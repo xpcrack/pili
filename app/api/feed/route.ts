@@ -19,6 +19,15 @@ function sanitizeUsers(value: unknown): User[] {
     }
 
     const candidate = item as Partial<User>;
+    const currentChainAssetTotal =
+      typeof candidate.currentChainAssetTotal === 'number' && Number.isFinite(candidate.currentChainAssetTotal)
+        ? candidate.currentChainAssetTotal
+        : 0;
+    const historicalMaxChainAssetTotal =
+      typeof candidate.historicalMaxChainAssetTotal === 'number' &&
+      Number.isFinite(candidate.historicalMaxChainAssetTotal)
+        ? Math.max(candidate.historicalMaxChainAssetTotal, currentChainAssetTotal)
+        : currentChainAssetTotal;
 
     if (
       typeof candidate.id !== 'string' ||
@@ -32,6 +41,8 @@ function sanitizeUsers(value: unknown): User[] {
 
     return [
       {
+        currentChainAssetTotal,
+        historicalMaxChainAssetTotal,
         id: candidate.id,
         name: candidate.name,
         handle: candidate.handle,
