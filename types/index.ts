@@ -14,6 +14,8 @@ export interface User {
   name: string;
   handle: string;
   avatar: string;
+  currentChainAssetTotal: number;
+  historicalMaxChainAssetTotal: number;
   twitter?: string;
   telegram?: string;
   addresses: AddressInfo[];

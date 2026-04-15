@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { User } from '@/types';
-import { UserBar } from '@/components/UserBar';
+import { UserBar, type SidebarSortBy } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -16,6 +16,7 @@ import { getUserAvatar } from '@/lib/userProfile';
 export default function Home() {
   // null 表示全部动态，有值表示特定用户
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [sidebarSortBy, setSidebarSortBy] = useState<SidebarSortBy>('historicalMaxAsset');
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
@@ -33,6 +34,21 @@ export default function Home() {
     if (!selectedUserId) return feed; // 全部动态
     return feed.filter(item => item.user.id === selectedUserId);
   }, [feed, selectedUserId]);
+
+  const lastActiveAtByUserId = useMemo(() => {
+    const activityMap: Record<string, number> = {};
+
+    for (const item of feed) {
+      const userId = item.user.id;
+      const currentLatest = activityMap[userId] ?? 0;
+
+      if (item.activity.timestamp > currentLatest) {
+        activityMap[userId] = item.activity.timestamp;
+      }
+    }
+
+    return activityMap;
+  }, [feed]);
 
   // 处理选择用户
   const handleSelectUser = (user: User | null) => {
@@ -99,7 +115,14 @@ export default function Home() {
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
           <aside className="w-full md:sticky md:top-20 md:w-64 md:shrink-0">
-            <UserBar users={users} selectedUserId={selectedUserId} onSelectUser={handleSelectUser} />
+            <UserBar
+              users={users}
+              selectedUserId={selectedUserId}
+              onSelectUser={handleSelectUser}
+              sortBy={sidebarSortBy}
+              onSortByChange={setSidebarSortBy}
+              lastActiveAtByUserId={lastActiveAtByUserId}
+            />
           </aside>
 
           <main className="min-w-0 flex-1">
