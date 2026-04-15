@@ -46,6 +46,7 @@ interface ProfileFormState {
   twitter: string;
   telegram: string;
   tags: string;
+  currentChainAssetTotal: string;
 }
 
 const CHAIN_VALUES = new Set(CHAIN_OPTIONS.map((option) => option.value));
@@ -160,6 +161,16 @@ function parseBulkImportText(
   return Array.from(groupedUsers.values());
 }
 
+function parseAssetTotalInput(value: string) {
+  const parsed = Number(value.trim());
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+
+  return parsed;
+}
+
 export default function ManagePage() {
   const { users, addUser, addUsers, updateUser, deleteUser, removeAddress } = useUsersDataStore();
   const isClient = useIsClient();
@@ -171,6 +182,7 @@ export default function ManagePage() {
     twitter: '',
     telegram: '',
     tags: '',
+    currentChainAssetTotal: '',
   });
 
   const [addressText, setAddressText] = useState('');
@@ -187,7 +199,14 @@ export default function ManagePage() {
   );
 
   const resetForm = () => {
-    setFormData({ name: '', handle: '', twitter: '', telegram: '', tags: '' });
+    setFormData({
+      name: '',
+      handle: '',
+      twitter: '',
+      telegram: '',
+      tags: '',
+      currentChainAssetTotal: '',
+    });
     setAddressText('');
   };
 
@@ -204,6 +223,7 @@ export default function ManagePage() {
       telegram: formData.telegram.trim() || undefined,
       addresses: parsedAddresses,
       tags: formData.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      currentChainAssetTotal: parseAssetTotalInput(formData.currentChainAssetTotal),
     });
 
     resetForm();
@@ -414,6 +434,18 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   className="border-zinc-800 bg-zinc-950 text-zinc-100"
                 />
               </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label className="text-zinc-300">当前链上资产总额</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={formData.currentChainAssetTotal}
+                  onChange={(e) => setFormData({ ...formData, currentChainAssetTotal: e.target.value })}
+                  placeholder="例如: 128000"
+                  className="border-zinc-800 bg-zinc-950 text-zinc-100"
+                />
+              </div>
             </div>
 
             <div className="border-t border-zinc-800 pt-6">
@@ -572,6 +604,7 @@ function UserCard({
     twitter: user.twitter || '',
     telegram: user.telegram || '',
     tags: user.tags.join(', '),
+    currentChainAssetTotal: String(user.currentChainAssetTotal ?? 0),
   });
 
   const handleSaveProfile = () => {
@@ -586,6 +619,7 @@ function UserCard({
       twitter: normalizedTwitter || undefined,
       telegram: profileForm.telegram.trim() || undefined,
       tags: profileForm.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      currentChainAssetTotal: parseAssetTotalInput(profileForm.currentChainAssetTotal),
     });
 
     setIsEditingProfile(false);
@@ -617,6 +651,7 @@ function UserCard({
                   twitter: user.twitter || '',
                   telegram: user.telegram || '',
                   tags: user.tags.join(', '),
+                  currentChainAssetTotal: String(user.currentChainAssetTotal ?? 0),
                 });
               }
 
@@ -683,6 +718,20 @@ function UserCard({
                 className="border-zinc-800 bg-zinc-900 text-zinc-100"
               />
             </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label className="text-xs text-zinc-400">当前链上资产总额</Label>
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                value={profileForm.currentChainAssetTotal}
+                onChange={(e) => setProfileForm({ ...profileForm, currentChainAssetTotal: e.target.value })}
+                className="border-zinc-800 bg-zinc-900 text-zinc-100"
+              />
+              <p className="text-[11px] text-zinc-500">
+                历史最高值：{user.historicalMaxChainAssetTotal ?? 0}
+              </p>
+            </div>
           </div>
 
           <div className="flex gap-2">
@@ -696,6 +745,7 @@ function UserCard({
                   twitter: user.twitter || '',
                   telegram: user.telegram || '',
                   tags: user.tags.join(', '),
+                  currentChainAssetTotal: String(user.currentChainAssetTotal ?? 0),
                 });
                 setIsEditingProfile(false);
               }}
@@ -720,6 +770,10 @@ function UserCard({
             <span>{user.twitter ? `@${user.twitter}` : '未填写'}</span>
             <span className="text-zinc-600">Telegram</span>
             <span>{user.telegram || '未填写'}</span>
+            <span className="text-zinc-600">当前资产</span>
+            <span>{user.currentChainAssetTotal ?? 0}</span>
+            <span className="text-zinc-600">历史峰值</span>
+            <span>{user.historicalMaxChainAssetTotal ?? 0}</span>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
