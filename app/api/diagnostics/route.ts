@@ -64,12 +64,15 @@ export async function GET() {
         WHERE json_extract(activity_json, '$.metadata.txAction') = 'receive'
         GROUP BY json_extract(activity_json, '$.metadata.uncertainFrom')
       `)
-      .all() as Array<{ uncertainFrom: number | string; count: number }>;
+      .all() as Array<{ uncertainFrom: number | string | null; count: number }>;
+
+    const isTruthySqliteBoolean = (value: number | string | null) =>
+      value === 1 || value === '1' || value === 'true';
 
     const receiveWithUncertainFrom =
-      receiveStats.find((s) => s.uncertainFrom === 1 || s.uncertainFrom === true)?.count || 0;
+      receiveStats.find((s) => isTruthySqliteBoolean(s.uncertainFrom))?.count || 0;
     const receiveWithoutUncertainFrom =
-      receiveStats.find((s) => s.uncertainFrom === 0 || s.uncertainFrom === false)?.count || 0;
+      receiveStats.find((s) => !isTruthySqliteBoolean(s.uncertainFrom))?.count || 0;
 
     const databaseStats = {
       receiveTransactions: txActionStats.find((s) => s.txAction === 'receive')?.count || 0,

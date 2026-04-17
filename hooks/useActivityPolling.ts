@@ -68,10 +68,6 @@ const CACHE_POISON_REPEAT_TIME_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CACHE_POISON_SENDER_FANOUT_MIN_RECIPIENTS = 3;
 const CACHE_POISON_SENDER_FANOUT_MIN_TRANSFERS = 3;
 
-// Environment variable to temporarily disable poison filtering for debugging
-// Note: This needs to be set on the server side as well
-const DISABLE_POISON_FILTER =
-  typeof process !== 'undefined' && process.env?.DISABLE_POISON_FILTER === 'true';
 const CACHE_NATIVE_DUST_THRESHOLDS: Record<string, number> = {
   'solana|sol': 0.00002,
   'bsc|bnb': 0.00002,
