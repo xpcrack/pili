@@ -23,6 +23,10 @@ export interface ToActivityInput {
   classification?: ParseClassification;
 }
 
+export function isVisibleByDefault(classification: ParseClassification = 'normal') {
+  return classification !== 'poison';
+}
+
 function buildActivityTitle(input: ToActivityInput) {
   let title = input.txAction === 'receive' ? '收到转账' : '发送转账';
 

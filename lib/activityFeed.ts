@@ -5,7 +5,7 @@ import {
   type OkxTransaction,
   type OkxTransactionDetail,
 } from '@/lib/okx';
-import { toActivity } from '@/lib/parsing/toActivity';
+import { isVisibleByDefault, toActivity, type ParseClassification } from '@/lib/parsing/toActivity';
 
 export interface AddressDiagnostic {
   userId: string;
@@ -633,6 +633,11 @@ async function convertToActivity(
   }
 
   const uncertainFrom = !initiatorMatchedFrom && !initiatorMatchedSigner;
+  const classification: ParseClassification = 'normal';
+
+  if (!isVisibleByDefault(classification)) {
+    return null;
+  }
 
   return toActivity({
     userId: user.id,
@@ -651,7 +656,7 @@ async function convertToActivity(
     toAddress: displayToAddress,
     trackedAddress: addressInfo.address,
     uncertainFrom,
-    classification: 'normal',
+    classification,
   });
 }
 
