@@ -1,111 +1,99 @@
-import { parseGroupedTransaction } from '@/lib/parsing/core';
-import type { GroupedTransaction } from '@/lib/parsing/types';
-import { Activity, ActivityType, User, type AddressInfo } from '@/types';
+import type { Activity } from '@/types';
 
-interface ConvertToActivityParams {
-  group: GroupedTransaction;
-  user: User;
-  addressInfo: AddressInfo;
-  requireTrackedInitiator: boolean;
+export type ParseClassification = 'normal' | 'suspicious' | 'poison';
+
+export interface ToActivityInput {
+  id?: string;
+  userId: string;
+  txHash: string;
+  timestamp: number;
+  chain: string;
+  rawType: string;
+  txStatus?: string;
+  txAction: NonNullable<Activity['metadata']['txAction']>;
+  value: string;
+  token: string;
+  tokenAddress: string;
+  quoteToken?: string;
+  quoteAmount?: string;
+  fromAddress: string;
+  toAddress: string;
+  trackedAddress: string;
+  uncertainFrom: boolean;
+  classification?: ParseClassification;
 }
 
-function buildTitle(params: {
-  txAction: NonNullable<Activity['metadata']['txAction']>;
-  rawType: string;
-  targetMatchedTo: boolean;
-  txStatus?: string;
-}) {
-  const { txAction, rawType, targetMatchedTo, txStatus } = params;
+function buildActivityTitle(input: ToActivityInput) {
+  let title = input.txAction === 'receive' ? '收到转账' : '发送转账';
 
-  let title = targetMatchedTo ? '收到转账' : '发送转账';
-
-  if (rawType === '2') {
+  if (input.rawType === '2') {
     title += ' (Token)';
-  } else if (rawType === '1') {
+  } else if (input.rawType === '1') {
     title += ' (合约)';
-  } else if (rawType === '0') {
+  } else if (input.rawType === '0') {
     title += ' (主链币)';
   }
 
-  if (txAction === 'buy') {
+  if (input.txAction === 'buy') {
     title = '买入资产';
-  } else if (txAction === 'sell') {
+  } else if (input.txAction === 'sell') {
     title = '卖出资产';
   }
 
-  if (txStatus === 'fail') {
+  if (input.txStatus === 'fail') {
     title += ' [失败]';
-  } else if (txStatus === 'pending') {
+  } else if (input.txStatus === 'pending') {
     title += ' [处理中]';
   }
 
   return title;
 }
 
-function buildActionText(txAction: NonNullable<Activity['metadata']['txAction']>) {
-  if (txAction === 'buy') {
-    return '买入';
-  }
-  if (txAction === 'sell') {
-    return '卖出';
-  }
-  if (txAction === 'receive') {
-    return '收到';
-  }
-  return '发送';
+function buildActivityContent(input: ToActivityInput) {
+  const actionText =
+    input.txAction === 'buy'
+      ? '买入'
+      : input.txAction === 'sell'
+        ? '卖出'
+        : input.txAction === 'receive'
+          ? '收到'
+          : '发送';
+
+  const quoteText =
+    input.quoteAmount && input.quoteToken
+      ? `，${input.txAction === 'sell' ? '获得' : '花费'} ${input.quoteAmount} ${input.quoteToken}`
+      : '';
+
+  return `${actionText} ${input.value} ${input.token}${quoteText}`;
 }
 
-export async function convertToActivity({
-  group,
-  user,
-  addressInfo,
-  requireTrackedInitiator,
-}: ConvertToActivityParams): Promise<Activity | null> {
-  const parsed = await parseGroupedTransaction({
-    group,
-    chain: addressInfo.chain,
-    trackedAddress: addressInfo.address,
-    requireTrackedInitiator,
-  });
+function buildActivityId(input: ToActivityInput) {
+  return input.id ?? `${input.userId}-${input.txHash || input.timestamp}-${Math.random().toString(36).slice(2, 11)}`;
+}
 
-  if (!parsed) {
-    return null;
-  }
-
-  const type: ActivityType = 'transfer';
-  const title = buildTitle({
-    txAction: parsed.txAction,
-    rawType: parsed.rawType,
-    targetMatchedTo: parsed.addressMatch.targetMatchedTo,
-    txStatus: parsed.txStatus,
-  });
-  const actionText = buildActionText(parsed.txAction);
-  const quoteText = parsed.quoteAsset
-    ? `，${parsed.txAction === 'sell' ? '获得' : '花费'} ${parsed.quoteAsset.amount} ${parsed.quoteAsset.token}`
-    : '';
-
+export function toActivity(input: ToActivityInput): Activity {
   return {
-    id: `${user.id}-${group.txHash || parsed.timestamp}-${Math.random().toString(36).slice(2, 11)}`,
-    userId: user.id,
+    id: buildActivityId(input),
+    userId: input.userId,
     source: 'blockchain',
-    type,
-    title,
-    content: `${actionText} ${parsed.primaryAsset.amount} ${parsed.primaryAsset.symbol}${quoteText}`,
-    timestamp: parsed.timestamp,
+    type: 'transfer',
+    title: buildActivityTitle(input),
+    content: buildActivityContent(input),
+    timestamp: input.timestamp,
     metadata: {
-      txHash: parsed.txHash || parsed.representative.txHash,
-      value: parsed.primaryAsset.amount,
-      token: parsed.primaryAsset.symbol,
-      tokenAddress: parsed.primaryAsset.tokenAddress,
-      quoteToken: parsed.quoteAsset?.token,
-      quoteAmount: parsed.quoteAsset?.amount,
-      chain: addressInfo.chain,
-      fromAddress: parsed.primaryAsset.fromAddress,
-      toAddress: parsed.primaryAsset.toAddress,
-      txStatus: parsed.txStatus,
-      txAction: parsed.txAction,
-      trackedAddress: addressInfo.address,
-      uncertainFrom: parsed.addressMatch.uncertainFrom,
+      txHash: input.txHash,
+      value: input.value,
+      token: input.token,
+      tokenAddress: input.tokenAddress,
+      quoteToken: input.quoteToken,
+      quoteAmount: input.quoteAmount,
+      chain: input.chain,
+      fromAddress: input.fromAddress,
+      toAddress: input.toAddress,
+      txStatus: input.txStatus,
+      txAction: input.txAction,
+      trackedAddress: input.trackedAddress,
+      uncertainFrom: input.uncertainFrom,
     },
   };
 }
