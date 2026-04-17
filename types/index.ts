@@ -7,6 +7,8 @@ export interface AddressInfo {
   address: string;
   name: string;
   chain: ChainType;
+  totalAssetUsd: number | null;
+  assetUpdatedAt: number | null;
 }
 
 export interface User {
@@ -17,6 +19,9 @@ export interface User {
   twitter?: string;
   telegram?: string;
   addresses: AddressInfo[];
+  totalAssetUsd: number;
+  historicalMaxAssetUsd: number;
+  assetUpdatedAt: number | null;
   tags: string[];
 }
 
@@ -32,6 +37,9 @@ export interface Activity {
     txHash?: string;
     value?: string;
     token?: string;
+    tokenAddress?: string;
+    quoteToken?: string;
+    quoteAmount?: string;
     media?: string[];
     likes?: number;
     replies?: number;
@@ -40,6 +48,13 @@ export interface Activity {
     fromAddress?: string;
     toAddress?: string;
     txStatus?: string;
+    uncertainFrom?: boolean;
+    txAction?: 'buy' | 'sell' | 'send' | 'receive';
+    trackedAddress?: string;
+    coHitUserCount?: number;
+    coHitAddressCount?: number;
+    coHitUserNames?: string[];
+    coHitAddresses?: string[];
   };
 }
 

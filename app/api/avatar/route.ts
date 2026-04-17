@@ -7,8 +7,8 @@ export const runtime = 'nodejs';
 const avatarCache = new Map<string, { body: ArrayBuffer; contentType: string; expiresAt: number }>();
 const negativeCache = new Map<string, number>();
 const POSITIVE_CACHE_MS = 6 * 60 * 60 * 1000;
-const NEGATIVE_CACHE_MS = 30 * 60 * 1000;
-const AVATAR_PROBE_TIMEOUT_MS = 1200;
+const NEGATIVE_CACHE_MS = 5 * 60 * 1000;
+const AVATAR_PROBE_TIMEOUT_MS = 7000;
 const CACHE_CONTROL = 'public, max-age=3600, s-maxage=3600';
 const MAX_AVATAR_BYTES = 1024 * 1024;
 
@@ -108,14 +108,8 @@ async function resolveTwitterAvatar(twitter: string) {
     `https://unavatar.io/twitter/${encodeURIComponent(twitter)}`,
   ];
 
-  for (const candidate of candidates) {
-    const avatar = await fetchAvatarBytes(candidate);
-    if (avatar) {
-      return avatar;
-    }
-  }
-
-  return null;
+  const results = await Promise.all(candidates.map((candidate) => fetchAvatarBytes(candidate)));
+  return results.find((result) => result !== null) ?? null;
 }
 
 export async function GET(request: NextRequest) {

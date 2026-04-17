@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
+import { formatUsdCompact, formatUsdOrDash } from '@/lib/assetFormat';
 import {
   ArrowLeft,
   Plus,
@@ -28,6 +29,8 @@ interface AddressEntry {
   address: string;
   name: string;
   chain: ChainType;
+  totalAssetUsd: number | null;
+  assetUpdatedAt: number | null;
 }
 
 interface UserDraft {
@@ -37,6 +40,9 @@ interface UserDraft {
   twitter?: string;
   telegram?: string;
   addresses: AddressEntry[];
+  totalAssetUsd: number;
+  historicalMaxAssetUsd: number;
+  assetUpdatedAt: number | null;
   tags: string[];
 }
 
@@ -76,7 +82,7 @@ function buildHandle(base: string, usedHandles: Set<string>) {
   return candidate;
 }
 
-function parseAddressText(text: string): AddressEntry[] {
+function parseAddressText(text: string, startIndex = 1): AddressEntry[] {
   const lines = text.trim().split('\n');
   const result: AddressEntry[] = [];
 
@@ -97,8 +103,10 @@ function parseAddressText(text: string): AddressEntry[] {
 
     result.push({
       address,
-      name: addressName || `地址 ${result.length + 1}`,
+      name: addressName || `#${startIndex + result.length}`,
       chain: hasExplicitChain ? maybeChain : inferChainFromAddress(address),
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
     });
   }
 
@@ -142,6 +150,9 @@ function parseBulkImportText(
         handle,
         avatar: buildUserAvatar(handle),
         addresses: [],
+        totalAssetUsd: 0,
+        historicalMaxAssetUsd: 0,
+        assetUpdatedAt: null,
         tags: [],
       });
     }
@@ -152,8 +163,10 @@ function parseBulkImportText(
 
     currentUser.addresses.push({
       address,
-      name: aliasSuffix || `地址 ${currentUser.addresses.length + 1}`,
+      name: aliasSuffix || `#${currentUser.addresses.length + 1}`,
       chain: hasExplicitChain ? maybeChain : inferChainFromAddress(address),
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
     });
   }
 
@@ -203,6 +216,9 @@ export default function ManagePage() {
       twitter: normalizedTwitter || undefined,
       telegram: formData.telegram.trim() || undefined,
       addresses: parsedAddresses,
+      totalAssetUsd: 0,
+      historicalMaxAssetUsd: 0,
+      assetUpdatedAt: null,
       tags: formData.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
     });
 
@@ -218,7 +234,7 @@ export default function ManagePage() {
   };
 
   const handleAddAddressesToUser = (user: User) => {
-    const newAddresses = parseAddressText(editingAddressText);
+    const newAddresses = parseAddressText(editingAddressText, user.addresses.length + 1);
 
     if (newAddresses.length > 0) {
       updateUser(user.id, {
@@ -720,6 +736,10 @@ function UserCard({
             <span>{user.twitter ? `@${user.twitter}` : '未填写'}</span>
             <span className="text-zinc-600">Telegram</span>
             <span>{user.telegram || '未填写'}</span>
+            <span className="text-zinc-600">总资产</span>
+            <span>{formatUsdCompact(user.totalAssetUsd)}</span>
+            <span className="text-zinc-600">历史最高</span>
+            <span>{formatUsdCompact(user.historicalMaxAssetUsd)}</span>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -784,6 +804,9 @@ function UserCard({
                   <span className="truncate text-sm text-zinc-300">{address.name}</span>
                   <span className="truncate text-xs text-zinc-600">
                     {address.address.slice(0, 8)}...{address.address.slice(-6)}
+                  </span>
+                  <span className="shrink-0 rounded bg-zinc-800/60 px-2 py-0.5 text-xs text-zinc-300">
+                    {formatUsdOrDash(address.totalAssetUsd)}
                   </span>
                 </div>
                 <button

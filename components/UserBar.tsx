@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { User } from '@/types';
 import { UserAvatar } from './UserAvatar';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
@@ -7,16 +8,54 @@ import { Activity } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useUserStore } from '@/store/userStore';
 import { getUserAvatar } from '@/lib/userProfile';
+import { formatUsdCompact } from '@/lib/assetFormat';
 
 interface UserBarProps {
   users: User[];
   selectedUserId: string | null;
+  latestActivityAtByUser: Map<string, number>;
   onSelectUser: (user: User | null) => void;
 }
 
-export function UserBar({ users, selectedUserId, onSelectUser }: UserBarProps) {
+export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelectUser }: UserBarProps) {
   const isAllSelected = selectedUserId === null;
   const hasNew = useUserStore((state) => state.hasNew);
+  const [now, setNow] = useState(0);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const kickoff = window.setTimeout(tick, 0);
+    const timer = window.setInterval(() => {
+      tick();
+    }, 60 * 1000);
+
+    return () => {
+      window.clearTimeout(kickoff);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const formatRelativeTimeCompact = (timestamp: number) => {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return '暂无动态';
+    }
+
+    const diffMs = Math.max(0, now - timestamp);
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (diffMs < minuteMs) {
+      return '刚刚';
+    }
+    if (diffMs < hourMs) {
+      return `约 ${Math.floor(diffMs / minuteMs)}m前`;
+    }
+    if (diffMs < dayMs) {
+      return `约 ${Math.floor(diffMs / hourMs)}h前`;
+    }
+    return `约 ${Math.floor(diffMs / dayMs)}d前`;
+  };
 
   return (
     <div className="w-full">
@@ -86,6 +125,8 @@ export function UserBar({ users, selectedUserId, onSelectUser }: UserBarProps) {
 
             {users.map((user) => {
               const isSelected = selectedUserId === user.id;
+              const latestActivityAt = latestActivityAtByUser.get(user.id) ?? 0;
+              const latestActivityText = formatRelativeTimeCompact(latestActivityAt);
 
               return (
                 <button
@@ -106,7 +147,14 @@ export function UserBar({ users, selectedUserId, onSelectUser }: UserBarProps) {
                   </div>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{user.name}</div>
-                    <div className="truncate text-xs text-zinc-500">@{user.handle}</div>
+                    <div className="mt-0.5 flex items-center gap-2 text-xs">
+                      <span className="min-w-0 truncate text-zinc-500">
+                        {formatUsdCompact(user.totalAssetUsd)}
+                      </span>
+                      <span className={`shrink-0 text-[11px] ${isSelected ? 'text-blue-300/90' : 'text-zinc-400'}`}>
+                        {latestActivityText}
+                      </span>
+                    </div>
                   </div>
                 </button>
               );

@@ -1,6 +1,7 @@
 'use client';
 
 import type { PersistStorage, StorageValue } from 'zustand/middleware';
+import { isQuotaExceededError } from '@/lib/storageQuota';
 
 export function createSafePersistStorage<T>(keyPrefix?: string): PersistStorage<T> {
   return {
@@ -30,7 +31,18 @@ export function createSafePersistStorage<T>(keyPrefix?: string): PersistStorage<
       }
 
       const storageKey = keyPrefix ? `${keyPrefix}:${name}` : name;
-      window.localStorage.setItem(storageKey, JSON.stringify(value));
+
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(value));
+      } catch (error) {
+        if (isQuotaExceededError(error)) {
+          window.localStorage.removeItem(storageKey);
+          console.warn(`Persist storage quota exceeded for ${storageKey}, skipped update.`);
+          return;
+        }
+
+        console.warn(`Failed to persist state for ${storageKey}.`, error);
+      }
     },
     removeItem: (name) => {
       if (typeof window === 'undefined') {
