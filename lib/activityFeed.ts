@@ -1,6 +1,6 @@
 import { fetchOkxTransactionsByAddress } from '@/lib/okx';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
-import { convertToActivity } from '@/lib/parsing/toActivity';
+import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
 import { Activity, User } from '@/types';
 
 export interface AddressDiagnostic {
@@ -75,11 +75,13 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
 
         let convertedCount = 0;
         for (const group of groups) {
+          const classification: ParseClassification = 'normal';
           const activity = await convertToActivity({
             group,
             user,
             addressInfo,
             requireTrackedInitiator,
+            classification,
           });
           if (!activity) {
             continue;

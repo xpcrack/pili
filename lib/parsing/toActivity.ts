@@ -2,11 +2,18 @@ import { parseGroupedTransaction } from '@/lib/parsing/core';
 import type { GroupedTransaction } from '@/lib/parsing/types';
 import { Activity, ActivityType, User, type AddressInfo } from '@/types';
 
+export type ParseClassification = 'normal' | 'suspicious' | 'poison';
+
 interface ConvertToActivityParams {
   group: GroupedTransaction;
   user: User;
   addressInfo: AddressInfo;
   requireTrackedInitiator: boolean;
+  classification?: ParseClassification;
+}
+
+export function isVisibleByDefault(classification: ParseClassification = 'normal') {
+  return classification !== 'poison';
 }
 
 function buildTitle(params: {
@@ -60,6 +67,7 @@ export async function convertToActivity({
   user,
   addressInfo,
   requireTrackedInitiator,
+  classification = 'normal',
 }: ConvertToActivityParams): Promise<Activity | null> {
   const parsed = await parseGroupedTransaction({
     group,
@@ -68,7 +76,7 @@ export async function convertToActivity({
     requireTrackedInitiator,
   });
 
-  if (!parsed) {
+  if (!parsed || !isVisibleByDefault(classification)) {
     return null;
   }
 
