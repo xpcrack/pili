@@ -71,12 +71,15 @@ const FEED_BACKFILL_WINDOW_STATE_KEY = 'feed_backfill_window_state_v1';
 
 const SNAPSHOT_POISON_SENDER_FANOUT_MIN_RECIPIENTS = 3;
 const SNAPSHOT_POISON_SENDER_FANOUT_MIN_TRANSFERS = 3;
+const ENABLE_LEGACY_SNAPSHOT_REPAIRS = process.env.ENABLE_LEGACY_SNAPSHOT_REPAIRS === 'true';
+const ENABLE_LEGACY_POISON_FILTER = process.env.ENABLE_LEGACY_POISON_FILTER === 'true';
 
-// Environment variable to temporarily disable poison filtering for debugging
-const DISABLE_POISON_FILTER = process.env.DISABLE_POISON_FILTER === 'true';
+if (ENABLE_LEGACY_SNAPSHOT_REPAIRS) {
+  console.warn('[feedSnapshotRepo] ⚠️ Legacy snapshot repair compatibility mode is enabled');
+}
 
-if (DISABLE_POISON_FILTER) {
-  console.warn('[feedSnapshotRepo] ⚠️ Poison filtering is DISABLED via DISABLE_POISON_FILTER environment variable');
+if (ENABLE_LEGACY_POISON_FILTER) {
+  console.warn('[feedSnapshotRepo] ⚠️ Legacy poison filtering compatibility mode is enabled');
 }
 
 function normalize(value: string | undefined) {
@@ -417,45 +420,54 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
     })
     .filter((item): item is { user: User; activity: Activity } => Boolean(item));
 
-  const fixCandidates = feed.filter((item) => {
-    const action = item.activity.metadata.txAction;
-    if (action !== 'buy' && action !== 'sell') {
-      return false;
-    }
-    return true;
-  });
+  if (ENABLE_LEGACY_SNAPSHOT_REPAIRS) {
+    const fixCandidates = feed.filter((item) => {
+      const action = item.activity.metadata.txAction;
+      if (action !== 'buy' && action !== 'sell') {
+        return false;
+      }
+      return true;
+    });
 
-  if (fixCandidates.length > 0) {
-    const fetchRawStmt = db.prepare(
-      `SELECT chain, tracked_address_lower, tx_hash_lower, payload_json
-       FROM raw_transactions
-       WHERE chain = ? AND tracked_address_lower = ? AND tx_hash_lower = ?
-       LIMIT 1`
-    );
-    const rawByKey = new Map<string, RawPayloadRow>();
-    for (const item of fixCandidates) {
-      const chain = normalize(item.activity.metadata.chain);
-      const tracked = normalize(item.activity.metadata.trackedAddress);
-      const txHash = normalize(item.activity.metadata.txHash);
-      if (!chain || !tracked || !txHash) {
-        continue;
+    if (fixCandidates.length > 0) {
+      const fetchRawStmt = db.prepare(
+        `SELECT chain, tracked_address_lower, tx_hash_lower, payload_json
+         FROM raw_transactions
+         WHERE chain = ? AND tracked_address_lower = ? AND tx_hash_lower = ?
+         LIMIT 1`
+      );
+      const rawByKey = new Map<string, RawPayloadRow>();
+      for (const item of fixCandidates) {
+        const chain = normalize(item.activity.metadata.chain);
+        const tracked = normalize(item.activity.metadata.trackedAddress);
+        const txHash = normalize(item.activity.metadata.txHash);
+        if (!chain || !tracked || !txHash) {
+          continue;
+        }
+        const key = `${chain}|${tracked}|${txHash}`;
+        if (rawByKey.has(key)) {
+          continue;
+        }
+        const raw = fetchRawStmt.get(chain, tracked, txHash) as RawPayloadRow | undefined;
+        if (raw) {
+          rawByKey.set(key, raw);
+        }
       }
-      const key = `${chain}|${tracked}|${txHash}`;
-      if (rawByKey.has(key)) {
-        continue;
-      }
-      const raw = fetchRawStmt.get(chain, tracked, txHash) as RawPayloadRow | undefined;
-      if (raw) {
-        rawByKey.set(key, raw);
-      }
-    }
 
-    if (rawByKey.size > 0) {
-      for (let i = 0; i < feed.length; i += 1) {
-        const nativeFixed = tryFixLegacyNativeTradeActivity(feed[i], rawByKey);
-        feed[i] = tryFixLegacyIncomingPoisonBuy(nativeFixed, rawByKey);
+      if (rawByKey.size > 0) {
+        for (let i = 0; i < feed.length; i += 1) {
+          const nativeFixed = tryFixLegacyNativeTradeActivity(feed[i], rawByKey);
+          feed[i] = tryFixLegacyIncomingPoisonBuy(nativeFixed, rawByKey);
+        }
       }
     }
+  }
+
+  if (!ENABLE_LEGACY_POISON_FILTER) {
+    return {
+      feed,
+      total: totalRow.count,
+    };
   }
 
   const senderFanOutStats = new Map<
@@ -501,7 +513,7 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
   );
 
   const filteredFeed =
-    DISABLE_POISON_FILTER || suspiciousSenderKeys.size === 0
+    suspiciousSenderKeys.size === 0
       ? feed
       : feed.filter((item) => {
           const action = item.activity.metadata.txAction;
@@ -520,17 +532,12 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
         });
 
   // Debug logging for poison filtering
-  if (suspiciousSenderKeys.size > 0 && !DISABLE_POISON_FILTER) {
+  if (suspiciousSenderKeys.size > 0) {
     console.log('[readFeedSnapshot] Poison filtering stats:', {
       feedBeforeFilter: feed.length,
       suspiciousSendersCount: suspiciousSenderKeys.size,
       feedAfterFilter: filteredFeed.length,
       filteredCount: feed.length - filteredFeed.length,
-      sampleSuspiciousSenders: Array.from(suspiciousSenderKeys).slice(0, 3),
-    });
-  } else if (DISABLE_POISON_FILTER && suspiciousSenderKeys.size > 0) {
-    console.log('[readFeedSnapshot] Poison filtering skipped (DISABLE_POISON_FILTER=true). Would have filtered:', {
-      suspiciousSendersCount: suspiciousSenderKeys.size,
       sampleSuspiciousSenders: Array.from(suspiciousSenderKeys).slice(0, 3),
     });
   }

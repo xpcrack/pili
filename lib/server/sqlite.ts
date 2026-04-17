@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 
 const DATA_DIR = path.join(process.cwd(), '.data');
 const DB_PATH = path.join(DATA_DIR, 'web3-feed.sqlite');
+// Compatibility import only; live feed semantics now come from parser-built snapshots.
 const LEGACY_JUDGMENT_FILE = path.join(DATA_DIR, 'tx-judgments.json');
 
 let dbInstance: Database.Database | null = null;

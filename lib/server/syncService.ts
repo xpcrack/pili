@@ -345,7 +345,7 @@ async function runSync(
   let targetUsers = users;
   let beginMs = Math.max(0, now - INITIAL_WINDOW_MS);
   let endMs = now;
-  let writeMode: 'replace' | 'append' = 'append';
+  let writeMode: 'replace' | 'append' = 'replace';
 
   if (options.mode === 'backfill') {
     writeMode = 'append';
@@ -399,6 +399,8 @@ async function runSync(
     requireTrackedInitiator: true,
   });
 
+  // Persist parser artifacts for compatibility/audit flows, but keep result.feed
+  // as the semantic snapshot source of truth that readFeedSnapshot returns by default.
   upsertRawTransactions(result.rawTransactions);
   upsertActivityJudgments(result.judgments);
   if (writeMode === 'replace') {
