@@ -1,10 +1,11 @@
-import { Activity, ActivityType, User, type AddressInfo } from '@/types';
+import { Activity, User, type AddressInfo } from '@/types';
 import {
   fetchOkxTransactionDetailByTxHash,
   fetchOkxTransactionsByAddress,
   type OkxTransaction,
   type OkxTransactionDetail,
 } from '@/lib/okx';
+import { toActivity } from '@/lib/parsing/toActivity';
 
 export interface AddressDiagnostic {
   userId: string;
@@ -527,8 +528,6 @@ async function convertToActivity(
   const fromAddress = representative.from?.[0]?.address || '';
   const toAddress = representative.to?.[0]?.address || '';
   const rawType = representative.itype || representative.iType || '0';
-  const type: ActivityType = 'transfer';
-
   const fromAddresses = new Set<string>();
   const toAddresses = new Set<string>();
   const signerAddresses = new Set<string>();
@@ -649,65 +648,27 @@ async function convertToActivity(
     }
   }
 
-  let title = targetMatchedTo ? '收到转账' : '发送转账';
-
-  if (rawType === '2') {
-    title += ' (Token)';
-  } else if (rawType === '1') {
-    title += ' (合约)';
-  } else if (rawType === '0') {
-    title += ' (主链币)';
-  }
-
-  if (txAction === 'buy') {
-    title = '买入资产';
-  } else if (txAction === 'sell') {
-    title = '卖出资产';
-  }
-
-  if (txStatus === 'fail') {
-    title += ' [失败]';
-  } else if (txStatus === 'pending') {
-    title += ' [处理中]';
-  }
-
   const uncertainFrom = !initiatorMatchedFrom && !initiatorMatchedSigner;
 
-  const actionText =
-    txAction === 'buy'
-      ? '买入'
-      : txAction === 'sell'
-        ? '卖出'
-        : txAction === 'receive'
-          ? '收到'
-          : '发送';
-
-  const quoteText = quoteAmount && quoteToken ? `，${txAction === 'sell' ? '获得' : '花费'} ${quoteAmount} ${quoteToken}` : '';
-
-  return {
-    id: `${user.id}-${group.txHash || timestamp}-${Math.random().toString(36).slice(2, 11)}`,
+  return toActivity({
     userId: user.id,
-    source: 'blockchain',
-    type,
-    title,
-    content: `${actionText} ${displayAmount} ${displayToken}${quoteText}`,
+    txHash: group.txHash || representative.txHash || '',
     timestamp,
-    metadata: {
-      txHash: group.txHash || representative.txHash,
-      value: displayAmount,
-      token: displayToken,
-      tokenAddress: displayTokenAddress,
-      quoteToken,
-      quoteAmount,
-      chain: addressInfo.chain,
-      fromAddress: displayFromAddress,
-      toAddress: displayToAddress,
-      txStatus,
-      txAction,
-      trackedAddress: addressInfo.address,
-      uncertainFrom,
-    },
-  };
+    chain: addressInfo.chain,
+    rawType,
+    txStatus,
+    txAction,
+    value: displayAmount,
+    token: displayToken,
+    tokenAddress: displayTokenAddress,
+    quoteToken,
+    quoteAmount,
+    fromAddress: displayFromAddress,
+    toAddress: displayToAddress,
+    trackedAddress: addressInfo.address,
+    uncertainFrom,
+    classification: 'normal',
+  });
 }
 
 export async function buildActivityFeed(users: User[], options?: BuildActivityFeedOptions) {
