@@ -1,7 +1,5 @@
 import type { OkxTransaction } from '@/lib/okx';
-import type { Activity } from '@/types';
-
-export type NormalizedTxAction = NonNullable<Activity['metadata']['txAction']>;
+export type NormalizedTxAction = 'buy' | 'sell' | 'send' | 'receive';
 
 export interface GroupedTransaction {
   txHash: string;
