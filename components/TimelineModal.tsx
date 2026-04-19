@@ -186,6 +186,10 @@ function TimelineItem({
       return `https://web3.okx.com/explorer/solana/tx/${activity.metadata.txHash}`;
     }
 
+    if (activity.metadata.chain === 'ethereum') {
+      return `https://web3.okx.com/explorer/eth/tx/${activity.metadata.txHash}`;
+    }
+
     return null;
   })();
 
@@ -281,9 +285,6 @@ function TimelineItem({
             )}
             {activity.metadata.replies !== undefined && activity.metadata.replies > 0 && (
               <span>{activity.metadata.replies} 回复</span>
-            )}
-            {activity.metadata.views && (
-              <span>{activity.metadata.views} 浏览</span>
             )}
           </div>
         )}

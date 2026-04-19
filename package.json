@@ -6,11 +6,15 @@
     "dev": "next dev --port 3005",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "telegram:bridge": "tsx scripts/telegram-bridge.ts",
+    "test:admin-auth": "tsx scripts/test-admin-auth.ts",
+    "test:events-feed-total": "tsx scripts/test-events-feed-total.ts",
+    "test": "npm run test:admin-auth && npm run test:events-feed-total"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "11.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

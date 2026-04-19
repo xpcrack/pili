@@ -9,13 +9,14 @@ import {
   readFeedBackfillWindowState,
   readLastFailedSyncState,
   readLastSuccessfulSnapshotState,
+  clearParserArtifactSnapshots,
+  deleteFeedSnapshotWindowForUsers,
+  getQualifiedActivityCountsByUser,
   replaceFeedSnapshot,
   saveFeedBackfillWindowState,
   saveLastFailureState,
   saveLastSuccessfulSnapshotState,
-  upsertActivityJudgments,
   upsertFeedSnapshot,
-  upsertRawTransactions,
   type FeedBackfillWindowState,
 } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
@@ -24,6 +25,7 @@ import {
   markAddressesSynced,
   updateAssetSnapshots,
 } from '@/lib/server/trackedUsersRepo';
+import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -109,9 +111,39 @@ function createDefaultWindowState(): FeedBackfillWindowState {
   return {
     globalEarliestMs: null,
     perUserEarliestMs: {},
+    perUserHistoryComplete: {},
+    perUserLastBackfillAt: {},
+    perUserLocalQualifiedCount: {},
     globalAlignment: 'aligned',
     updatedAt: Date.now(),
   };
+}
+
+function getSuccessfulUserIds(diagnostics: AddressDiagnostic[]) {
+  return new Set(
+    diagnostics
+      .filter((item) => item.ok)
+      .map((item) => item.userId)
+  );
+}
+
+function getFullySuccessfulUserIds(diagnostics: AddressDiagnostic[]) {
+  const stats = new Map<string, { hasSuccess: boolean; hasFailure: boolean }>();
+  for (const item of diagnostics) {
+    const existing = stats.get(item.userId) ?? { hasSuccess: false, hasFailure: false };
+    if (item.ok) {
+      existing.hasSuccess = true;
+    } else {
+      existing.hasFailure = true;
+    }
+    stats.set(item.userId, existing);
+  }
+
+  return new Set(
+    Array.from(stats.entries())
+      .filter(([, value]) => value.hasSuccess && !value.hasFailure)
+      .map(([userId]) => userId)
+  );
 }
 
 function createRun(reason: string) {
@@ -205,13 +237,22 @@ function completeRunFailure(runId: number, payload: {
 
 function applyRefreshWindowState(users: ReturnType<typeof listTrackedUsers>, beginMs: number) {
   const perUserEarliestMs: Record<string, number> = {};
+  const perUserHistoryComplete: Record<string, boolean> = {};
+  const perUserLastBackfillAt: Record<string, number> = {};
+  const perUserLocalQualifiedCount: Record<string, number> = {};
   for (const user of users) {
     perUserEarliestMs[user.id] = beginMs;
+    perUserHistoryComplete[user.id] = false;
+    perUserLastBackfillAt[user.id] = 0;
+    perUserLocalQualifiedCount[user.id] = 0;
   }
 
   return {
     globalEarliestMs: beginMs,
     perUserEarliestMs,
+    perUserHistoryComplete,
+    perUserLastBackfillAt,
+    perUserLocalQualifiedCount,
     globalAlignment: 'aligned' as const,
     updatedAt: Date.now(),
   } satisfies FeedBackfillWindowState;
@@ -226,17 +267,35 @@ function mergeRefreshWindowState(
   const nextPerUserEarliest = {
     ...current.perUserEarliestMs,
   };
+  const nextPerUserHistoryComplete = {
+    ...current.perUserHistoryComplete,
+  };
+  const nextPerUserLastBackfillAt = {
+    ...current.perUserLastBackfillAt,
+  };
+  const nextPerUserLocalQualifiedCount = {
+    ...current.perUserLocalQualifiedCount,
+  };
 
   for (const user of users) {
     if (typeof nextPerUserEarliest[user.id] === 'number') {
+      nextPerUserHistoryComplete[user.id] = nextPerUserHistoryComplete[user.id] === true;
+      nextPerUserLastBackfillAt[user.id] = nextPerUserLastBackfillAt[user.id] ?? 0;
+      nextPerUserLocalQualifiedCount[user.id] = nextPerUserLocalQualifiedCount[user.id] ?? 0;
       continue;
     }
     nextPerUserEarliest[user.id] = beginMs;
+    nextPerUserHistoryComplete[user.id] = false;
+    nextPerUserLastBackfillAt[user.id] = 0;
+    nextPerUserLocalQualifiedCount[user.id] = 0;
   }
 
   return {
     globalEarliestMs: current.globalEarliestMs ?? beginMs,
     perUserEarliestMs: nextPerUserEarliest,
+    perUserHistoryComplete: nextPerUserHistoryComplete,
+    perUserLastBackfillAt: nextPerUserLastBackfillAt,
+    perUserLocalQualifiedCount: nextPerUserLocalQualifiedCount,
     globalAlignment: diagnostics.some((item) => !item.ok) ? 'partial' : 'aligned',
     updatedAt: Date.now(),
   } satisfies FeedBackfillWindowState;
@@ -248,16 +307,22 @@ function applyGlobalBackfillWindowState(
   beginMs: number,
   diagnostics: AddressDiagnostic[]
 ) {
-  const successfulUserIds = new Set(
-    diagnostics
-      .filter((item) => item.ok)
-      .map((item) => item.userId)
-  );
+  const successfulUserIds = getSuccessfulUserIds(diagnostics);
+  const fullySuccessfulUserIds = getFullySuccessfulUserIds(diagnostics);
 
   const next = {
     ...current,
     perUserEarliestMs: {
       ...current.perUserEarliestMs,
+    },
+    perUserHistoryComplete: {
+      ...current.perUserHistoryComplete,
+    },
+    perUserLastBackfillAt: {
+      ...current.perUserLastBackfillAt,
+    },
+    perUserLocalQualifiedCount: {
+      ...current.perUserLocalQualifiedCount,
     },
     updatedAt: Date.now(),
   };
@@ -271,6 +336,10 @@ function applyGlobalBackfillWindowState(
       continue;
     }
     next.perUserEarliestMs[user.id] = beginMs;
+    next.perUserLastBackfillAt[user.id] = Date.now();
+    if (beginMs === 0 && fullySuccessfulUserIds.has(user.id)) {
+      next.perUserHistoryComplete[user.id] = true;
+    }
   }
 
   next.globalAlignment = diagnostics.some((item) => !item.ok) ? 'partial' : 'aligned';
@@ -283,7 +352,9 @@ function applyUserBackfillWindowState(
   beginMs: number,
   diagnostics: AddressDiagnostic[]
 ) {
-  const hasSuccess = diagnostics.some((item) => item.ok);
+  const successfulUserIds = getSuccessfulUserIds(diagnostics);
+  const fullySuccessfulUserIds = getFullySuccessfulUserIds(diagnostics);
+  const hasSuccess = successfulUserIds.has(userId);
   if (!hasSuccess) {
     return {
       ...current,
@@ -297,6 +368,20 @@ function applyUserBackfillWindowState(
       ...current.perUserEarliestMs,
       [userId]: beginMs,
     },
+    perUserHistoryComplete: {
+      ...current.perUserHistoryComplete,
+      [userId]:
+        beginMs === 0 && fullySuccessfulUserIds.has(userId)
+          ? true
+          : current.perUserHistoryComplete[userId] === true,
+    },
+    perUserLastBackfillAt: {
+      ...current.perUserLastBackfillAt,
+      [userId]: Date.now(),
+    },
+    perUserLocalQualifiedCount: {
+      ...current.perUserLocalQualifiedCount,
+    },
     updatedAt: Date.now(),
   } satisfies FeedBackfillWindowState;
 }
@@ -307,10 +392,42 @@ async function runSync(
   startedAt: number,
   options: Required<Pick<TriggerSyncOptions, 'mode' | 'scope'>> & { userId: string | null }
 ) {
+  appendSyncLog({
+    runKind: 'sync',
+    runId,
+    level: 'info',
+    phase: 'start',
+    message: `sync run started: ${reason}`,
+    payload: {
+      mode: options.mode,
+      scope: options.scope,
+      userId: options.userId,
+    },
+  });
   const users = listTrackedUsers();
   const totalAddresses = users.reduce((sum, user) => sum + user.addresses.length, 0);
 
+  appendSyncLog({
+    runKind: 'sync',
+    runId,
+    level: 'info',
+    phase: 'scan-users',
+    message: `loaded tracked users`,
+    payload: {
+      userCount: users.length,
+      totalAddresses,
+    },
+  });
+
   if (users.length === 0 || totalAddresses === 0) {
+    appendSyncLog({
+      runKind: 'sync',
+      runId,
+      level: 'warn',
+      phase: 'empty',
+      message: 'no tracked users or addresses, writing empty snapshot',
+    });
+    clearParserArtifactSnapshots();
     replaceFeedSnapshot([]);
     const summary: ActivityFeedSummary = {
       userCount: users.length,
@@ -336,6 +453,13 @@ async function runSync(
       successfulAddresses: 0,
       failedAddresses: 0,
     });
+    appendSyncLog({
+      runKind: 'sync',
+      runId,
+      level: 'info',
+      phase: 'done',
+      message: 'sync run completed with empty snapshot',
+    });
     return;
   }
 
@@ -345,11 +469,9 @@ async function runSync(
   let targetUsers = users;
   let beginMs = Math.max(0, now - INITIAL_WINDOW_MS);
   let endMs = now;
-  let writeMode: 'replace' | 'append' = 'replace';
+  const shouldDeleteWindowBeforeWrite = true;
 
   if (options.mode === 'backfill') {
-    writeMode = 'append';
-
     if (options.scope === 'user' && options.userId) {
       targetUsers = users.filter((user) => user.id === options.userId);
       const baseEarliest =
@@ -365,7 +487,34 @@ async function runSync(
     }
   }
 
+  appendSyncLog({
+    runKind: 'sync',
+    runId,
+    level: 'info',
+    phase: 'build-feed',
+    message: 'building activity feed window',
+    payload: {
+      targetUserCount: targetUsers.length,
+      beginMs,
+      endMs,
+      mode: options.mode,
+      scope: options.scope,
+    },
+  });
+
   if (targetUsers.length === 0) {
+    appendSyncLog({
+      runKind: 'sync',
+      runId,
+      level: 'warn',
+      phase: 'empty-target',
+      message: 'no target users matched for current run options',
+      payload: {
+        mode: options.mode,
+        scope: options.scope,
+        userId: options.userId,
+      },
+    });
     const summary: ActivityFeedSummary = {
       userCount: 0,
       addressCount: 0,
@@ -390,6 +539,13 @@ async function runSync(
       successfulAddresses: 0,
       failedAddresses: 0,
     });
+    appendSyncLog({
+      runKind: 'sync',
+      runId,
+      level: 'info',
+      phase: 'done',
+      message: 'sync run completed with zero target users',
+    });
     return;
   }
 
@@ -399,15 +555,25 @@ async function runSync(
     requireTrackedInitiator: true,
   });
 
-  // Persist parser artifacts for compatibility/audit flows, but keep result.feed
-  // as the semantic snapshot source of truth that readFeedSnapshot returns by default.
-  upsertRawTransactions(result.rawTransactions);
-  upsertActivityJudgments(result.judgments);
-  if (writeMode === 'replace') {
-    replaceFeedSnapshot(result.feed);
-  } else {
-    upsertFeedSnapshot(result.feed);
+  appendSyncLog({
+    runKind: 'sync',
+    runId,
+    level: 'info',
+    phase: 'feed-built',
+    message: 'activity feed window built',
+    payload: {
+      feedCount: result.feed.length,
+      successfulAddressCount: result.summary.successfulAddressCount,
+      failedAddressCount: result.summary.failedAddressCount,
+      emptyAddressCount: result.summary.emptyAddressCount,
+    },
+  });
+
+  clearParserArtifactSnapshots();
+  if (shouldDeleteWindowBeforeWrite) {
+    deleteFeedSnapshotWindowForUsers(targetUsers, beginMs, endMs);
   }
+  upsertFeedSnapshot(result.feed);
   updateAssetSnapshots(result.addressAssets, result.userAssets);
 
   const syncedAt = Date.now();
@@ -432,6 +598,14 @@ async function runSync(
   } else {
     nextWindowState = applyGlobalBackfillWindowState(currentWindowState, users, beginMs, result.diagnostics);
   }
+  const latestQualifiedCounts = getQualifiedActivityCountsByUser();
+  nextWindowState.perUserLocalQualifiedCount = {
+    ...nextWindowState.perUserLocalQualifiedCount,
+    ...latestQualifiedCounts,
+  };
+  for (const user of users) {
+    nextWindowState.perUserLocalQualifiedCount[user.id] = latestQualifiedCounts[user.id] ?? 0;
+  }
   saveFeedBackfillWindowState(nextWindowState);
 
   saveLastSuccessfulSnapshotState({
@@ -448,6 +622,20 @@ async function runSync(
     successfulAddresses: result.summary.successfulAddressCount,
     failedAddresses: result.summary.failedAddressCount,
   });
+
+  appendSyncLog({
+    runKind: 'sync',
+    runId,
+    level: 'info',
+    phase: 'done',
+    message: 'sync run completed',
+    payload: {
+      transactionCount: result.summary.transactionCount,
+      successfulAddressCount: result.summary.successfulAddressCount,
+      failedAddressCount: result.summary.failedAddressCount,
+    },
+  });
+  pruneSyncLogs();
 }
 
 export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
@@ -485,6 +673,16 @@ export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
         totalAddresses,
         successfulAddresses: 0,
         failedAddresses: totalAddresses,
+      });
+      appendSyncLog({
+        runKind: 'sync',
+        runId: run.id,
+        level: 'error',
+        phase: 'failed',
+        message,
+        payload: {
+          debugError,
+        },
       });
       saveLastFailureState({
         error: debugError,

@@ -2,6 +2,8 @@ import 'server-only';
 
 import { type Activity, type User } from '@/types';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { matchesSearchQuery, parseSearchQuery } from '@/lib/smartSearch';
 
 export interface FeedSnapshotState {
   summary: {
@@ -29,6 +31,9 @@ export interface FeedSnapshotState {
 export interface FeedBackfillWindowState {
   globalEarliestMs: number | null;
   perUserEarliestMs: Record<string, number>;
+  perUserHistoryComplete: Record<string, boolean>;
+  perUserLastBackfillAt: Record<string, number>;
+  perUserLocalQualifiedCount: Record<string, number>;
   globalAlignment: 'aligned' | 'partial';
   updatedAt: number;
 }
@@ -45,16 +50,26 @@ export interface ActivityJudgmentSnapshot {
   chain: string;
   trackedAddress: string;
   txHash: string;
+  txTime?: number | null;
   txAction: 'buy' | 'sell' | 'send' | 'receive';
   token?: string;
   value?: string;
   tokenAddress?: string;
+  quoteToken?: string;
+  quoteAmount?: string;
   fromAddress?: string;
   toAddress?: string;
   uncertainFrom: boolean;
+  decision: 'visible' | 'hidden' | 'pending';
+  reasonCode: string;
+  reasonText: string;
+  computedUsdValue?: number | null;
 }
 
 interface FeedRow {
+  user_id: string;
+  chain: string | null;
+  tracked_address_lower: string | null;
   user_json: string;
   activity_json: string;
   timestamp: number;
@@ -92,6 +107,22 @@ function parseJSON<T>(value: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizeWindowState(state: FeedBackfillWindowState | null) {
+  if (!state) {
+    return null;
+  }
+
+  return {
+    globalEarliestMs: typeof state.globalEarliestMs === 'number' ? state.globalEarliestMs : null,
+    perUserEarliestMs: state.perUserEarliestMs || {},
+    perUserHistoryComplete: state.perUserHistoryComplete || {},
+    perUserLastBackfillAt: state.perUserLastBackfillAt || {},
+    perUserLocalQualifiedCount: state.perUserLocalQualifiedCount || {},
+    globalAlignment: state.globalAlignment === 'partial' ? 'partial' : 'aligned',
+    updatedAt: typeof state.updatedAt === 'number' ? state.updatedAt : Date.now(),
+  } satisfies FeedBackfillWindowState;
 }
 
 const NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
@@ -265,6 +296,8 @@ function buildActivityKey(item: { user: User; activity: Activity }, index: numbe
 }
 
 export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity }>) {
+  const dedupedRows: Array<{ user: User; activity: Activity }> = [];
+
   withTransaction(() => {
     const db = getDb();
     const now = Date.now();
@@ -299,6 +332,7 @@ export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity
 
     for (const { item, index } of dedupedFeed) {
       const activityKey = buildActivityKey(item, index);
+      dedupedRows.push(item);
       insertStmt.run(
         item.user.id,
         activityKey,
@@ -314,12 +348,16 @@ export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity
       );
     }
   });
+
+  upsertEventsFromFeedRows(dedupedRows, 'feed-snapshot-replace');
 }
 
 export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity }>) {
   if (feed.length === 0) {
     return;
   }
+
+  const dedupedRows: Array<{ user: User; activity: Activity }> = [];
 
   withTransaction(() => {
     const db = getDb();
@@ -359,6 +397,7 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
         continue;
       }
       seenKeys.add(activityKey);
+      dedupedRows.push(item);
 
       insertStmt.run(
         item.user.id,
@@ -375,41 +414,12 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
       );
     }
   });
+
+  upsertEventsFromFeedRows(dedupedRows, 'feed-snapshot-upsert');
 }
 
-export function readFeedSnapshot(limit: number, offset: number, userId?: string | null) {
-  const safeLimit = Math.max(1, Math.min(50000, limit));
-  const safeOffset = Math.max(0, offset);
-  const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
-  const hasUserFilter = normalizedUserId.length > 0;
-
-  const db = getDb();
-  const rows = hasUserFilter
-    ? (db
-        .prepare(
-          `SELECT user_json, activity_json, timestamp
-           FROM activity_feed
-           WHERE user_id = ?
-           ORDER BY timestamp DESC, id DESC
-           LIMIT ? OFFSET ?`
-        )
-        .all(normalizedUserId, safeLimit, safeOffset) as FeedRow[])
-    : (db
-        .prepare(
-          `SELECT user_json, activity_json, timestamp
-           FROM activity_feed
-           ORDER BY timestamp DESC, id DESC
-           LIMIT ? OFFSET ?`
-        )
-        .all(safeLimit, safeOffset) as FeedRow[]);
-
-  const totalRow = hasUserFilter
-    ? (db
-        .prepare('SELECT COUNT(1) AS count FROM activity_feed WHERE user_id = ?')
-        .get(normalizedUserId) as { count: number })
-    : (db.prepare('SELECT COUNT(1) AS count FROM activity_feed').get() as { count: number });
-
-  const feed = rows
+function parseFeedRows(rows: FeedRow[]) {
+  return rows
     .map((row) => {
       const user = parseJSON<User | null>(row.user_json, null);
       const activity = parseJSON<Activity | null>(row.activity_json, null);
@@ -419,6 +429,65 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
       return { user, activity };
     })
     .filter((item): item is { user: User; activity: Activity } => Boolean(item));
+}
+
+function applyFeedSearch(
+  feed: Array<{ user: User; activity: Activity }>,
+  searchQuery?: string | null
+) {
+  const normalizedSearch = typeof searchQuery === 'string' ? searchQuery.trim() : '';
+  if (!normalizedSearch) {
+    return feed;
+  }
+
+  const parsedSearchQuery = parseSearchQuery(normalizedSearch);
+  if (parsedSearchQuery.tokens.length === 0 && parsedSearchQuery.freeTextTerms.length === 0) {
+    return feed;
+  }
+
+  return feed.filter((item) => matchesSearchQuery(item, parsedSearchQuery));
+}
+
+export function readFeedSnapshot(limit: number, offset: number, userId?: string | null, searchQuery?: string | null) {
+  const safeLimit = Math.max(1, Math.min(50000, limit));
+  const safeOffset = Math.max(0, offset);
+  const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+  const hasUserFilter = normalizedUserId.length > 0;
+  const normalizedSearchQuery = typeof searchQuery === 'string' ? searchQuery.trim() : '';
+  const hasSearchQuery = normalizedSearchQuery.length > 0;
+
+  const db = getDb();
+  const baseQuery = hasUserFilter
+    ? `SELECT user_id, chain, tracked_address_lower, user_json, activity_json, timestamp
+       FROM activity_feed
+       WHERE user_id = ?
+       ORDER BY timestamp DESC, id DESC`
+    : `SELECT user_id, chain, tracked_address_lower, user_json, activity_json, timestamp
+       FROM activity_feed
+       ORDER BY timestamp DESC, id DESC`;
+
+  const rows = hasSearchQuery
+    ? (hasUserFilter
+        ? (db.prepare(baseQuery).all(normalizedUserId) as FeedRow[])
+        : (db.prepare(baseQuery).all() as FeedRow[]))
+    : (hasUserFilter
+        ? (db
+            .prepare(`${baseQuery}\nLIMIT ? OFFSET ?`)
+            .all(normalizedUserId, safeLimit, safeOffset) as FeedRow[])
+        : (db
+            .prepare(`${baseQuery}\nLIMIT ? OFFSET ?`)
+            .all(safeLimit, safeOffset) as FeedRow[]));
+
+  const totalRow = hasUserFilter
+    ? (db
+        .prepare('SELECT COUNT(1) AS count FROM activity_feed WHERE user_id = ?')
+        .get(normalizedUserId) as { count: number })
+    : (db.prepare('SELECT COUNT(1) AS count FROM activity_feed').get() as { count: number });
+
+  const allFeed = parseFeedRows(rows);
+  const searchedFeed = applyFeedSearch(allFeed, normalizedSearchQuery);
+  const feed = hasSearchQuery ? searchedFeed.slice(safeOffset, safeOffset + safeLimit) : searchedFeed;
+  const total = hasSearchQuery ? searchedFeed.length : totalRow.count;
 
   if (ENABLE_LEGACY_SNAPSHOT_REPAIRS) {
     const fixCandidates = feed.filter((item) => {
@@ -466,7 +535,7 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
   if (!ENABLE_LEGACY_POISON_FILTER) {
     return {
       feed,
-      total: totalRow.count,
+      total,
     };
   }
 
@@ -544,8 +613,42 @@ export function readFeedSnapshot(limit: number, offset: number, userId?: string 
 
   return {
     feed: filteredFeed,
-    total: totalRow.count,
+    total,
   };
+}
+
+export function deleteFeedSnapshotWindowForUsers(
+  users: User[],
+  beginMs: number,
+  endMs: number
+) {
+  if (users.length === 0) {
+    return;
+  }
+
+  withTransaction(() => {
+    const db = getDb();
+    const deleteStmt = db.prepare(
+      `DELETE FROM activity_feed
+       WHERE user_id = ?
+         AND chain = ?
+         AND tracked_address_lower = ?
+         AND timestamp >= ?
+         AND timestamp <= ?`
+    );
+
+    for (const user of users) {
+      for (const address of user.addresses) {
+        deleteStmt.run(
+          user.id,
+          normalize(address.chain),
+          normalize(address.address),
+          beginMs,
+          endMs
+        );
+      }
+    }
+  });
 }
 
 export function readLatestActivityAtByUser() {
@@ -563,6 +666,36 @@ export function readLatestActivityAtByUser() {
     }
   }
   return latestByUser;
+}
+
+export function countQualifiedActivitiesByUser(userId: string) {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) {
+    return 0;
+  }
+
+  const db = getDb();
+  const row = db
+    .prepare('SELECT COUNT(1) AS count FROM activity_feed WHERE user_id = ?')
+    .get(normalizedUserId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function getQualifiedActivityCountsByUser() {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT user_id AS userId, COUNT(1) AS count
+       FROM activity_feed
+       GROUP BY user_id`
+    )
+    .all() as Array<{ userId: string; count: number }>;
+
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    counts[row.userId] = row.count;
+  }
+  return counts;
 }
 
 export function upsertRawTransactions(records: RawTransactionSnapshot[]) {
@@ -634,24 +767,38 @@ export function upsertActivityJudgments(records: ActivityJudgmentSnapshot[]) {
         tracked_address_lower,
         tx_hash,
         tx_hash_lower,
+        tx_time,
         tx_action,
         token,
         value,
         token_address,
+        quote_token,
+        quote_amount,
         from_address,
         to_address,
         uncertain_from,
+        decision,
+        reason_code,
+        reason_text,
+        computed_usd_value,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(chain, tracked_address_lower, tx_hash_lower)
       DO UPDATE SET
+        tx_time = excluded.tx_time,
         tx_action = excluded.tx_action,
         token = excluded.token,
         value = excluded.value,
         token_address = excluded.token_address,
+        quote_token = excluded.quote_token,
+        quote_amount = excluded.quote_amount,
         from_address = excluded.from_address,
         to_address = excluded.to_address,
         uncertain_from = excluded.uncertain_from,
+        decision = excluded.decision,
+        reason_code = excluded.reason_code,
+        reason_text = excluded.reason_text,
+        computed_usd_value = excluded.computed_usd_value,
         updated_at = excluded.updated_at`
     );
 
@@ -671,16 +818,31 @@ export function upsertActivityJudgments(records: ActivityJudgmentSnapshot[]) {
         addressLower,
         txHash,
         txHashLower,
+        record.txTime ?? null,
         record.txAction,
         record.token ?? null,
         record.value ?? null,
         record.tokenAddress ?? null,
+        record.quoteToken ?? null,
+        record.quoteAmount ?? null,
         record.fromAddress ?? null,
         record.toAddress ?? null,
         record.uncertainFrom ? 1 : 0,
+        record.decision,
+        record.reasonCode,
+        record.reasonText,
+        typeof record.computedUsdValue === 'number' ? record.computedUsdValue : null,
         now
       );
     }
+  });
+}
+
+export function clearParserArtifactSnapshots() {
+  withTransaction(() => {
+    const db = getDb();
+    db.prepare('DELETE FROM raw_transactions').run();
+    db.prepare('DELETE FROM activity_judgments').run();
   });
 }
 
@@ -740,7 +902,7 @@ export function readFeedBackfillWindowState() {
     return null;
   }
 
-  return parseJSON<FeedBackfillWindowState | null>(row.value_json, null);
+  return normalizeWindowState(parseJSON<FeedBackfillWindowState | null>(row.value_json, null));
 }
 
 export function saveFeedBackfillWindowState(state: FeedBackfillWindowState) {
@@ -750,5 +912,5 @@ export function saveFeedBackfillWindowState(state: FeedBackfillWindowState) {
     `INSERT INTO app_state (key, value_json, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
-  ).run(FEED_BACKFILL_WINDOW_STATE_KEY, JSON.stringify(state), now);
+  ).run(FEED_BACKFILL_WINDOW_STATE_KEY, JSON.stringify(normalizeWindowState(state)), now);
 }

@@ -1,15 +1,20 @@
 import crypto from 'node:crypto';
 
 const OKX_API_BASE = 'https://web3.okx.com';
+const OKX_MARKET_API_BASE = 'https://www.okx.com';
 const OKX_REQUEST_INTERVAL_MS = 250;
 const OKX_MAX_CONCURRENT_REQUESTS = 4;
 const OKX_REQUEST_TIMEOUT_MS = 8000;
+const OKX_MARKET_PRICE_CACHE_TTL_MS = 60 * 1000;
 
 const endpointNextAvailableAt = new Map<string, number>();
 const endpointInFlight = new Map<string, number>();
+const marketPriceCache = new Map<string, { value: number | null; expiresAt: number }>();
+const marketPriceInFlight = new Map<string, Promise<number | null>>();
 
 export const CHAIN_TO_OKX_INDEX: Record<string, string> = {
   bsc: '56',
+  ethereum: '1',
   solana: '501',
 };
 
@@ -89,6 +94,50 @@ interface OkxTransactionDetailPayload {
   code?: string;
   msg?: string;
   data?: OkxTransactionDetail[];
+}
+
+interface OkxMarketTickerPayload {
+  code?: string;
+  msg?: string;
+  data?: Array<{
+    instId?: string;
+    last?: string;
+  }>;
+}
+
+interface OkxTokenSearchItem {
+  tokenLogoUrl?: string;
+}
+
+interface OkxTokenSearchPayload {
+  code?: string;
+  msg?: string;
+  data?: OkxTokenSearchItem[];
+}
+
+interface OkxHistoricalCandlesPayload {
+  code?: string;
+  msg?: string;
+  data?: Array<[string, string, string, string, string, string, string, string]>;
+}
+
+const OKX_CANDLE_BAR_MS = {
+  '1m': 60_000,
+  '5m': 5 * 60_000,
+  '15m': 15 * 60_000,
+  '1H': 60 * 60_000,
+  '4H': 4 * 60 * 60_000,
+  '1D': 24 * 60 * 60_000,
+} as const;
+
+type OkxCandleBar = keyof typeof OKX_CANDLE_BAR_MS;
+
+const OKX_CANDLE_BAR_FALLBACK_ORDER: OkxCandleBar[] = ['1m', '5m', '15m', '1H', '4H', '1D'];
+
+export interface OkxHistoricalPricePoint {
+  priceUsd: number;
+  candleTimestampMs: number;
+  bar: OkxCandleBar;
 }
 
 function sleep(ms: number) {
@@ -181,6 +230,296 @@ function extractTransactions(payload: unknown): OkxTransaction[] {
 
 export function getOkxConfigStatus() {
   return getOkxCredentials();
+}
+
+function parseOkxMarketPrice(payload: OkxMarketTickerPayload) {
+  const last = payload.data?.[0]?.last;
+  const parsed = typeof last === 'string' ? Number.parseFloat(last) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function getMarketTickerInstId(symbol: string) {
+  const normalized = symbol.trim().toUpperCase();
+  if (normalized === 'SOL' || normalized === 'WSOL') {
+    return 'SOL-USDT';
+  }
+  if (normalized === 'BNB' || normalized === 'WBNB') {
+    return 'BNB-USDT';
+  }
+  return null;
+}
+
+export async function fetchOkxMarketUsdPrice(symbol: string) {
+  const instId = getMarketTickerInstId(symbol);
+  if (!instId) {
+    return null;
+  }
+
+  const cached = marketPriceCache.get(instId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const existingTask = marketPriceInFlight.get(instId);
+  if (existingTask) {
+    return existingTask;
+  }
+
+  const task = (async () => {
+    const requestPathWithQuery = `/api/v5/market/ticker?instId=${encodeURIComponent(instId)}`;
+
+    let response: Response;
+    try {
+      response = await runWithEndpointRateLimit('market-ticker', () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          controller.abort();
+        }, OKX_REQUEST_TIMEOUT_MS);
+
+        return fetch(`${OKX_MARKET_API_BASE}${requestPathWithQuery}`, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        }).finally(() => {
+          clearTimeout(timer);
+        });
+      });
+    } catch {
+      return null;
+    }
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as OkxMarketTickerPayload;
+    if (payload.code && payload.code !== '0') {
+      return null;
+    }
+
+    return parseOkxMarketPrice(payload);
+  })()
+    .catch(() => null)
+    .finally(() => {
+      marketPriceInFlight.delete(instId);
+    });
+
+  marketPriceInFlight.set(instId, task);
+  const value = await task;
+  marketPriceCache.set(instId, {
+    value,
+    expiresAt: Date.now() + OKX_MARKET_PRICE_CACHE_TTL_MS,
+  });
+  return value;
+}
+
+function sanitizeTokenLogoUrl(value: unknown) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function parseHistoricalCandlePoint(
+  row: [string, string, string, string, string, string, string, string] | undefined,
+  bar: OkxCandleBar
+): OkxHistoricalPricePoint | null {
+  if (!Array.isArray(row) || row.length < 5) {
+    return null;
+  }
+
+  const timestampMs = Number.parseInt(row[0], 10);
+  const closePrice = Number.parseFloat(row[4]);
+
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(closePrice) || closePrice <= 0) {
+    return null;
+  }
+
+  return {
+    priceUsd: closePrice,
+    candleTimestampMs: timestampMs,
+    bar,
+  };
+}
+
+async function fetchOkxHistoricalCandlePrice(
+  chain: string,
+  tokenAddress: string,
+  timestampMs: number,
+  bar: OkxCandleBar
+) {
+  const chainIndex = CHAIN_TO_OKX_INDEX[chain];
+  if (!chainIndex) {
+    return null;
+  }
+
+  const normalizedAddress = tokenAddress.trim();
+  if (!normalizedAddress) {
+    return null;
+  }
+
+  const normalizedTimestamp = Number.isFinite(timestampMs) ? Math.floor(timestampMs) : NaN;
+  if (!Number.isFinite(normalizedTimestamp) || normalizedTimestamp <= 0) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    chainIndex,
+    tokenContractAddress: normalizedAddress,
+    bar,
+    before: String(normalizedTimestamp + OKX_CANDLE_BAR_MS[bar]),
+    limit: '1',
+  });
+  const requestPathWithQuery = `/api/v6/dex/market/historical-candles?${params.toString()}`;
+
+  let response: Response;
+  try {
+    response = await runWithEndpointRateLimit('market-historical-candles', () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, OKX_REQUEST_TIMEOUT_MS);
+
+      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+      }).finally(() => {
+        clearTimeout(timer);
+      });
+    });
+  } catch {
+    return null;
+  }
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as OkxHistoricalCandlesPayload;
+  if (payload.code && payload.code !== '0') {
+    return null;
+  }
+
+  return parseHistoricalCandlePoint(payload.data?.[0], bar);
+}
+
+export async function fetchOkxTokenHistoricalPriceBeforeTimestamp(
+  chain: string,
+  tokenAddress: string,
+  timestampMs: number
+) {
+  for (const bar of OKX_CANDLE_BAR_FALLBACK_ORDER) {
+    const point = await fetchOkxHistoricalCandlePrice(chain, tokenAddress, timestampMs, bar);
+    if (point) {
+      return point;
+    }
+  }
+
+  return null;
+}
+
+export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: string, tokenSymbol?: string) {
+  const chainIndex = CHAIN_TO_OKX_INDEX[chain];
+  if (!chainIndex) {
+    return null;
+  }
+
+  const normalizedAddress = tokenAddress.trim();
+  if (!normalizedAddress) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    chainIndex,
+    keyword: normalizedAddress,
+  });
+  const requestPathWithQuery = `/api/v5/dex/market/token/search?${params.toString()}`;
+  const headers = createOkxHeaders(requestPathWithQuery);
+  if (!headers) {
+    return null;
+  }
+
+  try {
+    const response = await runWithEndpointRateLimit('market-token-search', () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, OKX_REQUEST_TIMEOUT_MS);
+
+      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      }).finally(() => {
+        clearTimeout(timer);
+      });
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as OkxTokenSearchPayload;
+    if (payload.code && payload.code !== '0') {
+      return null;
+    }
+
+    const exact = payload.data?.find((item) => sanitizeTokenLogoUrl(item.tokenLogoUrl));
+    const exactLogo = sanitizeTokenLogoUrl(exact?.tokenLogoUrl);
+    if (exactLogo) {
+      return exactLogo;
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  if (tokenSymbol && tokenSymbol.trim()) {
+    const symbolQuery = tokenSymbol.trim().toUpperCase();
+    const paramsBySymbol = new URLSearchParams({
+      chainIndex,
+      keyword: symbolQuery,
+    });
+    const requestPathBySymbol = `/api/v5/dex/market/token/search?${paramsBySymbol.toString()}`;
+    const headersBySymbol = createOkxHeaders(requestPathBySymbol);
+    if (!headersBySymbol) {
+      return null;
+    }
+
+    try {
+      const response = await runWithEndpointRateLimit('market-token-search', () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          controller.abort();
+        }, OKX_REQUEST_TIMEOUT_MS);
+
+        return fetch(`${OKX_API_BASE}${requestPathBySymbol}`, {
+          method: 'GET',
+          headers: headersBySymbol,
+          cache: 'no-store',
+          signal: controller.signal,
+        }).finally(() => {
+          clearTimeout(timer);
+        });
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = (await response.json()) as OkxTokenSearchPayload;
+      if (payload.code && payload.code !== '0') {
+        return null;
+      }
+      return sanitizeTokenLogoUrl(payload.data?.[0]?.tokenLogoUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 export async function fetchOkxTransactionsByAddress(

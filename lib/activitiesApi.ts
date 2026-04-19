@@ -18,6 +18,11 @@ export interface ActivityFeedResponse {
   ok: boolean;
   feed: { user: User; activity: Activity }[];
   total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+  historyComplete: boolean | null;
+  localQualifiedCount: number;
   latestActivityAtByUser?: Record<string, number>;
   diagnostics: AddressDiagnostic[];
   summary: ActivityFeedSummary;
@@ -41,9 +46,10 @@ export interface ActivityFeedResponse {
 }
 
 interface FetchAllActivitiesOptions {
-  limit?: number;
-  offset?: number;
+  page?: number;
+  pageSize?: number;
   userId?: string | null;
+  search?: string | null;
   syncStrategy?: 'refresh' | 'local' | 'backfill';
   backfillScope?: 'global' | 'user';
   backfillUserId?: string | null;
@@ -69,11 +75,18 @@ function buildFallbackSummary(users: User[], feedLength: number): ActivityFeedSu
 function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | null | undefined, users: User[]) {
   const feed = Array.isArray(payload?.feed) ? payload.feed : [];
   const total = typeof payload?.total === 'number' ? payload.total : feed.length;
+  const pageSize = typeof payload?.pageSize === 'number' ? payload.pageSize : feed.length || 0;
+  const page = typeof payload?.page === 'number' ? payload.page : 1;
 
   return {
     ok: true,
     feed,
     total,
+    page,
+    pageSize,
+    hasMore: payload?.hasMore === true,
+    historyComplete: typeof payload?.historyComplete === 'boolean' ? payload.historyComplete : null,
+    localQualifiedCount: typeof payload?.localQualifiedCount === 'number' ? payload.localQualifiedCount : total,
     latestActivityAtByUser:
       payload?.latestActivityAtByUser && typeof payload.latestActivityAtByUser === 'object'
         ? payload.latestActivityAtByUser
@@ -115,15 +128,24 @@ export async function fetchAllActivities(
 ): Promise<ActivityFeedResponse> {
   const maxRetryCount = FEED_429_RETRY_DELAYS_MS.length;
   const maxAttempts = maxRetryCount + 1;
-  const limit = typeof options?.limit === 'number' ? Math.max(1, Math.floor(options.limit)) : 200;
-  const offset = typeof options?.offset === 'number' ? Math.max(0, Math.floor(options.offset)) : 0;
-  const syncStrategy = options?.syncStrategy || 'refresh';
+  const page = typeof options?.page === 'number' ? Math.max(1, Math.floor(options.page)) : 1;
+  const pageSize = typeof options?.pageSize === 'number' ? Math.max(1, Math.floor(options.pageSize)) : 200;
+  const requestedSyncStrategy = options?.syncStrategy || 'refresh';
+  const feedSourceMode = (process.env.NEXT_PUBLIC_FEED_SOURCE_MODE || '').trim().toLowerCase();
+  const isTelegramMode = feedSourceMode === 'telegram';
+  const syncStrategy = isTelegramMode ? 'local' : requestedSyncStrategy;
   const requestTimeoutMs =
     syncStrategy === 'backfill' ? FEED_BACKFILL_REQUEST_TIMEOUT_MS : FEED_REQUEST_TIMEOUT_MS;
 
-  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (isTelegramMode) {
+    query.set('mode', 'telegram');
+  }
   if (typeof options?.userId === 'string' && options.userId.trim()) {
     query.set('userId', options.userId.trim());
+  }
+  if (typeof options?.search === 'string' && options.search.trim()) {
+    query.set('search', options.search.trim());
   }
 
   const method = syncStrategy === 'local' ? 'GET' : 'POST';

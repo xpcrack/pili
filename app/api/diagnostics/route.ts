@@ -1,51 +1,116 @@
 import { NextResponse } from 'next/server';
+
 import { getDb } from '@/lib/server/sqlite';
-import { readFeedSnapshot } from '@/lib/server/feedSnapshotRepo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+type DiagnosticSourceMode = 'parser' | 'telegram';
+
 interface DiagnosticResult {
+  sourceMode: DiagnosticSourceMode;
   totalInDatabase: number;
   apiResponseBeforeFilter: number;
   apiResponseAfterFilter: number;
   suspiciousSendersCount: number;
   sampleSuspiciousSenders: string[];
-  sampleFilteredItems: Array<{
+  hiddenByMinUsdCount: number;
+  pendingValuationCount: number;
+  filterReasonStats: Record<string, number>;
+  sampleHiddenOrPendingItems: Array<{
     txHash: string;
+    decision: string;
+    reasonCode: string;
+    reasonText: string;
+    computedUsdValue: number | null;
     txAction: string;
-    uncertainFrom: boolean;
     chain: string;
-    fromAddress: string;
-    toAddress: string;
     token: string;
     value: string;
-    timestamp: number;
+    quoteToken: string;
+    quoteAmount: string;
+    fromAddress: string;
+    toAddress: string;
+    timestamp: number | null;
   }>;
   databaseStats: {
+    judgmentCount: number;
+    visibleCount: number;
+    hiddenCount: number;
+    pendingCount: number;
     receiveTransactions: number;
     receiveWithUncertainFrom: number;
     receiveWithoutUncertainFrom: number;
     byTxAction: Record<string, number>;
+    byDecision: Record<string, number>;
   };
+}
+
+function normalize(value: string | undefined | null) {
+  return (value || '').trim().toLowerCase();
+}
+
+function getDiagnosticSourceMode(): DiagnosticSourceMode {
+  const mode =
+    process.env.FEED_SOURCE_MODE?.trim().toLowerCase() ||
+    process.env.NEXT_PUBLIC_FEED_SOURCE_MODE?.trim().toLowerCase() ||
+    '';
+  return mode === 'telegram' ? 'telegram' : 'parser';
 }
 
 export async function GET() {
   try {
     const db = getDb();
+    const sourceMode = getDiagnosticSourceMode();
 
-    // Get total count from database
+    if (sourceMode === 'telegram') {
+      const telegramTotalRow = db.prepare(
+        "SELECT COUNT(1) AS count FROM telegram_monitor_events WHERE provider = 'xxyy'"
+      ).get() as { count: number };
+
+      const total = telegramTotalRow.count;
+      const result: DiagnosticResult = {
+        sourceMode,
+        totalInDatabase: total,
+        apiResponseBeforeFilter: total,
+        apiResponseAfterFilter: total,
+        suspiciousSendersCount: 0,
+        sampleSuspiciousSenders: [],
+        hiddenByMinUsdCount: 0,
+        pendingValuationCount: 0,
+        filterReasonStats: {},
+        sampleHiddenOrPendingItems: [],
+        databaseStats: {
+          judgmentCount: 0,
+          visibleCount: total,
+          hiddenCount: 0,
+          pendingCount: 0,
+          receiveTransactions: 0,
+          receiveWithUncertainFrom: 0,
+          receiveWithoutUncertainFrom: 0,
+          byTxAction: {},
+          byDecision: {
+            visible: total,
+            hidden: 0,
+            pending: 0,
+          },
+        },
+      };
+
+      return NextResponse.json({ ok: true, result });
+    }
+
     const totalResult = db.prepare('SELECT COUNT(1) AS count FROM activity_feed').get() as { count: number };
+    const judgmentCountRow = db
+      .prepare('SELECT COUNT(1) AS count FROM activity_judgments')
+      .get() as { count: number };
 
-    // Get stats by txAction
     const txActionStats = db
       .prepare(`
-        SELECT
-          json_extract(activity_json, '$.metadata.txAction') AS txAction,
-          COUNT(1) AS count
-        FROM activity_feed
-        WHERE json_extract(activity_json, '$.metadata.txAction') IS NOT NULL
-        GROUP BY json_extract(activity_json, '$.metadata.txAction')
+        SELECT tx_action AS txAction, COUNT(1) AS count
+        FROM activity_judgments
+        WHERE tx_action IS NOT NULL
+        GROUP BY tx_action
       `)
       .all() as Array<{ txAction: string; count: number }>;
 
@@ -54,69 +119,101 @@ export async function GET() {
       byTxAction[stat.txAction] = stat.count;
     });
 
-    // Get receive transactions with uncertainFrom status
+    const decisionStats = db
+      .prepare(`
+        SELECT decision, COUNT(1) AS count
+        FROM activity_judgments
+        WHERE decision IS NOT NULL
+        GROUP BY decision
+      `)
+      .all() as Array<{ decision: string; count: number }>;
+
+    const byDecision: Record<string, number> = {};
+    decisionStats.forEach((stat) => {
+      byDecision[stat.decision] = stat.count;
+    });
+
     const receiveStats = db
       .prepare(`
-        SELECT
-          json_extract(activity_json, '$.metadata.uncertainFrom') AS uncertainFrom,
-          COUNT(1) AS count
-        FROM activity_feed
-        WHERE json_extract(activity_json, '$.metadata.txAction') = 'receive'
-        GROUP BY json_extract(activity_json, '$.metadata.uncertainFrom')
+        SELECT uncertain_from AS uncertainFrom, COUNT(1) AS count
+        FROM activity_judgments
+        WHERE tx_action = 'receive'
+        GROUP BY uncertain_from
       `)
-      .all() as Array<{ uncertainFrom: number | string | null; count: number }>;
+      .all() as Array<{ uncertainFrom: number; count: number }>;
 
-    const isTruthySqliteBoolean = (value: number | string | null) =>
-      value === 1 || value === '1' || value === 'true';
+    const receiveWithUncertainFrom = receiveStats.find((s) => s.uncertainFrom === 1)?.count || 0;
+    const receiveWithoutUncertainFrom = receiveStats.find((s) => s.uncertainFrom !== 1)?.count || 0;
 
-    const receiveWithUncertainFrom =
-      receiveStats.find((s) => isTruthySqliteBoolean(s.uncertainFrom))?.count || 0;
-    const receiveWithoutUncertainFrom =
-      receiveStats.find((s) => !isTruthySqliteBoolean(s.uncertainFrom))?.count || 0;
+    const hiddenByMinUsdRow = db
+      .prepare(`
+        SELECT COUNT(1) AS count
+        FROM activity_judgments
+        WHERE decision = 'hidden' AND reason_code = 'below_min_usd'
+      `)
+      .get() as { count: number };
 
-    const databaseStats = {
-      receiveTransactions: txActionStats.find((s) => s.txAction === 'receive')?.count || 0,
-      receiveWithUncertainFrom,
-      receiveWithoutUncertainFrom,
-      byTxAction,
-    };
+    const pendingValuationRow = db
+      .prepare(`
+        SELECT COUNT(1) AS count
+        FROM activity_judgments
+        WHERE decision = 'pending' AND reason_code = 'pending_valuation'
+      `)
+      .get() as { count: number };
 
-    // Get snapshot before filter (fetch all to see full picture)
-    const snapshotBeforeFilter = readFeedSnapshot(10000, 0, null);
-    const apiResponseBeforeFilter = snapshotBeforeFilter.feed.length;
+    const reasonRows = db
+      .prepare(`
+        SELECT reason_code AS reasonCode, COUNT(1) AS count
+        FROM activity_judgments
+        WHERE reason_code IS NOT NULL
+        GROUP BY reason_code
+      `)
+      .all() as Array<{ reasonCode: string; count: number }>;
 
-    // Get sample of items that would be filtered
-    const sampleFilteredItems = db
+    const filterReasonStats: Record<string, number> = {};
+    reasonRows.forEach((row) => {
+      filterReasonStats[row.reasonCode] = row.count;
+    });
+
+    const sampleHiddenOrPendingItems = db
       .prepare(`
         SELECT
-          json_extract(activity_json, '$.metadata.txHash') AS txHash,
-          json_extract(activity_json, '$.metadata.txAction') AS txAction,
-          json_extract(activity_json, '$.metadata.uncertainFrom') AS uncertainFrom,
-          json_extract(activity_json, '$.metadata.chain') AS chain,
-          json_extract(activity_json, '$.metadata.fromAddress') AS fromAddress,
-          json_extract(activity_json, '$.metadata.toAddress') AS toAddress,
-          json_extract(activity_json, '$.metadata.token') AS token,
-          json_extract(activity_json, '$.metadata.value') AS value,
-          timestamp
-        FROM activity_feed
-        WHERE json_extract(activity_json, '$.metadata.txAction') = 'receive'
-          AND json_extract(activity_json, '$.metadata.uncertainFrom') = 1
-        ORDER BY timestamp DESC
-        LIMIT 5
+          tx_hash AS txHash,
+          decision,
+          reason_code AS reasonCode,
+          reason_text AS reasonText,
+          computed_usd_value AS computedUsdValue,
+          tx_action AS txAction,
+          chain,
+          token,
+          value,
+          quote_token AS quoteToken,
+          quote_amount AS quoteAmount,
+          from_address AS fromAddress,
+          to_address AS toAddress,
+          tx_time AS timestamp
+        FROM activity_judgments
+        WHERE decision <> 'visible'
+        ORDER BY COALESCE(tx_time, updated_at) DESC
+        LIMIT 10
       `)
       .all() as Array<{
         txHash: string;
+        decision: string;
+        reasonCode: string;
+        reasonText: string;
+        computedUsdValue: number | null;
         txAction: string;
-        uncertainFrom: number;
         chain: string;
-        fromAddress: string;
-        toAddress: string;
         token: string;
         value: string;
-        timestamp: number;
+        quoteToken: string;
+        quoteAmount: string;
+        fromAddress: string;
+        toAddress: string;
+        timestamp: number | null;
       }>;
 
-    // Build suspicious sender stats
     const senderFanOutStats = new Map<
       string,
       {
@@ -127,20 +224,13 @@ export async function GET() {
 
     const allReceiveItems = db
       .prepare(`
-        SELECT
-          json_extract(activity_json, '$.metadata.chain') AS chain,
-          json_extract(activity_json, '$.metadata.fromAddress') AS fromAddress,
-          json_extract(activity_json, '$.metadata.toAddress') AS toAddress,
-          json_extract(user_json, '$.id') AS userId
-        FROM activity_feed
-        WHERE json_extract(activity_json, '$.metadata.txAction') = 'receive'
-          AND json_extract(activity_json, '$.metadata.uncertainFrom') = 1
-          AND json_extract(activity_json, '$.metadata.fromAddress') IS NOT NULL
-          AND json_extract(activity_json, '$.metadata.toAddress') IS NOT NULL
+        SELECT chain, from_address AS fromAddress, to_address AS toAddress
+        FROM activity_judgments
+        WHERE tx_action = 'receive'
+          AND uncertain_from = 1
+          AND from_address IS NOT NULL
       `)
-      .all() as Array<{ chain: string; fromAddress: string; toAddress: string; userId: string }>;
-
-    const normalize = (value: string | undefined) => (value || '').trim().toLowerCase();
+      .all() as Array<{ chain: string; fromAddress: string; toAddress: string }>;
 
     for (const item of allReceiveItems) {
       const chain = normalize(item.chain);
@@ -159,39 +249,35 @@ export async function GET() {
       senderFanOutStats.set(key, existing);
     }
 
-    const SNAPSHOT_POISON_SENDER_FANOUT_MIN_RECIPIENTS = 3;
-    const SNAPSHOT_POISON_SENDER_FANOUT_MIN_TRANSFERS = 3;
-
     const suspiciousSenderKeys = new Set(
       Array.from(senderFanOutStats.entries())
-        .filter(
-          ([, value]) =>
-            value.transferCount >= SNAPSHOT_POISON_SENDER_FANOUT_MIN_TRANSFERS &&
-            value.recipientAddresses.size >= SNAPSHOT_POISON_SENDER_FANOUT_MIN_RECIPIENTS
-        )
+        .filter(([, value]) => value.transferCount >= 3 && value.recipientAddresses.size >= 3)
         .map(([key]) => key)
     );
 
-    const sampleSuspiciousSenders = Array.from(suspiciousSenderKeys).slice(0, 10);
-
+    const visibleCount = byDecision.visible ?? 0;
     const diagnosticResult: DiagnosticResult = {
+      sourceMode,
       totalInDatabase: totalResult.count,
-      apiResponseBeforeFilter,
-      apiResponseAfterFilter: snapshotBeforeFilter.feed.length,
+      apiResponseBeforeFilter: judgmentCountRow.count,
+      apiResponseAfterFilter: visibleCount,
       suspiciousSendersCount: suspiciousSenderKeys.size,
-      sampleSuspiciousSenders,
-      sampleFilteredItems: sampleFilteredItems.map((item) => ({
-        txHash: item.txHash,
-        txAction: item.txAction,
-        uncertainFrom: Boolean(item.uncertainFrom),
-        chain: item.chain,
-        fromAddress: item.fromAddress,
-        toAddress: item.toAddress,
-        token: item.token,
-        value: item.value,
-        timestamp: item.timestamp,
-      })),
-      databaseStats,
+      sampleSuspiciousSenders: Array.from(suspiciousSenderKeys).slice(0, 10),
+      hiddenByMinUsdCount: hiddenByMinUsdRow.count,
+      pendingValuationCount: pendingValuationRow.count,
+      filterReasonStats,
+      sampleHiddenOrPendingItems,
+      databaseStats: {
+        judgmentCount: judgmentCountRow.count,
+        visibleCount,
+        hiddenCount: byDecision.hidden ?? 0,
+        pendingCount: byDecision.pending ?? 0,
+        receiveTransactions: byTxAction.receive ?? 0,
+        receiveWithUncertainFrom,
+        receiveWithoutUncertainFrom,
+        byTxAction,
+        byDecision,
+      },
     };
 
     return NextResponse.json({

@@ -14,22 +14,35 @@ interface DiagnosticData {
   apiResponseAfterFilter: number;
   suspiciousSendersCount: number;
   sampleSuspiciousSenders: string[];
-  sampleFilteredItems: Array<{
+  hiddenByMinUsdCount: number;
+  pendingValuationCount: number;
+  filterReasonStats: Record<string, number>;
+  sampleHiddenOrPendingItems: Array<{
     txHash: string;
+    decision: string;
+    reasonCode: string;
+    reasonText: string;
+    computedUsdValue: number | null;
     txAction: string;
-    uncertainFrom: boolean;
     chain: string;
     fromAddress: string;
     toAddress: string;
     token: string;
     value: string;
-    timestamp: number;
+    quoteToken: string;
+    quoteAmount: string;
+    timestamp: number | null;
   }>;
   databaseStats: {
+    judgmentCount: number;
+    visibleCount: number;
+    hiddenCount: number;
+    pendingCount: number;
     receiveTransactions: number;
     receiveWithUncertainFrom: number;
     receiveWithoutUncertainFrom: number;
     byTxAction: Record<string, number>;
+    byDecision: Record<string, number>;
   };
 }
 
@@ -152,6 +165,14 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                       </span>
                     </div>
                     <div className="flex justify-between">
+                      <span className="text-gray-400">低于 5U 隐藏:</span>
+                      <span className="text-red-300">{diagnostics.hiddenByMinUsdCount}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">待判定估值:</span>
+                      <span className="text-amber-300">{diagnostics.pendingValuationCount}</span>
+                    </div>
+                    <div className="flex justify-between">
                       <span className="text-gray-400">可疑发送方数量:</span>
                       <span className="text-yellow-400">{diagnostics.suspiciousSendersCount}</span>
                     </div>
@@ -161,6 +182,17 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                 <div className="bg-gray-800 p-3 rounded">
                   <div className="font-bold mb-2">数据库统计</div>
                   <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">判定总数:</span>
+                      <span>{diagnostics.databaseStats.judgmentCount}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">visible / hidden / pending:</span>
+                      <span>
+                        {diagnostics.databaseStats.visibleCount} / {diagnostics.databaseStats.hiddenCount} /{' '}
+                        {diagnostics.databaseStats.pendingCount}
+                      </span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">receive 交易总数:</span>
                       <span>{diagnostics.databaseStats.receiveTransactions}</span>
@@ -182,6 +214,24 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                       {Object.entries(diagnostics.databaseStats.byTxAction).map(([action, count]) => (
                         <div key={action} className="flex justify-between text-xs">
                           <span className="text-gray-500">{action}:</span>
+                          <span>{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-700">
+                      <div className="text-gray-400 mb-1">按判定结果分布:</div>
+                      {Object.entries(diagnostics.databaseStats.byDecision).map(([decision, count]) => (
+                        <div key={decision} className="flex justify-between text-xs">
+                          <span className="text-gray-500">{decision}:</span>
+                          <span>{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-700">
+                      <div className="text-gray-400 mb-1">按过滤原因分布:</div>
+                      {Object.entries(diagnostics.filterReasonStats).map(([reason, count]) => (
+                        <div key={reason} className="flex justify-between text-xs">
+                          <span className="text-gray-500">{reason}:</span>
                           <span>{count}</span>
                         </div>
                       ))}
@@ -208,12 +258,12 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                   </div>
                 )}
 
-                {diagnostics.sampleFilteredItems.length > 0 && (
+                {diagnostics.sampleHiddenOrPendingItems.length > 0 && (
                   <div className="bg-gray-800 p-3 rounded">
-                    <div className="font-bold mb-2">被过滤的交易示例</div>
+                    <div className="font-bold mb-2">hidden / pending 示例</div>
                     <div className="space-y-2 max-h-60 overflow-auto">
-                      {diagnostics.sampleFilteredItems.map((item) => (
-                        <div key={item.txHash} className="text-xs bg-gray-700 p-2 rounded">
+                      {diagnostics.sampleHiddenOrPendingItems.map((item) => (
+                        <div key={`${item.decision}-${item.txHash}`} className="text-xs bg-gray-700 p-2 rounded">
                           <div className="flex justify-between items-start mb-1">
                             <span className="text-gray-400">交易:</span>
                             <span className="font-mono">{formatAddress(item.txHash)}</span>
@@ -221,16 +271,21 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                           <div className="grid grid-cols-2 gap-1 text-gray-400">
                             <div>链: {item.chain}</div>
                             <div>动作: {item.txAction}</div>
+                            <div>判定: {item.decision}</div>
+                            <div>原因: {item.reasonCode}</div>
                             <div>代币: {item.token}</div>
                             <div>金额: {item.value}</div>
+                            <div>报价币: {item.quoteToken || 'N/A'}</div>
+                            <div>报价额: {item.quoteAmount || 'N/A'}</div>
+                            <div>估值: {typeof item.computedUsdValue === 'number' ? `$${item.computedUsdValue}` : '待判定'}</div>
+                            <div>时间: {item.timestamp ? formatTimestamp(item.timestamp) : 'N/A'}</div>
+                            <div className="col-span-2">说明: {item.reasonText}</div>
                             <div className="col-span-2">
                               发送方: <span className="font-mono">{formatAddress(item.fromAddress)}</span>
                             </div>
                             <div className="col-span-2">
                               接收方: <span className="font-mono">{formatAddress(item.toAddress)}</span>
                             </div>
-                            <div>uncertainFrom: {item.uncertainFrom ? '是' : '否'}</div>
-                            <div>时间: {formatTimestamp(item.timestamp)}</div>
                           </div>
                         </div>
                       ))}
@@ -242,20 +297,19 @@ export function FeedDebugPanel({ totalInDatabase, apiFeedLength, lastUpdate }: F
                   <div className="font-bold text-blue-300 mb-2">💡 调试建议</div>
                   <div className="text-blue-200 text-xs space-y-2">
                     <div>
-                      <strong>1. 临时禁用过滤:</strong> 设置环境变量{' '}
-                      <code className="bg-gray-800 px-1 py-0.5 rounded">DISABLE_POISON_FILTER=true</code>
-                      重启服务器，查看数据是否正常显示。
+                      <strong>1. 调整金额阈值:</strong> 设置环境变量{' '}
+                      <code className="bg-gray-800 px-1 py-0.5 rounded">CHAIN_ACTIVITY_MIN_USD_VALUE</code>
+                      后重启服务器，可调低或调高最小展示金额。
                     </div>
                     <div>
-                      <strong>2. 检查过滤阈值:</strong> 当前阈值为发送给{' '}
-                      {3} 个以上接收方，每个接收方收到 {3} 次以上交易。如果阈值过严格，可以调整{' '}
+                      <strong>2. 检查待判定:</strong> pending 说明当前无法可靠换算美元价值；如需更激进，可补充 token 定价来源。
+                    </div>
+                    <div>
+                      <strong>3. 检查投毒阈值:</strong> 当前 legacy 投毒统计仍以发送给 {3} 个以上接收方、每个接收方收到 {3} 次以上交易为口径。如果阈值过严格，可以调整{' '}
                       <code className="bg-gray-800 px-1 py-0.5 rounded">
                         SNAPSHOT_POISON_SENDER_FANOUT_MIN_*
                       </code>{' '}
                       常量。
-                    </div>
-                    <div>
-                      <strong>3. 添加白名单:</strong> 如果识别出某些地址是合法的DEX聚合器，可以将它们添加到白名单中以避免误过滤。
                     </div>
                   </div>
                 </div>

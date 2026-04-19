@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useUserStore } from '@/store/userStore';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
+import { formatRelativeTimeCompact } from '@/lib/timeFormat';
 
 interface UserBarProps {
   users: User[];
@@ -34,28 +35,6 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
       window.clearInterval(timer);
     };
   }, []);
-
-  const formatRelativeTimeCompact = (timestamp: number) => {
-    if (!Number.isFinite(timestamp) || timestamp <= 0) {
-      return '暂无动态';
-    }
-
-    const diffMs = Math.max(0, now - timestamp);
-    const minuteMs = 60 * 1000;
-    const hourMs = 60 * minuteMs;
-    const dayMs = 24 * hourMs;
-
-    if (diffMs < minuteMs) {
-      return '刚刚';
-    }
-    if (diffMs < hourMs) {
-      return `约 ${Math.floor(diffMs / minuteMs)}m前`;
-    }
-    if (diffMs < dayMs) {
-      return `约 ${Math.floor(diffMs / hourMs)}h前`;
-    }
-    return `约 ${Math.floor(diffMs / dayMs)}d前`;
-  };
 
   return (
     <div className="w-full">
@@ -126,7 +105,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
             {users.map((user) => {
               const isSelected = selectedUserId === user.id;
               const latestActivityAt = latestActivityAtByUser.get(user.id) ?? 0;
-              const latestActivityText = formatRelativeTimeCompact(latestActivityAt);
+              const latestActivityText = formatRelativeTimeCompact(latestActivityAt, now);
 
               return (
                 <button

@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 
 import { type User } from '@/types';
 
-const SUPPORTED_CHAINS = new Set(['bsc', 'solana']);
+const SUPPORTED_CHAINS = new Set(['bsc', 'solana', 'ethereum']);
 
 function isAddressArray(value: unknown): value is User['addresses'] {
   return Array.isArray(value);

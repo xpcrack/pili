@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { readFeedSnapshot, readLatestActivityAtByUser } from '@/lib/server/feedSnapshotRepo';
+import { requireAdmin } from '@/lib/server/apiGuard';
+import { readEventsFeed } from '@/lib/server/eventsRepo';
+import { countQualifiedActivitiesByUser, readFeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
 import { getSyncStatus, triggerSync, waitForSyncIdle } from '@/lib/server/syncService';
 import { importTrackedUsers, listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import { readTelegramMonitorFeed } from '@/lib/server/telegramMonitorFeed';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,22 +39,73 @@ function buildAssetSnapshotsFromUsers(users: ReturnType<typeof listTrackedUsers>
 }
 
 function parsePagination(request: NextRequest) {
-  const limit = Number.parseInt(request.nextUrl.searchParams.get('limit') || '200', 10);
-  const offset = Number.parseInt(request.nextUrl.searchParams.get('offset') || '0', 10);
+  const page = Number.parseInt(request.nextUrl.searchParams.get('page') || '1', 10);
+  const pageSize = Number.parseInt(
+    request.nextUrl.searchParams.get('pageSize') || request.nextUrl.searchParams.get('limit') || '50',
+    10
+  );
   const userId = request.nextUrl.searchParams.get('userId');
+  const search = request.nextUrl.searchParams.get('search') || request.nextUrl.searchParams.get('q');
+  const cursor = request.nextUrl.searchParams.get('cursor');
+  const source = request.nextUrl.searchParams.get('source');
+  const chain = request.nextUrl.searchParams.get('chain');
+  const from = request.nextUrl.searchParams.get('from');
+  const to = request.nextUrl.searchParams.get('to');
+  const normalizedPage = Number.isFinite(page) && page > 0 ? page : 1;
+  const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(200, pageSize) : 50;
+
+  const fromMs = from && Number.isFinite(Number(from)) ? Number(from) : null;
+  const toMs = to && Number.isFinite(Number(to)) ? Number(to) : null;
+
   return {
-    limit: Number.isFinite(limit) ? limit : 200,
-    offset: Number.isFinite(offset) ? offset : 0,
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
     userId: typeof userId === 'string' && userId.trim() ? userId.trim() : null,
+    search: typeof search === 'string' && search.trim() ? search.trim() : null,
+    cursor: typeof cursor === 'string' && cursor.trim() ? cursor.trim() : null,
+    source: typeof source === 'string' && source.trim() ? source.trim() : null,
+    chain: typeof chain === 'string' && chain.trim() ? chain.trim() : null,
+    fromMs,
+    toMs,
   };
 }
 
-function buildFeedPayload(limit: number, offset: number, userId?: string | null) {
-  const snapshot = readFeedSnapshot(limit, offset, userId);
-  const latestActivityAtByUser = readLatestActivityAtByUser();
+function shouldUseTelegramMonitorFeed(request: NextRequest) {
+  const mode = request.nextUrl.searchParams.get('mode')?.trim().toLowerCase();
+  if (mode === 'poll') return false;
+  if (mode === 'telegram') return true;
+
+  const env = (process.env.FEED_SOURCE_MODE || '').trim().toLowerCase();
+  return env === 'telegram';
+}
+
+function buildFeedPayload(
+  pageSize: number,
+  userId?: string | null,
+  search?: string | null,
+  cursor?: string | null,
+  source?: string | null,
+  chain?: string | null,
+  fromMs?: number | null,
+  toMs?: number | null
+) {
+  const snapshot = readEventsFeed({
+    limit: pageSize,
+    userId,
+    q: search,
+    cursor,
+    source,
+    chain,
+    fromMs,
+    toMs,
+  });
+
   const syncStatus = getSyncStatus();
   const users = listTrackedUsers();
   const selectedUser = userId ? users.find((user) => user.id === userId) || null : null;
+  const historyState = readFeedBackfillWindowState();
+  const localQualifiedCount = selectedUser ? countQualifiedActivitiesByUser(selectedUser.id) : snapshot.total;
+  const historyComplete = selectedUser ? historyState?.perUserHistoryComplete[selectedUser.id] === true : null;
   const { addressAssets, userAssets } = buildAssetSnapshotsFromUsers(users);
   const diagnostics = selectedUser
     ? (syncStatus.lastSuccessSnapshot?.diagnostics || []).filter((item) => item.userId === selectedUser.id)
@@ -77,10 +131,20 @@ function buildFeedPayload(limit: number, offset: number, userId?: string | null)
       }
     : globalSummary;
 
+  const latestActivityAtByUser = Object.fromEntries(
+    snapshot.feed.map((item) => [item.user.id, item.activity.timestamp])
+  );
+
   return {
     ok: true,
     feed: snapshot.feed,
     total: snapshot.total,
+    page: 1,
+    pageSize,
+    hasMore: snapshot.hasMore,
+    nextCursor: snapshot.nextCursor,
+    historyComplete,
+    localQualifiedCount,
     latestActivityAtByUser,
     summary,
     diagnostics,
@@ -101,8 +165,54 @@ function buildFeedPayload(limit: number, offset: number, userId?: string | null)
 
 export async function GET(request: NextRequest) {
   try {
-    const { limit, offset, userId } = parsePagination(request);
-    return NextResponse.json(buildFeedPayload(limit, offset, userId));
+    const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
+
+    if (shouldUseTelegramMonitorFeed(request)) {
+      const monitorFeed = readTelegramMonitorFeed(Math.max(pageSize, 200));
+      const filteredByUser = userId ? monitorFeed.filter((item) => item.user.id === userId) : monitorFeed;
+      const paged = filteredByUser.slice(0, pageSize);
+      const users = listTrackedUsers();
+      const latestActivityAtByUser = Object.fromEntries(
+        monitorFeed.map((item) => [item.user.id, item.activity.timestamp])
+      );
+
+      return NextResponse.json({
+        ok: true,
+        feed: paged,
+        total: filteredByUser.length,
+        page: 1,
+        pageSize,
+        hasMore: filteredByUser.length > paged.length,
+        nextCursor: null,
+        historyComplete: true,
+        localQualifiedCount: filteredByUser.length,
+        latestActivityAtByUser,
+        summary: {
+          userCount: users.length,
+          addressCount: users.reduce((sum, user) => sum + user.addresses.length, 0),
+          transactionCount: filteredByUser.length,
+          successfulAddressCount: 0,
+          failedAddressCount: 0,
+          emptyAddressCount: 0,
+          completedAt: Date.now(),
+        },
+        diagnostics: [],
+        addressAssets: [],
+        userAssets: [],
+        users,
+        sync: {
+          running: false,
+          stale: false,
+          activeRunId: null,
+          lastSuccessAt: null,
+          lastError: null,
+          lastFailureAt: null,
+          latestRun: null,
+        },
+      });
+    }
+
+    return NextResponse.json(buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs));
   } catch (error) {
     const message = error instanceof Error ? error.message : '读取快照失败';
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
@@ -110,10 +220,15 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await request.json().catch(() => null);
     const users = sanitizeUsersPayload(body?.users);
-    const { limit, offset, userId } = parsePagination(request);
+    const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
 
     if (users.length > 0) {
       importTrackedUsers(users, { replaceExisting: true });
@@ -127,14 +242,13 @@ export async function POST(request: NextRequest) {
       scope,
       userId: typeof body?.syncUserId === 'string' && body.syncUserId.trim() ? body.syncUserId.trim() : null,
     });
-    // refresh 走异步触发，避免首屏加载被长耗时同步阻塞超时；
-    // backfill 需要尽量拿到补拉后的结果，仍等待同步结束再返回。
+
     if (mode === 'backfill') {
       await waitForSyncIdle();
     }
 
     return NextResponse.json({
-      ...buildFeedPayload(limit, offset, userId),
+      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs),
       syncTrigger: sync,
     });
   } catch (error) {

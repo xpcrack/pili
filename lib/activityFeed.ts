@@ -1,4 +1,5 @@
 import { fetchOkxTransactionsByAddress } from '@/lib/okx';
+import { evaluateActivityForFeed, getDefaultFilterEngineConfig } from '@/lib/filterEngine';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
 import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
 import { Activity, User } from '@/types';
@@ -49,7 +50,97 @@ export interface BuildActivityFeedOptions {
   requireTrackedInitiator?: boolean;
 }
 
+export interface RawTransactionSnapshotRecord {
+  chain: string;
+  trackedAddress: string;
+  txHash: string;
+  txTime: number | null;
+  payload: unknown;
+}
+
+export interface ActivityJudgmentRecord {
+  chain: string;
+  trackedAddress: string;
+  txHash: string;
+  txTime?: number | null;
+  txAction: 'buy' | 'sell' | 'send' | 'receive';
+  token?: string;
+  value?: string;
+  tokenAddress?: string;
+  quoteToken?: string;
+  quoteAmount?: string;
+  fromAddress?: string;
+  toAddress?: string;
+  uncertainFrom: boolean;
+  decision: 'visible' | 'hidden' | 'pending';
+  reasonCode: string;
+  reasonText: string;
+  computedUsdValue?: number | null;
+}
+
 const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const OKX_WINDOW_RESULT_LIMIT = 100;
+const MIN_WINDOW_SPLIT_MS = 60 * 1000;
+const MAX_WINDOW_SPLIT_DEPTH = 12;
+
+async function fetchQualifiedWindowTransactions(
+  address: string,
+  chain: string,
+  beginMs: number,
+  endMs: number,
+  depth = 0
+): Promise<Awaited<ReturnType<typeof fetchOkxTransactionsByAddress>>> {
+  const result = await fetchOkxTransactionsByAddress(address, chain, {
+    beginMs,
+    endMs,
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  if (
+    result.transactions.length < OKX_WINDOW_RESULT_LIMIT ||
+    depth >= MAX_WINDOW_SPLIT_DEPTH ||
+    endMs - beginMs <= MIN_WINDOW_SPLIT_MS
+  ) {
+    return result;
+  }
+
+  const middleMs = Math.floor((beginMs + endMs) / 2);
+  if (middleMs <= beginMs || middleMs >= endMs) {
+    return result;
+  }
+
+  const [left, right] = await Promise.all([
+    fetchQualifiedWindowTransactions(address, chain, beginMs, middleMs, depth + 1),
+    fetchQualifiedWindowTransactions(address, chain, middleMs + 1, endMs, depth + 1),
+  ]);
+
+  if (!left.ok) {
+    return left;
+  }
+
+  if (!right.ok) {
+    return right;
+  }
+
+  const merged = new Map<string, (typeof left.transactions)[number]>();
+  for (const tx of [...left.transactions, ...right.transactions]) {
+    const txHash = typeof tx.txHash === 'string' ? tx.txHash.trim() : '';
+    const nonce = typeof tx.nonce === 'string' ? tx.nonce.trim() : '';
+    const dedupKey = txHash || `${tx.txTime || ''}:${nonce}:${tx.symbol || ''}:${tx.amount || ''}`;
+    if (!dedupKey) {
+      continue;
+    }
+    merged.set(dedupKey, tx);
+  }
+
+  return {
+    ...result,
+    transactions: Array.from(merged.values()),
+  };
+}
 
 export async function buildActivityFeed(users: User[], options?: BuildActivityFeedOptions) {
   const now = Date.now();
@@ -59,18 +150,32 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
       ? Math.max(0, Math.min(Math.floor(options.beginMs), endMs))
       : Math.max(0, endMs - DEFAULT_WINDOW_MS);
   const requireTrackedInitiator = options?.requireTrackedInitiator !== false;
+  const filterConfig = getDefaultFilterEngineConfig();
 
   const feed: Array<{ user: User; activity: Activity }> = [];
   const diagnostics: AddressDiagnostic[] = [];
+  const rawTransactions: RawTransactionSnapshotRecord[] = [];
+  const judgments: ActivityJudgmentRecord[] = [];
 
   for (const user of users) {
     for (const addressInfo of user.addresses) {
       try {
-        const result = await fetchOkxTransactionsByAddress(addressInfo.address, addressInfo.chain, {
-          beginMs,
-          endMs,
-        });
+        const result = await fetchQualifiedWindowTransactions(addressInfo.address, addressInfo.chain, beginMs, endMs);
         const transactions = result.ok ? result.transactions : [];
+        for (const tx of transactions) {
+          const txHash = typeof tx.txHash === 'string' ? tx.txHash.trim() : '';
+          if (!txHash) {
+            continue;
+          }
+          const txTime = typeof tx.txTime === 'string' ? Number.parseInt(tx.txTime, 10) : Number.NaN;
+          rawTransactions.push({
+            chain: addressInfo.chain,
+            trackedAddress: addressInfo.address,
+            txHash,
+            txTime: Number.isFinite(txTime) && txTime > 0 ? txTime : null,
+            payload: tx,
+          });
+        }
         const groups = groupTransactionsByHash(transactions);
 
         let convertedCount = 0;
@@ -84,6 +189,29 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
             classification,
           });
           if (!activity) {
+            continue;
+          }
+          const verdict = await evaluateActivityForFeed(activity, filterConfig);
+          judgments.push({
+            chain: addressInfo.chain,
+            trackedAddress: addressInfo.address,
+            txHash: activity.metadata.txHash || group.txHash || '',
+            txTime: activity.timestamp,
+            txAction: activity.metadata.txAction || 'send',
+            token: activity.metadata.token,
+            value: activity.metadata.value,
+            tokenAddress: activity.metadata.tokenAddress,
+            quoteToken: activity.metadata.quoteToken,
+            quoteAmount: activity.metadata.quoteAmount,
+            fromAddress: activity.metadata.fromAddress,
+            toAddress: activity.metadata.toAddress,
+            uncertainFrom: activity.metadata.uncertainFrom === true,
+            decision: verdict.decision,
+            reasonCode: verdict.reasonCode,
+            reasonText: verdict.reasonText,
+            computedUsdValue: verdict.computedUsdValue,
+          });
+          if (verdict.decision !== 'visible') {
             continue;
           }
           convertedCount += 1;
@@ -130,8 +258,8 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
     feed: sortedFeed,
     diagnostics,
     summary,
-    rawTransactions: [],
-    judgments: [],
+    rawTransactions,
+    judgments,
     addressAssets: [],
     userAssets: [],
     window: {

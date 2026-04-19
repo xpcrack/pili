@@ -6,7 +6,7 @@ import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activit
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
-const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana']);
+const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum']);
 
 interface TrackedUserRow {
   id: string;
@@ -257,6 +257,14 @@ function purgeAddressRelatedData(userId: string, chain: string, addressLower: st
   ).run(chain, addressLower);
 }
 
+function purgeTelegramMonitorEventsByTrackedAddress(chain: string, addressLower: string) {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM telegram_monitor_events
+     WHERE chain = ? AND tracked_wallet_address_lower = ?`
+  ).run(chain, addressLower);
+}
+
 function purgeOrphanedAddressData() {
   const db = getDb();
   db.prepare(
@@ -424,9 +432,27 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
 }
 
 export function deleteTrackedUser(id: string) {
-  const db = getDb();
-  const result = db.prepare('DELETE FROM tracked_users WHERE id = ?').run(id);
-  return result.changes > 0;
+  return withTransaction(() => {
+    const db = getDb();
+    const addresses = db
+      .prepare(
+        `SELECT chain, address_lower
+         FROM tracked_addresses
+         WHERE user_id = ?`
+      )
+      .all(id) as Array<{ chain: string; address_lower: string }>;
+
+    for (const row of addresses) {
+      purgeAddressRelatedData(id, row.chain, row.address_lower);
+      purgeTelegramMonitorEventsByTrackedAddress(row.chain, row.address_lower);
+    }
+
+    db.prepare('DELETE FROM tracked_addresses WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM activity_feed WHERE user_id = ?').run(id);
+    const result = db.prepare('DELETE FROM tracked_users WHERE id = ?').run(id);
+
+    return result.changes > 0;
+  });
 }
 
 export function addTrackedAddresses(userId: string, addresses: User['addresses']) {

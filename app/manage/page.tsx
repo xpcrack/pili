@@ -10,11 +10,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { TopNav } from '@/components/TopNav';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
 import { formatUsdCompact, formatUsdOrDash } from '@/lib/assetFormat';
 import {
-  ArrowLeft,
   Plus,
+  Copy,
   Trash2,
   Wallet,
   ChevronDown,
@@ -191,6 +192,7 @@ export default function ManagePage() {
 
   const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
   const [editingAddressText, setEditingAddressText] = useState('');
+  const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -246,6 +248,42 @@ export default function ManagePage() {
     setEditingAddressUserId(null);
   };
 
+  const copyText = async (text: string) => {
+    if (!text.trim()) return;
+    await navigator.clipboard.writeText(text);
+  };
+
+  const flashCopied = (kind: 'all-addresses' | 'all-twitter') => {
+    setCopiedKind(kind);
+    window.setTimeout(() => {
+      setCopiedKind((current) => (current === kind ? null : current));
+    }, 1200);
+  };
+
+  const handleExportAllAddresses = async () => {
+    const lines = users.flatMap((user) =>
+      user.addresses.map((address) => `${address.address}:${user.name}${address.name}:${address.chain}`)
+    );
+    const payload = lines.join('\n');
+    if (!payload) return;
+    await copyText(payload);
+    flashCopied('all-addresses');
+  };
+
+  const handleExportAllTwitter = async () => {
+    const lines = users
+      .map((user) => {
+        const handle = normalizeTwitterHandle(user.twitter || '');
+        if (!handle) return null;
+        return `${user.name}\t@${handle}\thttps://x.com/${handle}`;
+      })
+      .filter((line): line is string => Boolean(line));
+    const payload = lines.join('\n');
+    if (!payload) return;
+    await copyText(payload);
+    flashCopied('all-twitter');
+  };
+
   if (!isClient) {
     return (
       <div className="min-h-screen bg-zinc-950">
@@ -258,29 +296,33 @@ export default function ManagePage() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <header className="sticky top-0 z-50 border-b border-zinc-800/50 bg-zinc-950/95 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-          <div className="flex items-center gap-4">
-            <Link
-              href="/"
-              className="flex items-center gap-2 text-zinc-400 transition-colors hover:text-zinc-200"
+      <TopNav
+        active="manage"
+        rightSlot={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void handleExportAllAddresses()}
+              className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
             >
-              <ArrowLeft className="h-4 w-4" />
-              <span>返回看板</span>
-            </Link>
-            <div className="h-6 w-px bg-zinc-800" />
-            <h1 className="text-lg font-semibold text-zinc-100">人物管理</h1>
+              <Copy className="mr-1 h-4 w-4" />
+              {copiedKind === 'all-addresses' ? '已复制全部地址' : '导出全部地址'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void handleExportAllTwitter()}
+              className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
+            >
+              <Copy className="mr-1 h-4 w-4" />
+              {copiedKind === 'all-twitter' ? '已复制全部推特' : '导出全部推特'}
+            </Button>
+            <Button onClick={() => setIsCreating(true)} className="bg-blue-600 text-white hover:bg-blue-700">
+              <Plus className="mr-1 h-4 w-4" />
+              手动新建
+            </Button>
           </div>
-
-          <Button
-            onClick={() => setIsCreating(true)}
-            className="bg-blue-600 text-white hover:bg-blue-700"
-          >
-            <Plus className="mr-1 h-4 w-4" />
-            手动新建
-          </Button>
-        </div>
-      </header>
+        }
+      />
 
       <main className="mx-auto flex max-w-6xl flex-col gap-8 px-4 py-8">
         <section className="rounded-2xl border border-zinc-800/50 bg-zinc-900/50 p-6">
@@ -457,7 +499,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none transition-colors focus:border-zinc-700"
                   />
                   <p className="text-xs text-zinc-500">
-                    名称可选；链会按地址自动识别。为兼容旧数据，仍然接受末尾补 `:bsc` 或 `:solana`。
+                    名称可选；链会按地址自动识别（0x 默认按 bsc）。为兼容旧数据，仍然接受末尾补 `:bsc`、`:ethereum` 或 `:solana`。
                   </p>
                 </div>
 

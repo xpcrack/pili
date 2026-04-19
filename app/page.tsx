@@ -5,13 +5,13 @@ import { Activity, User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
 import { FeedDebugPanel } from '@/components/FeedDebugPanel';
+import { TopNav } from '@/components/TopNav';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
 import { useIsClient } from '@/hooks/useIsClient';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
-import { RefreshCw, Zap, ArrowLeft, User as UserIcon, Settings } from 'lucide-react';
+import { ArrowLeft, User as UserIcon } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import Link from 'next/link';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
 import { Input } from '@/components/ui/input';
@@ -20,17 +20,59 @@ import {
   buildSearchSuggestionSources,
   getSearchSuggestions,
   hasActiveSearchQuery,
-  matchesSearchQuery,
   parseSearchQuery,
 } from '@/lib/smartSearch';
 
 const MAX_GLOBAL_FEED_ITEMS = 200;
 const MIN_SELECTED_USER_FEED_ITEMS = 50;
 
-function mergeGlobalFeedByTxHash(feed: Array<{ user: User; activity: Activity }>) {
+function rebalanceMixedFeed(feed: Array<{ user: User; activity: Activity }>) {
+  const twitter = feed.filter((item) => item.activity.source === 'twitter');
+  const nonTwitter = feed.filter((item) => item.activity.source !== 'twitter');
+
+  if (twitter.length === 0 || nonTwitter.length === 0) {
+    return feed;
+  }
+
+  const balanced: Array<{ user: User; activity: Activity }> = [];
+  let twitterIndex = 0;
+  let nonTwitterIndex = 0;
+
+  while (twitterIndex < twitter.length || nonTwitterIndex < nonTwitter.length) {
+    for (let i = 0; i < 4 && nonTwitterIndex < nonTwitter.length; i += 1) {
+      balanced.push(nonTwitter[nonTwitterIndex]);
+      nonTwitterIndex += 1;
+    }
+    if (twitterIndex < twitter.length) {
+      balanced.push(twitter[twitterIndex]);
+      twitterIndex += 1;
+    }
+  }
+
+  return balanced.sort((a, b) => {
+    const indexA = balanced.indexOf(a);
+    const indexB = balanced.indexOf(b);
+    if (Math.abs(a.activity.timestamp - b.activity.timestamp) > 30 * 60 * 1000) {
+      return b.activity.timestamp - a.activity.timestamp;
+    }
+    return indexA - indexB;
+  });
+}
+
+function mergeGlobalFeedByPrimaryKey(feed: Array<{ user: User; activity: Activity }>) {
   const merged = new Map<string, { user: User; activity: Activity }>();
 
   for (const item of feed) {
+    const tweetId = item.activity.metadata.tweetId?.trim().toLowerCase();
+    if (tweetId) {
+      const key = `twitter:${tweetId}`;
+      const existing = merged.get(key);
+      if (!existing || item.activity.timestamp >= existing.activity.timestamp) {
+        merged.set(key, item);
+      }
+      continue;
+    }
+
     const txHash = item.activity.metadata.txHash?.trim().toLowerCase();
     if (!txHash) {
       merged.set(`__nohash__:${item.activity.id}`, item);
@@ -94,7 +136,19 @@ export default function Home() {
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
-  const { feed, latestActivityAtByUser, loading, error, refetch, lastUpdate, summary, diagnostics } = useActivityPolling(selectedUserId);
+  const {
+    feed,
+    latestActivityAtByUser,
+    loading,
+    error,
+    hasMore,
+    historyComplete,
+    localQualifiedCount,
+    refetch,
+    lastUpdate,
+    summary,
+    diagnostics,
+  } = useActivityPolling(selectedUserId, searchInput);
   const { dismissNewForUser } = useUserStore();
 
   // 当前选中的用户对象
@@ -114,19 +168,12 @@ export default function Home() {
     [searchInput, suggestionSources]
   );
 
-  const searchMatchedFeed = useMemo(
-    () => feed.filter((item) => matchesSearchQuery(item, parsedSearchQuery)),
-    [feed, parsedSearchQuery]
-  );
-  const selectedUserFeed = useMemo(() => {
-    if (!selectedUserId) return searchMatchedFeed;
-    return searchMatchedFeed.filter((item) => item.user.id === selectedUserId);
-  }, [searchMatchedFeed, selectedUserId]);
+  const selectedUserFeed = useMemo(() => feed, [feed]);
   const pagedSourceFeed = useMemo(() => {
     if (selectedUserId) {
       return selectedUserFeed;
     }
-    return mergeGlobalFeedByTxHash(selectedUserFeed);
+    return rebalanceMixedFeed(mergeGlobalFeedByPrimaryKey(selectedUserFeed));
   }, [selectedUserFeed, selectedUserId]);
   const filteredFeed = useMemo(() => {
     if (!selectedUserId) return pagedSourceFeed.slice(0, globalVisibleCount);
@@ -136,11 +183,11 @@ export default function Home() {
 
   const visibleUserIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const item of searchMatchedFeed) {
+    for (const item of feed) {
       ids.add(item.user.id);
     }
     return ids;
-  }, [searchMatchedFeed]);
+  }, [feed]);
 
   const sidebarUsers = useMemo(() => {
     const sorted = [...users];
@@ -244,7 +291,9 @@ export default function Home() {
       setIsExpanding(true);
       setExpandFeedback('正在从本地库读取该人物动态...');
       const result = await refetch({
+        targetCount: hasSearchQuery ? undefined : MIN_SELECTED_USER_FEED_ITEMS,
         selectedUserId: user.id,
+        searchQuery: searchInput,
         syncStrategy: 'local',
       });
       setIsExpanding(false);
@@ -259,8 +308,14 @@ export default function Home() {
       }
 
       const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
+      const historySuffix =
+        result.historyComplete === true
+          ? '（本地历史已补完）'
+          : result.selectedFeedLength < MIN_SELECTED_USER_FEED_ITEMS && !hasSearchQuery
+            ? '（已自动继续补历史）'
+            : '';
       setExpandFeedback(
-        `已从本地库读取该人物 ${result.selectedFeedLength} 条动态${partialSuffix}`
+        `已从本地库读取该人物 ${result.selectedFeedLength} 条动态${historySuffix}${partialSuffix}`
       );
       return;
     }
@@ -274,15 +329,7 @@ export default function Home() {
     setExpandFeedback(null);
     setGlobalVisibleCount(MAX_GLOBAL_FEED_ITEMS);
     setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
-    void refetch({ selectedUserId: null, syncStrategy: 'local' });
-  };
-
-  const handleRefetchWithReset = () => {
-    setGlobalVisibleCount(MAX_GLOBAL_FEED_ITEMS);
-    setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
-    setIsExpanding(false);
-    setExpandFeedback(null);
-    void refetch();
+    void refetch({ selectedUserId: null, searchQuery: searchInput, syncStrategy: 'local' });
   };
 
   const handlePullMoreHistory = async () => {
@@ -309,12 +356,40 @@ export default function Home() {
       }
     }
 
+    if (hasMore) {
+      setIsExpanding(true);
+      setExpandFeedback('正在从本地库加载更多动态...');
+      const localResult = await refetch({
+        targetCount: nextVisibleCount,
+        selectedUserId,
+        searchQuery: searchInput,
+        syncStrategy: 'local',
+      });
+      setIsExpanding(false);
+
+      if (!localResult.success) {
+        setExpandFeedback(localResult.error ? `本地读取失败：${localResult.error}` : '本地读取失败');
+        return;
+      }
+
+      const localCount = isSelectedMode ? localResult.selectedFeedLength : localResult.feedLength;
+      setExpandFeedback(`已从本地库展开到 ${localCount} 条`);
+      if (localCount >= nextVisibleCount || localResult.hasMore) {
+        return;
+      }
+    }
+
     setIsExpanding(true);
-    setExpandFeedback('本地库不足，正在按所有源向前拉取 7 天历史...');
+    setExpandFeedback(
+      isSelectedMode
+        ? '该人物本地动态不足，正在向前补 7 天历史...'
+        : '本地库不足，正在按所有源向前拉取 7 天历史...'
+    );
     const result = await refetch({
       selectedUserId,
+      searchQuery: searchInput,
       syncStrategy: 'backfill',
-      backfillScope: 'global',
+      backfillScope: isSelectedMode ? 'user' : 'global',
     });
     setIsExpanding(false);
 
@@ -340,7 +415,9 @@ export default function Home() {
         return;
       }
       setExpandFeedback(
-        `API 拉取完成，筛选后该人物可用 ${result.selectedFeedLength} 条${autoBackfillSuffix}${partialSuffix}`
+        `API 拉取完成，该人物本地可用 ${result.selectedFeedLength} 条${
+          result.historyComplete === true ? '（历史已补完）' : autoBackfillSuffix
+        }${partialSuffix}`
       );
       return;
     }
@@ -360,40 +437,16 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      {/* 顶部导航 */}
-      <header className="sticky top-0 z-50 bg-zinc-950/95 backdrop-blur-md border-b border-zinc-800/50">
-        <div className="mx-auto flex h-14 w-full max-w-7xl items-center justify-between px-4">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <Zap className="w-4 h-4 text-white" />
-            </div>
-            <h1 className="text-lg font-semibold text-zinc-100">
-              Web3玩家动态
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {lastUpdate && (
-              <span className="text-xs text-zinc-500 hidden sm:inline">
-                更新于 {lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            )}
-            <button
-              onClick={handleRefetchWithReset}
-              disabled={loading}
-              className="p-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-            <Link
-              href="/manage"
-              className="p-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
-            >
-              <Settings className="w-4 h-4" />
-            </Link>
-          </div>
-        </div>
-      </header>
+      <TopNav
+        active="feed"
+        rightSlot={
+          lastUpdate ? (
+            <span className="hidden text-xs text-zinc-500 sm:inline">
+              更新于 {lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          ) : null
+        }
+      />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
@@ -558,6 +611,16 @@ export default function Home() {
                   </div>
                 </div>
 
+                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
+                  <div className="text-zinc-500">本地动态</div>
+                  <div className="text-sm font-medium text-zinc-100">
+                    {localQualifiedCount}
+                    <span className="ml-2 text-xs text-zinc-500">
+                      {historyComplete === true ? '已补完' : '补历史中'}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="ml-auto flex items-center gap-2">
                   {selectedUser.tags.map((tag) => (
                     <span key={tag} className="rounded bg-zinc-800/50 px-2 py-0.5 text-xs text-zinc-400">
@@ -615,8 +678,18 @@ export default function Home() {
                     <div>
                       <UserIcon className="mx-auto mb-3 h-12 w-12 text-zinc-600" />
                       <p className="text-zinc-500">
-                        {hasSearchQuery ? `${selectedUser.name} 在当前筛选下暂无动态` : `${selectedUser.name} 暂无动态`}
+                        {historyComplete === false && !hasSearchQuery
+                          ? `${selectedUser.name} 本地动态不足，正在继续补历史...`
+                          : hasSearchQuery
+                            ? `${selectedUser.name} 在当前筛选下暂无动态`
+                            : `${selectedUser.name} 暂无动态`}
                       </p>
+                      {selectedUserId && !hasSearchQuery && (
+                        <p className="mt-2 text-xs text-zinc-600">
+                          本地已收录 {localQualifiedCount} 条合格动态
+                          {historyComplete === true ? '，历史已补完' : '，历史仍在补齐中'}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <p className="text-zinc-500">

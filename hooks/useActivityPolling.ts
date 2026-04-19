@@ -24,9 +24,13 @@ interface UseActivityPollingReturn {
   latestActivityAtByUser: Map<string, number>;
   loading: boolean;
   error: string | null;
+  hasMore: boolean;
+  historyComplete: boolean | null;
+  localQualifiedCount: number;
   refetch: (options?: {
     targetCount?: number;
     selectedUserId?: string | null;
+    searchQuery?: string;
     syncStrategy?: 'refresh' | 'local' | 'backfill';
     backfillScope?: 'global' | 'user';
   }) => Promise<{
@@ -37,6 +41,9 @@ interface UseActivityPollingReturn {
     error?: string;
     partialSyncWarning?: boolean;
     autoBackfillRounds?: number;
+    hasMore?: boolean;
+    historyComplete?: boolean | null;
+    localQualifiedCount?: number;
   }>;
   lastUpdate: Date | null;
   summary: ActivityFeedSummary | null;
@@ -46,6 +53,7 @@ interface UseActivityPollingReturn {
 interface FetchActivitiesOptions {
   targetCount?: number;
   selectedUserId?: string | null;
+  searchQuery?: string;
   replace?: boolean;
   syncStrategy?: 'refresh' | 'local' | 'backfill';
   backfillScope?: 'global' | 'user';
@@ -113,7 +121,16 @@ function buildActivitiesByUser(feed: { user: User; activity: Activity }[]) {
   return activitiesByUser;
 }
 
+function filterFeedByExistingUsers(feed: { user: User; activity: Activity }[], users: User[]) {
+  const userIdSet = new Set(users.map((user) => user.id));
+  return feed.filter((item) => userIdSet.has(item.user.id));
+}
+
 function getActivityDedupKey(item: { user: User; activity: Activity }) {
+  const tweetId = item.activity.metadata?.tweetId?.toLowerCase();
+  if (tweetId) {
+    return `twitter:${tweetId}`;
+  }
   const txHash = item.activity.metadata?.txHash?.toLowerCase();
   if (txHash) {
     return `${item.user.id}:${txHash}`;
@@ -550,7 +567,10 @@ function readFeedCache(): PersistedFeedCache | null {
   return null;
 }
 
-export function useActivityPolling(activeSelectedUserId?: string | null): UseActivityPollingReturn {
+export function useActivityPolling(
+  activeSelectedUserId?: string | null,
+  activeSearchQuery?: string
+): UseActivityPollingReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [feed, setFeed] = useState<{ user: User; activity: Activity }[]>([]);
@@ -559,6 +579,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [summary, setSummary] = useState<ActivityFeedSummary | null>(null);
   const [diagnostics, setDiagnostics] = useState<AddressDiagnostic[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [historyComplete, setHistoryComplete] = useState<boolean | null>(null);
+  const [localQualifiedCount, setLocalQualifiedCount] = useState(0);
   
   const { checkAndUpdateNewStatus } = useUserStore();
   const { users, upsertUserAssetSnapshot } = useUsersDataStore();
@@ -576,7 +599,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
   const usersRef = useRef(users);
   const activeSelectedUserIdRef = useRef<string | null>(activeSelectedUserId ?? null);
+  const activeSearchQueryRef = useRef((activeSearchQuery || '').trim());
   const usersFingerprintRef = useRef('');
+  const searchFingerprintRef = useRef((activeSearchQuery || '').trim());
   const usersFingerprint = useMemo(
     () => users.map((user) => `${user.id}:${user.addresses.length}`).join('|'),
     [users]
@@ -589,6 +614,10 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
   useEffect(() => {
     activeSelectedUserIdRef.current = activeSelectedUserId ?? null;
   }, [activeSelectedUserId]);
+
+  useEffect(() => {
+    activeSearchQueryRef.current = (activeSearchQuery || '').trim();
+  }, [activeSearchQuery]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -645,6 +674,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
     error?: string;
     partialSyncWarning?: boolean;
     autoBackfillRounds?: number;
+    hasMore?: boolean;
+    historyComplete?: boolean | null;
+    localQualifiedCount?: number;
   }> => {
     const targetCount = options?.targetCount;
     const hasSelectedUserOption =
@@ -652,6 +684,8 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
     const selectedUserId = hasSelectedUserOption
       ? options?.selectedUserId ?? null
       : activeSelectedUserIdRef.current ?? null;
+    const searchQuery =
+      typeof options?.searchQuery === 'string' ? options.searchQuery.trim() : activeSearchQueryRef.current;
     const replace = options?.replace === true;
     const syncStrategy = options?.syncStrategy ?? (typeof targetCount === 'number' ? 'local' : 'refresh');
     const backfillScope = options?.backfillScope ?? (selectedUserId ? 'user' : 'global');
@@ -673,6 +707,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
           error: '请求进行中',
           partialSyncWarning: false,
           autoBackfillRounds: 0,
+          hasMore,
+          historyComplete,
+          localQualifiedCount,
         };
     }
 
@@ -716,20 +753,34 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
           completedAt: Date.now(),
         });
         setDiagnostics([]);
+        setHasMore(false);
+        setHistoryComplete(null);
+        setLocalQualifiedCount(0);
         setLastUpdate(new Date());
         setError(null);
-        return { feedLength: 0, selectedFeedLength: 0, totalAvailable: 0, success: true, autoBackfillRounds: 0 };
+        return {
+          feedLength: 0,
+          selectedFeedLength: 0,
+          totalAvailable: 0,
+          success: true,
+          autoBackfillRounds: 0,
+          hasMore: false,
+          historyComplete: null,
+          localQualifiedCount: 0,
+        };
       }
 
       const requestLimit = selectedUserId
-        ? Math.max(targetCount ?? (syncStrategy === 'local' ? 1000 : 50), 1)
+        ? Math.max(targetCount ?? 50, 1)
         : Math.max(targetCount ?? 200, 200);
       console.log('[fetchActivities] 开始从 API 获取数据，strategy:', syncStrategy);
 
       const requestFeed = async (strategy: 'refresh' | 'local' | 'backfill') =>
         fetchAllActivities(currentUsers, {
-          limit: requestLimit,
+          page: 1,
+          pageSize: requestLimit,
           userId: selectedUserId,
+          search: searchQuery,
           syncStrategy: strategy,
           backfillScope: strategy === 'backfill' ? backfillScope : undefined,
           backfillUserId: selectedUserId,
@@ -746,26 +797,28 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
       let result = await requestFeed(syncStrategy);
       let autoBackfillRounds = 0;
 
-      if (syncStrategy === 'local' && typeof targetCount === 'number') {
-        let loadedCount = selectedUserId
-          ? result.feed.filter((item) => item.user.id === selectedUserId).length
-          : result.feed.length;
+      if (syncStrategy === 'local' && typeof targetCount === 'number' && !searchQuery) {
+        let loadedCount = result.total;
 
         const maxRounds = selectedUserId ? USER_AUTO_BACKFILL_MAX_ROUNDS : GLOBAL_AUTO_BACKFILL_MAX_ROUNDS;
-        while (loadedCount < targetCount && autoBackfillRounds < maxRounds) {
+        while (
+          loadedCount < targetCount &&
+          autoBackfillRounds < maxRounds &&
+          (selectedUserId ? result.historyComplete !== true : true)
+        ) {
           autoBackfillRounds += 1;
           console.log(
             `[fetchActivities] 本地数据不足，触发自动 backfill 第 ${autoBackfillRounds}/${maxRounds} 轮`
           );
           result = await requestFeed('backfill');
-          loadedCount = selectedUserId
-            ? result.feed.filter((item) => item.user.id === selectedUserId).length
-            : result.feed.length;
+          loadedCount = result.total;
         }
       }
 
       // 服务端 feed 快照是权威源；默认以服务端结果替换，避免前端残留已删除交易。
-      const mergedFeed = replace ? result.feed : mergeFeedItems([], result.feed);
+      const serverMergedFeed = replace ? result.feed : mergeFeedItems([], result.feed);
+      // 用户删除后立刻过滤本地不可见人物，避免历史动态残留。
+      const mergedFeed = filterFeedByExistingUsers(serverMergedFeed, currentUsers);
 
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
         console.log('[fetchActivities] 组件已卸载或请求过期，放弃更新');
@@ -777,6 +830,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
           error: '请求状态已过期',
           partialSyncWarning: false,
           autoBackfillRounds: 0,
+          hasMore,
+          historyComplete,
+          localQualifiedCount,
         };
       }
 
@@ -785,6 +841,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
       setFeed(mergedFeed);
       setSummary(result.summary);
       setDiagnostics(result.diagnostics);
+      setHasMore(result.hasMore);
+      setHistoryComplete(result.historyComplete);
+      setLocalQualifiedCount(result.localQualifiedCount);
 
       // Debug: Check if feed is being filtered by client-side poison detection
       const poisonFilteredFeed = filterPoisonFromFeed(mergedFeed);
@@ -838,10 +897,13 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
       return {
         feedLength: mergedFeed.length,
         selectedFeedLength: mergedSelectedFeedLength,
-        totalAvailable: result.total,
+        totalAvailable: mergedFeed.length,
         success: true,
         partialSyncWarning,
         autoBackfillRounds,
+        hasMore: result.hasMore,
+        historyComplete: result.historyComplete,
+        localQualifiedCount: result.localQualifiedCount,
       };
     } catch (err) {
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
@@ -853,6 +915,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
           error: '请求状态已过期',
           partialSyncWarning: false,
           autoBackfillRounds: 0,
+          hasMore,
+          historyComplete,
+          localQualifiedCount,
         };
       }
 
@@ -864,6 +929,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
       setLatestActivityAtByUser(new Map());
       setSummary(null);
       setDiagnostics([]);
+      setHasMore(false);
+      setHistoryComplete(null);
+      setLocalQualifiedCount(0);
       console.warn('拉取失败（严格模式，未兜底）:', err);
       return {
         feedLength: feedRef.current.length,
@@ -873,6 +941,9 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
         error: message,
         partialSyncWarning: false,
         autoBackfillRounds: 0,
+        hasMore: false,
+        historyComplete: null,
+        localQualifiedCount: 0,
       };
     } finally {
       isFetchingRef.current = false;
@@ -884,10 +955,22 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
         pendingRefetchRef.current = false;
         const pendingOptions = pendingRefetchOptionsRef.current;
         pendingRefetchOptionsRef.current = undefined;
-        void fetchActivities(pendingOptions ?? { selectedUserId: activeSelectedUserIdRef.current });
+        void fetchActivities(
+          pendingOptions ?? {
+            selectedUserId: activeSelectedUserIdRef.current,
+            searchQuery: activeSearchQueryRef.current,
+          }
+        );
       }
     }
-  }, [applyNewStatusForActivities, summary?.transactionCount, upsertUserAssetSnapshot]);
+  }, [
+    applyNewStatusForActivities,
+    hasMore,
+    historyComplete,
+    localQualifiedCount,
+    summary?.transactionCount,
+    upsertUserAssetSnapshot,
+  ]);
 
   // 初始获取 - 先从缓存恢复，再发起请求
   useEffect(() => {
@@ -903,7 +986,10 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
     usersFingerprintRef.current = usersRef.current
       .map((user) => `${user.id}:${user.addresses.length}`)
       .join('|');
-    void fetchActivities({ selectedUserId: activeSelectedUserIdRef.current });
+    void fetchActivities({
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: activeSearchQueryRef.current,
+    });
 
     return () => {
       isMountedRef.current = false;
@@ -921,13 +1007,39 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
     }
 
     usersFingerprintRef.current = usersFingerprint;
-    void fetchActivities({ replace: true, selectedUserId: activeSelectedUserIdRef.current });
+    void fetchActivities({
+      replace: true,
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: activeSearchQueryRef.current,
+    });
   }, [usersFingerprint, fetchActivities]);
+
+  useEffect(() => {
+    if (!isMountedRef.current) {
+      return;
+    }
+
+    const nextSearchFingerprint = (activeSearchQuery || '').trim();
+    if (searchFingerprintRef.current === nextSearchFingerprint) {
+      return;
+    }
+
+    searchFingerprintRef.current = nextSearchFingerprint;
+    void fetchActivities({
+      replace: true,
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: nextSearchFingerprint,
+    });
+  }, [activeSearchQuery, fetchActivities]);
 
   // 高频本地快照轮询：不触发后台同步，只读取最新快照。
   useEffect(() => {
     snapshotPollIntervalRef.current = setInterval(() => {
-      void fetchActivities({ syncStrategy: 'local', selectedUserId: activeSelectedUserIdRef.current });
+      void fetchActivities({
+        syncStrategy: 'local',
+        selectedUserId: activeSelectedUserIdRef.current,
+        searchQuery: activeSearchQueryRef.current,
+      });
     }, SNAPSHOT_POLL_INTERVAL);
 
     return () => {
@@ -940,7 +1052,11 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
   // 低频后台刷新触发：维持原有周期性全量同步能力。
   useEffect(() => {
     refreshIntervalRef.current = setInterval(() => {
-      void fetchActivities({ syncStrategy: 'refresh', selectedUserId: activeSelectedUserIdRef.current });
+      void fetchActivities({
+        syncStrategy: 'refresh',
+        selectedUserId: activeSelectedUserIdRef.current,
+        searchQuery: activeSearchQueryRef.current,
+      });
     }, REFRESH_TRIGGER_INTERVAL);
 
     return () => {
@@ -979,7 +1095,10 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
           return;
         }
         sseRefetchingRef.current = true;
-        void fetchActivities({ selectedUserId: activeSelectedUserIdRef.current }).finally(() => {
+        void fetchActivities({
+          selectedUserId: activeSelectedUserIdRef.current,
+          searchQuery: activeSearchQueryRef.current,
+        }).finally(() => {
           sseRefetchingRef.current = false;
         });
       } catch {
@@ -1005,9 +1124,13 @@ export function useActivityPolling(activeSelectedUserId?: string | null): UseAct
     latestActivityAtByUser,
     loading,
     error,
+    hasMore,
+    historyComplete,
+    localQualifiedCount,
     refetch: (options?: {
       targetCount?: number;
       selectedUserId?: string | null;
+      searchQuery?: string;
       syncStrategy?: 'refresh' | 'local' | 'backfill';
       backfillScope?: 'global' | 'user';
     }) => {

@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 function parseChain(value: unknown): ChainType | undefined {
-  if (value === 'bsc' || value === 'solana') {
+  if (value === 'bsc' || value === 'solana' || value === 'ethereum') {
     return value;
   }
   return undefined;
