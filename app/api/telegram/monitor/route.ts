@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
+import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
+import { projectTelegramMonitorEvent } from '@/lib/server/telegramMonitorFeed';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
@@ -66,6 +69,38 @@ function extractMessage(update: TelegramUpdateLike) {
   if (update.message) return update.message;
   if (update.channel_post) return update.channel_post;
   return null;
+}
+
+const INGEST_ALERT_WINDOW_MS = 5 * 60 * 1000;
+
+async function notifyIngestFormatIssue(params: {
+  source: 'telegram-monitor';
+  reason: string;
+  sourceChatId: string | null;
+  sourceMessageId: number | null;
+  previewText: string;
+}) {
+  const config = readSystemConfig();
+  const chatId = config.telegramUnknownPersonAlertChatId?.trim() || '';
+  if (!chatId) {
+    return;
+  }
+
+  const rateKey = `${params.source}|${params.sourceChatId || 'unknown'}|${params.reason}`;
+  if (!consumeIngestAlertQuota(rateKey, INGEST_ALERT_WINDOW_MS)) {
+    return;
+  }
+
+  const sourceRef = `${params.sourceChatId || 'unknown-chat'}:${params.sourceMessageId ?? 'unknown-message'}`;
+  const text = [
+    '⚠️ 拒收一条监控消息（格式/来源校验未通过）',
+    `来源: ${params.source}`,
+    `原因: ${params.reason}`,
+    `消息定位: ${sourceRef}`,
+    `预览: ${params.previewText.slice(0, 180) || '(empty)'}`,
+  ].join('\n');
+
+  await sendTelegramTextMessage({ chatId, text });
 }
 
 function collectMessageLinks(message: TelegramMessageLike) {
@@ -215,6 +250,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, ignored: true, reason: 'empty-text' });
   }
 
+  const sourceChatId = message.chat?.id ? String(message.chat.id) : null;
+  const sourceMessageId = typeof message.message_id === 'number' ? message.message_id : null;
+  const config = readSystemConfig();
+  const allowedChatId = config.telegramTradeMonitorSourceChatId?.trim() || '';
+  if (!allowedChatId) {
+    await notifyIngestFormatIssue({
+      source: 'telegram-monitor',
+      reason: 'missing-monitor-chat-config',
+      sourceChatId,
+      sourceMessageId,
+      previewText: text,
+    });
+    return NextResponse.json({ ok: true, ignored: true, reason: 'missing-monitor-chat-config' });
+  }
+
+  if (!sourceChatId || sourceChatId !== allowedChatId) {
+    return NextResponse.json({ ok: true, ignored: true, reason: 'chat-not-allowed' });
+  }
+
   const messageLinks = collectMessageLinks(message);
   const parsed = parseXxyyTelegramText(
     text,
@@ -222,15 +276,22 @@ export async function POST(request: NextRequest) {
     messageLinks
   );
 
-  if (!parsed.chain || !parsed.tokenAddress) {
-    return NextResponse.json({ ok: true, ignored: true, reason: 'missing-chain-or-ca' });
+  if (!parsed.chain || !parsed.tokenAddress || !parsed.action) {
+    await notifyIngestFormatIssue({
+      source: 'telegram-monitor',
+      reason: 'invalid-trade-format',
+      sourceChatId,
+      sourceMessageId,
+      previewText: text,
+    });
+    return NextResponse.json({ ok: true, ignored: true, reason: 'invalid-trade-format' });
   }
 
   if (!hasTrackedUserMatch(parsed)) {
     await notifyUnknownTrackedUser({
       parsed,
-      sourceChatId: message.chat?.id ? String(message.chat.id) : null,
-      sourceMessageId: typeof message.message_id === 'number' ? message.message_id : null,
+      sourceChatId,
+      sourceMessageId,
     });
 
     return NextResponse.json({
@@ -248,8 +309,8 @@ export async function POST(request: NextRequest) {
 
   const saved = upsertTelegramMonitorEvent({
     provider: 'xxyy',
-    sourceChatId: message.chat?.id ? String(message.chat.id) : null,
-    sourceMessageId: typeof message.message_id === 'number' ? message.message_id : null,
+    sourceChatId,
+    sourceMessageId,
     updateId: typeof body.update_id === 'number' ? body.update_id : null,
     chain: parsed.chain,
     tokenAddress: parsed.tokenAddress,
@@ -271,9 +332,37 @@ export async function POST(request: NextRequest) {
     payload: body as unknown as Record<string, unknown>,
   });
 
+  const projected = projectTelegramMonitorEvent({
+    event: {
+      chain: parsed.chain,
+      tokenAddress: parsed.tokenAddress,
+      tokenSymbol: parsed.tokenSymbol,
+      txHash: parsed.txHash,
+      marketCapUsd: parsed.marketCapUsd,
+      priceUsd: parsed.priceUsd,
+      quoteAmount: parsed.quoteAmount,
+      quoteSymbol: parsed.quoteSymbol,
+      action: parsed.action,
+      actionLabel: parsed.actionLabel,
+      actionVariant: parsed.actionVariant,
+      walletLabel: parsed.walletLabel,
+      walletGroupLabel: parsed.walletGroupLabel,
+      walletAliasLabel: parsed.walletAliasLabel,
+      trackedWalletAddress: parsed.trackedWalletAddress,
+      eventTimeMs: parsed.eventTimeMs ?? (typeof message.date === 'number' ? message.date * 1000 : Date.now()),
+      rawText: text,
+      updatedAt: Date.now(),
+    },
+  });
+
+  if (projected) {
+    upsertEventsFromFeedRows([projected], 'telegram-monitor-webhook');
+  }
+
   return NextResponse.json({
     ok: true,
     saved,
+    projected: Boolean(projected),
     parsed: {
       chain: parsed.chain,
       tokenAddress: parsed.tokenAddress,

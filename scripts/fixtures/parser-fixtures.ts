@@ -461,6 +461,7 @@ export interface TelegramMonitorFixtureCase {
     walletGroupLabel: string | null;
     walletAliasLabel: string | null;
     trackedWalletAddress: string | null;
+    txHash: string | null;
   };
 }
 
@@ -486,6 +487,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: null,
       walletAliasLabel: 'user_b#1',
       trackedWalletAddress: '5nR5qtq2aYHm2DawQ6hFdFvQ9M7M1f6xk1FQmYhQm9wA',
+      txHash: null,
     },
   },
   {
@@ -509,6 +511,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: null,
       walletAliasLabel: '金狗挖掘机#1',
       trackedWalletAddress: '0x7a2363a401b2340c7941dd2eeff0196a5078d2e6',
+      txHash: null,
     },
   },
   {
@@ -516,6 +519,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
     text: `[xp] [user_d#1]\n🟢 New buy 0.1336 BNB\nToken: 23423.53  [共建]\nPrice: $0.0036\nMCAP: $3.6M\nPlatform: Pancake V2\nCA: 0xb2acf3ae051c7f0b0b8de90cbb4ed99312574444\n#574444`,
     linkCandidates: [
       'https://www.xxyy.io/bsc/0xb2acf3ae051c7f0b0b8de90cbb4ed99312574444?wallet=0x1111111111111111111111111111111111111111&ref=',
+      'https://bscscan.com/tx/0x51c5fa650a72458b0a476b3ff85cd7a21b9c76bddcc1bb3f5e35504f2d650ca4',
     ],
     fallbackTimestampMs: 1713456000000,
     expected: {
@@ -532,6 +536,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: 'xp',
       walletAliasLabel: 'user_d#1',
       trackedWalletAddress: '0x1111111111111111111111111111111111111111',
+      txHash: '0x51c5fa650a72458b0a476b3ff85cd7a21b9c76bddcc1bb3f5e35504f2d650ca4',
     },
   },
   {
@@ -555,6 +560,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: null,
       walletAliasLabel: 'user_b#1',
       trackedWalletAddress: '5nR5qtq2aYHm2DawQ6hFdFvQ9M7M1f6xk1FQmYhQm9wA',
+      txHash: null,
     },
   },
   {
@@ -578,6 +584,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: null,
       walletAliasLabel: 'user_c#1',
       trackedWalletAddress: '0x1111111111111111111111111111111111111111',
+      txHash: null,
     },
   },
   {
@@ -601,6 +608,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletGroupLabel: null,
       walletAliasLabel: 'user_c#1',
       trackedWalletAddress: '0x1111111111111111111111111111111111111111',
+      txHash: null,
     },
   },
 ];

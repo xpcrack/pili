@@ -1,4 +1,6 @@
 import { getDb } from '../lib/server/sqlite';
+import { upsertEventsFromFeedRows } from '../lib/server/eventsRepo';
+import { projectTelegramMonitorEvent } from '../lib/server/telegramMonitorFeed';
 import { parseXxyyTelegramText } from '../lib/server/xxyyTelegramParser';
 
 interface TelegramMessageEntityLike {
@@ -52,6 +54,16 @@ interface TelegramMonitorRepairRow {
   event_time_ms: number | null;
   raw_text: string;
   payload_json: string;
+  updated_at?: number;
+}
+
+interface LegacyEventCandidateRow {
+  rowid: number;
+  event_id: string;
+  timestamp: number;
+  token: string | null;
+  action: string | null;
+  ingest_source: string | null;
 }
 
 function normalize(value: string | null | undefined) {
@@ -129,7 +141,8 @@ const rows = db
        tracked_wallet_address,
        event_time_ms,
        raw_text,
-       payload_json
+       payload_json,
+       updated_at
      FROM telegram_monitor_events
      WHERE provider = 'xxyy'
      ORDER BY id ASC`
@@ -162,8 +175,40 @@ const updateStmt = db.prepare(
    WHERE id = ?`
 );
 
+const CLEANUP_TIME_WINDOW_MS = 120 * 1000;
+
+const findLegacyEventCandidatesStmt = db.prepare(
+  `SELECT
+     rowid,
+     event_id,
+     timestamp,
+     token,
+     action,
+     ingest_source
+   FROM events
+  WHERE source = 'blockchain'
+     AND tx_hash IS NULL
+     AND ingest_source = 'telegram-monitor-webhook'
+     AND user_id = ?
+     AND chain = ?
+     AND address = ?
+     AND timestamp >= ?
+     AND timestamp <= ?
+     AND (? IS NULL OR lower(coalesce(token, '')) = ?)
+     AND (? IS NULL OR lower(coalesce(action, '')) = ?)
+   ORDER BY abs(timestamp - ?) ASC, rowid DESC
+   LIMIT 5`
+);
+
+const deleteLegacyEventStmt = db.prepare(`DELETE FROM events WHERE rowid = ?`);
+
 let repairedCount = 0;
 let changedCount = 0;
+let projectedCount = 0;
+let projectedWithTxHashCount = 0;
+let legacyDeleteCount = 0;
+let legacyNoMatchCount = 0;
+let legacyAmbiguousCount = 0;
 
 for (const row of rows) {
   const payload = parsePayload(row.payload_json);
@@ -245,6 +290,89 @@ for (const row of rows) {
     row.id
   );
 
+  const projected = projectTelegramMonitorEvent({
+    event: {
+      chain: nextChain,
+      tokenAddress: nextTokenAddress,
+      tokenSymbol: nextTokenSymbol,
+      txHash: nextTxHash,
+      marketCapUsd: nextMarketCapUsd,
+      priceUsd: nextPriceUsd,
+      quoteAmount: nextQuoteAmount,
+      quoteSymbol: nextQuoteSymbol,
+      action: nextAction === 'buy' || nextAction === 'sell' || nextAction === 'send' ? nextAction : null,
+      actionLabel:
+        nextActionLabel === '建仓' ||
+        nextActionLabel === '加仓' ||
+        nextActionLabel === '减仓' ||
+        nextActionLabel === '清仓' ||
+        nextActionLabel === '发送'
+          ? nextActionLabel
+          : null,
+      actionVariant:
+        nextActionVariant === 'open' ||
+        nextActionVariant === 'add' ||
+        nextActionVariant === 'reduce' ||
+        nextActionVariant === 'close' ||
+        nextActionVariant === 'send'
+          ? nextActionVariant
+          : null,
+      walletLabel: nextWalletLabel || null,
+      walletGroupLabel: nextWalletGroupLabel || null,
+      walletAliasLabel: nextWalletAliasLabel || null,
+      trackedWalletAddress: nextTrackedWalletAddress || null,
+      eventTimeMs: nextEventTimeMs ?? row.updated_at ?? Date.now(),
+      rawText: text,
+      updatedAt: row.updated_at ?? Date.now(),
+    },
+  });
+
+  if (projected) {
+    upsertEventsFromFeedRows([projected], 'telegram-monitor-repair');
+    projectedCount += 1;
+
+    const normalizedChain = normalize(projected.activity.metadata.chain);
+    const normalizedTrackedAddress = normalize(projected.activity.metadata.trackedAddress);
+    const normalizedTxHash = normalize(projected.activity.metadata.txHash);
+    if (normalizedChain && normalizedTrackedAddress && normalizedTxHash) {
+      projectedWithTxHashCount += 1;
+
+      const tokenFilter = normalize(projected.activity.metadata.token) || null;
+      const actionFilter = normalize(projected.activity.metadata.txAction) || null;
+      const timestamp = projected.activity.timestamp;
+      const legacyCandidates = findLegacyEventCandidatesStmt.all(
+        projected.user.id,
+        normalizedChain,
+        normalizedTrackedAddress,
+        timestamp - CLEANUP_TIME_WINDOW_MS,
+        timestamp + CLEANUP_TIME_WINDOW_MS,
+        tokenFilter,
+        tokenFilter,
+        actionFilter,
+        actionFilter,
+        timestamp
+      ) as LegacyEventCandidateRow[];
+
+      if (legacyCandidates.length === 1) {
+        const target = legacyCandidates[0];
+        deleteLegacyEventStmt.run(target.rowid);
+        legacyDeleteCount += 1;
+        console.log(
+          `[repair-cleanup] deleted legacy rowid=${target.rowid} event_id=${target.event_id} ts=${target.timestamp}`
+        );
+      } else if (legacyCandidates.length === 0) {
+        legacyNoMatchCount += 1;
+      } else {
+        legacyAmbiguousCount += 1;
+        console.warn(
+          `[repair-cleanup] ambiguous tx=${normalizedTxHash} user=${projected.user.id} candidates=${legacyCandidates
+            .map((item) => `${item.rowid}:${item.event_id}`)
+            .join(',')}`
+        );
+      }
+    }
+  }
+
   repairedCount += 1;
   if (changed) {
     changedCount += 1;
@@ -256,4 +384,6 @@ for (const row of rows) {
   }
 }
 
-console.log(`[repair] completed rows=${repairedCount} changed=${changedCount}`);
+console.log(
+  `[repair] completed rows=${repairedCount} changed=${changedCount} projected=${projectedCount} projectedWithTxHash=${projectedWithTxHashCount} legacyDeleted=${legacyDeleteCount} legacyNoMatch=${legacyNoMatchCount} legacyAmbiguous=${legacyAmbiguousCount}`
+);
