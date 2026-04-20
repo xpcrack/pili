@@ -108,6 +108,70 @@ function normalizeAddress(value: string | null | undefined) {
   return trimmed;
 }
 
+function extractValidTxHash(value: string | null | undefined) {
+  const candidate = (value || '').trim();
+  if (!candidate) {
+    return null;
+  }
+
+  if (/^0x[a-fA-F0-9]{64}$/.test(candidate)) {
+    return candidate;
+  }
+
+  if (/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(candidate)) {
+    return candidate;
+  }
+
+  return null;
+}
+
+function parseTxHashFromUrl(rawUrl: string) {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  const queryKeys = ['tx', 'txhash', 'txHash', 'hash', 'signature', 'sig'];
+  for (const key of queryKeys) {
+    const txFromQuery = extractValidTxHash(url.searchParams.get(key));
+    if (txFromQuery) {
+      return txFromQuery;
+    }
+  }
+
+  const pathSegments = url.pathname.split('/').filter(Boolean);
+  for (let index = 0; index < pathSegments.length; index += 1) {
+    const segment = pathSegments[index];
+    const normalizedSegment = segment.toLowerCase();
+    if (normalizedSegment === 'tx' || normalizedSegment === 'transaction') {
+      const nextSegment = pathSegments[index + 1];
+      const txFromPath = extractValidTxHash(nextSegment);
+      if (txFromPath) {
+        return txFromPath;
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseTxHashFromLinks(linkCandidates: string[]) {
+  for (const link of linkCandidates) {
+    const txHash = parseTxHashFromUrl(link);
+    if (txHash) {
+      return txHash;
+    }
+  }
+  return null;
+}
+
 export function parseXxyyLink(rawUrl: string): XxyyTelegramLinkInfo | null {
   const trimmed = rawUrl.trim();
   if (!trimmed) return null;
@@ -142,6 +206,7 @@ export function parseXxyyTelegramText(
   linkCandidates: string[] = []
 ): ParseXxyyTelegramResult {
   const text = rawText || '';
+  const txHashFromLinks = parseTxHashFromLinks(linkCandidates);
   const parsedLinks = linkCandidates
     .map((item) => parseXxyyLink(item))
     .filter((item): item is XxyyTelegramLinkInfo => Boolean(item));
@@ -221,7 +286,7 @@ export function parseXxyyTelegramText(
     tokenAddress: (caMatch ? caMatch[1] : null) || primaryLink?.tokenAddress || null,
     tokenSymbol: tokenMatch ? tokenMatch[2]?.trim() || null : sendSymbol,
     tokenAmount: tokenAmountNormalized ?? fallbackTokenAmount,
-    txHash: txMatch ? txMatch[1] : null,
+    txHash: (txMatch ? txMatch[1] : null) || txHashFromLinks,
     marketCapUsd,
     priceUsd,
     quoteAmount: Number.isFinite(quoteAmount as number) ? quoteAmount : null,
