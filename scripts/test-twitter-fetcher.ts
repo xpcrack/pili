@@ -289,17 +289,96 @@ async function testFetchUserTweetsUses6551Provider() {
       });
 
       assert.equal(result.provider, '6551');
-      assert.equal(result.credentialId, '6551-key-2');
+      assert.equal(result.credentialId, '6551-key-1');
       assert.equal(result.chargedUnit, 1);
       assert.deepEqual(result.fallbackChain, ['6551']);
+      assert.equal(result.coverageEstablished, true);
       assert.equal(result.tweets.length, 1);
       assert.equal(result.tweets[0]?.tweetId, '1901');
       assert.equal(result.tweets[0]?.lane, 'timeline');
-      assert.deepEqual(lookupCalls, ['key-2:elonmusk']);
-      assert.deepEqual(fetchCalls, ['key-2:elonmusk:timeline']);
+      assert.deepEqual(lookupCalls, ['key-1:elonmusk']);
+      assert.deepEqual(fetchCalls, ['key-1:elonmusk:timeline']);
       assert.equal(successCalls.length, 2);
       assert.equal(failureCalls.length, 0);
       assert.equal(identityCache.get('elonmusk')?.userId, '44196397');
+    }
+  );
+}
+
+async function testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached() {
+  await withEnv(
+    {
+      TWITTER_6551_API_KEY_1: 'key-1',
+    },
+    async () => {
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => ({
+            provider: '6551',
+            user: {
+              id: '44196397',
+              handle: 'elonmusk',
+              raw: {},
+            },
+            raw: {},
+          }),
+          fetchUserTweets: async () => ({
+            provider: '6551',
+            tweets: [
+              createStructuredTweet('1950', {
+                createdAtMs: NOW_MS - 5 * 60 * 1000,
+              }),
+            ],
+            hasMore: true,
+            nextCursor: 'next-page',
+            raw: {},
+          }),
+          fetchTweetById: async () => {
+            throw new Error('unexpected detail fetch');
+          },
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected xread detail fetch');
+          },
+        } as never,
+        routeChooser: () => createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100)]),
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+        }),
+        readIdentityCache: () => ({
+          handle: 'elonmusk',
+          provider: '6551',
+          userId: '44196397',
+          username: 'elonmusk',
+          resolvedAtMs: NOW_MS,
+          expiresAtMs: NOW_MS + 60_000,
+          lastError: null,
+          updatedAtMs: NOW_MS,
+        }),
+        upsertIdentityCache: () => {},
+        markProviderSuccess: () => {},
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchUserTweets({
+        handle: 'elonmusk',
+        lane: 'timeline',
+        sinceMs: NOW_MS - 10 * 60 * 1000,
+        maxItems: 5,
+        intent: 'sync',
+      });
+
+      assert.equal(result.provider, '6551');
+      assert.equal(result.tweets.length, 1);
+      assert.equal(result.coverageEstablished, false);
     }
   );
 }
@@ -380,7 +459,7 @@ async function testFetchUserTweetsFallsBackToXread() {
   );
 }
 
-async function testBackfillIntentPrefersXreadBeforeSecond6551() {
+async function testBackfillIntentKeepsSecond6551AheadOfXread() {
   await withEnv(
     {
       TWITTER_6551_API_KEY_1: 'key-1',
@@ -462,10 +541,10 @@ async function testBackfillIntentPrefersXreadBeforeSecond6551() {
         maxItems: 5,
         intent: 'backfill',
       });
-      assert.equal(backfillResult.provider, 'xread');
-      assert.equal(backfillResult.credentialId, 'xread-default');
-      assert.deepEqual(backfillResult.fallbackChain, ['6551', 'xread']);
-      assert.equal(backfillResult.tweets[0]?.fullText, 'xread backfill');
+      assert.equal(backfillResult.provider, '6551');
+      assert.equal(backfillResult.credentialId, '6551-key-2');
+      assert.deepEqual(backfillResult.fallbackChain, ['6551', '6551']);
+      assert.equal(backfillResult.tweets[0]?.fullText, 'second 6551 key');
     }
   );
 }
@@ -530,7 +609,202 @@ async function testFetchTweetsByIdsUses6551ChargedUnits() {
         ['501', '502']
       );
       assert.equal(successCalls.length, 1);
-      assert.equal(successCalls[0]?.successUnits, 2);
+      assert.equal(successCalls[0]?.successUnits, undefined);
+    }
+  );
+}
+
+async function testFetchTweetsByIdsFallsBackWhen6551ReturnsNull() {
+  await withEnv(
+    {
+      TWITTER_6551_API_KEY_1: 'key-1',
+      TWITTER_XREAD_API_KEY: 'xread-key',
+    },
+    async () => {
+      const successCalls: Array<Record<string, unknown>> = [];
+
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => {
+            throw new Error('unexpected lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected user fetch');
+          },
+          fetchTweetById: async () => ({
+            provider: '6551',
+            tweet: null,
+            raw: {},
+          }),
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async ({ tweetId }: { tweetId: string }) => ({
+            provider: 'xread',
+            tweet: createStructuredTweet(tweetId, { text: `xread detail ${tweetId}` }),
+            raw: {},
+          }),
+        } as never,
+        routeChooser: () =>
+          createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100), createXreadCandidate('xread-key')]),
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+        }),
+        readIdentityCache: () => null,
+        upsertIdentityCache: () => {},
+        markProviderSuccess: (input) => {
+          successCalls.push(input as unknown as Record<string, unknown>);
+        },
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchTweetsByIds({
+        ids: ['601'],
+        intent: 'detail',
+      });
+
+      assert.equal(result.provider, 'xread');
+      assert.equal(result.credentialId, 'xread-default');
+      assert.deepEqual(result.fallbackChain, ['6551', 'xread']);
+      assert.deepEqual(
+        result.tweets.map((tweet) => tweet.tweetId),
+        ['601']
+      );
+      assert.equal(result.tweets[0]?.fullText, 'xread detail 601');
+      assert.equal(successCalls.length, 0);
+    }
+  );
+}
+
+async function testFetchTweetsByIdsMergesMixedProviderResultsInRequestOrder() {
+  await withEnv(
+    {
+      TWITTER_6551_API_KEY_1: 'key-1',
+      TWITTER_XREAD_API_KEY: 'xread-key',
+    },
+    async () => {
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => {
+            throw new Error('unexpected lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected user fetch');
+          },
+          fetchTweetById: async ({ tweetId }: { tweetId: string }) => ({
+            provider: '6551',
+            tweet:
+              tweetId === '701'
+                ? createStructuredTweet(tweetId, { text: `6551 detail ${tweetId}` })
+                : null,
+            raw: {},
+          }),
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async ({ tweetId }: { tweetId: string }) => ({
+            provider: 'xread',
+            tweet: createStructuredTweet(tweetId, { text: `xread detail ${tweetId}` }),
+            raw: {},
+          }),
+        } as never,
+        routeChooser: () =>
+          createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100), createXreadCandidate('xread-key')]),
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+        }),
+        readIdentityCache: () => null,
+        upsertIdentityCache: () => {},
+        markProviderSuccess: () => {},
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchTweetsByIds({
+        ids: ['701', '702'],
+        intent: 'detail',
+      });
+
+      assert.equal(result.provider, '6551');
+      assert.equal(result.credentialId, '6551-key-1');
+      assert.equal(result.chargedUnit, 2);
+      assert.deepEqual(result.fallbackChain, ['6551', 'xread']);
+      assert.deepEqual(
+        result.tweets.map((tweet) => tweet.tweetId),
+        ['701', '702']
+      );
+      assert.deepEqual(
+        result.tweets.map((tweet) => tweet.fullText),
+        ['6551 detail 701', 'xread detail 702']
+      );
+    }
+  );
+}
+
+async function testFetchTweetsByIdsKeepsChargedUnitsOnNullOnlyMissWithoutFallbackHit() {
+  await withEnv(
+    {
+      TWITTER_FETCH_PROVIDER: '6551',
+      TWITTER_6551_API_KEY_1: 'key-1',
+      TWITTER_XREAD_API_KEY: undefined,
+    },
+    async () => {
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => {
+            throw new Error('unexpected lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected user fetch');
+          },
+          fetchTweetById: async () => ({
+            provider: '6551',
+            tweet: null,
+            raw: {},
+          }),
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected xread detail fetch');
+          },
+        } as never,
+        routeChooser: () => createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100)]),
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+        }),
+        readIdentityCache: () => null,
+        upsertIdentityCache: () => {},
+        markProviderSuccess: () => {},
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchTweetsByIds({
+        ids: ['801'],
+        intent: 'detail',
+      });
+
+      assert.equal(result.provider, 'noop');
+      assert.equal(result.chargedUnit, 1);
+      assert.deepEqual(result.fallbackChain, ['6551']);
+      assert.equal(result.tweets.length, 0);
     }
   );
 }
@@ -599,9 +873,13 @@ async function main() {
   testDokobotArtifactFilterStillRejectsNavigationChrome();
   testFetcherResultMetadataIncludesFallbackChain();
   await testFetchUserTweetsUses6551Provider();
+  await testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached();
   await testFetchUserTweetsFallsBackToXread();
-  await testBackfillIntentPrefersXreadBeforeSecond6551();
+  await testBackfillIntentKeepsSecond6551AheadOfXread();
   await testFetchTweetsByIdsUses6551ChargedUnits();
+  await testFetchTweetsByIdsFallsBackWhen6551ReturnsNull();
+  await testFetchTweetsByIdsMergesMixedProviderResultsInRequestOrder();
+  await testFetchTweetsByIdsKeepsChargedUnitsOnNullOnlyMissWithoutFallbackHit();
   await testSeedResultsStillShortCircuitFetcher();
   console.log('twitter fetcher tests: ok');
 }

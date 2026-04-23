@@ -5,10 +5,35 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
-const DATA_DIR = path.join(process.cwd(), '.data');
-const DB_PATH = path.join(DATA_DIR, 'web3-feed.sqlite');
-// Compatibility import only; live feed semantics now come from parser-built snapshots.
-const LEGACY_JUDGMENT_FILE = path.join(DATA_DIR, 'tx-judgments.json');
+const DEFAULT_DATA_DIR = path.join(process.cwd(), '.data');
+
+function getDataDir() {
+  const customDataDir = (process.env.PILIPILI_DATA_DIR || '').trim();
+  if (customDataDir) {
+    return path.resolve(customDataDir);
+  }
+  return DEFAULT_DATA_DIR;
+}
+
+function getDbPath() {
+  const customDbPath = (process.env.PILIPILI_DB_PATH || '').trim();
+  if (customDbPath) {
+    return path.resolve(customDbPath);
+  }
+  return path.join(getDataDir(), 'web3-feed.sqlite');
+}
+
+function getLegacyJudgmentFilePath() {
+  const customDataDir = (process.env.PILIPILI_DATA_DIR || '').trim();
+  if (customDataDir) {
+    return path.join(path.resolve(customDataDir), 'tx-judgments.json');
+  }
+  const customDbPath = (process.env.PILIPILI_DB_PATH || '').trim();
+  if (customDbPath) {
+    return path.join(path.dirname(path.resolve(customDbPath)), 'tx-judgments.json');
+  }
+  return path.join(getDataDir(), 'tx-judgments.json');
+}
 
 let dbInstance: Database.Database | null = null;
 let initialized = false;
@@ -222,6 +247,7 @@ ON twitter_tweet_relations(target_tweet_id, relation_type);
 CREATE TABLE IF NOT EXISTS twitter_sync_cursor (
   user_id TEXT NOT NULL,
   lane TEXT NOT NULL,
+  covered_since_ms INTEGER,
   watermark_created_at_ms INTEGER,
   watermark_tweet_id TEXT,
   last_success_at_ms INTEGER,
@@ -305,6 +331,22 @@ CREATE TABLE IF NOT EXISTS app_state (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS telegram_ingest_cursors (
+  worker_key TEXT PRIMARY KEY,
+  last_update_id INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_status (
+  worker_key TEXT PRIMARY KEY,
+  worker_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_heartbeat_at_ms INTEGER NOT NULL,
+  last_update_id INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL UNIQUE,
@@ -349,6 +391,37 @@ ON events(tweet_id);
 
 CREATE INDEX IF NOT EXISTS idx_events_tx_hash
 ON events(tx_hash);
+
+CREATE TABLE IF NOT EXISTS feed_conflicts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conflict_key TEXT NOT NULL UNIQUE,
+  domain TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  winner TEXT NOT NULL,
+  diff_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_conflicts_created
+ON feed_conflicts(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS feed_conflict_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conflict_id INTEGER NOT NULL,
+  conflict_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  last_error TEXT,
+  sent_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (conflict_id) REFERENCES feed_conflicts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feed_conflict_notifications_pending
+ON feed_conflict_notifications(status, next_retry_at, id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   event_id UNINDEXED,
@@ -412,17 +485,18 @@ function setAppStateFlag(db: Database.Database, key: string) {
 }
 
 function migrateLegacyJudgments(db: Database.Database) {
+  const legacyJudgmentFile = getLegacyJudgmentFilePath();
   const migrated = getAppStateFlag(db, 'legacy_tx_judgments_migrated_v1');
   if (migrated) {
     return;
   }
 
-  if (!existsSync(LEGACY_JUDGMENT_FILE)) {
+  if (!existsSync(legacyJudgmentFile)) {
     setAppStateFlag(db, 'legacy_tx_judgments_migrated_v1');
     return;
   }
 
-  const raw = readFileSync(LEGACY_JUDGMENT_FILE, 'utf8');
+  const raw = readFileSync(legacyJudgmentFile, 'utf8');
   const parsed = parseJSON<{ records?: Array<Record<string, unknown>> }>(raw, {});
   const records = Array.isArray(parsed.records) ? parsed.records : [];
 
@@ -497,6 +571,7 @@ function initializeDb(db: Database.Database) {
   db.exec(SCHEMA_SQL);
   ensureTelegramMonitorEventColumns(db);
   ensureActivityJudgmentColumns(db);
+  ensureTwitterSyncCursorColumns(db);
   migrateLegacyJudgments(db);
   initialized = true;
 }
@@ -540,13 +615,18 @@ function ensureActivityJudgmentColumns(db: Database.Database) {
   ensureColumn(db, 'activity_judgments', 'computed_usd_value', 'REAL');
 }
 
+function ensureTwitterSyncCursorColumns(db: Database.Database) {
+  ensureColumn(db, 'twitter_sync_cursor', 'covered_since_ms', 'INTEGER');
+}
+
 export function getDb() {
   if (dbInstance) {
     return dbInstance;
   }
 
-  mkdirSync(DATA_DIR, { recursive: true });
-  const db = new Database(DB_PATH);
+  const dbPath = getDbPath();
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
   initializeDb(db);
   dbInstance = db;
   return db;

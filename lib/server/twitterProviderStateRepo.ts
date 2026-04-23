@@ -195,7 +195,7 @@ export function markTwitterProviderSuccess(input: {
 }) {
   const db = getDb();
   const dateKey = getTwitterDateKey(input.nowMs);
-  const successUnits = Math.max(1, Math.floor(input.successUnits || 1));
+  const successUnits = Math.max(0, Math.floor(input.successUnits ?? 0));
   db.prepare(
     `INSERT INTO twitter_provider_budget (
        provider,

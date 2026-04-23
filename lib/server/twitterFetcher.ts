@@ -33,6 +33,7 @@ export interface TwitterFetcherResult {
   credentialId?: string | null;
   chargedUnit?: number;
   fallbackChain?: TwitterFetcherProvider[];
+  coverageEstablished?: boolean;
   tweets: UpsertTwitterTweetInput[];
 }
 
@@ -127,6 +128,29 @@ export function createFetcherResultMetadata(attempts: TwitterFetcherProviderAtte
     chargedUnit: successfulAttempt?.chargedUnit || 0,
     fallbackChain,
   } satisfies Required<Pick<TwitterFetcherResult, 'provider' | 'credentialId' | 'chargedUnit' | 'fallbackChain'>>;
+}
+
+function createDetailFetcherResultMetadata(attempts: TwitterFetcherProviderAttempt[]) {
+  const successfulAttempt = attempts.find((attempt) => attempt.ok) || null;
+  return {
+    provider: successfulAttempt?.provider || 'noop',
+    credentialId: successfulAttempt?.credentialId || null,
+    chargedUnit: attempts.reduce((sum, attempt) => sum + Math.max(0, attempt.chargedUnit || 0), 0),
+    fallbackChain: attempts.map((attempt) => attempt.provider),
+  } satisfies Required<Pick<TwitterFetcherResult, 'provider' | 'credentialId' | 'chargedUnit' | 'fallbackChain'>>;
+}
+
+function didStructuredProviderEstablishCoverage(input: {
+  tweets: StructuredTwitterTweet[];
+  hasMore: boolean;
+  sinceMs: number;
+}) {
+  if (!input.hasMore) {
+    return true;
+  }
+
+  const normalizedSinceMs = Math.max(0, Math.floor(input.sinceMs));
+  return input.tweets.some((tweet) => tweet.createdAtMs <= normalizedSinceMs);
 }
 
 export function buildTwitterFetcherProviderPlan(input: {
@@ -964,6 +988,7 @@ export function createTwitterFetcher(
           credentialId: null,
           chargedUnit: 0,
           fallbackChain: ['seed'],
+          coverageEstablished: true,
           tweets: seedTweets,
         };
       }
@@ -1017,8 +1042,14 @@ export function createTwitterFetcher(
               });
               attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: 1 });
               const metadata = createFetcherResultMetadata(attempts);
+              const coverageEstablished = didStructuredProviderEstablishCoverage({
+                tweets: result.tweets,
+                hasMore: result.hasMore,
+                sinceMs: params.sinceMs,
+              });
               return {
                 ...metadata,
+                coverageEstablished,
                 tweets: sortAndFilterTweets(
                   result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
                   params.sinceMs,
@@ -1054,8 +1085,14 @@ export function createTwitterFetcher(
               });
               attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
               const metadata = createFetcherResultMetadata(attempts);
+              const coverageEstablished = didStructuredProviderEstablishCoverage({
+                tweets: result.tweets,
+                hasMore: result.hasMore,
+                sinceMs: params.sinceMs,
+              });
               return {
                 ...metadata,
+                coverageEstablished,
                 tweets: sortAndFilterTweets(
                   result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
                   params.sinceMs,
@@ -1082,6 +1119,7 @@ export function createTwitterFetcher(
           const metadata = createFetcherResultMetadata(attempts);
           return {
             ...metadata,
+            coverageEstablished: true,
             tweets: opencli.tweets,
           };
         }
@@ -1104,6 +1142,7 @@ export function createTwitterFetcher(
           const metadata = createFetcherResultMetadata(attempts);
           return {
             ...metadata,
+            coverageEstablished: true,
             tweets: dokobot.tweets,
           };
         }
@@ -1121,6 +1160,7 @@ export function createTwitterFetcher(
           const metadata = createFetcherResultMetadata(attempts);
           return {
             ...metadata,
+            coverageEstablished: true,
             tweets: sortAndFilterTweets(fixtureTweets, params.sinceMs, params.maxItems),
           };
         }
@@ -1131,6 +1171,7 @@ export function createTwitterFetcher(
         return {
           ...metadata,
           provider: 'noop',
+          coverageEstablished: false,
           tweets: [],
         };
       }
@@ -1140,6 +1181,7 @@ export function createTwitterFetcher(
         credentialId: null,
         chargedUnit: 0,
         fallbackChain: [],
+        coverageEstablished: false,
         tweets: [],
       };
     },
@@ -1160,6 +1202,7 @@ export function createTwitterFetcher(
           credentialId: null,
           chargedUnit: 0,
           fallbackChain: ['seed'],
+          coverageEstablished: true,
           tweets: seedMatches,
         };
       }
@@ -1179,8 +1222,14 @@ export function createTwitterFetcher(
         route,
       });
       const attempts: TwitterFetcherProviderAttempt[] = [];
+      const tweetsById = new Map<string, UpsertTwitterTweetInput>();
+      const unresolvedIds = new Set(ids);
 
       for (const item of providerPlan) {
+        if (unresolvedIds.size === 0) {
+          break;
+        }
+
         if (item.provider === '6551' && item.credentialId) {
           const apiKey = get6551ApiKey(item.credentialId);
           if (!apiKey) {
@@ -1189,41 +1238,42 @@ export function createTwitterFetcher(
           }
 
           let chargedUnit = 0;
+          let resolvedCount = 0;
           try {
-            const tweets: UpsertTwitterTweetInput[] = [];
-            for (const id of ids) {
+            for (const id of Array.from(unresolvedIds)) {
               const result = await dependencies.client6551.fetchTweetById({
                 apiKey,
                 tweetId: id,
               });
               chargedUnit += 1;
               if (result.tweet) {
-                tweets.push(toUpsertTwitterTweet(result.tweet, 'timeline'));
+                tweetsById.set(id, toUpsertTwitterTweet(result.tweet, 'timeline'));
+                unresolvedIds.delete(id);
+                resolvedCount += 1;
               }
             }
-            if (chargedUnit > 0) {
+            if (resolvedCount > 0) {
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
-                successUnits: chargedUnit,
               });
             }
-            attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit });
-            const metadata = createFetcherResultMetadata(attempts);
-            return {
-              ...metadata,
-              tweets,
-            };
+            attempts.push({
+              provider: '6551',
+              credentialId: item.credentialId,
+              ok: resolvedCount > 0,
+              chargedUnit,
+            });
+            continue;
           } catch (error) {
-            if (chargedUnit > 0) {
+            if (resolvedCount > 0) {
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
-                successUnits: chargedUnit,
               });
             }
             dependencies.markProviderFailure({
@@ -1234,7 +1284,12 @@ export function createTwitterFetcher(
               cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
               dailyLimit: DEFAULT_6551_DAILY_LIMIT,
             });
-            attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit });
+            attempts.push({
+              provider: '6551',
+              credentialId: item.credentialId,
+              ok: resolvedCount > 0,
+              chargedUnit,
+            });
             continue;
           }
         }
@@ -1246,22 +1301,25 @@ export function createTwitterFetcher(
             continue;
           }
           try {
-            const tweets: UpsertTwitterTweetInput[] = [];
-            for (const id of ids) {
+            let resolvedCount = 0;
+            for (const id of Array.from(unresolvedIds)) {
               const result = await dependencies.clientXread.fetchTweetById({
                 apiKey,
                 tweetId: id,
               });
               if (result.tweet) {
-                tweets.push(toUpsertTwitterTweet(result.tweet, 'timeline'));
+                tweetsById.set(id, toUpsertTwitterTweet(result.tweet, 'timeline'));
+                unresolvedIds.delete(id);
+                resolvedCount += 1;
               }
             }
-            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
-            const metadata = createFetcherResultMetadata(attempts);
-            return {
-              ...metadata,
-              tweets,
-            };
+            attempts.push({
+              provider: 'xread',
+              credentialId: item.credentialId,
+              ok: resolvedCount > 0,
+              chargedUnit: 0,
+            });
+            continue;
           } catch {
             attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
             continue;
@@ -1269,54 +1327,95 @@ export function createTwitterFetcher(
         }
       }
 
+      if (unresolvedIds.size === 0 && tweetsById.size > 0) {
+        const metadata = createDetailFetcherResultMetadata(attempts);
+        return {
+          ...metadata,
+          tweets: ids.map((id) => tweetsById.get(id)).filter((tweet): tweet is UpsertTwitterTweetInput => Boolean(tweet)),
+        };
+      }
+
       const tryOpencli = providerMode === 'auto' || providerMode === 'opencli';
       if (tryOpencli) {
-        const opencliMatches = fetchFromOpencliByIds(ids);
+        const opencliMatches = fetchFromOpencliByIds(Array.from(unresolvedIds));
         if (opencliMatches.length > 0) {
           attempts.push({ provider: 'opencli', credentialId: null, ok: true, chargedUnit: 0 });
-          const metadata = createFetcherResultMetadata(attempts);
-          return {
-            ...metadata,
-            tweets: opencliMatches,
-          };
+          for (const tweet of opencliMatches) {
+            tweetsById.set(tweet.tweetId, tweet);
+            unresolvedIds.delete(tweet.tweetId);
+          }
+          if (unresolvedIds.size === 0) {
+            const metadata = createDetailFetcherResultMetadata(attempts);
+            return {
+              ...metadata,
+              tweets: ids
+                .map((id) => tweetsById.get(id))
+                .filter((tweet): tweet is UpsertTwitterTweetInput => Boolean(tweet)),
+            };
+          }
         }
         attempts.push({ provider: 'opencli', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
       const tryDokobot = providerMode === 'auto' || providerMode === 'dokobot';
       if (tryDokobot) {
-        const dokobotMatches = fetchFromDokobotByIds(ids);
+        const dokobotMatches = fetchFromDokobotByIds(Array.from(unresolvedIds));
         if (dokobotMatches.length > 0) {
           attempts.push({ provider: 'dokobot', credentialId: null, ok: true, chargedUnit: 0 });
-          const metadata = createFetcherResultMetadata(attempts);
-          return {
-            ...metadata,
-            tweets: dokobotMatches,
-          };
+          for (const tweet of dokobotMatches) {
+            tweetsById.set(tweet.tweetId, tweet);
+            unresolvedIds.delete(tweet.tweetId);
+          }
+          if (unresolvedIds.size === 0) {
+            const metadata = createDetailFetcherResultMetadata(attempts);
+            return {
+              ...metadata,
+              tweets: ids
+                .map((id) => tweetsById.get(id))
+                .filter((tweet): tweet is UpsertTwitterTweetInput => Boolean(tweet)),
+            };
+          }
         }
         attempts.push({ provider: 'dokobot', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
       if (providerMode === 'auto' || providerMode === 'fixture') {
         const fixtureMap = readFixtureById(byIdFixtureFile);
-        const fixtureMatches = ids
+        const fixtureMatches = Array.from(unresolvedIds)
           .map((id) => fixtureMap.get(id))
           .filter((item): item is UpsertTwitterTweetInput => Boolean(item));
         if (fixtureMatches.length > 0) {
           attempts.push({ provider: 'fixture', credentialId: null, ok: true, chargedUnit: 0 });
-          const metadata = createFetcherResultMetadata(attempts);
-          return {
-            ...metadata,
-            tweets: fixtureMatches,
-          };
+          for (const tweet of fixtureMatches) {
+            tweetsById.set(tweet.tweetId, tweet);
+            unresolvedIds.delete(tweet.tweetId);
+          }
+          if (unresolvedIds.size === 0) {
+            const metadata = createDetailFetcherResultMetadata(attempts);
+            return {
+              ...metadata,
+              tweets: ids
+                .map((id) => tweetsById.get(id))
+                .filter((tweet): tweet is UpsertTwitterTweetInput => Boolean(tweet)),
+            };
+          }
         }
       }
 
+      if (tweetsById.size > 0) {
+        const metadata = createDetailFetcherResultMetadata(attempts);
+        return {
+          ...metadata,
+          tweets: ids.map((id) => tweetsById.get(id)).filter((tweet): tweet is UpsertTwitterTweetInput => Boolean(tweet)),
+        };
+      }
+
       if (attempts.length > 0) {
-        const metadata = createFetcherResultMetadata(attempts);
+        const metadata = createDetailFetcherResultMetadata(attempts);
         return {
           ...metadata,
           provider: 'noop',
+          coverageEstablished: false,
           tweets: [],
         };
       }
@@ -1326,6 +1425,7 @@ export function createTwitterFetcher(
         credentialId: null,
         chargedUnit: 0,
         fallbackChain: [],
+        coverageEstablished: false,
         tweets: [],
       };
     },

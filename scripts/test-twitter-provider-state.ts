@@ -67,8 +67,8 @@ function main() {
     dailyLimit: 100,
   });
   assert.equal(budget.dateKey, '2026-04-23');
-  assert.equal(budget.successUnitsUsed, 3);
-  assert.equal(budget.remainingUnits, 97);
+  assert.equal(budget.successUnitsUsed, 2);
+  assert.equal(budget.remainingUnits, 98);
   assert.ok((budget.cooldownUntilMs || 0) > 0);
 
   markTwitterProviderFailure({

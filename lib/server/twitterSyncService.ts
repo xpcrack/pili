@@ -1,6 +1,10 @@
 import 'server-only';
 
-import { createTwitterFetcher, type TwitterFetcherSeedByHandle } from '@/lib/server/twitterFetcher';
+import {
+  createTwitterFetcher,
+  type TwitterFetcherProvider,
+  type TwitterFetcherSeedByHandle,
+} from '@/lib/server/twitterFetcher';
 import { projectTwitterTweetsToFeed } from '@/lib/server/twitterFeedMapper';
 import {
   acquireIngestionLease,
@@ -22,6 +26,7 @@ import {
   type TwitterSyncAction,
   type UpsertTwitterTweetInput,
 } from '@/lib/server/twitterRepo';
+import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 
 const TWITTER_SYNC_LOCK_KEY = 'twitter-sync-global';
@@ -61,8 +66,26 @@ interface SyncSummary {
   providerHits: Record<string, number>;
 }
 
+type TwitterSyncFetcher = Pick<ReturnType<typeof createTwitterFetcher>, 'fetchUserTweets' | 'fetchTweetsByIds'>;
+
+export function shouldAdvanceTwitterCoverageCursor(input: {
+  provider: TwitterFetcherProvider;
+  coverageEstablished?: boolean;
+}) {
+  if (input.provider === 'noop') {
+    return false;
+  }
+  if (isStructuredProvider(input.provider)) {
+    return input.coverageEstablished === true;
+  }
+  return true;
+}
+
 function computeSinceMs(userId: string, lane: TwitterLane, nowMs: number) {
   const cursor = readTwitterCursor(userId, lane);
+  if (typeof cursor?.coveredSinceMs === 'number' && !cursor?.watermarkCreatedAtMs) {
+    return Math.max(0, cursor.coveredSinceMs);
+  }
   if (!cursor?.watermarkCreatedAtMs) {
     return Math.max(0, nowMs - BOOTSTRAP_WINDOW_HOURS * 60 * 60 * 1000);
   }
@@ -232,11 +255,19 @@ async function processBackfillQueue(params: {
 function getTwitterSyncOverview() {
   const lease = readIngestionLease(TWITTER_SYNC_LOCK_KEY);
   const nowMs = Date.now();
+  const runs = readRecentTwitterSyncRuns(20);
+  const latestRun = (runs[0] || null) as { id?: number; status?: string } | null;
+  const leaseActive = Boolean(lease && lease.expires_at_ms > nowMs);
+  const stale = Boolean(latestRun && latestRun.status === 'running' && !leaseActive);
+
   return {
-    running: Boolean(lease && lease.expires_at_ms > nowMs),
+    running: leaseActive && !stale,
+    stale,
     lockOwner: lease?.owner || null,
     leaseExpiresAtMs: lease?.expires_at_ms || null,
-    runs: readRecentTwitterSyncRuns(20),
+    heartbeatAtMs: lease?.heartbeat_at_ms || null,
+    latestRun,
+    runs,
   };
 }
 
@@ -245,9 +276,10 @@ async function runSyncAction(options: {
   seedByHandle?: TwitterFetcherSeedByHandle;
   windowDays?: number;
   runId?: number;
+  fetcherOverride?: TwitterSyncFetcher;
 }) {
   const runId = typeof options.runId === 'number' ? options.runId : null;
-  const fetcher = createTwitterFetcher(options.seedByHandle);
+  const fetcher = options.fetcherOverride || createTwitterFetcher(options.seedByHandle);
   const trackedUsers = listTrackedTwitterUsers().filter((user) =>
     options.userId?.trim() ? user.id === options.userId.trim() : true
   );
@@ -370,17 +402,39 @@ async function runSyncAction(options: {
       summary.backfillEnqueuedCount += backfill.enqueuedCount;
       summary.backfillFetchedCount += backfill.fetchedCount;
 
+      const existingCursor = readTwitterCursor(user.id, lane);
+      const shouldAdvanceCoverage = shouldAdvanceTwitterCoverageCursor({
+        provider: fetched.provider,
+        coverageEstablished: fetched.coverageEstablished,
+      });
       const watermark = chooseLaneWatermark(laneTweets);
-      if (watermark) {
+      const shouldStickIncompleteBootstrapCoverage =
+        fetched.provider !== 'noop' &&
+        isStructuredProvider(fetched.provider) &&
+        fetched.coverageEstablished === false &&
+        existingCursor?.watermarkCreatedAtMs == null;
+      const coveredSinceMs = shouldAdvanceCoverage
+        ? watermark
+          ? sinceMs
+          : null
+        : shouldStickIncompleteBootstrapCoverage
+          ? existingCursor?.coveredSinceMs ?? sinceMs
+          : existingCursor?.coveredSinceMs ?? null;
+      const nextWatermark = shouldAdvanceCoverage ? watermark : null;
+
+      if (nextWatermark) {
         upsertTwitterCursor({
           userId: user.id,
           lane,
-          watermarkCreatedAtMs: watermark.createdAtMs,
-          watermarkTweetId: watermark.tweetId,
+          coveredSinceMs,
+          watermarkCreatedAtMs: nextWatermark.createdAtMs,
+          watermarkTweetId: nextWatermark.tweetId,
           lastSuccessAtMs: Date.now(),
         });
-      } else {
-        touchTwitterCursorLastSuccess(user.id, lane, Date.now());
+      } else if (fetched.provider !== 'noop' && coveredSinceMs !== null) {
+        touchTwitterCursorLastSuccess(user.id, lane, Date.now(), coveredSinceMs);
+      } else if (shouldAdvanceCoverage) {
+        touchTwitterCursorLastSuccess(user.id, lane, Date.now(), coveredSinceMs);
       }
     }
 
@@ -488,6 +542,7 @@ export async function runTwitterSyncAction(input?: {
   userId?: string | null;
   windowDays?: number;
   seedByHandle?: TwitterFetcherSeedByHandle;
+  fetcherOverride?: TwitterSyncFetcher;
 }) {
   const action: TwitterSyncAction =
     input?.action === 'replay' || input?.action === 'reconcile' ? input.action : 'sync';
@@ -534,6 +589,7 @@ export async function runTwitterSyncAction(input?: {
             seedByHandle: input?.seedByHandle,
             windowDays: input?.windowDays,
             runId: run.id,
+            fetcherOverride: input?.fetcherOverride,
           })
         : action === 'replay'
           ? await runReplayAction({
