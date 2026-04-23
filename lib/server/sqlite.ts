@@ -178,6 +178,34 @@ ON twitter_tweets(author_handle, created_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_twitter_tweets_created
 ON twitter_tweets(created_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS twitter_identity_cache (
+  handle TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  user_id TEXT,
+  username TEXT,
+  resolved_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_twitter_identity_cache_expires
+ON twitter_identity_cache(expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS twitter_provider_budget (
+  provider TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  date_key TEXT NOT NULL,
+  success_units_used INTEGER NOT NULL DEFAULT 0,
+  daily_limit INTEGER NOT NULL,
+  cooldown_until_ms INTEGER,
+  last_success_at_ms INTEGER,
+  last_failure_at_ms INTEGER,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(provider, credential_id, date_key)
+);
+
 CREATE TABLE IF NOT EXISTS twitter_tweet_relations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_tweet_id TEXT NOT NULL,

@@ -4,13 +4,35 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { createTwitter6551Client } from '@/lib/server/twitter6551Client';
+import { createTwitterXreadClient } from '@/lib/server/twitterXreadClient';
+import {
+  chooseTwitterProviderRoute,
+  type TwitterStructuredProviderRouteResult,
+} from '@/lib/server/twitterProviderRouter';
+import {
+  markTwitterProviderFailure,
+  markTwitterProviderSuccess,
+  readTwitterIdentityCache,
+  readTwitterProviderBudgetSnapshot,
+  upsertTwitterIdentityCache,
+} from '@/lib/server/twitterProviderStateRepo';
 import { type TwitterLane, type UpsertTwitterTweetInput } from '@/lib/server/twitterRepo';
+import { isLikelyTwitterArtifactText } from '@/lib/twitterArtifactText';
+import {
+  normalizeTwitterUsername,
+  type StructuredTwitterTweet,
+  type TwitterProviderIntent,
+} from '@/lib/server/twitterProviderTypes';
 
 export type TwitterFetcherTweet = Omit<UpsertTwitterTweetInput, 'lane'>;
-export type TwitterFetcherProvider = 'opencli' | 'dokobot' | 'seed' | 'fixture' | 'noop';
+export type TwitterFetcherProvider = '6551' | 'xread' | 'opencli' | 'dokobot' | 'seed' | 'fixture' | 'noop';
 
 export interface TwitterFetcherResult {
   provider: TwitterFetcherProvider;
+  credentialId?: string | null;
+  chargedUnit?: number;
+  fallbackChain?: TwitterFetcherProvider[];
   tweets: UpsertTwitterTweetInput[];
 }
 
@@ -22,7 +44,31 @@ export interface TwitterFetcherSeedByHandle {
   };
 }
 
-type RealProviderMode = 'auto' | 'opencli' | 'dokobot' | 'fixture';
+export type TwitterFetcherProviderMode = 'auto' | '6551' | 'xread' | 'opencli' | 'dokobot' | 'fixture';
+
+export interface TwitterFetcherProviderPlanItem {
+  provider: Exclude<TwitterFetcherProvider, 'seed' | 'noop'>;
+  credentialId?: string | null;
+}
+
+export interface TwitterFetcherProviderAttempt {
+  provider: TwitterFetcherProvider;
+  credentialId?: string | null;
+  ok: boolean;
+  chargedUnit?: number;
+}
+
+export interface TwitterFetcherDependencies {
+  client6551?: ReturnType<typeof createTwitter6551Client>;
+  clientXread?: ReturnType<typeof createTwitterXreadClient>;
+  routeChooser?: typeof chooseTwitterProviderRoute;
+  readBudgetSnapshot?: typeof readTwitterProviderBudgetSnapshot;
+  readIdentityCache?: typeof readTwitterIdentityCache;
+  upsertIdentityCache?: typeof upsertTwitterIdentityCache;
+  markProviderSuccess?: typeof markTwitterProviderSuccess;
+  markProviderFailure?: typeof markTwitterProviderFailure;
+  now?: () => number;
+}
 
 interface CliExecutionResult {
   ok: boolean;
@@ -36,6 +82,10 @@ const DEFAULT_FETCH_TIMEOUT_MS = 45_000;
 const DEFAULT_OPENCLI_DETAIL_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENCLI_DETAIL_ENRICH_LIMIT = 0;
 const DEFAULT_DOKOBOT_TIMEOUT_SEC = 45;
+const DEFAULT_6551_DAILY_LIMIT = 100;
+const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
+const DEFAULT_IDENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const STATUS_URL_PATTERN = /https?:\/\/(?:x|twitter)\.com\/([A-Za-z0-9_]+)\/status\/(\d+)/gi;
 
@@ -43,12 +93,79 @@ function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
 }
 
-function normalizeRealProviderMode(value: string | undefined | null): RealProviderMode {
+function normalizeRealProviderMode(value: string | undefined | null): TwitterFetcherProviderMode {
   const normalized = normalize(value);
-  if (normalized === 'opencli' || normalized === 'dokobot' || normalized === 'fixture') {
+  if (
+    normalized === '6551' ||
+    normalized === 'xread' ||
+    normalized === 'opencli' ||
+    normalized === 'dokobot' ||
+    normalized === 'fixture'
+  ) {
     return normalized;
   }
   return 'auto';
+}
+
+export function isLikelyDokobotArtifactText(value: string) {
+  return isLikelyTwitterArtifactText(value);
+}
+
+export function createFetcherResultMetadata(attempts: TwitterFetcherProviderAttempt[]) {
+  const successfulAttempt = attempts.find((attempt) => attempt.ok) || null;
+  const fallbackChain: TwitterFetcherProvider[] = [];
+  for (const attempt of attempts) {
+    fallbackChain.push(attempt.provider);
+    if (attempt.ok) {
+      break;
+    }
+  }
+
+  return {
+    provider: successfulAttempt?.provider || 'noop',
+    credentialId: successfulAttempt?.credentialId || null,
+    chargedUnit: successfulAttempt?.chargedUnit || 0,
+    fallbackChain,
+  } satisfies Required<Pick<TwitterFetcherResult, 'provider' | 'credentialId' | 'chargedUnit' | 'fallbackChain'>>;
+}
+
+export function buildTwitterFetcherProviderPlan(input: {
+  intent: TwitterProviderIntent;
+  providerMode: TwitterFetcherProviderMode;
+  route: TwitterStructuredProviderRouteResult;
+}) {
+  const plan: TwitterFetcherProviderPlanItem[] = [];
+  const toPlanItem = (item: {
+    provider: TwitterFetcherProviderPlanItem['provider'];
+    credentialId?: string | null;
+  }): TwitterFetcherProviderPlanItem => ({
+    provider: item.provider,
+    credentialId: item.credentialId ?? null,
+  });
+
+  if (input.providerMode === 'fixture') {
+    return [toPlanItem({ provider: 'fixture', credentialId: null })];
+  }
+
+  if (input.providerMode === '6551' || input.providerMode === 'xread') {
+    return input.route.orderedProviders.filter((item) => item.provider === input.providerMode).map(toPlanItem);
+  }
+
+  if (input.providerMode === 'auto') {
+    plan.push(...input.route.orderedProviders.map(toPlanItem));
+  }
+
+  if (input.providerMode === 'auto' || input.providerMode === 'opencli') {
+    plan.push(toPlanItem({ provider: 'opencli', credentialId: null }));
+  }
+  if (input.providerMode === 'auto' || input.providerMode === 'dokobot') {
+    plan.push(toPlanItem({ provider: 'dokobot', credentialId: null }));
+  }
+  if (input.providerMode === 'auto') {
+    plan.push(toPlanItem({ provider: 'fixture', credentialId: null }));
+  }
+
+  return plan;
 }
 
 function toSafeInt(value: unknown) {
@@ -521,6 +638,9 @@ function fetchFromDokobotUser(params: {
   const deduped = new Map<string, UpsertTwitterTweetInput>();
   for (const item of candidates) {
     const cleanedText = item.line.replace(STATUS_URL_PATTERN, '').trim() || `tweet ${item.tweetId}`;
+    if (isLikelyDokobotArtifactText(cleanedText)) {
+      continue;
+    }
     const normalized = normalizeTweet(
       {
         id: item.tweetId,
@@ -562,6 +682,9 @@ function fetchFromDokobotByIds(ids: string[]) {
         .split('\n')
         .map((line) => line.trim())
         .find((line) => line.length > 0 && !line.startsWith('http')) || `tweet ${id}`;
+    if (isLikelyDokobotArtifactText(firstTextLine)) {
+      continue;
+    }
     const normalized = normalizeTweet(
       {
         id,
@@ -625,29 +748,325 @@ function logProviderFailure(provider: 'opencli' | 'dokobot', context: string, er
   console.warn(`[twitterFetcher] ${provider} ${context} failed: ${error}`);
 }
 
-export function createTwitterFetcher(seedByHandle?: TwitterFetcherSeedByHandle) {
+function toUpsertTwitterTweet(tweet: StructuredTwitterTweet, lane: TwitterLane): UpsertTwitterTweetInput {
+  return {
+    tweetId: tweet.tweetId,
+    authorHandle: normalize(tweet.authorHandle),
+    authorName: tweet.authorName,
+    fullText: tweet.fullText,
+    createdAtMs: tweet.createdAtMs,
+    lane,
+    conversationId: tweet.conversationId,
+    replyToTweetId: tweet.replyToTweetId,
+    quoteTweetId: tweet.quoteTweetId,
+    replyCount: tweet.replyCount,
+    retweetCount: tweet.retweetCount,
+    likeCount: tweet.likeCount,
+    viewCount: tweet.viewCount,
+    source: tweet.raw,
+  };
+}
+
+function get6551ApiKey(credentialId: string) {
+  return credentialId === '6551-key-2'
+    ? (process.env.TWITTER_6551_API_KEY_2 || '').trim()
+    : (process.env.TWITTER_6551_API_KEY_1 || '').trim();
+}
+
+function getXreadApiKey() {
+  return (process.env.TWITTER_XREAD_API_KEY || '').trim();
+}
+
+function createRouteCandidates(
+  nowMs: number,
+  dependencies: Required<Pick<TwitterFetcherDependencies, 'readBudgetSnapshot'>>
+) {
+  const keys6551 = [
+    {
+      provider: '6551' as const,
+      credentialId: '6551-key-1',
+      apiKey: (process.env.TWITTER_6551_API_KEY_1 || '').trim(),
+    },
+    {
+      provider: '6551' as const,
+      credentialId: '6551-key-2',
+      apiKey: (process.env.TWITTER_6551_API_KEY_2 || '').trim(),
+    },
+  ].map((candidate) => {
+    const snapshot = dependencies.readBudgetSnapshot({
+      provider: candidate.provider,
+      credentialId: candidate.credentialId,
+      nowMs,
+      dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+    });
+    return {
+      provider: candidate.provider,
+      credentialId: candidate.credentialId,
+      apiKey: candidate.apiKey,
+      dailyLimit: snapshot.dailyLimit,
+      remainingUnits: snapshot.remainingUnits,
+      cooldownUntilMs: snapshot.cooldownUntilMs,
+      lastSuccessAtMs: snapshot.lastSuccessAtMs,
+      lastFailureAtMs: snapshot.lastFailureAtMs,
+    };
+  });
+
+  const xreadApiKey = getXreadApiKey();
+  const xread = xreadApiKey
+    ? {
+        provider: 'xread' as const,
+        credentialId: 'xread-default',
+        apiKey: xreadApiKey,
+      }
+    : null;
+
+  return {
+    keys6551,
+    xread,
+  };
+}
+
+async function resolveTwitterIdentity(params: {
+  handle: string;
+  providerPlan: TwitterFetcherProviderPlanItem[];
+  dependencies: Required<
+    Pick<
+      TwitterFetcherDependencies,
+      | 'client6551'
+      | 'clientXread'
+      | 'readIdentityCache'
+      | 'upsertIdentityCache'
+      | 'markProviderSuccess'
+      | 'markProviderFailure'
+      | 'now'
+    >
+  >;
+}) {
+  const cached = params.dependencies.readIdentityCache(params.handle);
+  if (cached) {
+    return cached.userId;
+  }
+
+  const firstStructuredProvider =
+    params.providerPlan.find((item) => item.provider === '6551' || item.provider === 'xread')?.provider || '6551';
+
+  for (const item of params.providerPlan) {
+    if (item.provider === '6551' && item.credentialId) {
+      const apiKey = get6551ApiKey(item.credentialId);
+      if (!apiKey) {
+        continue;
+      }
+      try {
+        const lookup = await params.dependencies.client6551.lookupUser({
+          apiKey,
+          username: params.handle,
+        });
+        params.dependencies.markProviderSuccess({
+          provider: '6551',
+          credentialId: item.credentialId,
+          nowMs: params.dependencies.now(),
+          dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+        });
+        params.dependencies.upsertIdentityCache({
+          handle: params.handle,
+          provider: '6551',
+          userId: lookup.user.id,
+          username: lookup.user.handle,
+          expiresAtMs: params.dependencies.now() + DEFAULT_IDENTITY_CACHE_TTL_MS,
+          lastError: null,
+        });
+        return lookup.user.id;
+      } catch (error) {
+        params.dependencies.markProviderFailure({
+          provider: '6551',
+          credentialId: item.credentialId,
+          nowMs: params.dependencies.now(),
+          error: error instanceof Error ? error.message : 'twitter_6551_identity_failed',
+          cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
+          dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+        });
+        continue;
+      }
+    }
+
+    if (item.provider === 'xread') {
+      const apiKey = getXreadApiKey();
+      if (!apiKey) {
+        continue;
+      }
+      try {
+        const lookup = await params.dependencies.clientXread.lookupUser({
+          apiKey,
+          username: params.handle,
+        });
+        params.dependencies.upsertIdentityCache({
+          handle: params.handle,
+          provider: 'xread',
+          userId: lookup.user.id,
+          username: lookup.user.handle,
+          expiresAtMs: params.dependencies.now() + DEFAULT_IDENTITY_CACHE_TTL_MS,
+          lastError: null,
+        });
+        return lookup.user.id;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  params.dependencies.upsertIdentityCache({
+    handle: params.handle,
+    provider: firstStructuredProvider,
+    userId: null,
+    username: params.handle,
+    expiresAtMs: params.dependencies.now() + DEFAULT_NEGATIVE_CACHE_TTL_MS,
+    lastError: 'identity_resolution_failed',
+  });
+  return null;
+}
+
+export function createTwitterFetcher(
+  seedByHandle?: TwitterFetcherSeedByHandle,
+  overrides: TwitterFetcherDependencies = {}
+) {
   const fixtureRoot = path.join(process.cwd(), '.data', 'twitter-fixtures');
   const byIdFixtureFile = path.join(fixtureRoot, 'by-id.json');
   const providerMode = normalizeRealProviderMode(process.env.TWITTER_FETCH_PROVIDER);
+  const dependencies = {
+    client6551: overrides.client6551 || createTwitter6551Client(),
+    clientXread: overrides.clientXread || createTwitterXreadClient(),
+    routeChooser: overrides.routeChooser || chooseTwitterProviderRoute,
+    readBudgetSnapshot: overrides.readBudgetSnapshot || readTwitterProviderBudgetSnapshot,
+    readIdentityCache: overrides.readIdentityCache || readTwitterIdentityCache,
+    upsertIdentityCache: overrides.upsertIdentityCache || upsertTwitterIdentityCache,
+    markProviderSuccess: overrides.markProviderSuccess || markTwitterProviderSuccess,
+    markProviderFailure: overrides.markProviderFailure || markTwitterProviderFailure,
+    now: overrides.now || (() => Date.now()),
+  };
 
   return {
-    fetchUserTweets(params: {
+    async fetchUserTweets(params: {
       handle: string;
       lane: TwitterLane;
       sinceMs: number;
       maxItems: number;
-    }): TwitterFetcherResult {
+      intent?: TwitterProviderIntent;
+    }): Promise<TwitterFetcherResult> {
       const handle = normalize(params.handle);
       if (!handle) {
-        return { provider: 'noop', tweets: [] };
+        return { provider: 'noop', credentialId: null, chargedUnit: 0, fallbackChain: [], tweets: [] };
       }
 
       const seedTweets = fetchSeedUserTweets(seedByHandle, handle, params.lane, params.sinceMs, params.maxItems);
       if (seedTweets.length > 0) {
         return {
           provider: 'seed',
+          credentialId: null,
+          chargedUnit: 0,
+          fallbackChain: ['seed'],
           tweets: seedTweets,
         };
+      }
+
+      const intent = params.intent || 'sync';
+      const routeNowMs = dependencies.now();
+      const route = dependencies.routeChooser({
+        intent,
+        nowMs: routeNowMs,
+        providers: createRouteCandidates(routeNowMs, {
+          readBudgetSnapshot: dependencies.readBudgetSnapshot,
+        }),
+      });
+      const providerPlan = buildTwitterFetcherProviderPlan({
+        intent,
+        providerMode,
+        route,
+      });
+      const attempts: TwitterFetcherProviderAttempt[] = [];
+      const structuredPlan = providerPlan.filter(
+        (item) => item.provider === '6551' || item.provider === 'xread'
+      );
+
+      if (structuredPlan.length > 0) {
+        const resolvedUserId = await resolveTwitterIdentity({
+          handle,
+          providerPlan: structuredPlan,
+          dependencies,
+        });
+
+        for (const item of structuredPlan) {
+          if (item.provider === '6551' && item.credentialId) {
+            const apiKey = get6551ApiKey(item.credentialId);
+            if (!apiKey) {
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+              continue;
+            }
+
+            try {
+              const result = await dependencies.client6551.fetchUserTweets({
+                apiKey,
+                username: normalizeTwitterUsername(handle),
+                lane: params.lane,
+                maxResults: params.maxItems,
+              });
+              dependencies.markProviderSuccess({
+                provider: '6551',
+                credentialId: item.credentialId,
+                nowMs: dependencies.now(),
+                dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+              });
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: 1 });
+              const metadata = createFetcherResultMetadata(attempts);
+              return {
+                ...metadata,
+                tweets: sortAndFilterTweets(
+                  result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
+                  params.sinceMs,
+                  params.maxItems
+                ),
+              };
+            } catch (error) {
+              dependencies.markProviderFailure({
+                provider: '6551',
+                credentialId: item.credentialId,
+                nowMs: dependencies.now(),
+                error: error instanceof Error ? error.message : 'twitter_6551_fetch_failed',
+                cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
+                dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+              });
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+            }
+          }
+
+          if (item.provider === 'xread') {
+            const apiKey = getXreadApiKey();
+            if (!apiKey) {
+              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+              continue;
+            }
+            try {
+              const result = await dependencies.clientXread.fetchUserTweets({
+                apiKey,
+                username: normalizeTwitterUsername(handle),
+                userId: resolvedUserId || undefined,
+                lane: params.lane,
+                maxResults: params.maxItems,
+              });
+              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
+              const metadata = createFetcherResultMetadata(attempts);
+              return {
+                ...metadata,
+                tweets: sortAndFilterTweets(
+                  result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
+                  params.sinceMs,
+                  params.maxItems
+                ),
+              };
+            } catch {
+              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+            }
+          }
+        }
       }
 
       const tryOpencli = providerMode === 'auto' || providerMode === 'opencli';
@@ -659,12 +1078,15 @@ export function createTwitterFetcher(seedByHandle?: TwitterFetcherSeedByHandle) 
           maxItems: params.maxItems,
         });
         if (opencli.ok) {
+          attempts.push({ provider: 'opencli', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'opencli',
+            ...metadata,
             tweets: opencli.tweets,
           };
         }
         if (!opencli.ok) {
+          attempts.push({ provider: 'opencli', credentialId: null, ok: false, chargedUnit: 0 });
           logProviderFailure('opencli', 'fetchUserTweets', opencli.error);
         }
       }
@@ -678,12 +1100,15 @@ export function createTwitterFetcher(seedByHandle?: TwitterFetcherSeedByHandle) 
           maxItems: params.maxItems,
         });
         if (dokobot.ok) {
+          attempts.push({ provider: 'dokobot', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'dokobot',
+            ...metadata,
             tweets: dokobot.tweets,
           };
         }
         if (!dokobot.ok) {
+          attempts.push({ provider: 'dokobot', credentialId: null, ok: false, chargedUnit: 0 });
           logProviderFailure('dokobot', 'fetchUserTweets', dokobot.error);
         }
       }
@@ -692,53 +1117,184 @@ export function createTwitterFetcher(seedByHandle?: TwitterFetcherSeedByHandle) 
         const fixtureFile = path.join(fixtureRoot, `${handle}-${params.lane}.json`);
         const fixtureTweets = readTweetsFromFile(fixtureFile, params.lane);
         if (fixtureTweets.length > 0) {
+          attempts.push({ provider: 'fixture', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'fixture',
+            ...metadata,
             tweets: sortAndFilterTweets(fixtureTweets, params.sinceMs, params.maxItems),
           };
         }
       }
 
+      if (attempts.length > 0) {
+        const metadata = createFetcherResultMetadata(attempts);
+        return {
+          ...metadata,
+          provider: 'noop',
+          tweets: [],
+        };
+      }
+
       return {
         provider: 'noop',
+        credentialId: null,
+        chargedUnit: 0,
+        fallbackChain: [],
         tweets: [],
       };
     },
 
-    fetchTweetsByIds(params: { ids: string[] }): TwitterFetcherResult {
+    async fetchTweetsByIds(params: {
+      ids: string[];
+      intent?: TwitterProviderIntent;
+    }): Promise<TwitterFetcherResult> {
       const ids = Array.from(new Set(params.ids.map((item) => item.trim()).filter(Boolean)));
       if (ids.length === 0) {
-        return { provider: 'noop', tweets: [] };
+        return { provider: 'noop', credentialId: null, chargedUnit: 0, fallbackChain: [], tweets: [] };
       }
 
       const seedMatches = fetchSeedByIds(seedByHandle, ids);
       if (seedMatches.length > 0) {
         return {
           provider: 'seed',
+          credentialId: null,
+          chargedUnit: 0,
+          fallbackChain: ['seed'],
           tweets: seedMatches,
         };
+      }
+
+      const intent = params.intent || 'detail';
+      const routeNowMs = dependencies.now();
+      const route = dependencies.routeChooser({
+        intent,
+        nowMs: routeNowMs,
+        providers: createRouteCandidates(routeNowMs, {
+          readBudgetSnapshot: dependencies.readBudgetSnapshot,
+        }),
+      });
+      const providerPlan = buildTwitterFetcherProviderPlan({
+        intent,
+        providerMode,
+        route,
+      });
+      const attempts: TwitterFetcherProviderAttempt[] = [];
+
+      for (const item of providerPlan) {
+        if (item.provider === '6551' && item.credentialId) {
+          const apiKey = get6551ApiKey(item.credentialId);
+          if (!apiKey) {
+            attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+            continue;
+          }
+
+          let chargedUnit = 0;
+          try {
+            const tweets: UpsertTwitterTweetInput[] = [];
+            for (const id of ids) {
+              const result = await dependencies.client6551.fetchTweetById({
+                apiKey,
+                tweetId: id,
+              });
+              chargedUnit += 1;
+              if (result.tweet) {
+                tweets.push(toUpsertTwitterTweet(result.tweet, 'timeline'));
+              }
+            }
+            if (chargedUnit > 0) {
+              dependencies.markProviderSuccess({
+                provider: '6551',
+                credentialId: item.credentialId,
+                nowMs: dependencies.now(),
+                dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                successUnits: chargedUnit,
+              });
+            }
+            attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit });
+            const metadata = createFetcherResultMetadata(attempts);
+            return {
+              ...metadata,
+              tweets,
+            };
+          } catch (error) {
+            if (chargedUnit > 0) {
+              dependencies.markProviderSuccess({
+                provider: '6551',
+                credentialId: item.credentialId,
+                nowMs: dependencies.now(),
+                dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                successUnits: chargedUnit,
+              });
+            }
+            dependencies.markProviderFailure({
+              provider: '6551',
+              credentialId: item.credentialId,
+              nowMs: dependencies.now(),
+              error: error instanceof Error ? error.message : 'twitter_6551_detail_failed',
+              cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
+              dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+            });
+            attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit });
+            continue;
+          }
+        }
+
+        if (item.provider === 'xread') {
+          const apiKey = getXreadApiKey();
+          if (!apiKey) {
+            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+            continue;
+          }
+          try {
+            const tweets: UpsertTwitterTweetInput[] = [];
+            for (const id of ids) {
+              const result = await dependencies.clientXread.fetchTweetById({
+                apiKey,
+                tweetId: id,
+              });
+              if (result.tweet) {
+                tweets.push(toUpsertTwitterTweet(result.tweet, 'timeline'));
+              }
+            }
+            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
+            const metadata = createFetcherResultMetadata(attempts);
+            return {
+              ...metadata,
+              tweets,
+            };
+          } catch {
+            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
+            continue;
+          }
+        }
       }
 
       const tryOpencli = providerMode === 'auto' || providerMode === 'opencli';
       if (tryOpencli) {
         const opencliMatches = fetchFromOpencliByIds(ids);
         if (opencliMatches.length > 0) {
+          attempts.push({ provider: 'opencli', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'opencli',
+            ...metadata,
             tweets: opencliMatches,
           };
         }
+        attempts.push({ provider: 'opencli', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
       const tryDokobot = providerMode === 'auto' || providerMode === 'dokobot';
       if (tryDokobot) {
         const dokobotMatches = fetchFromDokobotByIds(ids);
         if (dokobotMatches.length > 0) {
+          attempts.push({ provider: 'dokobot', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'dokobot',
+            ...metadata,
             tweets: dokobotMatches,
           };
         }
+        attempts.push({ provider: 'dokobot', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
       if (providerMode === 'auto' || providerMode === 'fixture') {
@@ -747,15 +1303,29 @@ export function createTwitterFetcher(seedByHandle?: TwitterFetcherSeedByHandle) 
           .map((id) => fixtureMap.get(id))
           .filter((item): item is UpsertTwitterTweetInput => Boolean(item));
         if (fixtureMatches.length > 0) {
+          attempts.push({ provider: 'fixture', credentialId: null, ok: true, chargedUnit: 0 });
+          const metadata = createFetcherResultMetadata(attempts);
           return {
-            provider: 'fixture',
+            ...metadata,
             tweets: fixtureMatches,
           };
         }
       }
 
+      if (attempts.length > 0) {
+        const metadata = createFetcherResultMetadata(attempts);
+        return {
+          ...metadata,
+          provider: 'noop',
+          tweets: [],
+        };
+      }
+
       return {
         provider: 'noop',
+        credentialId: null,
+        chargedUnit: 0,
+        fallbackChain: [],
         tweets: [],
       };
     },
