@@ -22,6 +22,25 @@ export interface ActivityFeedSummary {
   completedAt: number;
 }
 
+export interface AddressAssetSnapshot {
+  userId?: string;
+  address: string;
+  chain: string;
+  token: string;
+  tokenAddress: string;
+  balance: string;
+  valueUsd: number;
+  totalAssetUsd: number;
+  updatedAt: number;
+}
+
+export interface UserAssetSnapshot {
+  userId: string;
+  totalValueUsd: number;
+  totalAssetUsd: number;
+  updatedAt: number;
+}
+
 function convertToActivity(
   tx: OkxTransaction,
   user: User,
