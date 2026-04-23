@@ -144,12 +144,12 @@ function enqueueBackfillRelations(
   enqueue('quote_source', sourceTweet.quoteTweetId);
 }
 
-function processBackfillQueue(params: {
+async function processBackfillQueue(params: {
   queue: BackfillQueueItem[];
   budgetReasons: Set<string>;
   accountDeadlineMs: number;
   knownTweetIds: Set<string>;
-  fetchByIds: (ids: string[]) => { provider: string; tweets: UpsertTwitterTweetInput[] };
+  fetchByIds: (ids: string[]) => Promise<{ provider: string; tweets: UpsertTwitterTweetInput[] }>;
   providerHits: Record<string, number>;
 }) {
   let processedNodes = 0;
@@ -185,7 +185,7 @@ function processBackfillQueue(params: {
       continue;
     }
 
-    const fetched = params.fetchByIds([item.targetTweetId]);
+    const fetched = await params.fetchByIds([item.targetTweetId]);
     params.providerHits[fetched.provider] = (params.providerHits[fetched.provider] || 0) + 1;
     const fetchedTweet = fetched.tweets.find((tweet) => tweet.tweetId === item.targetTweetId);
 
@@ -320,7 +320,7 @@ async function runSyncAction(options: {
       const baseSinceMs = computeSinceMs(user.id, lane, nowMs);
       const sinceMs = overrideSinceMs === null ? baseSinceMs : Math.min(baseSinceMs, overrideSinceMs);
       projectionSinceMs = Math.min(projectionSinceMs, sinceMs);
-      const fetched = fetcher.fetchUserTweets({
+      const fetched = await fetcher.fetchUserTweets({
         handle: user.twitterHandle,
         lane,
         sinceMs,
@@ -359,13 +359,13 @@ async function runSyncAction(options: {
         enqueueBackfillRelations(queue, queueDedupe, rootNodeCounts, tweet, 1, budgetReasons);
       }
 
-      const backfill = processBackfillQueue({
+      const backfill = await processBackfillQueue({
         queue,
         budgetReasons,
         accountDeadlineMs,
         knownTweetIds,
         providerHits: summary.providerHits,
-        fetchByIds: (ids: string[]) => fetcher.fetchTweetsByIds({ ids }),
+        fetchByIds: (ids: string[]) => fetcher.fetchTweetsByIds({ ids, intent: 'detail' }),
       });
       summary.backfillEnqueuedCount += backfill.enqueuedCount;
       summary.backfillFetchedCount += backfill.fetchedCount;
