@@ -1,9 +1,8 @@
 import { fetchOkxTokenHistoricalPriceBeforeTimestamp } from '@/lib/okx';
-import type { ChainType } from '@/types';
 
 const STABLE_SYMBOLS = new Set(['USDT', 'USDC', 'DAI']);
 
-const WRAPPED_NATIVE_BY_CHAIN: Partial<Record<ChainType, { address: string; symbols: Set<string> }>> = {
+const WRAPPED_NATIVE_BY_CHAIN: Record<string, { address: string; symbols: Set<string> }> = {
   bsc: {
     address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
     symbols: new Set(['BNB', 'WBNB']),
@@ -15,25 +14,34 @@ const WRAPPED_NATIVE_BY_CHAIN: Partial<Record<ChainType, { address: string; symb
 };
 
 export interface ResolveTradeAmountUsdAtTxParams {
-  chain?: ChainType | null;
-  tokenSymbol?: string | null;
-  tokenAmount?: number | null;
-  quoteTokenSymbol?: string | null;
-  quoteAmount?: number | null;
+  chain?: string | null;
+  token?: string | null;
+  value?: string | number | null;
+  quoteToken?: string | null;
+  quoteAmount?: string | number | null;
   explicitPriceUsd?: number | null;
   txTimestampMs: number;
 }
 
 export interface ResolveTradeAmountUsdAtTxDeps {
-  fetchHistoricalPriceBeforeTimestamp?: typeof fetchOkxTokenHistoricalPriceBeforeTimestamp;
+  fetchHistoricalTokenPrice?: typeof fetchOkxTokenHistoricalPriceBeforeTimestamp;
 }
 
 function normalizeSymbol(symbol: string | null | undefined) {
   return (symbol || '').trim().toUpperCase();
 }
 
-function parsePositiveFiniteNumber(value: number | null | undefined) {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+function parsePositiveFiniteNumber(value: string | number | null | undefined) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(value.trim().replaceAll(',', ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function roundUsd(value: number) {
@@ -44,10 +52,11 @@ export async function resolveTradeAmountUsdAtTx(
   params: ResolveTradeAmountUsdAtTxParams,
   deps: ResolveTradeAmountUsdAtTxDeps = {}
 ) {
-  const quoteTokenSymbol = normalizeSymbol(params.quoteTokenSymbol);
-  const tokenSymbol = normalizeSymbol(params.tokenSymbol);
+  const chain = (params.chain || '').trim().toLowerCase();
+  const quoteTokenSymbol = normalizeSymbol(params.quoteToken);
+  const tokenSymbol = normalizeSymbol(params.token);
   const quoteAmount = parsePositiveFiniteNumber(params.quoteAmount);
-  const tokenAmount = parsePositiveFiniteNumber(params.tokenAmount);
+  const tokenAmount = parsePositiveFiniteNumber(params.value);
   const explicitPriceUsd = parsePositiveFiniteNumber(params.explicitPriceUsd);
 
   if (quoteTokenSymbol && quoteAmount !== null && STABLE_SYMBOLS.has(quoteTokenSymbol)) {
@@ -62,20 +71,14 @@ export async function resolveTradeAmountUsdAtTx(
     return roundUsd(tokenAmount * explicitPriceUsd);
   }
 
-  const wrappedNative =
-    params.chain && quoteTokenSymbol ? WRAPPED_NATIVE_BY_CHAIN[params.chain]?.symbols.has(quoteTokenSymbol) : false;
+  const wrappedNative = chain && quoteTokenSymbol ? WRAPPED_NATIVE_BY_CHAIN[chain]?.symbols.has(quoteTokenSymbol) : false;
 
-  if (params.chain && wrappedNative && quoteAmount !== null) {
-    const wrappedNativeAddress = WRAPPED_NATIVE_BY_CHAIN[params.chain]?.address;
-    const fetchHistoricalPriceBeforeTimestamp =
-      deps.fetchHistoricalPriceBeforeTimestamp ?? fetchOkxTokenHistoricalPriceBeforeTimestamp;
+  if (chain && wrappedNative && quoteAmount !== null) {
+    const wrappedNativeAddress = WRAPPED_NATIVE_BY_CHAIN[chain]?.address;
+    const fetchHistoricalTokenPrice = deps.fetchHistoricalTokenPrice ?? fetchOkxTokenHistoricalPriceBeforeTimestamp;
 
     if (wrappedNativeAddress) {
-      const pricePoint = await fetchHistoricalPriceBeforeTimestamp(
-        params.chain,
-        wrappedNativeAddress,
-        params.txTimestampMs
-      );
+      const pricePoint = await fetchHistoricalTokenPrice(chain, wrappedNativeAddress, params.txTimestampMs);
 
       if (typeof pricePoint?.priceUsd === 'number' && Number.isFinite(pricePoint.priceUsd) && pricePoint.priceUsd > 0) {
         return roundUsd(quoteAmount * pricePoint.priceUsd);
