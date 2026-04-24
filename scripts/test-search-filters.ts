@@ -71,6 +71,26 @@ function run() {
     },
     {}
   );
+  const enrichedTwitterItem = makeItem(
+    alice,
+    {
+      source: 'twitter',
+      content: '我看好 ABC',
+    },
+    {
+      tweetId: '1',
+      mentionedTickers: ['ABC'],
+      mentionedTokenAddresses: ['0xabc'],
+      tokenSentiments: [
+        {
+          tokenSymbol: 'ABC',
+          tokenAddress: '0xabc',
+          sentiment: 'positive',
+          matchSource: 'both',
+        },
+      ],
+    }
+  );
   const noisyBlockchainItem = makeItem(
     alice,
     {
@@ -106,6 +126,22 @@ function run() {
     }),
     true,
     'twitter keyword search should match tweet content'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(enrichedTwitterItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: 'ticker:abc',
+    }),
+    true,
+    'ticker-prefixed keyword search should match mentioned tickers'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(enrichedTwitterItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: 'ca:0xabc',
+    }),
+    true,
+    'ca-prefixed keyword search should match mentioned token addresses'
   );
 
   assert.equal(
