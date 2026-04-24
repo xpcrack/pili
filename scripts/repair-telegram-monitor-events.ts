@@ -290,7 +290,7 @@ for (const row of rows) {
     row.id
   );
 
-  const projected = projectTelegramMonitorEvent({
+  const projected = await projectTelegramMonitorEvent({
     event: {
       chain: nextChain,
       tokenAddress: nextTokenAddress,

@@ -338,7 +338,7 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
-  const projected = projectTelegramMonitorEvent({
+  const projected = await projectTelegramMonitorEvent({
     event: {
       chain: parsed.chain,
       tokenAddress: parsed.tokenAddress,

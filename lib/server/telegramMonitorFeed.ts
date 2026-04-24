@@ -3,6 +3,7 @@ import 'server-only';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { listRecentTelegramMonitorEvents, type TelegramMonitorFeedEvent } from '@/lib/server/telegramMonitorRepo';
 import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
+import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import type { Activity, User } from '@/types';
 
@@ -104,7 +105,7 @@ function pickMonitoredUser(params: {
   return null;
 }
 
-function buildActivityFromEvent(params: {
+async function buildActivityFromEvent(params: {
   user: User;
   chain: string;
   tokenAddress: string;
@@ -114,6 +115,7 @@ function buildActivityFromEvent(params: {
   quoteAmount: number | null;
   quoteSymbol: string | null;
   tokenAmount: number | null;
+  explicitPriceUsd: number | null;
   rawText: string | null;
   action: 'buy' | 'sell' | 'send' | null;
   actionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
@@ -134,6 +136,7 @@ function buildActivityFromEvent(params: {
     quoteAmount,
     quoteSymbol,
     tokenAmount,
+    explicitPriceUsd,
     rawText,
     action,
     actionLabel,
@@ -166,6 +169,18 @@ function buildActivityFromEvent(params: {
     marketCapUsd,
     tokenAddress,
   });
+  const tradeAmountUsdAtTx =
+    action === 'buy' || action === 'sell'
+      ? await resolveTradeAmountUsdAtTx({
+          chain,
+          txTimestampMs: eventTimeMs,
+          token: tokenSymbol,
+          value: typeof tokenAmount === 'number' && Number.isFinite(tokenAmount) ? String(tokenAmount) : null,
+          quoteToken: quoteSymbol,
+          quoteAmount: typeof quoteAmount === 'number' && Number.isFinite(quoteAmount) ? String(quoteAmount) : null,
+          explicitPriceUsd,
+        })
+      : null;
 
   const activity: Activity = {
     id: `xxyy-monitor:${chain}:${txHash || tokenAddress}:${eventTimeMs}`,
@@ -194,6 +209,7 @@ function buildActivityFromEvent(params: {
       monitorWalletAliasLabel: walletAliasLabel || undefined,
       marketCapAtTxUsd:
         typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) ? marketCapUsd : undefined,
+      tradeAmountUsdAtTx: tradeAmountUsdAtTx ?? undefined,
       marketCapAtTxSource:
         typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) ? 'telegram-monitor-exact' : undefined,
       ...displayMetadata,
@@ -203,7 +219,7 @@ function buildActivityFromEvent(params: {
   return activity;
 }
 
-export function projectTelegramMonitorEvent(params: {
+export async function projectTelegramMonitorEvent(params: {
   event: TelegramMonitorFeedEvent;
   users?: User[];
 }) {
@@ -211,10 +227,7 @@ export function projectTelegramMonitorEvent(params: {
   const trackedAddressIndex = buildTrackedAddressIndex(users);
   const event = params.event;
 
-  const fallbackParsed =
-    !event.action || !event.tokenSymbol
-      ? parseXxyyTelegramText(event.rawText || '', event.eventTimeMs, [])
-      : null;
+  const fallbackParsed = event.rawText ? parseXxyyTelegramText(event.rawText, event.eventTimeMs, []) : null;
 
   const action = event.action || fallbackParsed?.action || null;
   const actionLabel = event.actionLabel || fallbackParsed?.actionLabel || null;
@@ -230,6 +243,7 @@ export function projectTelegramMonitorEvent(params: {
     typeof fallbackParsed?.tokenAmount === 'number' && Number.isFinite(fallbackParsed.tokenAmount)
       ? fallbackParsed.tokenAmount
       : null;
+  const explicitPriceUsd = event.priceUsd ?? fallbackParsed?.priceUsd ?? null;
 
   if (!action || !tokenSymbol) {
     return null;
@@ -253,7 +267,7 @@ export function projectTelegramMonitorEvent(params: {
 
   return {
     user,
-    activity: buildActivityFromEvent({
+    activity: await buildActivityFromEvent({
       user,
       chain,
       tokenAddress: event.tokenAddress,
@@ -263,6 +277,7 @@ export function projectTelegramMonitorEvent(params: {
       quoteAmount,
       quoteSymbol,
       tokenAmount,
+      explicitPriceUsd,
       rawText: event.rawText,
       action,
       actionLabel,
@@ -276,12 +291,11 @@ export function projectTelegramMonitorEvent(params: {
   };
 }
 
-export function readTelegramMonitorFeed(limit = 200) {
+export async function readTelegramMonitorFeed(limit = 200) {
   const events = listRecentTelegramMonitorEvents(limit);
   const users = listTrackedUsers();
-  const feed = events
-    .map((event) => projectTelegramMonitorEvent({ event, users }))
-    .filter((item): item is { user: User; activity: Activity } => Boolean(item));
+  const projected = await Promise.all(events.map((event) => projectTelegramMonitorEvent({ event, users })));
+  const feed = projected.filter((item): item is { user: User; activity: Activity } => Boolean(item));
 
   const deduped = new Map<string, { user: User; activity: Activity }>();
   for (const item of feed) {
