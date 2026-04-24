@@ -40,6 +40,34 @@ function getKeywordTerms(keyword: string) {
     .filter(Boolean);
 }
 
+function collectCaValues(item: FeedItem) {
+  const sentimentTokenAddresses = (item.activity.metadata.tokenSentiments || [])
+    .map((entry) => entry.tokenAddress || '')
+    .filter(Boolean);
+
+  return [
+    item.activity.metadata.tokenAddress,
+    ...(item.activity.metadata.mentionedTokenAddresses || []),
+    ...sentimentTokenAddresses,
+  ]
+    .map((value) => normalizeText(value))
+    .filter(Boolean);
+}
+
+function collectTickerValues(item: FeedItem) {
+  const sentimentTokenSymbols = (item.activity.metadata.tokenSentiments || [])
+    .map((entry) => entry.tokenSymbol || '')
+    .filter(Boolean);
+
+  return [
+    item.activity.metadata.token,
+    ...(item.activity.metadata.mentionedTickers || []),
+    ...sentimentTokenSymbols,
+  ]
+    .map((value) => normalizeText(value))
+    .filter(Boolean);
+}
+
 function toComparableNumber(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -51,7 +79,9 @@ function toComparableNumber(value: string) {
 function getKeywordHaystack(item: FeedItem) {
   const values = [
     item.user.name,
-    item.activity.metadata.tokenAddress,
+    item.activity.metadata.token,
+    ...collectTickerValues(item),
+    ...collectCaValues(item),
     item.activity.metadata.fromAddress,
     item.activity.metadata.toAddress,
     item.activity.metadata.trackedAddress,
@@ -71,7 +101,24 @@ function matchesKeyword(item: FeedItem, keyword: string) {
   if (terms.length === 0) return true;
 
   const haystack = getKeywordHaystack(item);
-  return terms.some((term) => haystack.some((value) => value.includes(term)));
+  const tickerValues = collectTickerValues(item);
+  const caValues = collectCaValues(item);
+
+  return terms.some((term) => {
+    if (term.startsWith('ticker:')) {
+      const tickerTerm = normalizeText(term.slice('ticker:'.length));
+      if (!tickerTerm) return false;
+      return tickerValues.some((value) => value.includes(tickerTerm));
+    }
+
+    if (term.startsWith('ca:')) {
+      const caTerm = normalizeText(term.slice('ca:'.length));
+      if (!caTerm) return false;
+      return caValues.some((value) => value.includes(caTerm));
+    }
+
+    return haystack.some((value) => value.includes(term));
+  });
 }
 
 function matchesTradeThreshold(
