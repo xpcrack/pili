@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS telegram_monitor_events (
   tracked_wallet_address_lower TEXT,
   event_time_ms INTEGER,
   raw_text TEXT NOT NULL DEFAULT '',
+  message_links_json TEXT NOT NULL DEFAULT '[]',
   payload_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -651,6 +652,7 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
   ensureColumn(db, 'telegram_monitor_events', 'tracked_wallet_address_lower', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'action_label', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'action_variant', 'TEXT');
+  ensureColumn(db, 'telegram_monitor_events', 'message_links_json', 'TEXT', "'[]'");
 }
 
 function ensureActivityJudgmentColumns(db: Database.Database) {

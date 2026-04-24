@@ -6,6 +6,7 @@ import {
   type TwitterFetcherSeedByHandle,
 } from '@/lib/server/twitterFetcher';
 import { projectTwitterTweetsToFeed } from '@/lib/server/twitterFeedMapper';
+import { listRecentTelegramMonitorEvents } from '@/lib/server/telegramMonitorRepo';
 import {
   acquireIngestionLease,
   countTwitterStaleFeedRows,
@@ -27,6 +28,7 @@ import {
   type UpsertTwitterTweetInput,
 } from '@/lib/server/twitterRepo';
 import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
+import { collectTwitterStatusUrls, upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 
 const TWITTER_SYNC_LOCK_KEY = 'twitter-sync-global';
@@ -534,6 +536,40 @@ async function runReconcileAction(options: { userId?: string | null; windowDays:
     missingInFeedAfter: missingAfter.length,
     staleProjection,
     windowDays,
+  };
+}
+
+export async function backfillRecentTelegramMonitorTweetRefs(limit = 200) {
+  const rows = listRecentTelegramMonitorEvents(limit);
+  const fetcher = createTwitterFetcher();
+
+  let scanned = 0;
+  let linked = 0;
+  let fetched = 0;
+  for (const row of rows) {
+    scanned += 1;
+    const tweetUrls = Array.from(
+      new Set([...(row.messageLinks || []), ...collectTwitterStatusUrls(row.rawText || '')])
+    );
+    if (tweetUrls.length === 0) {
+      continue;
+    }
+
+    const eventId = `xxyy-monitor:${row.chain}:${row.txHash || row.tokenAddress}:${row.eventTimeMs}`;
+    const result = await upsertEventTweetRefAndFetchMissing({
+      eventId,
+      tweetUrls,
+      refSource: 'historical-backfill',
+      fetchTweetsByIds: async (ids) => fetcher.fetchTweetsByIds({ ids, intent: 'detail' }),
+    });
+    linked += result.refCount;
+    fetched += result.fetchedCount;
+  }
+
+  return {
+    scanned,
+    linked,
+    fetched,
   };
 }
 

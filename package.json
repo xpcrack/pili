@@ -28,6 +28,9 @@
     "test:twitter-provider-router": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-provider-router.ts",
     "test:twitter-provider-clients": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-provider-clients.ts",
     "test:twitter-provider-state": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-provider-state.ts",
+    "test:twitter-enrichment": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-enrichment.ts",
+    "test:twitter-linked-ingest": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-linked-ingest.ts",
+    "test:twitter-sync-service": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-sync-service.ts",
     "test:twitter-bridge": "tsx scripts/test-twitter-bridge.ts",
     "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:source-reconciliation && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-bridge"
   },
