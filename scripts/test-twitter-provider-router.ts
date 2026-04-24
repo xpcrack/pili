@@ -45,13 +45,13 @@ function buildInput(
   };
 }
 
-function testPrefers6551KeyWithLargestRemainingBudget() {
+function testPrefersHealthy6551KeyWithoutUsingLocalBudgetAsGate() {
   const route = chooseTwitterProviderRoute(buildInput());
   assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['6551', '6551', 'xread']);
-  assert.equal(route.orderedProviders[0]?.credentialId, '6551-key-2');
-  assert.equal(route.orderedProviders[1]?.credentialId, '6551-key-1');
+  assert.equal(route.orderedProviders[0]?.credentialId, '6551-key-1');
+  assert.equal(route.orderedProviders[1]?.credentialId, '6551-key-2');
   assert.equal(route.primaryProvider?.provider, '6551');
-  assert.equal(route.primaryProvider?.credentialId, '6551-key-2');
+  assert.equal(route.primaryProvider?.credentialId, '6551-key-1');
 }
 
 function testSkipsCooldownAndUsesHealthy6551Key() {
@@ -106,9 +106,9 @@ function testFallsBackToXreadWhen6551IsUnavailable() {
             apiKey: 'key-1',
             dailyLimit: 100,
             remainingUnits: 0,
-            cooldownUntilMs: null,
+            cooldownUntilMs: Date.UTC(2026, 3, 23, 4, 30, 0),
             lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 55, 0),
-            lastFailureAtMs: null,
+            lastFailureAtMs: Date.UTC(2026, 3, 23, 4, 0, 0),
           },
         ],
         xread: {
@@ -122,7 +122,7 @@ function testFallsBackToXreadWhen6551IsUnavailable() {
 
   assert.equal(route.primaryProvider?.provider, 'xread');
   assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['xread']);
-  assert.equal(route.unavailableProviders[0]?.reason, 'budget_exhausted');
+  assert.equal(route.unavailableProviders[0]?.reason, 'cooldown_active');
 }
 
 function testReturnsNoopRouteWithoutStructuredProviders() {
@@ -139,7 +139,7 @@ function testReturnsNoopRouteWithoutStructuredProviders() {
   assert.equal(route.orderedProviders.length, 0);
 }
 
-function testBackfillPrefersXreadBeforeSecondary6551() {
+function testBackfillKeepsHealthy6551AheadOfXread() {
   const route = chooseTwitterProviderRoute(
     buildInput({
       intent: 'backfill',
@@ -148,16 +148,16 @@ function testBackfillPrefersXreadBeforeSecondary6551() {
 
   assert.deepEqual(
     route.orderedProviders.map((item) => `${item.provider}:${item.credentialId}`),
-    ['6551:6551-key-2', 'xread:xread-default', '6551:6551-key-1']
+    ['6551:6551-key-1', '6551:6551-key-2', 'xread:xread-default']
   );
 }
 
 function main() {
-  testPrefers6551KeyWithLargestRemainingBudget();
+  testPrefersHealthy6551KeyWithoutUsingLocalBudgetAsGate();
   testSkipsCooldownAndUsesHealthy6551Key();
   testFallsBackToXreadWhen6551IsUnavailable();
   testReturnsNoopRouteWithoutStructuredProviders();
-  testBackfillPrefersXreadBeforeSecondary6551();
+  testBackfillKeepsHealthy6551AheadOfXread();
   console.log('twitter provider router tests: ok');
 }
 

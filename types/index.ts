@@ -3,12 +3,80 @@ export type ActivityType = 'post' | 'transfer' | 'swap' | 'nft_trade' | 'mint';
 
 export type ChainType = 'bsc' | 'solana' | 'ethereum';
 
+export interface CanonicalAddress {
+  id: string;
+  userId: string;
+  address: string;
+  chain: ChainType;
+}
+
+export interface CanonicalUser {
+  id: string;
+  name: string;
+  avatar: string;
+  currentBalanceUsd: number;
+  maxBalanceUsd: number;
+  hasUnread: boolean;
+  twitterUrl: string | null;
+  telegramUrl: string | null;
+}
+
+export interface CanonicalBaseEvent {
+  id: string;
+  userId: string;
+  timestamp: number;
+}
+
+export type CanonicalTradeAction = 'open' | 'add' | 'reduce' | 'close';
+export type CanonicalTransferAction = 'send' | 'receive';
+
+export interface CanonicalTradeEvent extends CanonicalBaseEvent {
+  type: 'trade';
+  txHash: string;
+  walletAddress: string;
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenAmount: number;
+  amountUsd: number | null;
+  priceUsd: number | null;
+  marketCapUsd: number | null;
+  action: CanonicalTradeAction;
+  chain: ChainType | null;
+  quoteSymbol?: string | null;
+  quoteAmount?: number | null;
+  coHitUserCount?: number;
+  coHitAddressCount?: number;
+}
+
+export interface CanonicalTransferEvent extends CanonicalBaseEvent {
+  type: 'transfer';
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenAmount: number;
+  amountUsd: number | null;
+  action: CanonicalTransferAction;
+  chain: ChainType | null;
+}
+
+export interface CanonicalTwitterEvent extends CanonicalBaseEvent {
+  type: 'twitter';
+  tweetId: string;
+  content: string;
+  url: string;
+  action: 'post';
+}
+
+export type CanonicalEvent = CanonicalTradeEvent | CanonicalTransferEvent | CanonicalTwitterEvent;
+
 export interface AddressInfo {
   address: string;
   name: string;
   chain: ChainType;
-  totalAssetUsd?: number | null;
-  assetUpdatedAt?: number | null;
+  totalAssetUsd: number | null;
+  assetUpdatedAt: number | null;
 }
 
 export interface User {
@@ -16,14 +84,14 @@ export interface User {
   name: string;
   handle: string;
   avatar: string;
-  currentChainAssetTotal: number;
-  historicalMaxChainAssetTotal: number;
+  currentChainAssetTotal?: number;
+  historicalMaxChainAssetTotal?: number;
   twitter?: string;
   telegram?: string;
   addresses: AddressInfo[];
-  totalAssetUsd?: number;
-  historicalMaxAssetUsd?: number;
-  assetUpdatedAt?: number | null;
+  totalAssetUsd: number;
+  historicalMaxAssetUsd: number;
+  assetUpdatedAt: number | null;
   tags: string[];
 }
 
@@ -48,7 +116,6 @@ export interface Activity {
     media?: string[];
     likes?: number;
     replies?: number;
-    views?: string;
     chain?: string;
     fromAddress?: string;
     toAddress?: string;

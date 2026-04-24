@@ -18,6 +18,8 @@ import { zhCN } from 'date-fns/locale';
 import { useUserStore } from '@/store/userStore';
 import { useEffect } from 'react';
 import { getUserAvatar } from '@/lib/userProfile';
+import { formatTokenAmount } from '@/lib/assetFormat';
+import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 
 interface TimelineModalProps {
   user: User | null;
@@ -132,7 +134,7 @@ export function TimelineModal({ user, activities, open, onOpenChange }: Timeline
           <div className="p-6 space-y-0">
             {sortedActivities.map((activity, index) => (
               <TimelineItem 
-                key={activity.id} 
+                key={buildActivityScopedDedupKey(activity, user.id) || `${user.id}:${activity.id}:${index}`} 
                 activity={activity} 
                 isLast={index === sortedActivities.length - 1}
               />
@@ -157,6 +159,14 @@ function TimelineItem({
     locale: zhCN 
   });
   const exactTime = format(activity.timestamp, 'yyyy-MM-dd HH:mm:ss', { locale: zhCN });
+  const formattedTokenAmount = formatTokenAmount(activity.metadata.value);
+  const contentText =
+    activity.source === 'blockchain' && activity.type === 'transfer'
+      ? activity.content.replace(
+          /-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/iu,
+          formattedTokenAmount
+        )
+      : activity.content;
 
   const handleCopyHash = () => {
     if (activity.metadata.txHash) {
@@ -170,11 +180,15 @@ function TimelineItem({
     }
 
     if (activity.metadata.chain === 'bsc') {
-      return `https://bscscan.com/tx/${activity.metadata.txHash}`;
+      return `https://web3.okx.com/explorer/bsc/tx/${activity.metadata.txHash}`;
     }
 
     if (activity.metadata.chain === 'solana') {
-      return `https://solscan.io/tx/${activity.metadata.txHash}`;
+      return `https://web3.okx.com/explorer/solana/tx/${activity.metadata.txHash}`;
+    }
+
+    if (activity.metadata.chain === 'ethereum') {
+      return `https://web3.okx.com/explorer/eth/tx/${activity.metadata.txHash}`;
     }
 
     return null;
@@ -214,15 +228,15 @@ function TimelineItem({
         
         {/* 正文 */}
         <p className="text-zinc-400 text-sm leading-relaxed mb-2">
-          {activity.content}
+          {contentText}
         </p>
         
         {/* 元数据 */}
         {activity.source === 'blockchain' && (
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-3 text-xs flex-wrap">
             {activity.metadata.value && (
               <span className="text-emerald-400 font-medium">
-                {activity.metadata.value}
+                {formattedTokenAmount}
               </span>
             )}
             {activity.metadata.chain && (
@@ -256,6 +270,11 @@ function TimelineItem({
                 </button>
               </div>
             )}
+            {activity.metadata.uncertainFrom && (
+              <span className="rounded bg-amber-500/10 px-2 py-0.5 text-amber-300">
+                来源待确认（可能为代付/聚合器）
+              </span>
+            )}
           </div>
         )}
         
@@ -267,9 +286,6 @@ function TimelineItem({
             )}
             {activity.metadata.replies !== undefined && activity.metadata.replies > 0 && (
               <span>{activity.metadata.replies} 回复</span>
-            )}
-            {activity.metadata.views && (
-              <span>{activity.metadata.views} 浏览</span>
             )}
           </div>
         )}
