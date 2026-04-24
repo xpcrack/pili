@@ -272,6 +272,50 @@ export function listTwitterTweetTokenMentions(tweetId: string) {
   }));
 }
 
+export function listTwitterTweetTokenMentionsByTweetIds(tweetIds: string[]) {
+  if (tweetIds.length === 0) {
+    return [] as StoredTwitterTweetTokenMention[];
+  }
+
+  const uniqueIds = Array.from(new Set(tweetIds.map((value) => value.trim()).filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    return [] as StoredTwitterTweetTokenMention[];
+  }
+
+  const db = getDb();
+  const placeholders = uniqueIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT
+         id,
+         tweet_id,
+         token_address,
+         token_symbol,
+         chain,
+         match_source,
+         sentiment,
+         confidence,
+         rank_in_tweet
+       FROM twitter_tweet_token_mentions
+       WHERE tweet_id IN (${placeholders})
+       ORDER BY tweet_id ASC, COALESCE(rank_in_tweet, 2147483647) ASC, id ASC`
+    )
+    .all(...uniqueIds) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    id: Number(row.id || 0),
+    tweetId: String(row.tweet_id || ''),
+    tokenAddress: row.token_address ? String(row.token_address) : null,
+    tokenSymbol: row.token_symbol ? String(row.token_symbol) : null,
+    chain: row.chain ? String(row.chain) : null,
+    matchSource: normalizeMatchSource(String(row.match_source || 'ticker')),
+    sentiment: normalizeSentiment(String(row.sentiment || 'neutral')),
+    confidence: typeof row.confidence === 'number' && Number.isFinite(row.confidence) ? row.confidence : null,
+    rankInTweet:
+      typeof row.rank_in_tweet === 'number' && Number.isFinite(row.rank_in_tweet) ? row.rank_in_tweet : null,
+  }));
+}
+
 export function upsertEventTweetRef(input: UpsertEventTweetRefInput) {
   const db = getDb();
   const now = Date.now();
@@ -317,4 +361,3 @@ export function listEventTweetRefsByTweetId(tweetId: string) {
     discoveredAtMs: Number(row.discovered_at_ms || 0),
   }));
 }
-
