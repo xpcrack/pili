@@ -203,6 +203,54 @@ ON twitter_tweets(author_handle, created_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_twitter_tweets_created
 ON twitter_tweets(created_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS twitter_tweet_enrichments (
+  tweet_id TEXT PRIMARY KEY,
+  translation_zh TEXT,
+  translation_status TEXT NOT NULL DEFAULT 'pending',
+  extraction_status TEXT NOT NULL DEFAULT 'pending',
+  extractor_version TEXT,
+  translator_version TEXT,
+  last_processed_at_ms INTEGER,
+  last_error TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS twitter_tweet_token_mentions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tweet_id TEXT NOT NULL,
+  token_address TEXT,
+  token_address_lower TEXT,
+  token_symbol TEXT,
+  token_symbol_lower TEXT,
+  chain TEXT,
+  match_source TEXT NOT NULL,
+  sentiment TEXT NOT NULL,
+  confidence REAL,
+  rank_in_tweet INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_twitter_tweet_token_mentions_identity
+ON twitter_tweet_token_mentions(tweet_id, chain, token_address_lower, token_symbol_lower);
+
+CREATE INDEX IF NOT EXISTS idx_twitter_tweet_token_mentions_tweet_id
+ON twitter_tweet_token_mentions(tweet_id);
+
+CREATE TABLE IF NOT EXISTS event_tweet_refs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL,
+  tweet_id TEXT NOT NULL,
+  ref_source TEXT NOT NULL,
+  discovered_at_ms INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(event_id, tweet_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_tweet_refs_tweet_id
+ON event_tweet_refs(tweet_id, discovered_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS twitter_identity_cache (
   handle TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
