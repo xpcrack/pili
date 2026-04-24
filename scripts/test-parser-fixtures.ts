@@ -253,9 +253,12 @@ function runPoisonFixtures() {
 async function runTelegramMonitorFixtures() {
   const { parseXxyyTelegramText } = await import('@/lib/server/xxyyTelegramParser');
   const { POST } = await import('@/app/api/telegram/monitor/route');
+  const { ingestTelegramMonitorUpdate } = await import('@/lib/server/telegramMonitorIngest');
   const { createTrackedUser, deleteTrackedUser } = await import('@/lib/server/trackedUsersRepo');
   const { getDb } = await import('@/lib/server/sqlite');
-  const { saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
+  const { readSystemConfig, saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
+  const { readTelegramIngestCursor, saveTelegramIngestCursor } = await import('@/lib/server/workerStateRepo');
+  const previousConfig = readSystemConfig();
 
   saveSystemConfig({
     telegramTradeMonitorSourceChatId: '-100123456',
@@ -388,10 +391,12 @@ async function runTelegramMonitorFixtures() {
 
     assert.ok(projectedEvent, 'telegram route: expected projected event row');
     assert.equal(projectedEvent?.tx_hash, routeFixture.expected.txHash, 'telegram route: projected txHash mismatch');
-    assert.equal(
-      projectedEvent?.event_id,
-      `${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash}`,
-      'telegram route: projected event_id should use chain:tracked:txHash'
+    assert.match(
+      projectedEvent?.event_id || '',
+      new RegExp(
+        `^${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash}`
+      ),
+      'telegram route: projected event_id should use chain:tracked:txHash prefix'
     );
 
     console.log('PASS telegram-route xxyy-bot-to-bot-buy');
@@ -438,7 +443,41 @@ async function runTelegramMonitorFixtures() {
     assert.equal(invalidFormatPayload.ignored, true, 'telegram route: invalid format should be ignored');
     assert.equal(invalidFormatPayload.reason, 'invalid-trade-format', 'telegram route: invalid format reason mismatch');
     console.log('PASS telegram-route invalid-trade-format');
+
+    const directWorkerBody = {
+      ...requestBody,
+      update_id: 900004,
+      message: {
+        ...requestBody.message,
+        message_id: 504,
+      },
+    };
+    const directWorkerResult = await ingestTelegramMonitorUpdate(directWorkerBody);
+    assert.equal(directWorkerResult.ok, true, 'telegram worker ingest: ok mismatch');
+    assert.equal('ignored' in directWorkerResult, false, 'telegram worker ingest: should not be ignored');
+    const directWorkerRow = db
+      .prepare(
+        `SELECT tracked_wallet_address
+         FROM telegram_monitor_events
+         WHERE provider = 'xxyy' AND source_chat_id = ? AND source_message_id = ?
+         LIMIT 1`
+      )
+      .get(String(directWorkerBody.message.chat.id), directWorkerBody.message.message_id) as
+      | {
+          tracked_wallet_address: string | null;
+        }
+      | undefined;
+    assert.equal(
+      directWorkerRow?.tracked_wallet_address,
+      routeFixture.expected.trackedWalletAddress,
+      'telegram worker ingest: saved tracked wallet mismatch'
+    );
+    saveTelegramIngestCursor('fixture-worker', 900004);
+    const savedCursor = readTelegramIngestCursor('fixture-worker');
+    assert.equal(savedCursor?.last_update_id, 900004, 'telegram worker cursor: last_update_id mismatch');
+    console.log('PASS telegram-worker direct-ingest');
   } finally {
+    saveSystemConfig(previousConfig);
     deleteTrackedUser(trackedUser.id);
   }
 }
@@ -447,7 +486,9 @@ async function runTwitterRelayFixtures() {
   const { POST } = await import('@/app/api/twitter/relay/route');
   const { createTrackedUser, deleteTrackedUser } = await import('@/lib/server/trackedUsersRepo');
   const { listTwitterTweetsByIds } = await import('@/lib/server/twitterRepo');
-  const { saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
+  const { getDb } = await import('@/lib/server/sqlite');
+  const { readSystemConfig, saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
+  const previousConfig = readSystemConfig();
 
   process.env.TWITTER_RELAY_INGEST_TOKEN ??= 'fixture-twitter-relay-token';
   saveSystemConfig({ telegramTwitterMonitorSourceChatId: '-5299035575' });
@@ -493,6 +534,30 @@ async function runTwitterRelayFixtures() {
     assert.equal(stored.length, 1, 'twitter relay: tweet should be stored');
     console.log('PASS twitter-relay valid payload');
 
+    const duplicateRequest = new Request('http://localhost:3005/api/twitter/relay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.TWITTER_RELAY_INGEST_TOKEN}`,
+      },
+      body: JSON.stringify(validBody),
+    });
+
+    const duplicateResponse = await POST(duplicateRequest as never);
+    const duplicatePayload = await duplicateResponse.json();
+    assert.equal(duplicatePayload.ok, true, 'twitter relay: duplicate payload should still succeed');
+    const duplicateStored = listTwitterTweetsByIds([validBody.tweetId]);
+    assert.equal(duplicateStored.length, 1, 'twitter relay: duplicate payload should not duplicate stored tweet');
+    const duplicateEventCount = Number(
+      (
+        getDb()
+          .prepare(`SELECT COUNT(1) AS count FROM events WHERE source = 'twitter' AND tweet_id = ?`)
+          .get(validBody.tweetId) as { count: number }
+      ).count || 0
+    );
+    assert.equal(duplicateEventCount, 1, 'twitter relay: duplicate payload should not duplicate visible event');
+    console.log('PASS twitter-relay dedupe');
+
     const wrongChatRequest = new Request('http://localhost:3005/api/twitter/relay', {
       method: 'POST',
       headers: {
@@ -526,7 +591,28 @@ async function runTwitterRelayFixtures() {
     assert.equal(invalidFormatPayload.ignored, true, 'twitter relay: invalid payload should be ignored');
     assert.equal(invalidFormatPayload.reason, 'invalid-twitter-format', 'twitter relay: invalid reason mismatch');
     console.log('PASS twitter-relay invalid-twitter-format');
+
+    const unknownHandleRequest = new Request('http://localhost:3005/api/twitter/relay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.TWITTER_RELAY_INGEST_TOKEN}`,
+      },
+      body: JSON.stringify({
+        ...validBody,
+        tweetId: '2050000000000000003',
+        authorHandle: 'unknown_fixture_user',
+        url: 'https://x.com/unknown_fixture_user/status/2050000000000000003',
+      }),
+    });
+
+    const unknownHandleResponse = await POST(unknownHandleRequest as never);
+    const unknownHandlePayload = await unknownHandleResponse.json();
+    assert.equal(unknownHandlePayload.ignored, true, 'twitter relay: unknown handle should be ignored');
+    assert.equal(unknownHandlePayload.reason, 'invalid-twitter-format', 'twitter relay: unknown handle reason mismatch');
+    console.log('PASS twitter-relay unknown-handle');
   } finally {
+    saveSystemConfig(previousConfig);
     deleteTrackedUser(trackedUser.id);
   }
 }

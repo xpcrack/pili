@@ -40,7 +40,6 @@ interface TelegramCapAtTxInput {
   chain: string;
   tokenAddress: string;
   txHash?: string | null;
-  txTimestampMs?: number | null;
 }
 
 export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInput) {
@@ -160,64 +159,30 @@ export function findTelegramMonitorMarketCapAtTx(params: TelegramCapAtTxInput) {
   const chain = normalize(params.chain);
   const tokenAddressLower = normalize(params.tokenAddress);
   const txHashLower = normalize(params.txHash);
-  const txTimestampMs =
-    typeof params.txTimestampMs === 'number' && Number.isFinite(params.txTimestampMs)
-      ? Math.floor(params.txTimestampMs)
-      : null;
 
-  if (!chain || !tokenAddressLower) {
+  if (!chain || !tokenAddressLower || !txHashLower) {
     return null;
   }
 
-  if (txHashLower) {
-    const byTx = db
-      .prepare(
-        `SELECT market_cap_usd, event_time_ms
-         FROM telegram_monitor_events
-         WHERE chain = ?
-           AND token_address_lower = ?
-           AND tx_hash_lower = ?
-           AND market_cap_usd IS NOT NULL
-         ORDER BY updated_at DESC
-         LIMIT 1`
-      )
-      .get(chain, tokenAddressLower, txHashLower) as TelegramMonitorEventRow | undefined;
+  const byTx = db
+    .prepare(
+      `SELECT market_cap_usd, event_time_ms
+       FROM telegram_monitor_events
+       WHERE chain = ?
+         AND token_address_lower = ?
+         AND tx_hash_lower = ?
+         AND market_cap_usd IS NOT NULL
+       ORDER BY updated_at DESC
+       LIMIT 1`
+    )
+    .get(chain, tokenAddressLower, txHashLower) as TelegramMonitorEventRow | undefined;
 
-    if (byTx?.market_cap_usd && byTx.market_cap_usd > 0) {
-      return {
-        marketCapUsd: byTx.market_cap_usd,
-        source: 'telegram-monitor-exact' as const,
-        eventTimeMs: byTx.event_time_ms,
-      };
-    }
-  }
-
-  if (txTimestampMs) {
-    const windowMs = 60 * 60 * 1000;
-    const byNearest = db
-      .prepare(
-        `SELECT market_cap_usd, event_time_ms
-         FROM telegram_monitor_events
-         WHERE chain = ?
-           AND token_address_lower = ?
-           AND market_cap_usd IS NOT NULL
-           AND event_time_ms IS NOT NULL
-           AND event_time_ms >= ?
-           AND event_time_ms <= ?
-         ORDER BY ABS(event_time_ms - ?) ASC
-         LIMIT 1`
-      )
-      .get(chain, tokenAddressLower, txTimestampMs - windowMs, txTimestampMs + windowMs, txTimestampMs) as
-      | TelegramMonitorEventRow
-      | undefined;
-
-    if (byNearest?.market_cap_usd && byNearest.market_cap_usd > 0) {
-      return {
-        marketCapUsd: byNearest.market_cap_usd,
-        source: 'telegram-monitor-nearest' as const,
-        eventTimeMs: byNearest.event_time_ms,
-      };
-    }
+  if (byTx?.market_cap_usd && byTx.market_cap_usd > 0) {
+    return {
+      marketCapUsd: byTx.market_cap_usd,
+      source: 'telegram-monitor-exact' as const,
+      eventTimeMs: byTx.event_time_ms,
+    };
   }
 
   return null;

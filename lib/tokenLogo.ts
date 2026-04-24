@@ -6,18 +6,13 @@ const DEXSCREENER_TIMEOUT_MS = 6000;
 const XXYY_API_BASE = 'https://www.xxyy.io';
 const XXYY_TIMEOUT_MS = 6000;
 
-function normalizeChainForDexscreener(chain: string) {
-  if (chain === 'solana') return 'solana';
-  if (chain === 'bsc') return 'bsc';
-  if (chain === 'ethereum') return 'ethereum';
-  return null;
-}
+type CurrentValuationSource = 'xxyy' | 'dexscreener';
+type LogoSource = 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
 
-function normalizeChainForXxyy(chain: string) {
-  if (chain === 'solana') return 'sol';
-  if (chain === 'bsc') return 'bsc';
-  if (chain === 'ethereum') return 'eth';
-  return null;
+interface CurrentValuationSnapshot {
+  source: CurrentValuationSource;
+  marketCapUsd: number;
+  priceUsd: number;
 }
 
 interface DexscreenerPairToken {
@@ -50,6 +45,42 @@ interface XxyyTokenQueryResponse {
       price?: number | string;
     };
   };
+}
+
+interface FetchTokenLogoOptions {
+  txTimestampMs?: number;
+  txHash?: string;
+}
+
+export interface TokenLogoResult {
+  logoUrl: string | null;
+  marketCapUsd: number | null;
+  marketCapAtTxUsd: number | null;
+  marketCapAtTxEstimated: boolean;
+  source: LogoSource;
+  marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
+}
+
+export interface TxMarketCapResolution {
+  marketCapAtTxUsd: number | null;
+  marketCapAtTxEstimated: boolean;
+  marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
+  currentMarketCapUsd: number | null;
+  currentValuationSource: CurrentValuationSource | null;
+}
+
+function normalizeChainForDexscreener(chain: string) {
+  if (chain === 'solana') return 'solana';
+  if (chain === 'bsc') return 'bsc';
+  if (chain === 'ethereum') return 'ethereum';
+  return null;
+}
+
+function normalizeChainForXxyy(chain: string) {
+  if (chain === 'solana') return 'sol';
+  if (chain === 'bsc') return 'bsc';
+  if (chain === 'ethereum') return 'eth';
+  return null;
 }
 
 function parseUsdNumber(value: unknown) {
@@ -184,51 +215,115 @@ export async function fetchXxyyTokenInfo(chain: string, tokenAddress: string) {
   }
 }
 
-interface FetchTokenLogoOptions {
-  txTimestampMs?: number;
-  txHash?: string;
-}
-
-async function estimateMarketCapAtTx(params: {
-  chain: string;
-  tokenAddress: string;
-  currentMarketCapUsd: number;
-  currentPriceUsd: number | null;
-  txTimestampMs: number;
-}) {
-  const { chain, tokenAddress, currentMarketCapUsd, currentPriceUsd, txTimestampMs } = params;
-  const [txPricePoint, currentPricePoint] = await Promise.all([
-    fetchOkxTokenHistoricalPriceBeforeTimestamp(chain, tokenAddress, txTimestampMs),
-    fetchOkxTokenHistoricalPriceBeforeTimestamp(chain, tokenAddress, Date.now()),
+async function resolveCurrentValuation(chain: string, tokenAddress: string) {
+  const [fromDexscreener, fromXxyy] = await Promise.all([
+    fetchDexscreenerTokenInfo(chain, tokenAddress),
+    fetchXxyyTokenInfo(chain, tokenAddress),
   ]);
 
-  const resolvedCurrentPrice = currentPricePoint?.priceUsd ?? currentPriceUsd;
-  const resolvedTxPrice = txPricePoint?.priceUsd ?? null;
-
+  let currentValuation: CurrentValuationSnapshot | null = null;
   if (
-    !resolvedCurrentPrice ||
-    resolvedCurrentPrice <= 0 ||
-    !resolvedTxPrice ||
-    resolvedTxPrice <= 0
+    typeof fromXxyy?.marketCapUsd === 'number' && fromXxyy.marketCapUsd > 0 &&
+    typeof fromXxyy.priceUsd === 'number' && fromXxyy.priceUsd > 0
   ) {
-    return {
-      marketCapAtTxUsd: null,
-      marketCapAtTxEstimated: false,
+    currentValuation = {
+      source: 'xxyy',
+      marketCapUsd: fromXxyy.marketCapUsd,
+      priceUsd: fromXxyy.priceUsd,
     };
-  }
-
-  const inferredCirculatingSupply = currentMarketCapUsd / resolvedCurrentPrice;
-  const estimatedMarketCap = inferredCirculatingSupply * resolvedTxPrice;
-  if (!Number.isFinite(estimatedMarketCap) || estimatedMarketCap <= 0) {
-    return {
-      marketCapAtTxUsd: null,
-      marketCapAtTxEstimated: false,
+  } else if (
+    typeof fromDexscreener?.marketCapUsd === 'number' && fromDexscreener.marketCapUsd > 0 &&
+    typeof fromDexscreener.priceUsd === 'number' && fromDexscreener.priceUsd > 0
+  ) {
+    currentValuation = {
+      source: 'dexscreener',
+      marketCapUsd: fromDexscreener.marketCapUsd,
+      priceUsd: fromDexscreener.priceUsd,
     };
   }
 
   return {
-    marketCapAtTxUsd: estimatedMarketCap,
+    fromDexscreener,
+    fromXxyy,
+    currentValuation,
+  };
+}
+
+export async function resolveTransactionTimeMarketCap(params: {
+  chain: string;
+  tokenAddress: string;
+  txHash?: string | null;
+  txTimestampMs?: number | null;
+}): Promise<TxMarketCapResolution> {
+  const txHash = typeof params.txHash === 'string' ? params.txHash.trim() : '';
+  const txTimestampMs =
+    typeof params.txTimestampMs === 'number' && Number.isFinite(params.txTimestampMs)
+      ? Math.floor(params.txTimestampMs)
+      : null;
+
+  const monitorCap = findTelegramMonitorMarketCapAtTx({
+    chain: params.chain,
+    tokenAddress: params.tokenAddress,
+    txHash: txHash || null,
+  });
+
+  if (monitorCap?.marketCapUsd && monitorCap.marketCapUsd > 0) {
+    return {
+      marketCapAtTxUsd: monitorCap.marketCapUsd,
+      marketCapAtTxEstimated: false,
+      marketCapAtTxSource: 'telegram-monitor-exact',
+      currentMarketCapUsd: monitorCap.marketCapUsd,
+      currentValuationSource: null,
+    };
+  }
+
+  const { currentValuation } = await resolveCurrentValuation(params.chain, params.tokenAddress);
+  if (!currentValuation || !txTimestampMs || txTimestampMs <= 0) {
+    return {
+      marketCapAtTxUsd: null,
+      marketCapAtTxEstimated: false,
+      currentMarketCapUsd: currentValuation?.marketCapUsd ?? null,
+      currentValuationSource: currentValuation?.source ?? null,
+    };
+  }
+
+  const txPricePoint = await fetchOkxTokenHistoricalPriceBeforeTimestamp(params.chain, params.tokenAddress, txTimestampMs);
+  const txPriceUsd = txPricePoint?.priceUsd ?? null;
+  if (!txPriceUsd || txPriceUsd <= 0) {
+    return {
+      marketCapAtTxUsd: null,
+      marketCapAtTxEstimated: false,
+      currentMarketCapUsd: currentValuation.marketCapUsd,
+      currentValuationSource: currentValuation.source,
+    };
+  }
+
+  const effectiveSupply = currentValuation.marketCapUsd / currentValuation.priceUsd;
+  if (!Number.isFinite(effectiveSupply) || effectiveSupply <= 0) {
+    return {
+      marketCapAtTxUsd: null,
+      marketCapAtTxEstimated: false,
+      currentMarketCapUsd: currentValuation.marketCapUsd,
+      currentValuationSource: currentValuation.source,
+    };
+  }
+
+  const marketCapAtTxUsd = effectiveSupply * txPriceUsd;
+  if (!Number.isFinite(marketCapAtTxUsd) || marketCapAtTxUsd <= 0) {
+    return {
+      marketCapAtTxUsd: null,
+      marketCapAtTxEstimated: false,
+      currentMarketCapUsd: currentValuation.marketCapUsd,
+      currentValuationSource: currentValuation.source,
+    };
+  }
+
+  return {
+    marketCapAtTxUsd,
     marketCapAtTxEstimated: true,
+    marketCapAtTxSource: 'estimated',
+    currentMarketCapUsd: currentValuation.marketCapUsd,
+    currentValuationSource: currentValuation.source,
   };
 }
 
@@ -237,52 +332,47 @@ export async function fetchTokenLogo(
   tokenAddress: string,
   tokenSymbol?: string,
   options?: FetchTokenLogoOptions
-) {
-  const [fromDexscreener, fromXxyy] = await Promise.all([
-    fetchDexscreenerTokenInfo(chain, tokenAddress),
-    fetchXxyyTokenInfo(chain, tokenAddress),
-  ]);
-
-  const currentMarketCapUsd = fromXxyy?.marketCapUsd ?? fromDexscreener?.marketCapUsd ?? null;
-  const currentPriceUsd = fromXxyy?.priceUsd ?? fromDexscreener?.priceUsd ?? null;
-  let marketCapAtTxUsd: number | null = null;
-  let marketCapAtTxEstimated = false;
-
+): Promise<TokenLogoResult> {
   const txTimestampMs =
     typeof options?.txTimestampMs === 'number' && Number.isFinite(options.txTimestampMs)
       ? Math.floor(options.txTimestampMs)
       : null;
   const txHash = typeof options?.txHash === 'string' ? options.txHash.trim() : '';
 
-  const monitorCap = findTelegramMonitorMarketCapAtTx({
-    chain,
-    tokenAddress,
-    txHash: txHash || null,
-    txTimestampMs: txTimestampMs ?? null,
-  });
-
-  if (monitorCap?.marketCapUsd && monitorCap.marketCapUsd > 0) {
-    marketCapAtTxUsd = monitorCap.marketCapUsd;
-    marketCapAtTxEstimated = false;
-  } else if (currentMarketCapUsd && currentMarketCapUsd > 0 && txTimestampMs && txTimestampMs > 0) {
-    const estimation = await estimateMarketCapAtTx({
+  const [valuationData, marketCapResolution] = await Promise.all([
+    resolveCurrentValuation(chain, tokenAddress),
+    resolveTransactionTimeMarketCap({
       chain,
       tokenAddress,
-      currentMarketCapUsd,
-      currentPriceUsd,
-      txTimestampMs,
-    });
-    marketCapAtTxUsd = estimation.marketCapAtTxUsd;
-    marketCapAtTxEstimated = estimation.marketCapAtTxEstimated;
-  }
+      txHash: txHash || null,
+      txTimestampMs: txTimestampMs ?? null,
+    }),
+  ]);
 
-  if (fromDexscreener) {
+  const currentMarketCapUsd =
+    valuationData.currentValuation?.marketCapUsd ??
+    marketCapResolution.currentMarketCapUsd ??
+    null;
+
+  const preferredSource: LogoSource =
+    marketCapResolution.marketCapAtTxSource === 'telegram-monitor-exact'
+      ? 'telegram-monitor'
+      : valuationData.currentValuation?.source === 'xxyy'
+        ? 'xxyy'
+        : valuationData.fromDexscreener
+          ? 'dexscreener'
+          : null;
+
+  // Dexscreener may return a valid pair set without token image metadata.
+  // In that case, continue to OKX contract lookup instead of exiting early.
+  if (valuationData.fromDexscreener?.logoUrl) {
     return {
-      logoUrl: fromDexscreener.logoUrl,
+      logoUrl: valuationData.fromDexscreener.logoUrl,
       marketCapUsd: currentMarketCapUsd,
-      marketCapAtTxUsd,
-      marketCapAtTxEstimated,
-      source: monitorCap ? ('telegram-monitor' as const) : (fromXxyy ? ('xxyy' as const) : ('dexscreener' as const)),
+      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
+      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
+      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      source: preferredSource,
     };
   }
 
@@ -291,17 +381,19 @@ export async function fetchTokenLogo(
     return {
       logoUrl: fromOkx,
       marketCapUsd: currentMarketCapUsd,
-      marketCapAtTxUsd,
-      marketCapAtTxEstimated,
-      source: monitorCap ? ('telegram-monitor' as const) : (fromXxyy ? ('xxyy' as const) : ('okx' as const)),
+      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
+      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
+      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      source: preferredSource ?? 'okx',
     };
   }
 
   return {
     logoUrl: null,
     marketCapUsd: currentMarketCapUsd,
-    marketCapAtTxUsd,
-    marketCapAtTxEstimated,
-    source: monitorCap ? ('telegram-monitor' as const) : (fromXxyy ? ('xxyy' as const) : null),
+    marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
+    marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
+    marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+    source: preferredSource,
   };
 }

@@ -1,4 +1,5 @@
 import { parseGroupedTransaction } from '@/lib/parsing/core';
+import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
 import type { GroupedTransaction } from '@/lib/parsing/types';
 import { Activity, ActivityType, User, type AddressInfo } from '@/types';
 
@@ -91,6 +92,23 @@ export async function convertToActivity({
   const quoteText = parsed.quoteAsset
     ? `，${parsed.txAction === 'sell' ? '获得' : '花费'} ${parsed.quoteAsset.amount} ${parsed.quoteAsset.token}`
     : '';
+  const txActionLabel =
+    parsed.txAction === 'buy'
+      ? '建仓'
+      : parsed.txAction === 'sell'
+        ? '减仓'
+        : parsed.txAction === 'send'
+          ? '发送'
+          : undefined;
+  const displayMetadata = buildTradeDisplayMetadata({
+    fallbackWalletLabel: `${user.name}${addressInfo.name.startsWith('#') ? addressInfo.name : `#${addressInfo.name}`}`,
+    txActionLabel,
+    quoteAmount: parsed.quoteAsset?.amount || null,
+    quoteToken: parsed.quoteAsset?.token || null,
+    value: parsed.primaryAsset.amount,
+    tokenSymbol: parsed.primaryAsset.symbol,
+    tokenAddress: parsed.primaryAsset.tokenAddress,
+  });
 
   return {
     id: `${user.id}-${group.txHash || parsed.timestamp}-${Math.random().toString(36).slice(2, 11)}`,
@@ -114,6 +132,7 @@ export async function convertToActivity({
       txAction: parsed.txAction,
       trackedAddress: addressInfo.address,
       uncertainFrom: parsed.addressMatch.uncertainFrom,
+      ...displayMetadata,
     },
   };
 }

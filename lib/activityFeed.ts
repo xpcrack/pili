@@ -2,6 +2,7 @@ import { fetchOkxTransactionsByAddress } from '@/lib/okx';
 import { evaluateActivityForFeed, getDefaultFilterEngineConfig } from '@/lib/filterEngine';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
 import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
+import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
 import { Activity, User } from '@/types';
 
 export interface AddressDiagnostic {
@@ -82,6 +83,7 @@ const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const OKX_WINDOW_RESULT_LIMIT = 100;
 const MIN_WINDOW_SPLIT_MS = 60 * 1000;
 const MAX_WINDOW_SPLIT_DEPTH = 12;
+const SKIP_TX_MARKET_CAP_BACKFILL = process.env.SKIP_TX_MARKET_CAP_BACKFILL === 'true';
 
 async function fetchQualifiedWindowTransactions(
   address: string,
@@ -156,9 +158,17 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
   const diagnostics: AddressDiagnostic[] = [];
   const rawTransactions: RawTransactionSnapshotRecord[] = [];
   const judgments: ActivityJudgmentRecord[] = [];
+  const totalAddresses = users.reduce((sum, user) => sum + user.addresses.length, 0);
+  let scannedAddresses = 0;
 
   for (const user of users) {
     for (const addressInfo of user.addresses) {
+      scannedAddresses += 1;
+      if (scannedAddresses === 1 || scannedAddresses % 20 === 0 || scannedAddresses === totalAddresses) {
+        console.info(
+          `[buildActivityFeed] progress ${scannedAddresses}/${totalAddresses} user=${user.name} chain=${addressInfo.chain}`
+        );
+      }
       try {
         const result = await fetchQualifiedWindowTransactions(addressInfo.address, addressInfo.chain, beginMs, endMs);
         const transactions = result.ok ? result.transactions : [];
@@ -191,6 +201,32 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
           if (!activity) {
             continue;
           }
+
+          if (
+            !SKIP_TX_MARKET_CAP_BACKFILL &&
+            activity.source === 'blockchain' &&
+            activity.type === 'transfer' &&
+            activity.metadata.txAction !== 'receive' &&
+            !activity.metadata.marketCapAtTxUsd
+          ) {
+            const chain = activity.metadata.chain || addressInfo.chain;
+            const tokenAddress = activity.metadata.tokenAddress || '';
+            if (chain && tokenAddress) {
+              const marketCapResolution = await resolveTransactionTimeMarketCap({
+                chain,
+                tokenAddress,
+                txHash: activity.metadata.txHash || null,
+                txTimestampMs: activity.timestamp,
+              });
+
+              if (marketCapResolution.marketCapAtTxUsd && marketCapResolution.marketCapAtTxUsd > 0) {
+                activity.metadata.marketCapAtTxUsd = marketCapResolution.marketCapAtTxUsd;
+                activity.metadata.marketCapAtTxEstimated = marketCapResolution.marketCapAtTxEstimated;
+                activity.metadata.marketCapAtTxSource = marketCapResolution.marketCapAtTxSource;
+              }
+            }
+          }
+
           const verdict = await evaluateActivityForFeed(activity, filterConfig);
           judgments.push({
             chain: addressInfo.chain,

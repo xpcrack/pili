@@ -432,8 +432,9 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
   }
 
   const params = new URLSearchParams({
-    chainIndex,
-    keyword: normalizedAddress,
+    // OKX token search now requires `chains` + `search`.
+    chains: chainIndex,
+    search: normalizedAddress,
   });
   const requestPathWithQuery = `/api/v5/dex/market/token/search?${params.toString()}`;
   const headers = createOkxHeaders(requestPathWithQuery);
@@ -479,8 +480,8 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
   if (tokenSymbol && tokenSymbol.trim()) {
     const symbolQuery = tokenSymbol.trim().toUpperCase();
     const paramsBySymbol = new URLSearchParams({
-      chainIndex,
-      keyword: symbolQuery,
+      chains: chainIndex,
+      search: symbolQuery,
     });
     const requestPathBySymbol = `/api/v5/dex/market/token/search?${paramsBySymbol.toString()}`;
     const headersBySymbol = createOkxHeaders(requestPathBySymbol);

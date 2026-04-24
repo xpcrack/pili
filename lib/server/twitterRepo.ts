@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { isLikelyTwitterArtifactText } from '@/lib/twitterArtifactText';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 
 export type TwitterLane = 'timeline' | 'replies';
@@ -18,6 +19,7 @@ export interface TrackedTwitterUser {
 export interface TwitterCursor {
   userId: string;
   lane: TwitterLane;
+  coveredSinceMs: number | null;
   watermarkCreatedAtMs: number | null;
   watermarkTweetId: string | null;
   lastSuccessAtMs: number | null;
@@ -55,6 +57,28 @@ export interface StoredTwitterTweet {
   retweetCount: number;
   likeCount: number;
   viewCount: number;
+}
+
+export interface TwitterLatestTweetSnapshot {
+  tweetId: string;
+  authorHandle: string;
+  createdAtMs: number;
+  lastSeenAtMs: number;
+}
+
+export interface TwitterLatestVisibleEventSnapshot {
+  eventId: string;
+  timestamp: number;
+  userName: string | null;
+}
+
+export interface TwitterLatestRelaySnapshot {
+  tweetId: string;
+  authorHandle: string;
+  createdAtMs: number;
+  lastSeenAtMs: number;
+  sourceChatId: string | null;
+  messageId: number | null;
 }
 
 interface TwitterRunSummary {
@@ -283,7 +307,7 @@ export function readTwitterCursor(userId: string, lane: TwitterLane): TwitterCur
   const db = getDb();
   const row = db
     .prepare(
-      `SELECT user_id, lane, watermark_created_at_ms, watermark_tweet_id, last_success_at_ms, updated_at_ms
+      `SELECT user_id, lane, covered_since_ms, watermark_created_at_ms, watermark_tweet_id, last_success_at_ms, updated_at_ms
        FROM twitter_sync_cursor
        WHERE user_id = ? AND lane = ?
        LIMIT 1`
@@ -297,6 +321,7 @@ export function readTwitterCursor(userId: string, lane: TwitterLane): TwitterCur
   return {
     userId: String(row.user_id || ''),
     lane: (row.lane === 'replies' ? 'replies' : 'timeline') as TwitterLane,
+    coveredSinceMs: typeof row.covered_since_ms === 'number' ? row.covered_since_ms : null,
     watermarkCreatedAtMs:
       typeof row.watermark_created_at_ms === 'number' ? row.watermark_created_at_ms : null,
     watermarkTweetId: typeof row.watermark_tweet_id === 'string' ? row.watermark_tweet_id : null,
@@ -308,6 +333,7 @@ export function readTwitterCursor(userId: string, lane: TwitterLane): TwitterCur
 export function upsertTwitterCursor(payload: {
   userId: string;
   lane: TwitterLane;
+  coveredSinceMs: number | null;
   watermarkCreatedAtMs: number | null;
   watermarkTweetId: string | null;
   lastSuccessAtMs: number;
@@ -318,12 +344,14 @@ export function upsertTwitterCursor(payload: {
     `INSERT INTO twitter_sync_cursor (
        user_id,
        lane,
+       covered_since_ms,
        watermark_created_at_ms,
        watermark_tweet_id,
        last_success_at_ms,
        updated_at_ms
-     ) VALUES (?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, lane) DO UPDATE SET
+       covered_since_ms = excluded.covered_since_ms,
        watermark_created_at_ms = excluded.watermark_created_at_ms,
        watermark_tweet_id = excluded.watermark_tweet_id,
        last_success_at_ms = excluded.last_success_at_ms,
@@ -331,6 +359,7 @@ export function upsertTwitterCursor(payload: {
   ).run(
     payload.userId,
     payload.lane,
+    payload.coveredSinceMs,
     payload.watermarkCreatedAtMs,
     payload.watermarkTweetId,
     payload.lastSuccessAtMs,
@@ -338,12 +367,18 @@ export function upsertTwitterCursor(payload: {
   );
 }
 
-export function touchTwitterCursorLastSuccess(userId: string, lane: TwitterLane, lastSuccessAtMs: number) {
+export function touchTwitterCursorLastSuccess(
+  userId: string,
+  lane: TwitterLane,
+  lastSuccessAtMs: number,
+  coveredSinceMs: number | null
+) {
   const existing = readTwitterCursor(userId, lane);
   if (!existing) {
     upsertTwitterCursor({
       userId,
       lane,
+      coveredSinceMs,
       watermarkCreatedAtMs: null,
       watermarkTweetId: null,
       lastSuccessAtMs,
@@ -354,6 +389,7 @@ export function touchTwitterCursorLastSuccess(userId: string, lane: TwitterLane,
   upsertTwitterCursor({
     userId,
     lane,
+    coveredSinceMs,
     watermarkCreatedAtMs: existing.watermarkCreatedAtMs,
     watermarkTweetId: existing.watermarkTweetId,
     lastSuccessAtMs,
@@ -433,7 +469,7 @@ export function upsertTwitterTweets(tweets: UpsertTwitterTweetInput[]) {
         ? Math.max(0, Math.floor(tweet.createdAtMs))
         : 0;
 
-      if (!tweetId || !authorHandle || !fullText || !createdAtMs) {
+      if (!tweetId || !authorHandle || !fullText || !createdAtMs || isLikelyTwitterArtifactText(fullText)) {
         continue;
       }
 
@@ -588,4 +624,103 @@ export function countTwitterStaleFeedRows() {
     )
     .get() as { count: number };
   return row?.count || 0;
+}
+
+export function readLatestTwitterTweet() {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT tweet_id, author_handle, created_at_ms, last_seen_at_ms
+       FROM twitter_tweets
+       ORDER BY created_at_ms DESC, tweet_id DESC
+       LIMIT 1`
+    )
+    .get() as
+    | {
+        tweet_id: string;
+        author_handle: string;
+        created_at_ms: number;
+        last_seen_at_ms: number;
+      }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    tweetId: row.tweet_id,
+    authorHandle: row.author_handle,
+    createdAtMs: row.created_at_ms,
+    lastSeenAtMs: row.last_seen_at_ms,
+  } satisfies TwitterLatestTweetSnapshot;
+}
+
+export function readLatestTwitterVisibleEvent() {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT event_id, timestamp, user_name
+       FROM events
+       WHERE source = 'twitter'
+       ORDER BY timestamp DESC, event_id DESC
+       LIMIT 1`
+    )
+    .get() as
+    | {
+        event_id: string;
+        timestamp: number;
+        user_name: string | null;
+      }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    eventId: row.event_id,
+    timestamp: row.timestamp,
+    userName: row.user_name || null,
+  } satisfies TwitterLatestVisibleEventSnapshot;
+}
+
+export function readLatestTwitterRelay() {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT tweet_id,
+              author_handle,
+              created_at_ms,
+              last_seen_at_ms,
+              json_extract(source_json, '$.sourceChatId') AS source_chat_id,
+              json_extract(source_json, '$.messageId') AS message_id
+       FROM twitter_tweets
+       WHERE json_extract(source_json, '$.provider') = 'bot2bot'
+       ORDER BY last_seen_at_ms DESC, tweet_id DESC
+       LIMIT 1`
+    )
+    .get() as
+    | {
+        tweet_id: string;
+        author_handle: string;
+        created_at_ms: number;
+        last_seen_at_ms: number;
+        source_chat_id: string | null;
+        message_id: number | null;
+      }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    tweetId: row.tweet_id,
+    authorHandle: row.author_handle,
+    createdAtMs: row.created_at_ms,
+    lastSeenAtMs: row.last_seen_at_ms,
+    sourceChatId: row.source_chat_id || null,
+    messageId: typeof row.message_id === 'number' ? row.message_id : null,
+  } satisfies TwitterLatestRelaySnapshot;
 }
