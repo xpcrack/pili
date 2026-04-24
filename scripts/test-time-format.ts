@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 
+import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
 import {
   formatAbsoluteTimeCompact,
   getRelativeTimeState,
@@ -67,6 +68,18 @@ function run() {
     ['relative', 'absolute', 'broken'].map((value) => normalizeFeedTimeDisplayMode(value)),
     ['relative', 'absolute', 'relative'],
     'invalid persisted display modes should fall back to relative'
+  );
+
+  assert.equal(
+    formatTradeAmountUsdLabel(12_500),
+    '$12.5K',
+    'trade USD labels should use compact USD formatting'
+  );
+
+  assert.equal(
+    formatTradeAmountUsdLabel(null),
+    '金额未知',
+    'missing trade USD values should show 金额未知'
   );
 
   console.log('time format tests: ok');

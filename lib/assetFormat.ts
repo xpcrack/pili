@@ -16,6 +16,14 @@ export function formatUsdCompact(value: number) {
   return usdCompactFormatter.format(value);
 }
 
+export function formatTradeAmountUsdLabel(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return '金额未知';
+  }
+
+  return formatUsdCompact(value);
+}
+
 export function formatUsd(value: number) {
   return usdStandardFormatter.format(value);
 }
