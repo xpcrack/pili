@@ -332,6 +332,21 @@ export function ActivityCard({
                 : null;
   const typeLabel = isTwitter ? twitterKindLabel : (typeLabels[activity.type] || activity.type);
   const twitterContent = isTwitter ? collapseEmptyLines(activity.content) : activity.content;
+  const twitterPrimaryText =
+    isTwitter ? collapseEmptyLines(activity.metadata.translationZh || twitterContent) : primaryText;
+  const twitterSecondaryText =
+    isTwitter && activity.metadata.translationZh ? collapseEmptyLines(twitterContent) : secondaryText;
+  const tweetSentimentChips = isTwitter
+    ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
+        const key = `${item.tokenAddress || ''}|${item.tokenSymbol || ''}`.toLowerCase();
+        return (
+          items.findIndex((candidate) => {
+            const candidateKey = `${candidate.tokenAddress || ''}|${candidate.tokenSymbol || ''}`.toLowerCase();
+            return candidateKey === key;
+          }) === index
+        );
+      })
+    : [];
   const coHitUserCount = activity.metadata.coHitUserCount ?? 1;
   const coHitAddressCount = activity.metadata.coHitAddressCount ?? 1;
   const hasCoHitMarker = coHitUserCount > 1 || coHitAddressCount > 1;
@@ -772,7 +787,33 @@ export function ActivityCard({
                   </div>
                 )}
                 {!isTransfer && isTwitter && (
-                  <span className="w-full whitespace-pre-wrap break-words text-zinc-100">{twitterContent}</span>
+                  <div className="w-full space-y-1">
+                    <p className="whitespace-pre-wrap break-words text-zinc-100">{twitterPrimaryText}</p>
+                    {twitterSecondaryText ? (
+                      <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
+                        Original: {twitterSecondaryText}
+                      </p>
+                    ) : null}
+                    {tweetSentimentChips.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {tweetSentimentChips.map((chip, index) => (
+                          <span
+                            key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                            className={
+                              chip.sentiment === 'positive'
+                                ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                : chip.sentiment === 'negative'
+                                  ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                  : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                            }
+                          >
+                            {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
+                            {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 )}
               </div>
 
