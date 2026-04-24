@@ -191,6 +191,10 @@ function TimelineItem({
       return `https://web3.okx.com/explorer/eth/tx/${activity.metadata.txHash}`;
     }
 
+    if (activity.metadata.chain === 'base') {
+      return `https://web3.okx.com/explorer/base/tx/${activity.metadata.txHash}`;
+    }
+
     return null;
   })();
 

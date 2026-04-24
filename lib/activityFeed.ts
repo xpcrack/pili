@@ -1,4 +1,5 @@
 import { fetchOkxTransactionsByAddress } from '@/lib/okx';
+import { collectAddressAssetSnapshots } from '@/lib/addressAssetSnapshots';
 import { evaluateActivityForFeed, getDefaultFilterEngineConfig } from '@/lib/filterEngine';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
 import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
@@ -30,10 +31,10 @@ export interface AddressAssetSnapshot {
   userId?: string;
   address: string;
   chain: string;
-  token: string;
-  tokenAddress: string;
-  balance: string;
-  valueUsd: number;
+  token?: string;
+  tokenAddress?: string;
+  balance?: string;
+  valueUsd?: number;
   totalAssetUsd: number;
   updatedAt: number;
 }
@@ -280,6 +281,7 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
   }
 
   const sortedFeed = feed.sort((a, b) => b.activity.timestamp - a.activity.timestamp);
+  const assetSnapshots = await collectAddressAssetSnapshots(users);
   const summary: ActivityFeedSummary = {
     userCount: users.length,
     addressCount: diagnostics.length,
@@ -296,8 +298,8 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
     summary,
     rawTransactions,
     judgments,
-    addressAssets: [],
-    userAssets: [],
+    addressAssets: assetSnapshots.addressAssets,
+    userAssets: assetSnapshots.userAssets,
     window: {
       beginMs,
       endMs,

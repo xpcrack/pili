@@ -16,6 +16,8 @@
     "test:feed-completeness-visibility": "tsx scripts/test-feed-completeness-visibility.ts",
     "test:feed-prewarm-service": "tsx scripts/test-feed-prewarm-service.ts",
     "test:source-reconciliation": "tsx scripts/test-source-reconciliation.ts",
+    "test:address-book": "tsx scripts/test-address-book.ts",
+    "test:address-assets": "tsx scripts/test-address-assets.ts",
     "test:conflict-repo": "tsx scripts/test-conflict-repo.ts",
     "test:system-config-conflict-chat": "tsx scripts/test-system-config-conflict-chat.ts",
     "test:conflict-notifier": "tsx scripts/test-conflict-notifier.ts",
@@ -25,7 +27,7 @@
     "test:twitter-provider-clients": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-provider-clients.ts",
     "test:twitter-provider-state": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-provider-state.ts",
     "test:twitter-bridge": "tsx scripts/test-twitter-bridge.ts",
-    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:source-reconciliation && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-bridge"
+    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:source-reconciliation && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-bridge"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

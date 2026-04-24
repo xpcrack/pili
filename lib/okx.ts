@@ -15,6 +15,7 @@ const marketPriceInFlight = new Map<string, Promise<number | null>>();
 export const CHAIN_TO_OKX_INDEX: Record<string, string> = {
   bsc: '56',
   ethereum: '1',
+  base: '8453',
   solana: '501',
 };
 
@@ -535,7 +536,7 @@ export async function fetchOkxTransactionsByAddress(
       ok: false,
       configured: getOkxCredentials().configured,
       transactions: [] as OkxTransaction[],
-      error: `暂不支持 ${chain}，当前仅支持 BSC 和 Solana`,
+      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
     };
   }
 
@@ -636,7 +637,7 @@ export async function fetchOkxTransactionDetailByTxHash(txHash: string, chain: s
       ok: false,
       configured: getOkxCredentials().configured,
       detail: null as OkxTransactionDetail | null,
-      error: `暂不支持 ${chain}，当前仅支持 BSC 和 Solana`,
+      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
     };
   }
 
@@ -736,7 +737,7 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
       ok: false,
       configured: getOkxCredentials().configured,
       totalAssetUsd: null as number | null,
-      error: `暂不支持 ${chain}，当前仅支持 BSC 和 Solana`,
+      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
     };
   }
 
