@@ -1,9 +1,9 @@
 import 'server-only';
 
 import { type Activity, type User } from '@/types';
+import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
-import { matchesSearchQuery, parseSearchQuery } from '@/lib/smartSearch';
 
 export interface FeedSnapshotState {
   summary: {
@@ -287,10 +287,9 @@ function tryFixLegacyIncomingPoisonBuy(
 }
 
 function buildActivityKey(item: { user: User; activity: Activity }, index: number) {
-  const txHash = normalize(item.activity.metadata.txHash);
-  const trackedAddress = normalize(item.activity.metadata.trackedAddress);
-  if (txHash) {
-    return `${item.user.id}|${trackedAddress}|${txHash}`;
+  const dedupKey = buildActivityScopedDedupKey(item.activity, item.user.id);
+  if (dedupKey) {
+    return dedupKey;
   }
   return `${item.user.id}|${item.activity.timestamp}|${item.activity.title || ''}|${item.activity.content}|${index}`;
 }
@@ -389,14 +388,35 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
         activity_json = excluded.activity_json`
     );
 
-    const seenKeys = new Set<string>();
+    // Group activities by dedup key and prioritize Telegram monitoring sources
+    const activityGroups = new Map<string, Array<{ item: { user: User; activity: Activity }; index: number }>>();
+
     for (let index = 0; index < feed.length; index += 1) {
       const item = feed[index];
       const activityKey = buildActivityKey(item, index);
-      if (seenKeys.has(activityKey)) {
-        continue;
+
+      if (!activityGroups.has(activityKey)) {
+        activityGroups.set(activityKey, []);
       }
-      seenKeys.add(activityKey);
+      activityGroups.get(activityKey)!.push({ item, index });
+    }
+
+    // For each group, select the highest priority activity
+    for (const [activityKey, group] of activityGroups) {
+      // Sort by priority: Telegram monitoring (xxyy-monitor: prefix) first, then by timestamp desc
+      const prioritized = group.sort((a, b) => {
+        const aIsTelegram = a.item.activity.id.startsWith('xxyy-monitor:');
+        const bIsTelegram = b.item.activity.id.startsWith('xxyy-monitor:');
+
+        if (aIsTelegram && !bIsTelegram) return -1;
+        if (!aIsTelegram && bIsTelegram) return 1;
+
+        // If both are same source type, prefer newer timestamp
+        return b.item.activity.timestamp - a.item.activity.timestamp;
+      });
+
+      const selectedActivity = prioritized[0];
+      const item = selectedActivity.item;
       dedupedRows.push(item);
 
       insertStmt.run(
@@ -431,21 +451,47 @@ function parseFeedRows(rows: FeedRow[]) {
     .filter((item): item is { user: User; activity: Activity } => Boolean(item));
 }
 
+function buildSearchHaystack(item: { user: User; activity: Activity }) {
+  const { user, activity } = item;
+  return [
+    user.name,
+    user.handle,
+    user.twitter,
+    user.telegram,
+    ...(user.tags || []),
+    ...user.addresses.map((address) => address.address),
+    activity.title,
+    activity.content,
+    activity.metadata.txHash,
+    activity.metadata.token,
+    activity.metadata.tokenAddress,
+    activity.metadata.fromAddress,
+    activity.metadata.toAddress,
+    activity.metadata.trackedAddress,
+    activity.metadata.txAction,
+  ]
+    .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
+    .filter(Boolean);
+}
+
 function applyFeedSearch(
   feed: Array<{ user: User; activity: Activity }>,
   searchQuery?: string | null
 ) {
-  const normalizedSearch = typeof searchQuery === 'string' ? searchQuery.trim() : '';
+  const normalizedSearch = typeof searchQuery === 'string' ? searchQuery.trim().toLowerCase() : '';
   if (!normalizedSearch) {
     return feed;
   }
 
-  const parsedSearchQuery = parseSearchQuery(normalizedSearch);
-  if (parsedSearchQuery.tokens.length === 0 && parsedSearchQuery.freeTextTerms.length === 0) {
+  const terms = normalizedSearch.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  if (terms.length === 0) {
     return feed;
   }
 
-  return feed.filter((item) => matchesSearchQuery(item, parsedSearchQuery));
+  return feed.filter((item) => {
+    const haystack = buildSearchHaystack(item);
+    return terms.every((term) => haystack.some((value) => value.includes(term)));
+  });
 }
 
 export function readFeedSnapshot(limit: number, offset: number, userId?: string | null, searchQuery?: string | null) {

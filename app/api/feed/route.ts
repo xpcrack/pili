@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/server/apiGuard';
-import { readEventsFeed } from '@/lib/server/eventsRepo';
+import { readEventsFeed, readLatestActivityAtByUser } from '@/lib/server/eventsRepo';
 import { countQualifiedActivitiesByUser, readFeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
-import { getSyncStatus, triggerSync, waitForSyncIdle } from '@/lib/server/syncService';
-import { importTrackedUsers, listTrackedUsers } from '@/lib/server/trackedUsersRepo';
-import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import { scheduleBackfillCompanionAfterPrimarySync } from '@/lib/server/feedBackfillScheduler';
+import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
+import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
+import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
+import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { readTelegramMonitorFeed } from '@/lib/server/telegramMonitorFeed';
+import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
+import { normalizeTwitterHandle } from '@/lib/userProfile';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,6 +93,7 @@ function buildFeedPayload(
   fromMs?: number | null,
   toMs?: number | null
 ) {
+  const prewarm = readPrewarmProgressSnapshot();
   const snapshot = readEventsFeed({
     limit: pageSize,
     userId,
@@ -102,6 +107,7 @@ function buildFeedPayload(
 
   const syncStatus = getSyncStatus();
   const users = listTrackedUsers();
+  const liveAddressCount = users.reduce((sum, user) => sum + user.addresses.length, 0);
   const selectedUser = userId ? users.find((user) => user.id === userId) || null : null;
   const historyState = readFeedBackfillWindowState();
   const localQualifiedCount = selectedUser ? countQualifiedActivitiesByUser(selectedUser.id) : snapshot.total;
@@ -112,12 +118,18 @@ function buildFeedPayload(
     : (syncStatus.lastSuccessSnapshot?.diagnostics || []);
   const globalSummary = syncStatus.lastSuccessSnapshot?.summary || {
     userCount: users.length,
-    addressCount: users.reduce((sum, user) => sum + user.addresses.length, 0),
+    addressCount: liveAddressCount,
     transactionCount: snapshot.total,
     successfulAddressCount: 0,
     failedAddressCount: 0,
     emptyAddressCount: 0,
     completedAt: 0,
+  };
+  const normalizedGlobalSummary = {
+    ...globalSummary,
+    userCount: users.length,
+    addressCount: liveAddressCount,
+    transactionCount: snapshot.total,
   };
   const summary = selectedUser
     ? {
@@ -127,16 +139,19 @@ function buildFeedPayload(
         successfulAddressCount: diagnostics.filter((item) => item.ok).length,
         failedAddressCount: diagnostics.filter((item) => !item.ok).length,
         emptyAddressCount: diagnostics.filter((item) => item.ok && item.transactionCount === 0).length,
-        completedAt: globalSummary.completedAt,
+        completedAt: normalizedGlobalSummary.completedAt,
       }
-    : globalSummary;
+    : normalizedGlobalSummary;
+  const feedViewMeta = readFeedViewMeta({
+    userId: selectedUser?.id ?? null,
+    endMs: normalizedGlobalSummary.completedAt > 0 ? normalizedGlobalSummary.completedAt : Date.now(),
+  });
 
-  const latestActivityAtByUser = Object.fromEntries(
-    snapshot.feed.map((item) => [item.user.id, item.activity.timestamp])
-  );
+  const latestActivityAtByUser = readLatestActivityAtByUser();
 
   return {
     ok: true,
+    prewarm,
     feed: snapshot.feed,
     total: snapshot.total,
     page: 1,
@@ -145,6 +160,8 @@ function buildFeedPayload(
     nextCursor: snapshot.nextCursor,
     historyComplete,
     localQualifiedCount,
+    activityBreakdown: feedViewMeta.activityBreakdown,
+    completenessWindow: feedViewMeta.completenessWindow,
     latestActivityAtByUser,
     summary,
     diagnostics,
@@ -163,9 +180,102 @@ function buildFeedPayload(
   };
 }
 
+function hasTrackedTwitterSource(users: ReturnType<typeof listTrackedUsers>, userId: string | null) {
+  if (userId) {
+    const user = users.find((item) => item.id === userId) || null;
+    return Boolean(user && normalizeTwitterHandle(user.twitter || ''));
+  }
+
+  return users.some((user) => Boolean(normalizeTwitterHandle(user.twitter || '')));
+}
+
+function triggerRefreshCompanionSyncs(options: {
+  scope: 'global' | 'user';
+  userId: string | null;
+}) {
+  const users = listTrackedUsers();
+  if (!hasTrackedTwitterSource(users, options.userId)) {
+    return;
+  }
+
+  void runTwitterSyncAction({
+    action: 'sync',
+    userId: options.scope === 'user' ? options.userId : null,
+    windowDays: 7,
+  }).catch((error) => {
+    console.error('[api/feed] twitter refresh companion sync failed:', error);
+  });
+}
+
+function triggerBackfillCompanionSyncs(options: {
+  scope: 'global' | 'user';
+  userId: string | null;
+}) {
+  const users = listTrackedUsers();
+  if (!hasTrackedTwitterSource(users, options.userId)) {
+    return {
+      twitter: {
+        ok: true,
+        skipped: true,
+        reason: 'no-tracked-twitter-source',
+      },
+    };
+  }
+
+  const windowState = readFeedBackfillWindowState();
+  const startMs =
+    options.scope === 'user' && options.userId
+      ? windowState?.perUserEarliestMs?.[options.userId] ?? windowState?.globalEarliestMs ?? null
+      : windowState?.globalEarliestMs ?? null;
+  const windowDays = computeTwitterBackfillWindowDays(startMs, Date.now());
+
+  void runTwitterSyncAction({
+    action: 'sync',
+    userId: options.scope === 'user' ? options.userId : null,
+    windowDays,
+  }).catch((error) => {
+    console.error('[api/feed] twitter backfill companion sync failed:', error);
+  });
+
+  return {
+    twitter: {
+      ok: true,
+      started: true,
+      background: true,
+      windowDays,
+      userId: options.scope === 'user' ? options.userId : null,
+    },
+  };
+}
+
+function scheduleBackfillCompanionSyncs(options: {
+  scope: 'global' | 'user';
+  userId: string | null;
+}) {
+  const users = listTrackedUsers();
+  if (!hasTrackedTwitterSource(users, options.userId)) {
+    return {
+      twitter: {
+        ok: true,
+        skipped: true,
+        reason: 'no-tracked-twitter-source',
+      },
+    };
+  }
+
+  return scheduleBackfillCompanionAfterPrimarySync({
+    waitForPrimarySync: waitForSyncCompletion,
+    runCompanionSyncs: () => triggerBackfillCompanionSyncs(options),
+    onError: (error) => {
+      console.error('[api/feed] deferred backfill companion sync failed:', error);
+    },
+  });
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
+    const prewarm = readPrewarmProgressSnapshot();
 
     if (shouldUseTelegramMonitorFeed(request)) {
       const monitorFeed = readTelegramMonitorFeed(Math.max(pageSize, 200));
@@ -175,9 +285,15 @@ export async function GET(request: NextRequest) {
       const latestActivityAtByUser = Object.fromEntries(
         monitorFeed.map((item) => [item.user.id, item.activity.timestamp])
       );
+      const selectedUser = userId ? users.find((user) => user.id === userId) || null : null;
+      const feedViewMeta = readFeedViewMeta({
+        userId: selectedUser?.id ?? null,
+        endMs: Date.now(),
+      });
 
       return NextResponse.json({
         ok: true,
+        prewarm,
         feed: paged,
         total: filteredByUser.length,
         page: 1,
@@ -186,6 +302,8 @@ export async function GET(request: NextRequest) {
         nextCursor: null,
         historyComplete: true,
         localQualifiedCount: filteredByUser.length,
+        activityBreakdown: feedViewMeta.activityBreakdown,
+        completenessWindow: feedViewMeta.completenessWindow,
         latestActivityAtByUser,
         summary: {
           userCount: users.length,
@@ -227,12 +345,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json().catch(() => null);
-    const users = sanitizeUsersPayload(body?.users);
     const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
-
-    if (users.length > 0) {
-      importTrackedUsers(users, { replaceExisting: true });
-    }
 
     const reason = typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'api-feed-post';
     const mode = body?.mode === 'backfill' ? 'backfill' : 'refresh';
@@ -242,14 +355,24 @@ export async function POST(request: NextRequest) {
       scope,
       userId: typeof body?.syncUserId === 'string' && body.syncUserId.trim() ? body.syncUserId.trim() : null,
     });
+    let sourceSyncs: ReturnType<typeof scheduleBackfillCompanionSyncs> | null = null;
 
     if (mode === 'backfill') {
-      await waitForSyncIdle();
+      sourceSyncs = scheduleBackfillCompanionSyncs({
+        scope,
+        userId: typeof body?.syncUserId === 'string' && body.syncUserId.trim() ? body.syncUserId.trim() : null,
+      });
+    } else {
+      triggerRefreshCompanionSyncs({
+        scope,
+        userId: typeof body?.syncUserId === 'string' && body.syncUserId.trim() ? body.syncUserId.trim() : null,
+      });
     }
 
     return NextResponse.json({
       ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs),
       syncTrigger: sync,
+      sourceSyncs,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : '触发同步失败';

@@ -23,6 +23,7 @@ const NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
 
 const solanaNetChangeCache = new Map<string, Promise<number | null>>();
 const okxDetailFlowCache = new Map<string, Promise<TokenFlow[]>>();
+const PARSER_FAST_MODE = process.env.PARSER_FAST_MODE === 'true';
 
 export function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
@@ -494,6 +495,7 @@ export async function parseGroupedTransaction(params: ParseGroupedTransactionPar
   let usedDetailProbe = false;
 
   if (
+    !PARSER_FAST_MODE &&
     shouldProbeOkxDetail({
       txHash: group.txHash,
       chain,
@@ -540,7 +542,7 @@ export async function parseGroupedTransaction(params: ParseGroupedTransactionPar
       outgoingNativeTotal > 0 &&
       Boolean(group.txHash);
 
-    if (shouldUseSolanaRpcQuote) {
+    if (shouldUseSolanaRpcQuote && !PARSER_FAST_MODE) {
       const netDelta = await fetchSolanaNetSolDelta(group.txHash, trackedAddressLower);
       if (typeof netDelta === 'number' && netDelta > 0) {
         acquiredNative = netDelta + outgoingNativeTotal;
@@ -564,7 +566,7 @@ export async function parseGroupedTransaction(params: ParseGroupedTransactionPar
     };
 
     let spentNative = outgoingNativeTotal;
-    if (chain === 'solana' && spentNative <= 0 && incomingNativeTotal > 0 && group.txHash) {
+    if (chain === 'solana' && spentNative <= 0 && incomingNativeTotal > 0 && group.txHash && !PARSER_FAST_MODE) {
       const netDelta = await fetchSolanaNetSolDelta(group.txHash, trackedAddressLower);
       if (typeof netDelta === 'number' && netDelta < 0) {
         spentNative = Math.abs(netDelta) + incomingNativeTotal;

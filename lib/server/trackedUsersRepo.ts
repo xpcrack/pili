@@ -130,6 +130,25 @@ function sanitizeUser(user: User): User {
   };
 }
 
+function refreshPersistedUserSnapshots(user: User) {
+  const db = getDb();
+  const userJson = JSON.stringify(user);
+
+  db.prepare(
+    `UPDATE activity_feed
+     SET user_json = ?
+     WHERE user_id = ?`
+  ).run(userJson, user.id);
+
+  db.prepare(
+    `UPDATE events
+     SET user_name = ?,
+         user_json = ?,
+         updated_at = ?
+     WHERE user_id = ?`
+  ).run(user.name, userJson, Date.now(), user.id);
+}
+
 function upsertUserRow(user: User, now: number) {
   const db = getDb();
   db.prepare(
@@ -425,6 +444,8 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
     if (updates.addresses) {
       upsertAddressRows(next.id, next.addresses, now, true);
     }
+
+    refreshPersistedUserSnapshots(next);
 
     const refreshed = listTrackedUsers().find((user) => user.id === id);
     return refreshed || next;

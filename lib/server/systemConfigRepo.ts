@@ -6,6 +6,9 @@ const SYSTEM_CONFIG_KEY = 'system_config_v1';
 
 export interface SystemConfigSnapshot {
   telegramUnknownPersonAlertChatId: string | null;
+  telegramTradeMonitorSourceChatId: string | null;
+  telegramTwitterMonitorSourceChatId: string | null;
+  conflictNotificationTelegramChatId: string | null;
 }
 
 function parseJSON<T>(value: string, fallback: T): T {
@@ -29,6 +32,9 @@ function normalizeSnapshot(value: unknown): SystemConfigSnapshot {
 
   return {
     telegramUnknownPersonAlertChatId: normalizeOptionalString(candidate.telegramUnknownPersonAlertChatId),
+    telegramTradeMonitorSourceChatId: normalizeOptionalString(candidate.telegramTradeMonitorSourceChatId),
+    telegramTwitterMonitorSourceChatId: normalizeOptionalString(candidate.telegramTwitterMonitorSourceChatId),
+    conflictNotificationTelegramChatId: normalizeOptionalString(candidate.conflictNotificationTelegramChatId),
   };
 }
 
@@ -41,6 +47,9 @@ export function readSystemConfig() {
   if (!row?.value_json) {
     return {
       telegramUnknownPersonAlertChatId: null,
+      telegramTradeMonitorSourceChatId: null,
+      telegramTwitterMonitorSourceChatId: null,
+      conflictNotificationTelegramChatId: null,
     } satisfies SystemConfigSnapshot;
   }
 
@@ -54,6 +63,18 @@ export function saveSystemConfig(input: Partial<SystemConfigSnapshot>) {
       input.telegramUnknownPersonAlertChatId !== undefined
         ? normalizeOptionalString(input.telegramUnknownPersonAlertChatId)
         : current.telegramUnknownPersonAlertChatId,
+    telegramTradeMonitorSourceChatId:
+      input.telegramTradeMonitorSourceChatId !== undefined
+        ? normalizeOptionalString(input.telegramTradeMonitorSourceChatId)
+        : current.telegramTradeMonitorSourceChatId,
+    telegramTwitterMonitorSourceChatId:
+      input.telegramTwitterMonitorSourceChatId !== undefined
+        ? normalizeOptionalString(input.telegramTwitterMonitorSourceChatId)
+        : current.telegramTwitterMonitorSourceChatId,
+    conflictNotificationTelegramChatId:
+      input.conflictNotificationTelegramChatId !== undefined
+        ? normalizeOptionalString(input.conflictNotificationTelegramChatId)
+        : current.conflictNotificationTelegramChatId,
   };
 
   const db = getDb();
@@ -66,4 +87,3 @@ export function saveSystemConfig(input: Partial<SystemConfigSnapshot>) {
 
   return next;
 }
-
