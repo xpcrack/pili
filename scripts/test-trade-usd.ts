@@ -6,10 +6,10 @@ async function run() {
   assert.equal(
     await resolveTradeAmountUsdAtTx({
       chain: 'bsc',
-      quoteTokenSymbol: 'USDT',
-      quoteAmount: 1250,
-      tokenSymbol: 'TEST',
-      tokenAmount: 1,
+      quoteToken: 'USDT',
+      quoteAmount: '1,250',
+      token: 'TEST',
+      value: '1',
       txTimestampMs: 1_710_000_000_000,
     }),
     1250
@@ -19,14 +19,14 @@ async function run() {
     await resolveTradeAmountUsdAtTx(
       {
         chain: 'bsc',
-        quoteTokenSymbol: 'BNB',
-        quoteAmount: 2,
-        tokenSymbol: 'TEST',
-        tokenAmount: 1,
+        quoteToken: 'BNB',
+        quoteAmount: ' 2 ',
+        token: 'TEST',
+        value: 1,
         txTimestampMs: 1_710_000_000_000,
       },
       {
-        fetchHistoricalPriceBeforeTimestamp: async () => ({
+        fetchHistoricalTokenPrice: async () => ({
           priceUsd: 600,
           candleTimestampMs: 1_710_000_000_000,
           bar: '1m',
@@ -39,8 +39,8 @@ async function run() {
   assert.equal(
     await resolveTradeAmountUsdAtTx({
       chain: 'bsc',
-      tokenSymbol: 'TEST',
-      tokenAmount: 300,
+      token: 'TEST',
+      value: '300',
       explicitPriceUsd: 2.5,
       txTimestampMs: 1_710_000_000_000,
     }),
@@ -58,10 +58,10 @@ async function run() {
     assert.equal(
       await resolveTradeAmountUsdAtTx({
         chain: 'solana',
-        quoteTokenSymbol: 'SOL',
+        quoteToken: 'SOL',
         quoteAmount: 1,
-        tokenSymbol: 'TEST',
-        tokenAmount: 1,
+        token: 'TEST',
+        value: '1',
         txTimestampMs: 1_710_000_000_000,
       }),
       null
