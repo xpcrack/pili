@@ -8,7 +8,8 @@
     <string>/Users/xp/vibecoding/pilipili</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/Users/xp/vibecoding/pilipili/node_modules/.bin/tsx</string>
+      <string>/Users/xp/.nvm/versions/node/v24.11.1/bin/node</string>
+      <string>/Users/xp/vibecoding/pilipili/node_modules/tsx/dist/cli.mjs</string>
       <string>scripts/telegram-bridge.ts</string>
     </array>
     <key>RunAtLoad</key>
@@ -21,6 +22,8 @@
     <string>/tmp/pilipili-telegram-bridge.err.log</string>
     <key>EnvironmentVariables</key>
     <dict>
+      <key>NODE_OPTIONS</key>
+      <string>--require /Users/xp/vibecoding/pilipili/scripts/server-only-shim.cjs</string>
       <key>PATH</key>
       <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>

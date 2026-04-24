@@ -3,7 +3,6 @@ import 'server-only';
 import { type StructuredTwitterProvider, type TwitterProviderIntent } from '@/lib/server/twitterProviderTypes';
 
 export type TwitterProviderUnavailableReason =
-  | 'budget_exhausted'
   | 'cooldown_active'
   | 'missing_api_key';
 
@@ -46,10 +45,6 @@ export interface TwitterStructuredProviderRouteResult {
 }
 
 function compare6551Candidates(a: Twitter6551RouteCandidate, b: Twitter6551RouteCandidate) {
-  if (b.remainingUnits !== a.remainingUnits) {
-    return b.remainingUnits - a.remainingUnits;
-  }
-
   const aFailure = a.lastFailureAtMs || 0;
   const bFailure = b.lastFailureAtMs || 0;
   if (aFailure !== bFailure) {
@@ -87,11 +82,6 @@ export function chooseTwitterProviderRoute(
       continue;
     }
 
-    if (candidate.remainingUnits <= 0) {
-      unavailableProviders.push(markUnavailable(candidate, 'budget_exhausted'));
-      continue;
-    }
-
     if (candidate.cooldownUntilMs && candidate.cooldownUntilMs > input.nowMs) {
       unavailableProviders.push(markUnavailable(candidate, 'cooldown_active'));
       continue;
@@ -104,14 +94,13 @@ export function chooseTwitterProviderRoute(
 
   const orderedProviders: TwitterStructuredRouteCandidate[] = [];
   if (input.intent === 'backfill') {
-    if (available6551[0]) {
-      orderedProviders.push({ ...available6551[0] });
-    }
+    orderedProviders.push(
+      ...available6551.map((candidate) => ({
+        ...candidate,
+      }))
+    );
     if (input.providers.xread?.apiKey.trim()) {
       orderedProviders.push(input.providers.xread);
-    }
-    for (const candidate of available6551.slice(1)) {
-      orderedProviders.push({ ...candidate });
     }
   } else {
     orderedProviders.push(
