@@ -2,21 +2,24 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { User, Activity } from '@/types';
-import { fetchAllActivities } from '@/lib/activitiesApi';
+import { fetchAllActivities, type ActivityBreakdown, type CompletenessWindow } from '@/lib/activitiesApi';
+import { FeedRequestArbiter } from '@/lib/feed/requestArbiter';
+import { resolveFeedSyncStrategy, type FeedSyncStrategy } from '@/lib/feed/fetchPolicy';
 import {
   type ActivityFeedSummary,
   type AddressAssetSnapshot,
   type AddressDiagnostic,
   type UserAssetSnapshot,
 } from '@/lib/activityFeed';
+import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
 const MAX_PERSISTED_FEED_ITEMS = 3000;
-const USER_AUTO_BACKFILL_MAX_ROUNDS = 30;
-const GLOBAL_AUTO_BACKFILL_MAX_ROUNDS = 8;
+const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
+const SERVER_BACKFILL_TIMEOUT_MS = 10000;
 
 interface UseActivityPollingReturn {
   feed: { user: User; activity: Activity }[];
@@ -27,11 +30,13 @@ interface UseActivityPollingReturn {
   hasMore: boolean;
   historyComplete: boolean | null;
   localQualifiedCount: number;
+  activityBreakdown: ActivityBreakdown | null;
+  completenessWindow: CompletenessWindow | null;
   refetch: (options?: {
     targetCount?: number;
     selectedUserId?: string | null;
     searchQuery?: string;
-    syncStrategy?: 'refresh' | 'local' | 'backfill';
+    syncStrategy?: FeedSyncStrategy;
     backfillScope?: 'global' | 'user';
   }) => Promise<{
     feedLength: number;
@@ -48,6 +53,7 @@ interface UseActivityPollingReturn {
   lastUpdate: Date | null;
   summary: ActivityFeedSummary | null;
   diagnostics: AddressDiagnostic[];
+  prewarmLabel: string | null;
 }
 
 interface FetchActivitiesOptions {
@@ -55,7 +61,7 @@ interface FetchActivitiesOptions {
   selectedUserId?: string | null;
   searchQuery?: string;
   replace?: boolean;
-  syncStrategy?: 'refresh' | 'local' | 'backfill';
+  syncStrategy?: FeedSyncStrategy;
   backfillScope?: 'global' | 'user';
 }
 
@@ -127,15 +133,7 @@ function filterFeedByExistingUsers(feed: { user: User; activity: Activity }[], u
 }
 
 function getActivityDedupKey(item: { user: User; activity: Activity }) {
-  const tweetId = item.activity.metadata?.tweetId?.toLowerCase();
-  if (tweetId) {
-    return `twitter:${tweetId}`;
-  }
-  const txHash = item.activity.metadata?.txHash?.toLowerCase();
-  if (txHash) {
-    return `${item.user.id}:${txHash}`;
-  }
-  return `${item.user.id}:${item.activity.timestamp}:${item.activity.title}:${item.activity.content}`;
+  return buildActivityScopedDedupKey(item.activity, item.user.id);
 }
 
 function getActionPriority(action: Activity['metadata']['txAction']) {
@@ -582,6 +580,9 @@ export function useActivityPolling(
   const [hasMore, setHasMore] = useState(false);
   const [historyComplete, setHistoryComplete] = useState<boolean | null>(null);
   const [localQualifiedCount, setLocalQualifiedCount] = useState(0);
+  const [activityBreakdown, setActivityBreakdown] = useState<ActivityBreakdown | null>(null);
+  const [completenessWindow, setCompletenessWindow] = useState<CompletenessWindow | null>(null);
+  const [prewarmLabel, setPrewarmLabel] = useState<string | null>(null);
   
   const { checkAndUpdateNewStatus } = useUserStore();
   const { users, upsertUserAssetSnapshot } = useUsersDataStore();
@@ -592,10 +593,12 @@ export function useActivityPolling(
   const sseRefetchingRef = useRef(false);
   const isMountedRef = useRef(false);
   const requestIdRef = useRef(0);
-  const isFetchingRef = useRef(false);
   const pendingRefetchRef = useRef(false);
   const pendingRefetchOptionsRef = useRef<FetchActivitiesOptions | undefined>(undefined);
+  const arbiterRef = useRef(new FeedRequestArbiter());
   const hydratedFromCacheRef = useRef(false);
+  const serverBackfillAttemptedRef = useRef(false);
+  const serverBackfillInFlightRef = useRef(false);
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
   const usersRef = useRef(users);
   const activeSelectedUserIdRef = useRef<string | null>(activeSelectedUserId ?? null);
@@ -663,7 +666,85 @@ export function useActivityPolling(
     [checkAndUpdateNewStatus]
   );
 
+  const backfillLocalUsersToServer = useCallback(async (localUsers: User[], signal?: AbortSignal) => {
+    if (serverBackfillInFlightRef.current) {
+      return false;
+    }
+
+    const usersWithAddresses = localUsers.filter((user) => user.addresses.length > 0);
+    if (usersWithAddresses.length === 0) {
+      return false;
+    }
+
+    if (signal?.aborted) {
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+
+    serverBackfillInFlightRef.current = true;
+    const controller = new AbortController();
+    let abortedByExternalSignal = false;
+    let detachExternalAbortListener: (() => void) | null = null;
+    if (signal) {
+      if (signal.aborted) {
+        abortedByExternalSignal = true;
+        controller.abort();
+      } else {
+        const handleExternalAbort = () => {
+          abortedByExternalSignal = true;
+          controller.abort();
+        };
+        signal.addEventListener('abort', handleExternalAbort, { once: true });
+        detachExternalAbortListener = () => {
+          signal.removeEventListener('abort', handleExternalAbort);
+        };
+      }
+    }
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, SERVER_BACKFILL_TIMEOUT_MS);
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch(SERVER_BACKFILL_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            users: usersWithAddresses,
+            replaceExisting: false,
+          }),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          if (abortedByExternalSignal) {
+            throw error;
+          }
+          throw new Error(`回灌超时（>${SERVER_BACKFILL_TIMEOUT_MS}ms）`);
+        }
+        throw new Error(error instanceof Error ? error.message : '回灌失败');
+      }
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error || `回灌失败（HTTP ${response.status}）`);
+      }
+
+      console.info(
+        `[useActivityPolling] 已将本地用户回灌到服务端 users=${usersWithAddresses.length}`
+      );
+      return true;
+    } finally {
+      clearTimeout(timer);
+      detachExternalAbortListener?.();
+      serverBackfillInFlightRef.current = false;
+    }
+  }, []);
+
   // 获取并处理活动数据
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const fetchActivities = useCallback(async (
     options?: FetchActivitiesOptions
   ): Promise<{
@@ -687,33 +768,39 @@ export function useActivityPolling(
     const searchQuery =
       typeof options?.searchQuery === 'string' ? options.searchQuery.trim() : activeSearchQueryRef.current;
     const replace = options?.replace === true;
-    const syncStrategy = options?.syncStrategy ?? (typeof targetCount === 'number' ? 'local' : 'refresh');
+    const syncStrategy = resolveFeedSyncStrategy(options?.syncStrategy);
     const backfillScope = options?.backfillScope ?? (selectedUserId ? 'user' : 'global');
+    const priority = syncStrategy === 'local' ? 'foreground' : 'background';
     const currentSelectedFeedLength = selectedUserId
       ? feedRef.current.filter((item) => item.user.id === selectedUserId).length
       : feedRef.current.length;
+    const ticket = arbiterRef.current.start(priority);
+    if (!ticket.accepted) {
+      if (ticket.reason === 'foreground_inflight' && priority === 'foreground') {
+        pendingRefetchRef.current = true;
+        pendingRefetchOptionsRef.current = options
+          ? { ...options }
+          : {
+              selectedUserId: activeSelectedUserIdRef.current,
+              searchQuery: activeSearchQueryRef.current,
+              syncStrategy: 'local',
+            };
+      }
 
-    if (isFetchingRef.current) {
-      pendingRefetchRef.current = true;
-      pendingRefetchOptionsRef.current = options
-        ? { ...options }
-        : { selectedUserId: activeSelectedUserIdRef.current };
-      console.log('[fetchActivities] 已在请求中，跳过');
-        return {
-          feedLength: feedRef.current.length,
-          selectedFeedLength: currentSelectedFeedLength,
-          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
-          success: false,
-          error: '请求进行中',
-          partialSyncWarning: false,
-          autoBackfillRounds: 0,
-          hasMore,
-          historyComplete,
-          localQualifiedCount,
-        };
+      return {
+        feedLength: feedRef.current.length,
+        selectedFeedLength: currentSelectedFeedLength,
+        totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+        success: false,
+        error: ticket.reason === 'foreground_inflight' ? '请求进行中' : '后台请求跳过',
+        partialSyncWarning: false,
+        autoBackfillRounds: 0,
+        hasMore,
+        historyComplete,
+        localQualifiedCount,
+      };
     }
 
-    isFetchingRef.current = true;
     pendingRefetchRef.current = false;
     const requestId = ++requestIdRef.current;
     const currentUsers = usersRef.current;
@@ -756,6 +843,8 @@ export function useActivityPolling(
         setHasMore(false);
         setHistoryComplete(null);
         setLocalQualifiedCount(0);
+        setActivityBreakdown(null);
+        setCompletenessWindow(null);
         setLastUpdate(new Date());
         setError(null);
         return {
@@ -784,6 +873,7 @@ export function useActivityPolling(
           syncStrategy: strategy,
           backfillScope: strategy === 'backfill' ? backfillScope : undefined,
           backfillUserId: selectedUserId,
+          signal: ticket.signal,
           reason:
             strategy === 'backfill'
               ? selectedUserId
@@ -794,26 +884,8 @@ export function useActivityPolling(
                 : 'feed-local-read',
         });
 
-      let result = await requestFeed(syncStrategy);
-      let autoBackfillRounds = 0;
-
-      if (syncStrategy === 'local' && typeof targetCount === 'number' && !searchQuery) {
-        let loadedCount = result.total;
-
-        const maxRounds = selectedUserId ? USER_AUTO_BACKFILL_MAX_ROUNDS : GLOBAL_AUTO_BACKFILL_MAX_ROUNDS;
-        while (
-          loadedCount < targetCount &&
-          autoBackfillRounds < maxRounds &&
-          (selectedUserId ? result.historyComplete !== true : true)
-        ) {
-          autoBackfillRounds += 1;
-          console.log(
-            `[fetchActivities] 本地数据不足，触发自动 backfill 第 ${autoBackfillRounds}/${maxRounds} 轮`
-          );
-          result = await requestFeed('backfill');
-          loadedCount = result.total;
-        }
-      }
+      const result = await requestFeed(syncStrategy);
+      const autoBackfillRounds = 0;
 
       // 服务端 feed 快照是权威源；默认以服务端结果替换，避免前端残留已删除交易。
       const serverMergedFeed = replace ? result.feed : mergeFeedItems([], result.feed);
@@ -844,6 +916,8 @@ export function useActivityPolling(
       setHasMore(result.hasMore);
       setHistoryComplete(result.historyComplete);
       setLocalQualifiedCount(result.localQualifiedCount);
+      setActivityBreakdown(result.activityBreakdown);
+      setCompletenessWindow(result.completenessWindow);
 
       // Debug: Check if feed is being filtered by client-side poison detection
       const poisonFilteredFeed = filterPoisonFromFeed(mergedFeed);
@@ -886,6 +960,11 @@ export function useActivityPolling(
       const now = new Date();
       setLastUpdate(now);
       setError(null);
+      setPrewarmLabel(
+        typeof result.prewarm?.label === 'string' && result.prewarm.label.trim()
+          ? result.prewarm.label
+          : null
+      );
       const mergedSelectedFeedLength = selectedUserId
         ? mergedFeed.filter((item) => item.user.id === selectedUserId).length
         : mergedFeed.length;
@@ -894,6 +973,33 @@ export function useActivityPolling(
           typeof result.sync.latestRun.failedAddresses === 'number' &&
           result.sync.latestRun.failedAddresses > 0
       );
+
+      const localAddressCount = currentUsers.reduce((sum, user) => sum + user.addresses.length, 0);
+      if (
+        result.summary.addressCount === 0 &&
+        localAddressCount > 0 &&
+        !serverBackfillAttemptedRef.current
+      ) {
+        try {
+          const restored = await backfillLocalUsersToServer(currentUsers, ticket.signal);
+          if (restored && isMountedRef.current && requestId === requestIdRef.current) {
+            serverBackfillAttemptedRef.current = true;
+            pendingRefetchRef.current = true;
+            pendingRefetchOptionsRef.current = {
+              replace: true,
+              syncStrategy: 'local',
+              selectedUserId,
+              searchQuery,
+            };
+          }
+        } catch (backfillError) {
+          console.warn(
+            '[useActivityPolling] 本地地址回灌服务端失败:',
+            backfillError instanceof Error ? backfillError.message : backfillError
+          );
+        }
+      }
+
       return {
         feedLength: mergedFeed.length,
         selectedFeedLength: mergedSelectedFeedLength,
@@ -946,10 +1052,11 @@ export function useActivityPolling(
         localQualifiedCount: 0,
       };
     } finally {
-      isFetchingRef.current = false;
       if (isMountedRef.current && requestId === requestIdRef.current) {
         setLoading(false);
       }
+
+      ticket.finish();
 
       if (pendingRefetchRef.current && isMountedRef.current) {
         pendingRefetchRef.current = false;
@@ -965,6 +1072,7 @@ export function useActivityPolling(
     }
   }, [
     applyNewStatusForActivities,
+    backfillLocalUsersToServer,
     hasMore,
     historyComplete,
     localQualifiedCount,
@@ -989,6 +1097,7 @@ export function useActivityPolling(
     void fetchActivities({
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
+      syncStrategy: 'local',
     });
 
     return () => {
@@ -1007,10 +1116,12 @@ export function useActivityPolling(
     }
 
     usersFingerprintRef.current = usersFingerprint;
+    serverBackfillAttemptedRef.current = false;
     void fetchActivities({
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
+      syncStrategy: 'local',
     });
   }, [usersFingerprint, fetchActivities]);
 
@@ -1029,6 +1140,7 @@ export function useActivityPolling(
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: nextSearchFingerprint,
+      syncStrategy: 'local',
     });
   }, [activeSearchQuery, fetchActivities]);
 
@@ -1067,6 +1179,23 @@ export function useActivityPolling(
   }, [fetchActivities]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetch('/api/feed/prewarm', { method: 'POST', cache: 'no-store' })
+        .then((response) => response.json())
+        .then((payload) => {
+          if (payload?.ok && typeof payload?.prewarm?.label === 'string' && payload.prewarm.label.trim()) {
+            setPrewarmLabel(payload.prewarm.label as string);
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
@@ -1098,6 +1227,7 @@ export function useActivityPolling(
         void fetchActivities({
           selectedUserId: activeSelectedUserIdRef.current,
           searchQuery: activeSearchQueryRef.current,
+          syncStrategy: 'local',
         }).finally(() => {
           sseRefetchingRef.current = false;
         });
@@ -1127,11 +1257,13 @@ export function useActivityPolling(
     hasMore,
     historyComplete,
     localQualifiedCount,
+    activityBreakdown,
+    completenessWindow,
     refetch: (options?: {
       targetCount?: number;
       selectedUserId?: string | null;
       searchQuery?: string;
-      syncStrategy?: 'refresh' | 'local' | 'backfill';
+      syncStrategy?: FeedSyncStrategy;
       backfillScope?: 'global' | 'user';
     }) => {
       return fetchActivities({ ...options, replace: true });
@@ -1139,5 +1271,6 @@ export function useActivityPolling(
     lastUpdate,
     summary,
     diagnostics,
+    prewarmLabel,
   };
 }

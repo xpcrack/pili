@@ -4,6 +4,8 @@ import { fetchTokenLogo } from '@/lib/tokenLogo';
 export const dynamic = 'force-dynamic';
 
 const LOGO_CACHE_TTL_MS = 30 * 60 * 1000;
+const EMPTY_LOGO_CACHE_TTL_MS = 60 * 1000;
+const TOKEN_LOGO_CACHE_VERSION = 'v3';
 const logoCache = new Map<
   string,
   {
@@ -11,6 +13,7 @@ const logoCache = new Map<
     marketCapUsd: number | null;
     marketCapAtTxUsd: number | null;
     marketCapAtTxEstimated: boolean;
+    marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
     source: 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
     expiresAt: number;
   }
@@ -23,7 +26,7 @@ function buildCacheKey(
   txTimestampBucket?: string,
   txHashLower?: string
 ) {
-  return `${chain.toLowerCase()}::${tokenAddress.toLowerCase()}::${(tokenSymbol || '').toUpperCase()}::${
+  return `${TOKEN_LOGO_CACHE_VERSION}::${chain.toLowerCase()}::${tokenAddress.toLowerCase()}::${(tokenSymbol || '').toUpperCase()}::${
     txTimestampBucket || 'none'
   }::${txHashLower || 'none'}`;
 }
@@ -58,6 +61,7 @@ export async function GET(request: NextRequest) {
       marketCapUsd: cached.marketCapUsd,
       marketCapAtTxUsd: cached.marketCapAtTxUsd,
       marketCapAtTxEstimated: cached.marketCapAtTxEstimated,
+      marketCapAtTxSource: cached.marketCapAtTxSource,
       source: cached.source,
       cached: true,
     });
@@ -72,8 +76,9 @@ export async function GET(request: NextRequest) {
     marketCapUsd: result.marketCapUsd,
     marketCapAtTxUsd: result.marketCapAtTxUsd,
     marketCapAtTxEstimated: result.marketCapAtTxEstimated,
+    marketCapAtTxSource: result.marketCapAtTxSource,
     source: result.source,
-    expiresAt: Date.now() + LOGO_CACHE_TTL_MS,
+    expiresAt: Date.now() + (result.logoUrl ? LOGO_CACHE_TTL_MS : EMPTY_LOGO_CACHE_TTL_MS),
   });
 
   return NextResponse.json({
@@ -82,6 +87,7 @@ export async function GET(request: NextRequest) {
     marketCapUsd: result.marketCapUsd,
     marketCapAtTxUsd: result.marketCapAtTxUsd,
     marketCapAtTxEstimated: result.marketCapAtTxEstimated,
+    marketCapAtTxSource: result.marketCapAtTxSource,
     source: result.source,
     cached: false,
   });

@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { enforceAdminRateLimit, requireAdmin } from '@/lib/server/apiGuard';
 import { type TwitterFetcherSeedByHandle } from '@/lib/server/twitterFetcher';
+import {
+  type TwitterSyncAction,
+  readLatestTwitterRelay,
+  readLatestTwitterTweet,
+  readLatestTwitterVisibleEvent,
+} from '@/lib/server/twitterRepo';
 import { getTwitterSyncStatus, runTwitterSyncAction } from '@/lib/server/twitterSyncService';
-import { type TwitterSyncAction } from '@/lib/server/twitterRepo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,9 +41,19 @@ function parseSeedByHandle(value: unknown) {
 }
 
 export async function GET() {
+  const status = getTwitterSyncStatus();
+  const latestTweet = readLatestTwitterTweet();
+  const latestVisibleEvent = readLatestTwitterVisibleEvent();
+  const latestRelay = readLatestTwitterRelay();
+
   return NextResponse.json({
     ok: true,
-    status: getTwitterSyncStatus(),
+    status: {
+      ...status,
+      latestTweet,
+      latestVisibleEvent,
+      latestRelay,
+    },
   });
 }
 

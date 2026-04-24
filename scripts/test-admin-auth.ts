@@ -45,13 +45,23 @@ function withEnv<T>(value: string | undefined, fn: () => T): T {
 }
 
 function run() {
-  withEnv(undefined, () => {
-    assert.equal(getConfiguredAdminToken(), '');
-    const result = verifyAdminRequest(createRequest({}) as never);
-    assert.equal(result.ok, false);
-    if (result.ok) throw new Error('unexpected ok');
-    assert.equal(result.reason, 'missing_admin_token');
-  });
+  const previousAllowInsecure = process.env.ALLOW_INSECURE_LOCAL_ADMIN;
+  process.env.ALLOW_INSECURE_LOCAL_ADMIN = 'false';
+  try {
+    withEnv(undefined, () => {
+      assert.equal(getConfiguredAdminToken(), '');
+      const result = verifyAdminRequest(createRequest({}) as never);
+      assert.equal(result.ok, false);
+      if (result.ok) throw new Error('unexpected ok');
+      assert.equal(result.reason, 'missing_admin_token');
+    });
+  } finally {
+    if (previousAllowInsecure === undefined) {
+      delete process.env.ALLOW_INSECURE_LOCAL_ADMIN;
+    } else {
+      process.env.ALLOW_INSECURE_LOCAL_ADMIN = previousAllowInsecure;
+    }
+  }
 
   withEnv('secret-token', () => {
     const missing = verifyAdminRequest(createRequest({}) as never);

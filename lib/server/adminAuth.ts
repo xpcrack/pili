@@ -38,7 +38,19 @@ export function readAdminTokenFromRequest(request: NextRequest) {
 
 export function verifyAdminRequest(request: NextRequest) {
   const expected = getConfiguredAdminToken();
+
+  const allowInsecureLocalAdmin =
+    process.env.NODE_ENV !== 'production' &&
+    normalizeEnvValue(process.env.ALLOW_INSECURE_LOCAL_ADMIN || 'true') !== 'false';
+
   if (!expected) {
+    if (allowInsecureLocalAdmin) {
+      return {
+        ok: true as const,
+        reason: null,
+      };
+    }
+
     return {
       ok: false as const,
       reason: 'missing_admin_token' as const,

@@ -1,7 +1,7 @@
 'use client';
 
-import { KeyboardEvent, useMemo, useState } from 'react';
-import { Activity, User } from '@/types';
+import { KeyboardEvent, useEffect, useMemo, useState } from 'react';
+import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
 import { FeedDebugPanel } from '@/components/FeedDebugPanel';
@@ -14,6 +14,9 @@ import { ArrowLeft, User as UserIcon } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
+import { prepareGlobalFeed, prepareUserFeed } from '@/lib/feedOrdering';
+import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
+import { shouldShowGlobalCompletenessWindow } from '@/lib/feedCompletenessVisibility';
 import { Input } from '@/components/ui/input';
 import {
   applySuggestionToInput,
@@ -22,102 +25,17 @@ import {
   hasActiveSearchQuery,
   parseSearchQuery,
 } from '@/lib/smartSearch';
+import {
+  type FeedTimeDisplayMode,
+  normalizeFeedTimeDisplayMode,
+} from '@/lib/timeFormat';
 
 const MAX_GLOBAL_FEED_ITEMS = 200;
 const MIN_SELECTED_USER_FEED_ITEMS = 50;
+const FEED_TIME_DISPLAY_MODE_STORAGE_KEY = 'pilipili:feed-time-display-mode';
 
-function rebalanceMixedFeed(feed: Array<{ user: User; activity: Activity }>) {
-  const twitter = feed.filter((item) => item.activity.source === 'twitter');
-  const nonTwitter = feed.filter((item) => item.activity.source !== 'twitter');
-
-  if (twitter.length === 0 || nonTwitter.length === 0) {
-    return feed;
-  }
-
-  const balanced: Array<{ user: User; activity: Activity }> = [];
-  let twitterIndex = 0;
-  let nonTwitterIndex = 0;
-
-  while (twitterIndex < twitter.length || nonTwitterIndex < nonTwitter.length) {
-    for (let i = 0; i < 4 && nonTwitterIndex < nonTwitter.length; i += 1) {
-      balanced.push(nonTwitter[nonTwitterIndex]);
-      nonTwitterIndex += 1;
-    }
-    if (twitterIndex < twitter.length) {
-      balanced.push(twitter[twitterIndex]);
-      twitterIndex += 1;
-    }
-  }
-
-  return balanced.sort((a, b) => {
-    const indexA = balanced.indexOf(a);
-    const indexB = balanced.indexOf(b);
-    if (Math.abs(a.activity.timestamp - b.activity.timestamp) > 30 * 60 * 1000) {
-      return b.activity.timestamp - a.activity.timestamp;
-    }
-    return indexA - indexB;
-  });
-}
-
-function mergeGlobalFeedByPrimaryKey(feed: Array<{ user: User; activity: Activity }>) {
-  const merged = new Map<string, { user: User; activity: Activity }>();
-
-  for (const item of feed) {
-    const tweetId = item.activity.metadata.tweetId?.trim().toLowerCase();
-    if (tweetId) {
-      const key = `twitter:${tweetId}`;
-      const existing = merged.get(key);
-      if (!existing || item.activity.timestamp >= existing.activity.timestamp) {
-        merged.set(key, item);
-      }
-      continue;
-    }
-
-    const txHash = item.activity.metadata.txHash?.trim().toLowerCase();
-    if (!txHash) {
-      merged.set(`__nohash__:${item.activity.id}`, item);
-      continue;
-    }
-
-    const existing = merged.get(txHash);
-    if (!existing) {
-      merged.set(txHash, item);
-      continue;
-    }
-
-    const representative =
-      item.activity.timestamp >= existing.activity.timestamp ? item : existing;
-    const counterpart = representative === item ? existing : item;
-
-    const userNames = new Set([
-      ...(representative.activity.metadata.coHitUserNames || [representative.user.name]),
-      ...(counterpart.activity.metadata.coHitUserNames || [counterpart.user.name]),
-    ]);
-
-    const addresses = new Set([
-      ...(representative.activity.metadata.coHitAddresses || []).map((value) => value.toLowerCase()),
-      ...(counterpart.activity.metadata.coHitAddresses || []).map((value) => value.toLowerCase()),
-      representative.activity.metadata.trackedAddress?.toLowerCase() || '',
-      counterpart.activity.metadata.trackedAddress?.toLowerCase() || '',
-    ]);
-    addresses.delete('');
-
-    merged.set(txHash, {
-      ...representative,
-      activity: {
-        ...representative.activity,
-        metadata: {
-          ...representative.activity.metadata,
-          coHitUserCount: userNames.size,
-          coHitAddressCount: addresses.size,
-          coHitUserNames: Array.from(userNames),
-          coHitAddresses: Array.from(addresses),
-        },
-      },
-    });
-  }
-
-  return Array.from(merged.values()).sort((a, b) => b.activity.timestamp - a.activity.timestamp);
+function getActivityRenderKey(userId: string, activityId: string, scopedKey: string) {
+  return scopedKey || `${userId}:${activityId}`;
 }
 
 export default function Home() {
@@ -133,6 +51,7 @@ export default function Home() {
   const [searchInput, setSearchInput] = useState('');
   const [isSuggestionOpen, setIsSuggestionOpen] = useState(false);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+  const [timeDisplayMode, setTimeDisplayMode] = useState<FeedTimeDisplayMode>('relative');
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
@@ -144,12 +63,47 @@ export default function Home() {
     hasMore,
     historyComplete,
     localQualifiedCount,
+    activityBreakdown,
+    completenessWindow,
     refetch,
     lastUpdate,
     summary,
     diagnostics,
+    prewarmLabel,
   } = useActivityPolling(selectedUserId, searchInput);
   const { dismissNewForUser } = useUserStore();
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      try {
+        setTimeDisplayMode(
+          normalizeFeedTimeDisplayMode(window.localStorage.getItem(FEED_TIME_DISPLAY_MODE_STORAGE_KEY))
+        );
+      } catch {
+        setTimeDisplayMode('relative');
+      }
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(FEED_TIME_DISPLAY_MODE_STORAGE_KEY, timeDisplayMode);
+    } catch {
+      // Ignore persistence failures and keep the in-memory choice.
+    }
+  }, [timeDisplayMode]);
 
   // 当前选中的用户对象
   const selectedUser = useMemo(() => {
@@ -168,18 +122,27 @@ export default function Home() {
     [searchInput, suggestionSources]
   );
 
-  const selectedUserFeed = useMemo(() => feed, [feed]);
+  const selectedUserFeed = useMemo(() => {
+    if (!selectedUserId) {
+      return feed;
+    }
+    return feed.filter((item) => item.user.id === selectedUserId);
+  }, [feed, selectedUserId]);
   const pagedSourceFeed = useMemo(() => {
     if (selectedUserId) {
-      return selectedUserFeed;
+      return prepareUserFeed(selectedUserFeed);
     }
-    return rebalanceMixedFeed(mergeGlobalFeedByPrimaryKey(selectedUserFeed));
+    return prepareGlobalFeed(selectedUserFeed);
   }, [selectedUserFeed, selectedUserId]);
   const filteredFeed = useMemo(() => {
     if (!selectedUserId) return pagedSourceFeed.slice(0, globalVisibleCount);
     return pagedSourceFeed.slice(0, selectedUserVisibleCount);
   }, [selectedUserId, globalVisibleCount, pagedSourceFeed, selectedUserVisibleCount]);
   const isInitialLoading = loading && feed.length === 0;
+  const showGlobalCompletenessWindow = shouldShowGlobalCompletenessWindow({
+    selectedUserId,
+    completenessWindow,
+  });
 
   const visibleUserIds = useMemo(() => {
     const ids = new Set<string>();
@@ -437,16 +400,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <TopNav
-        active="feed"
-        rightSlot={
-          lastUpdate ? (
-            <span className="hidden text-xs text-zinc-500 sm:inline">
-              更新于 {lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          ) : null
-        }
-      />
+      <TopNav active="feed" />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
@@ -512,6 +466,51 @@ export default function Home() {
                       ))}
                   </div>
                 )}
+                {showGlobalCompletenessWindow && completenessWindow && (
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-500">
+                    <span>全局完备起点 {completenessWindow.label || '尚未建立'}</span>
+                    <span className={completenessWindow.complete ? 'text-emerald-400' : 'text-amber-400'}>
+                      {completenessWindow.complete ? '已对齐' : '部分对齐'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {prewarmLabel && (
+              <div className="mb-4 flex flex-col gap-2 rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-3 text-xs text-zinc-400 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 space-y-1">
+                  <div className="truncate">{prewarmLabel}</div>
+                  {lastUpdate ? (
+                    <div className="text-[11px] text-zinc-500">
+                      更新于 {lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="inline-flex shrink-0 rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setTimeDisplayMode('relative')}
+                    className={`rounded px-2.5 py-1 transition-colors ${
+                      timeDisplayMode === 'relative'
+                        ? 'bg-zinc-700 text-zinc-100'
+                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    相对时间
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTimeDisplayMode('absolute')}
+                    className={`rounded px-2.5 py-1 transition-colors ${
+                      timeDisplayMode === 'absolute'
+                        ? 'bg-zinc-700 text-zinc-100'
+                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    精确时间
+                  </button>
+                </div>
               </div>
             )}
 
@@ -621,6 +620,23 @@ export default function Home() {
                   </div>
                 </div>
 
+                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
+                  <div className="text-zinc-500">动态拆分</div>
+                  <div className="text-sm font-medium text-zinc-100">
+                    推特 {activityBreakdown?.twitterCount ?? 0} 条 / 交易 {activityBreakdown?.tradeCount ?? 0} 笔
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
+                  <div className="text-zinc-500">个人完备起点</div>
+                  <div className="text-sm font-medium text-zinc-100">
+                    {completenessWindow?.label || '尚未建立'}
+                  </div>
+                  <div className={`mt-1 text-[11px] ${completenessWindow?.complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                    {completenessWindow?.complete ? '窗口已建立' : '等待建立窗口'}
+                  </div>
+                </div>
+
                 <div className="ml-auto flex items-center gap-2">
                   {selectedUser.tags.map((tag) => (
                     <span key={tag} className="rounded bg-zinc-800/50 px-2 py-0.5 text-xs text-zinc-400">
@@ -644,9 +660,14 @@ export default function Home() {
                   <div className="divide-y divide-zinc-800/70">
                   {filteredFeed.map(({ user, activity }) => (
                     <ActivityCard
-                      key={activity.id}
+                      key={getActivityRenderKey(
+                        user.id,
+                        activity.id,
+                        buildActivityScopedDedupKey(activity, user.id)
+                      )}
                       activity={activity}
                       user={user}
+                      timeDisplayMode={timeDisplayMode}
                       activeTokenCa={hoveredTokenCa}
                       onTokenCaHover={setHoveredTokenCa}
                       activeAddress={hoveredAddress}

@@ -23,6 +23,9 @@ export async function PATCH(request: NextRequest) {
     const body = (await request.json().catch(() => null)) as
       | {
           telegramUnknownPersonAlertChatId?: string | null;
+          telegramTradeMonitorSourceChatId?: string | null;
+          telegramTwitterMonitorSourceChatId?: string | null;
+          conflictNotificationTelegramChatId?: string | null;
         }
       | null;
 
@@ -36,6 +39,24 @@ export async function PATCH(request: NextRequest) {
           ? null
           : typeof body.telegramUnknownPersonAlertChatId === 'string'
             ? body.telegramUnknownPersonAlertChatId
+            : undefined,
+      telegramTradeMonitorSourceChatId:
+        body.telegramTradeMonitorSourceChatId === null
+          ? null
+          : typeof body.telegramTradeMonitorSourceChatId === 'string'
+            ? body.telegramTradeMonitorSourceChatId
+            : undefined,
+      telegramTwitterMonitorSourceChatId:
+        body.telegramTwitterMonitorSourceChatId === null
+          ? null
+          : typeof body.telegramTwitterMonitorSourceChatId === 'string'
+            ? body.telegramTwitterMonitorSourceChatId
+            : undefined,
+      conflictNotificationTelegramChatId:
+        body.conflictNotificationTelegramChatId === null
+          ? null
+          : typeof body.conflictNotificationTelegramChatId === 'string'
+            ? body.conflictNotificationTelegramChatId
             : undefined,
     });
 
