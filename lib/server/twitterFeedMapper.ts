@@ -4,6 +4,12 @@ import { type Activity, type User } from '@/types';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import {
+  listTwitterTweetEnrichmentsByTweetIds,
+  listTwitterTweetTokenMentionsByTweetIds,
+  type StoredTwitterTweetEnrichment,
+  type StoredTwitterTweetTokenMention,
+} from '@/lib/server/twitterEnrichmentRepo';
+import {
   listTwitterTweetsByAuthorAndWindow,
   listTwitterTweetsByIds,
   type StoredTwitterTweet,
@@ -15,11 +21,36 @@ function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
 }
 
-function toActivity(tweet: StoredTwitterTweet, user: User): Activity {
+function uniqStrings(values: Array<string | null>) {
+  const deduped = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = (value || '').trim();
+    if (!normalized) continue;
+    if (deduped.has(normalized)) continue;
+    deduped.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function toActivity(
+  tweet: StoredTwitterTweet,
+  user: User,
+  options: {
+    enrichment?: StoredTwitterTweetEnrichment | null;
+    mentions?: StoredTwitterTweetTokenMention[];
+  }
+): Activity {
   const isReply = tweet.lane === 'replies' || Boolean(tweet.replyToTweetId);
   const isQuote = !isReply && Boolean(tweet.quoteTweetId);
   const tweetKind: Activity['metadata']['tweetKind'] = isReply ? 'reply' : isQuote ? 'quote' : 'tweet';
   const title = isReply ? '回复推文' : isQuote ? '引用推文' : '发布推文';
+  const enrichment = options.enrichment || null;
+  const mentions = options.mentions || [];
+  const mentionedTickers = uniqStrings(mentions.map((item) => item.tokenSymbol));
+  const mentionedTokenAddresses = uniqStrings(mentions.map((item) => item.tokenAddress));
+  const translationZh = enrichment?.translationZh?.trim() || '';
 
   return {
     id: `twitter:${tweet.tweetId}`,
@@ -35,6 +66,20 @@ function toActivity(tweet: StoredTwitterTweet, user: User): Activity {
       tweetKind,
       likes: Math.max(0, Math.floor(tweet.likeCount)),
       replies: Math.max(0, Math.floor(tweet.replyCount)),
+      translationZh: translationZh || undefined,
+      translationStatus: enrichment?.translationStatus || 'pending',
+      mentionedTickers: mentionedTickers.length > 0 ? mentionedTickers : undefined,
+      mentionedTokenAddresses: mentionedTokenAddresses.length > 0 ? mentionedTokenAddresses : undefined,
+      tokenSentiments:
+        mentions.length > 0
+          ? mentions.map((item) => ({
+              tokenSymbol: item.tokenSymbol || undefined,
+              tokenAddress: item.tokenAddress || undefined,
+              chain: item.chain || undefined,
+              sentiment: item.sentiment,
+              matchSource: item.matchSource,
+            }))
+          : undefined,
     },
   };
 }
@@ -125,6 +170,16 @@ export function projectTwitterTweetsToFeed(options: {
             sinceMs: options.sinceMs,
           });
         });
+  const tweetIds = tweetCandidates.map((tweet) => tweet.tweetId);
+  const enrichmentRows = listTwitterTweetEnrichmentsByTweetIds(tweetIds);
+  const mentionRows = listTwitterTweetTokenMentionsByTweetIds(tweetIds);
+  const enrichmentByTweetId = new Map(enrichmentRows.map((row) => [row.tweetId, row] as const));
+  const mentionsByTweetId = new Map<string, StoredTwitterTweetTokenMention[]>();
+  for (const row of mentionRows) {
+    const list = mentionsByTweetId.get(row.tweetId) || [];
+    list.push(row);
+    mentionsByTweetId.set(row.tweetId, list);
+  }
 
   const upsertRows: Array<{ user: User; activity: Activity }> = [];
   for (const tweet of tweetCandidates) {
@@ -141,7 +196,10 @@ export function projectTwitterTweetsToFeed(options: {
 
     upsertRows.push({
       user: matchedUser,
-      activity: toActivity(tweet, matchedUser),
+      activity: toActivity(tweet, matchedUser, {
+        enrichment: enrichmentByTweetId.get(tweet.tweetId) || null,
+        mentions: mentionsByTweetId.get(tweet.tweetId) || [],
+      }),
     });
   }
 

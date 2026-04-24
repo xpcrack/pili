@@ -107,6 +107,18 @@ export interface Activity {
     tweetId?: string;
     tweetUrl?: string;
     tweetKind?: 'tweet' | 'reply' | 'quote';
+    translationZh?: string;
+    translationStatus?: 'pending' | 'processing' | 'succeeded' | 'failed';
+    mentionedTickers?: string[];
+    mentionedTokenAddresses?: string[];
+    tokenSentiments?: Array<{
+      tokenSymbol?: string;
+      tokenAddress?: string;
+      chain?: string;
+      sentiment: 'positive' | 'negative' | 'neutral';
+      matchSource: 'ticker' | 'ca' | 'both';
+    }>;
+    referencedByEventCount?: number;
     txHash?: string;
     value?: string;
     token?: string;
