@@ -6,6 +6,18 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
 }
 
+function normalizeMessageLinks(input: string[] | null | undefined) {
+  const seen = new Set<string>();
+  const links: string[] = [];
+  for (const value of input || []) {
+    const normalized = (value || '').trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    links.push(normalized);
+  }
+  return links;
+}
+
 export interface UpsertTelegramMonitorEventInput {
   provider: 'xxyy';
   sourceChatId?: string | null;
@@ -28,6 +40,7 @@ export interface UpsertTelegramMonitorEventInput {
   trackedWalletAddress?: string | null;
   eventTimeMs?: number | null;
   rawText?: string | null;
+  messageLinks?: string[] | null;
   payload?: Record<string, unknown> | null;
 }
 
@@ -90,10 +103,11 @@ export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInpu
       tracked_wallet_address_lower,
       event_time_ms,
       raw_text,
+      message_links_json,
       payload_json,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider, source_chat_id, source_message_id)
     DO UPDATE SET
       update_id = excluded.update_id,
@@ -117,9 +131,11 @@ export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInpu
       tracked_wallet_address_lower = excluded.tracked_wallet_address_lower,
       event_time_ms = excluded.event_time_ms,
       raw_text = excluded.raw_text,
+      message_links_json = excluded.message_links_json,
       payload_json = excluded.payload_json,
       updated_at = excluded.updated_at`
   );
+  const messageLinks = normalizeMessageLinks(input.messageLinks);
 
   stmt.run(
     input.provider,
@@ -146,6 +162,7 @@ export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInpu
     trackedWalletAddressLower || null,
     typeof input.eventTimeMs === 'number' && Number.isFinite(input.eventTimeMs) ? Math.floor(input.eventTimeMs) : null,
     input.rawText || '',
+    JSON.stringify(messageLinks),
     JSON.stringify(input.payload || {}),
     now,
     now
@@ -206,6 +223,7 @@ interface TelegramFeedRow {
   tracked_wallet_address: string | null;
   event_time_ms: number | null;
   raw_text: string | null;
+  message_links_json: string | null;
   updated_at: number;
 }
 
@@ -227,6 +245,7 @@ export interface TelegramMonitorFeedEvent {
   trackedWalletAddress: string | null;
   eventTimeMs: number;
   rawText: string | null;
+  messageLinks: string[];
   updatedAt: number;
 }
 
@@ -253,6 +272,7 @@ export function listRecentTelegramMonitorEvents(limit = 200) {
          tracked_wallet_address,
          event_time_ms,
          raw_text,
+         message_links_json,
          updated_at
        FROM telegram_monitor_events
        WHERE provider = 'xxyy'
@@ -293,6 +313,17 @@ export function listRecentTelegramMonitorEvents(limit = 200) {
     trackedWalletAddress: row.tracked_wallet_address,
     eventTimeMs: typeof row.event_time_ms === 'number' ? row.event_time_ms : row.updated_at,
     rawText: row.raw_text,
+    messageLinks: (() => {
+      if (!row.message_links_json) {
+        return [] as string[];
+      }
+      try {
+        const parsed = JSON.parse(row.message_links_json) as unknown;
+        return normalizeMessageLinks(Array.isArray(parsed) ? (parsed as string[]) : []);
+      } catch {
+        return [] as string[];
+      }
+    })(),
     updatedAt: row.updated_at,
   })) as TelegramMonitorFeedEvent[];
 }

@@ -8,6 +8,11 @@ import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import { upsertTelegramMonitorEvent } from '@/lib/server/telegramMonitorRepo';
+import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
+import {
+  parseTweetIdFromUrl,
+  upsertEventTweetRefAndFetchMissing,
+} from '@/lib/server/twitterLinkRefs';
 
 function getMonitorAuthConfig() {
   const relayToken = process.env.TELEGRAM_MONITOR_INGEST_TOKEN?.trim() || '';
@@ -331,6 +336,7 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
     trackedWalletAddress: parsed.trackedWalletAddress,
     eventTimeMs,
     rawText: text,
+    messageLinks,
     payload: body as unknown as Record<string, unknown>,
   });
 
@@ -363,6 +369,18 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
 
   if (projected) {
     upsertEventsFromFeedRows([projected], 'telegram-monitor-ingest');
+    const tweetUrls = messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)));
+    if (tweetUrls.length > 0) {
+      await upsertEventTweetRefAndFetchMissing({
+        eventId: projected.activity.id,
+        tweetUrls,
+        refSource: 'telegram-monitor',
+        fetchTweetsByIds: async (ids) => {
+          const fetcher = createTwitterFetcher();
+          return fetcher.fetchTweetsByIds({ ids, intent: 'detail' });
+        },
+      });
+    }
   }
 
   return {
