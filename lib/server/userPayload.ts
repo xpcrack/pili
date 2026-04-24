@@ -2,7 +2,8 @@ import 'server-only';
 
 import crypto from 'node:crypto';
 
-import { type User } from '@/types';
+import { canonicalUsersToLegacy, normalizeTelegramUrl, normalizeTwitterUrl } from '@/lib/canonical';
+import { type CanonicalAddress, type CanonicalUser, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set(['bsc', 'solana', 'ethereum']);
 
@@ -71,4 +72,64 @@ export function sanitizeUsersPayload(value: unknown): User[] {
       },
     ];
   });
+}
+
+function isCanonicalAddressesByUserId(
+  value: unknown
+): value is Record<string, CanonicalAddress[]> {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return Object.values(value).every(
+    (addresses) =>
+      Array.isArray(addresses) &&
+      addresses.every(
+        (address) =>
+          !!address &&
+          typeof address === 'object' &&
+          typeof address.address === 'string' &&
+          SUPPORTED_CHAINS.has((address as CanonicalAddress).chain)
+      )
+  );
+}
+
+export function sanitizeCanonicalUsersPayload(value: unknown, addressesByUserIdValue: unknown): User[] {
+  if (!Array.isArray(value) || !isCanonicalAddressesByUserId(addressesByUserIdValue)) {
+    return [];
+  }
+
+  const users: CanonicalUser[] = value.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return [];
+    }
+
+    const candidate = item as Partial<CanonicalUser>;
+    if (
+      typeof candidate.id !== 'string' ||
+      typeof candidate.name !== 'string' ||
+      typeof candidate.avatar !== 'string'
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        id: candidate.id.trim() || crypto.randomUUID(),
+        name: candidate.name.trim() || '未命名人物',
+        avatar: candidate.avatar.trim(),
+        currentBalanceUsd: typeof candidate.currentBalanceUsd === 'number' ? candidate.currentBalanceUsd : 0,
+        maxBalanceUsd: typeof candidate.maxBalanceUsd === 'number' ? candidate.maxBalanceUsd : 0,
+        hasUnread: candidate.hasUnread === true,
+        twitterUrl: normalizeTwitterUrl(candidate.twitterUrl) ?? null,
+        telegramUrl: normalizeTelegramUrl(candidate.telegramUrl) ?? null,
+      },
+    ];
+  });
+
+  if (users.length === 0) {
+    return [];
+  }
+
+  return canonicalUsersToLegacy(users, addressesByUserIdValue);
 }
