@@ -238,7 +238,8 @@ function isCanonicalAddressesByUserId(value: unknown): value is Record<string, C
           typeof (address as CanonicalAddress).address === 'string' &&
           ((address as CanonicalAddress).chain === 'bsc' ||
             (address as CanonicalAddress).chain === 'solana' ||
-            (address as CanonicalAddress).chain === 'ethereum')
+            (address as CanonicalAddress).chain === 'ethereum' ||
+            (address as CanonicalAddress).chain === 'base')
       )
   );
 }

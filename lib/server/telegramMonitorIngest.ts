@@ -153,7 +153,7 @@ function normalizeAlias(value: string | null | undefined) {
 }
 
 function isEvmChain(chain: string | null | undefined) {
-  return chain === 'bsc' || chain === 'ethereum';
+  return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
 function isCompatibleChain(addressChain: string, eventChain: string) {

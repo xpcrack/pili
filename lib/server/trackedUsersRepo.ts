@@ -6,7 +6,7 @@ import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activit
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
-const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum']);
+const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
 
 interface TrackedUserRow {
   id: string;

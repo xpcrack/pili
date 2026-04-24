@@ -144,7 +144,7 @@ function tradeActionFromActivity(activity: Activity): CanonicalTradeAction | nul
 }
 
 function toCanonicalChain(chain: string | undefined): ChainType | null {
-  return chain === 'bsc' || chain === 'solana' || chain === 'ethereum' ? chain : null;
+  return chain === 'bsc' || chain === 'solana' || chain === 'ethereum' || chain === 'base' ? chain : null;
 }
 
 export function legacyAddressToCanonical(userId: string, address: AddressInfo): CanonicalAddress {

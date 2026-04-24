@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Card, CardContent } from '@/components/ui/card';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatTokenAmount } from '@/lib/assetFormat';
+import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
 import {
   formatAbsoluteTimeCompact,
   type FeedTimeDisplayMode,
@@ -93,6 +94,9 @@ function getExplorerTxUrl(chain: string | undefined, txHash: string) {
   if (chain === 'ethereum') {
     return `https://web3.okx.com/explorer/eth/tx/${txHash}`;
   }
+  if (chain === 'base') {
+    return `https://web3.okx.com/explorer/base/tx/${txHash}`;
+  }
   return `https://web3.okx.com/explorer/solana/tx/${txHash}`;
 }
 
@@ -145,6 +149,8 @@ export function ActivityCard({
   onClick,
   activeTokenCa = null,
   onTokenCaHover,
+  activeAddress = null,
+  onAddressHover,
   addressAliasMap,
 }: ActivityCardProps) {
   const [now, setNow] = useState(activity.timestamp);
@@ -289,6 +295,14 @@ export function ActivityCard({
   );
   const isSameCaHighlighted =
     Boolean(activeTokenCa) && Boolean(tokenCa) && activeTokenCa?.toLowerCase() === tokenCa.toLowerCase();
+  const normalizedActiveAddress = activeAddress?.trim().toLowerCase() || null;
+  const isTrackedAddressHighlighted =
+    Boolean(normalizedActiveAddress) && Boolean(normalizedTrackedAddress) && normalizedActiveAddress === normalizedTrackedAddress;
+  const normalizedCounterpartyAddress = counterpartyAddress.trim().toLowerCase();
+  const isCounterpartyAddressHighlighted =
+    Boolean(normalizedActiveAddress) &&
+    Boolean(normalizedCounterpartyAddress) &&
+    normalizedActiveAddress === normalizedCounterpartyAddress;
   const primaryText = isTransfer
     ? `${transferAction} ${formattedTokenAmount} ${tokenSymbolDisplay}`
     : isBlockchain
@@ -315,6 +329,11 @@ export function ActivityCard({
   const coHitAddressCount = activity.metadata.coHitAddressCount ?? 1;
   const hasCoHitMarker = coHitUserCount > 1 || coHitAddressCount > 1;
   const explorerTxUrl = getExplorerTxUrl(activity.metadata.chain, activity.metadata.txHash || '');
+  const tokenGmgnUrl = canCopyTokenCa ? buildGmgnTokenUrl(activity.metadata.chain, tokenCa) : null;
+  const trackedAddressGmgnUrl = trackedAddress ? buildGmgnAddressUrl(activity.metadata.chain, trackedAddress) : null;
+  const counterpartyGmgnUrl = counterpartyAddress
+    ? buildGmgnAddressUrl(activity.metadata.chain, counterpartyAddress)
+    : null;
   const tweetUrl = activity.metadata.tweetUrl || '';
   const copyText = useCallback(async (text: string) => {
     if (!text) return;
@@ -323,6 +342,10 @@ export function ActivityCard({
     } catch (error) {
       console.warn('[ActivityCard] 复制失败:', error);
     }
+  }, []);
+  const openExternalLink = useCallback((url: string | null) => {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
   }, []);
 
   useEffect(() => {
@@ -558,6 +581,11 @@ export function ActivityCard({
                             title={`复制 ${displayTokenSymbol} CA: ${tokenCa}`}
                             onMouseEnter={() => onTokenCaHover?.(tokenCa)}
                             onMouseLeave={() => onTokenCaHover?.(null)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openExternalLink(tokenGmgnUrl);
+                            }}
                           >
                             <Avatar className="h-10 w-10 shrink-0 rounded-md">
                               <AvatarImage src={resolvedTokenAvatar || undefined} alt={`${displayTokenSymbol} avatar`} />
@@ -577,7 +605,32 @@ export function ActivityCard({
                       </div>
 
                       <div className="flex min-w-0 items-center justify-between gap-1">
-                        <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-zinc-300">{displayWalletLabel}</span>
+                        {trackedAddress ? (
+                          <button
+                            type="button"
+                            className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10 ${
+                              isTrackedAddressHighlighted
+                                ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
+                                : ''
+                            }`}
+                            title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void copyText(trackedAddress);
+                            }}
+                            onMouseEnter={() => onAddressHover?.(trackedAddress)}
+                            onMouseLeave={() => onAddressHover?.(null)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openExternalLink(trackedAddressGmgnUrl);
+                            }}
+                          >
+                            {displayWalletLabel}
+                          </button>
+                        ) : (
+                          <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-zinc-300">{displayWalletLabel}</span>
+                        )}
                         <span
                           className={
                             shouldUseOutgoingAmountTone
@@ -638,8 +691,56 @@ export function ActivityCard({
                       </div>
 
                       <div className="flex min-w-0 items-center justify-between gap-1">
-                        <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-yellow-400">{displayTokenSymbol}</span>
-                        {displayMarketCapText ? (
+                        {canCopyTokenCa ? (
+                          <button
+                            type="button"
+                            className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10 ${
+                              isSameCaHighlighted
+                                ? 'bg-yellow-400/25 text-yellow-100 ring-1 ring-yellow-300/80 shadow-[0_0_16px_rgba(250,204,21,0.55)] animate-pulse'
+                                : ''
+                            }`}
+                            title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void copyText(tokenCa);
+                            }}
+                            onMouseEnter={() => onTokenCaHover?.(tokenCa)}
+                            onMouseLeave={() => onTokenCaHover?.(null)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openExternalLink(tokenGmgnUrl);
+                            }}
+                          >
+                            {displayTokenSymbol}
+                          </button>
+                        ) : (
+                          <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-yellow-400">{displayTokenSymbol}</span>
+                        )}
+                        {displayMarketCapText && isSendReceiveTransfer && counterpartyAddress ? (
+                          <button
+                            type="button"
+                            className={`ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10 ${
+                              isCounterpartyAddressHighlighted
+                                ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
+                                : ''
+                            }`}
+                            title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void copyText(counterpartyAddress);
+                            }}
+                            onMouseEnter={() => onAddressHover?.(counterpartyAddress)}
+                            onMouseLeave={() => onAddressHover?.(null)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openExternalLink(counterpartyGmgnUrl);
+                            }}
+                          >
+                            {displayMarketCapText}
+                          </button>
+                        ) : displayMarketCapText ? (
                           <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
                             {displayMarketCapText}
                           </span>

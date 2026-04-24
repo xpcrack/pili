@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
         ok: false,
         configured: false,
         transactions: [],
-        error: '仅支持 bsc 和 solana 地址',
+        error: '仅支持 bsc、ethereum、base 和 solana 地址',
       },
       { status: 400 }
     );

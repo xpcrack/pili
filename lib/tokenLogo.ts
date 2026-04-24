@@ -73,6 +73,7 @@ function normalizeChainForDexscreener(chain: string) {
   if (chain === 'solana') return 'solana';
   if (chain === 'bsc') return 'bsc';
   if (chain === 'ethereum') return 'ethereum';
+  if (chain === 'base') return 'base';
   return null;
 }
 
@@ -80,6 +81,7 @@ function normalizeChainForXxyy(chain: string) {
   if (chain === 'solana') return 'sol';
   if (chain === 'bsc') return 'bsc';
   if (chain === 'ethereum') return 'eth';
+  if (chain === 'base') return 'base';
   return null;
 }
 

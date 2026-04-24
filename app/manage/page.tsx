@@ -13,6 +13,13 @@ import { TopNav } from '@/components/TopNav';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
 import { formatUsdCompact, formatUsdOrDash } from '@/lib/assetFormat';
 import {
+  expandTrackedAddresses,
+  formatUsersForAddressExport,
+  getAddressNetworkLabel,
+  groupAddressesForDisplay,
+  inferChainFromAddress,
+} from '@/lib/addressBook';
+import {
   Plus,
   Copy,
   Trash2,
@@ -56,10 +63,6 @@ interface ProfileFormState {
 }
 
 const CHAIN_VALUES = new Set(CHAIN_OPTIONS.map((option) => option.value));
-
-function inferChainFromAddress(address: string): ChainType {
-  return address.trim().toLowerCase().startsWith('0x') ? 'bsc' : 'solana';
-}
 
 function buildHandle(base: string, usedHandles: Set<string>) {
   const normalizedBase = base
@@ -174,6 +177,21 @@ function parseBulkImportText(
   return Array.from(groupedUsers.values());
 }
 
+function getAddressBadgeMeta(params: {
+  address: string;
+  chain: ChainType;
+  chains?: readonly ChainType[];
+}) {
+  const label = getAddressNetworkLabel(params);
+  return {
+    label,
+    className:
+      label === 'EVM地址'
+        ? 'bg-sky-500/15 text-sky-300'
+        : 'bg-emerald-500/15 text-emerald-300',
+  };
+}
+
 export default function ManagePage() {
   const { users, addUser, addUsers, updateUser, deleteUser, removeAddress } = useUsersDataStore();
   const isClient = useIsClient();
@@ -268,7 +286,7 @@ export default function ManagePage() {
       avatar: buildUserAvatar(formData.handle.trim(), normalizedTwitter),
       twitter: normalizedTwitter || undefined,
       telegram: formData.telegram.trim() || undefined,
-      addresses: parsedAddresses,
+      addresses: expandTrackedAddresses(parsedAddresses),
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
       assetUpdatedAt: null,
@@ -282,16 +300,22 @@ export default function ManagePage() {
   const handleImportUsers = () => {
     if (parsedBulkUsers.length === 0) return;
 
-    addUsers(parsedBulkUsers);
+    addUsers(
+      parsedBulkUsers.map((user) => ({
+        ...user,
+        addresses: expandTrackedAddresses(user.addresses),
+      }))
+    );
     setBulkImportText('');
   };
 
   const handleAddAddressesToUser = (user: User) => {
-    const newAddresses = parseAddressText(editingAddressText, user.addresses.length + 1);
+    const logicalAddressCount = groupAddressesForDisplay(user.addresses).length;
+    const newAddresses = parseAddressText(editingAddressText, logicalAddressCount + 1);
 
     if (newAddresses.length > 0) {
       updateUser(user.id, {
-        addresses: [...user.addresses, ...newAddresses],
+        addresses: [...user.addresses, ...expandTrackedAddresses(newAddresses)],
       });
     }
 
@@ -312,10 +336,7 @@ export default function ManagePage() {
   };
 
   const handleExportAllAddresses = async () => {
-    const lines = users.flatMap((user) =>
-      user.addresses.map((address) => `${address.address}:${user.name}${address.name}:${address.chain}`)
-    );
-    const payload = lines.join('\n');
+    const payload = formatUsersForAddressExport(users);
     if (!payload) return;
     await copyText(payload);
     flashCopied('all-addresses');
@@ -378,7 +399,7 @@ export default function ManagePage() {
             <div>
               <h2 className="text-lg font-medium text-zinc-100">批量导入人物</h2>
               <p className="text-sm text-zinc-400">
-                每行一个地址，系统会按同名人物自动归组，并自动识别 BSC / Solana 地址。
+                每行一个地址，系统会按同名人物自动归组；`0x` 地址会自动作为同一个 EVM 地址跟踪 BSC / ETH / BASE 三链动态。
               </p>
             </div>
           </div>
@@ -398,7 +419,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
               />
               <p className="text-xs text-zinc-500">
                 推荐格式: <code>地址:人物名#地址别名</code>。例如 <code>...:alice#1</code> 会创建人物
-                alice，并把这条地址记为 <code>#7</code>。`0x` 开头会识别为 BSC，其它地址识别为 Solana。
+                alice，并把这条地址记为 <code>#7</code>。导出时也会保持这个格式，不再额外附带链信息。
               </p>
             </div>
 
@@ -427,13 +448,9 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                         {user.addresses.map((address) => (
                           <div key={`${user.handle}-${address.address}`} className="flex items-center gap-2 text-sm">
                             <span
-                              className="rounded px-1.5 py-0.5 text-[10px] font-medium"
-                              style={{
-                                backgroundColor: `${CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color}20`,
-                                color: CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color,
-                              }}
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
                             >
-                              {address.chain}
+                              {getAddressBadgeMeta(address).label}
                             </span>
                             <span className="truncate text-zinc-300">{address.name}</span>
                             <span className="truncate text-xs text-zinc-600">
@@ -529,7 +546,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   录入地址
                 </h3>
                 <span className="text-xs text-zinc-500">
-                  自动识别: `0x...` 为 BSC，其它为 Solana
+                  自动识别: `0x...` 为 EVM（三链跟踪），其它为 Solana
                 </span>
               </div>
 
@@ -547,7 +564,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none transition-colors focus:border-zinc-700"
                   />
                   <p className="text-xs text-zinc-500">
-                    名称可选；链会按地址自动识别（0x 默认按 bsc）。为兼容旧数据，仍然接受末尾补 `:bsc`、`:ethereum` 或 `:solana`。
+                    名称可选；链会按地址自动识别。为兼容旧数据，仍然接受末尾补 `:bsc`、`:ethereum`、`:base` 或 `:solana`。
                   </p>
                 </div>
 
@@ -561,13 +578,9 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                         {parsedAddresses.map((address, index) => (
                           <div key={`${address.address}-${index}`} className="flex items-center gap-2 text-sm">
                             <span
-                              className="rounded px-1.5 py-0.5 text-[10px] font-medium"
-                              style={{
-                                backgroundColor: `${CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color}20`,
-                                color: CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color,
-                              }}
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
                             >
-                              {address.chain}
+                              {getAddressBadgeMeta(address).label}
                             </span>
                             <span className="flex-1 truncate text-zinc-300">{address.name}</span>
                             <span className="max-w-[120px] truncate text-xs text-zinc-600">
@@ -680,6 +693,7 @@ function UserCard({
 }: UserCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const displayAddresses = useMemo(() => groupAddressesForDisplay(user.addresses), [user.addresses]);
   const [profileForm, setProfileForm] = useState<ProfileFormState>({
     name: user.name,
     handle: user.handle,
@@ -870,7 +884,7 @@ function UserCard({
             className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200"
           >
             <Wallet className="h-4 w-4" />
-            <span>{user.addresses.length} 个地址</span>
+            <span>{displayAddresses.length} 个地址</span>
             {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
 
@@ -889,24 +903,20 @@ function UserCard({
 
         {expanded && (
           <div className="mt-3 space-y-2">
-            {user.addresses.length === 0 && !isEditingAddresses && (
+            {displayAddresses.length === 0 && !isEditingAddresses && (
               <p className="py-4 text-center text-sm text-zinc-600">暂无地址</p>
             )}
 
-            {user.addresses.map((address) => (
+            {displayAddresses.map((address) => (
               <div
                 key={address.address}
                 className="flex items-center justify-between rounded-lg bg-zinc-950/50 px-3 py-2"
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span
-                    className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-                    style={{
-                      backgroundColor: `${CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color}20`,
-                      color: CHAIN_OPTIONS.find((option) => option.value === address.chain)?.color,
-                    }}
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
                   >
-                    {address.chain}
+                    {address.networkLabel}
                   </span>
                   <span className="truncate text-sm text-zinc-300">{address.name}</span>
                   <span className="truncate text-xs text-zinc-600">
@@ -937,7 +947,7 @@ function UserCard({
 9x8y...:Sol钱包`}
                     className="w-full resize-none rounded bg-zinc-900 p-2 font-mono text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 transition-colors focus:ring-zinc-700"
                   />
-                  <p className="text-[10px] text-zinc-500">格式: address:name，链会自动识别</p>
+                  <p className="text-[10px] text-zinc-500">格式: address:name，`0x` 地址会自动补 BSC / ETH / BASE 三链</p>
                   <div className="flex gap-2 pt-1">
                     <Button
                       size="sm"

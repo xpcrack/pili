@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { canonicalUsersToLegacy, normalizeTelegramUrl, normalizeTwitterUrl } from '@/lib/canonical';
 import { type CanonicalAddress, type CanonicalUser, type User } from '@/types';
 
-const SUPPORTED_CHAINS = new Set(['bsc', 'solana', 'ethereum']);
+const SUPPORTED_CHAINS = new Set(['bsc', 'solana', 'ethereum', 'base']);
 
 function isAddressArray(value: unknown): value is User['addresses'] {
   return Array.isArray(value);

@@ -18,7 +18,7 @@ function normalizeAliasLabel(value: string | null | undefined) {
 }
 
 function isEvmChain(chain: string | null | undefined) {
-  return chain === 'bsc' || chain === 'ethereum';
+  return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
 function isCompatibleChain(addressChain: string, eventChain: string) {
@@ -41,7 +41,7 @@ function buildTrackedAddressIndex(users: User[]) {
         });
 
         if (isEvmChain(address.chain)) {
-          for (const evmChain of ['bsc', 'ethereum']) {
+          for (const evmChain of ['bsc', 'ethereum', 'base']) {
             const evmKey = `${evmChain}|${normalize(address.address)}`;
             index.set(evmKey, {
               user,

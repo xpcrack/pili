@@ -1,7 +1,7 @@
 export type ActivitySource = 'twitter' | 'telegram' | 'blockchain';
 export type ActivityType = 'post' | 'transfer' | 'swap' | 'nft_trade' | 'mint';
 
-export type ChainType = 'bsc' | 'solana' | 'ethereum';
+export type ChainType = 'bsc' | 'solana' | 'ethereum' | 'base';
 
 export interface CanonicalAddress {
   id: string;
@@ -162,4 +162,5 @@ export const CHAIN_OPTIONS: { value: ChainType; label: string; color: string }[]
   { value: 'bsc', label: 'BSC', color: '#F0B90B' },
   { value: 'solana', label: 'Solana', color: '#14F195' },
   { value: 'ethereum', label: 'Ethereum', color: '#627EEA' },
+  { value: 'base', label: 'Base', color: '#0052FF' },
 ];
