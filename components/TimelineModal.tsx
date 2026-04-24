@@ -19,6 +19,7 @@ import { useUserStore } from '@/store/userStore';
 import { useEffect } from 'react';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatTokenAmount } from '@/lib/assetFormat';
+import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 
 interface TimelineModalProps {
   user: User | null;
@@ -133,7 +134,7 @@ export function TimelineModal({ user, activities, open, onOpenChange }: Timeline
           <div className="p-6 space-y-0">
             {sortedActivities.map((activity, index) => (
               <TimelineItem 
-                key={activity.id} 
+                key={buildActivityScopedDedupKey(activity, user.id) || `${user.id}:${activity.id}:${index}`} 
                 activity={activity} 
                 isLast={index === sortedActivities.length - 1}
               />

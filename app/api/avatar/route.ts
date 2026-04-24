@@ -10,6 +10,7 @@ const POSITIVE_CACHE_MS = 6 * 60 * 60 * 1000;
 const NEGATIVE_CACHE_MS = 5 * 60 * 1000;
 const AVATAR_PROBE_TIMEOUT_MS = 7000;
 const CACHE_CONTROL = 'public, max-age=3600, s-maxage=3600';
+const FALLBACK_CACHE_CONTROL = 'no-store, max-age=0';
 const MAX_AVATAR_BYTES = 1024 * 1024;
 
 function escapeXml(value: string) {
@@ -55,7 +56,7 @@ function buildFallbackResponse(handle: string) {
     status: 200,
     headers: {
       'Content-Type': 'image/svg+xml; charset=utf-8',
-      'Cache-Control': CACHE_CONTROL,
+      'Cache-Control': FALLBACK_CACHE_CONTROL,
     },
   });
 }

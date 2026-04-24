@@ -2,8 +2,10 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { User, DEFAULT_USERS } from '@/types';
+
+import { canonicalUsersToLegacy } from '@/lib/canonical';
 import { createSafePersistStorage } from '@/lib/safePersistStorage';
+import { type CanonicalAddress, type CanonicalUser, User, DEFAULT_USERS } from '@/types';
 
 interface UsersDataState {
   users: User[];
@@ -65,6 +67,121 @@ function normalizeUser(user: User): User {
     assetUpdatedAt: user.assetUpdatedAt ?? null,
     addresses: user.addresses.map((address, index) => normalizeAddress(address, index)),
   };
+}
+
+function isCanonicalUser(candidate: unknown): candidate is CanonicalUser {
+  if (!candidate || typeof candidate !== 'object') {
+    return false;
+  }
+
+  const user = candidate as Partial<CanonicalUser>;
+  return (
+    typeof user.id === 'string' &&
+    typeof user.name === 'string' &&
+    typeof user.avatar === 'string' &&
+    typeof user.currentBalanceUsd === 'number' &&
+    typeof user.maxBalanceUsd === 'number'
+  );
+}
+
+function isLegacyUser(candidate: unknown): candidate is User {
+  if (!candidate || typeof candidate !== 'object') {
+    return false;
+  }
+
+  const user = candidate as Partial<User>;
+  return (
+    typeof user.id === 'string' &&
+    typeof user.name === 'string' &&
+    typeof user.handle === 'string' &&
+    typeof user.avatar === 'string' &&
+    Array.isArray(user.addresses)
+  );
+}
+
+function isCanonicalAddressesByUserId(value: unknown): value is Record<string, CanonicalAddress[]> {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return Object.values(value).every(
+    (addresses) =>
+      Array.isArray(addresses) &&
+      addresses.every(
+        (address) =>
+          !!address &&
+          typeof address === 'object' &&
+          typeof (address as CanonicalAddress).id === 'string' &&
+          typeof (address as CanonicalAddress).userId === 'string' &&
+          typeof (address as CanonicalAddress).address === 'string' &&
+          ((address as CanonicalAddress).chain === 'bsc' ||
+            (address as CanonicalAddress).chain === 'solana' ||
+            (address as CanonicalAddress).chain === 'ethereum')
+      )
+  );
+}
+
+function mergeRecoveredAddresses(users: User[], addressesByUserId: Record<string, CanonicalAddress[]>) {
+  return users.map((user) => {
+    const recovered = addressesByUserId[user.id] || [];
+    if (recovered.length === 0) {
+      return user;
+    }
+
+    const existingKeys = new Set(
+      user.addresses.map((address) => `${address.chain}:${address.address.trim().toLowerCase()}`)
+    );
+    const restoredAddresses = recovered.flatMap((address, index) => {
+      const key = `${address.chain}:${address.address.trim().toLowerCase()}`;
+      if (existingKeys.has(key)) {
+        return [];
+      }
+
+      existingKeys.add(key);
+      return [
+        {
+          address: address.address,
+          name: `#${user.addresses.length + index + 1}`,
+          chain: address.chain,
+          totalAssetUsd: null,
+          assetUpdatedAt: null,
+        },
+      ];
+    });
+
+    if (restoredAddresses.length === 0) {
+      return user;
+    }
+
+    return normalizeUser({
+      ...user,
+      addresses: [...user.addresses, ...restoredAddresses],
+    });
+  });
+}
+
+function restorePersistedUsers(persistedState: unknown, currentUsers: User[]) {
+  const state = (persistedState ?? {}) as {
+    users?: unknown;
+    addressesByUserId?: unknown;
+  };
+  const addressesByUserId = isCanonicalAddressesByUserId(state.addressesByUserId)
+    ? state.addressesByUserId
+    : {};
+
+  if (!Array.isArray(state.users)) {
+    return currentUsers;
+  }
+
+  if (state.users.every(isLegacyUser)) {
+    return mergeRecoveredAddresses(state.users.map((user) => normalizeUser(user)), addressesByUserId);
+  }
+
+  if (state.users.every(isCanonicalUser)) {
+    return canonicalUsersToLegacy(state.users, addressesByUserId).map((user) => normalizeUser(user));
+  }
+
+  return currentUsers;
 }
 
 export const useUsersDataStore = create<UsersDataState>()(
@@ -197,15 +314,9 @@ export const useUsersDataStore = create<UsersDataState>()(
       partialize: (state) => ({ users: state.users }),
       storage: createSafePersistStorage(),
       merge: (persistedState, currentState) => {
-        const state = (persistedState ?? {}) as Partial<UsersDataState>;
-        const normalizedUsers = Array.isArray(state.users)
-          ? state.users.map((user) => normalizeUser(user as User))
-          : currentState.users;
-
         return {
           ...currentState,
-          ...state,
-          users: normalizedUsers,
+          users: restorePersistedUsers(persistedState, currentState.users),
         };
       },
     }

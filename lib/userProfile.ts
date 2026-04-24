@@ -20,13 +20,20 @@ function buildFallbackAvatar(handle: string) {
   return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(handle.trim())}`;
 }
 
-export function buildUserAvatar(handle: string, twitter?: string) {
+function buildAvatarVersionSeed(handle: string, twitter?: string, avatar?: string) {
+  const normalizedTwitter = normalizeTwitterHandle(twitter);
+  const normalizedAvatar = (avatar || '').trim();
+  return normalizedAvatar || normalizedTwitter || handle.trim();
+}
+
+export function buildUserAvatar(handle: string, twitter?: string, avatar?: string) {
   const normalizedTwitter = normalizeTwitterHandle(twitter);
 
   if (normalizedTwitter) {
     const params = new URLSearchParams({
       handle: handle.trim(),
       twitter: normalizedTwitter,
+      v: buildAvatarVersionSeed(handle, twitter, avatar),
     });
 
     return `/api/avatar?${params.toString()}`;
@@ -36,9 +43,13 @@ export function buildUserAvatar(handle: string, twitter?: string) {
 }
 
 export function getUserAvatar(user: Pick<User, 'handle' | 'twitter' | 'avatar'>) {
-  if (user.twitter) {
-    return buildUserAvatar(user.handle, user.twitter);
+  if (typeof user.avatar === 'string' && user.avatar.trim()) {
+    return user.avatar.trim();
   }
 
-  return user.avatar || buildFallbackAvatar(user.handle);
+  if (user.twitter) {
+    return buildUserAvatar(user.handle, user.twitter, user.avatar);
+  }
+
+  return buildFallbackAvatar(user.handle);
 }

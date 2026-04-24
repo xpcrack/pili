@@ -14,6 +14,27 @@ interface UserAssetSnapshot {
   updatedAt: number;
 }
 
+interface FeedPrewarmSnapshot {
+  done: boolean;
+  label: string;
+  running: boolean;
+  usersTotal: number;
+  usersCovered: number;
+}
+
+export interface ActivityBreakdown {
+  twitterCount: number;
+  tradeCount: number;
+}
+
+export interface CompletenessWindow {
+  scope: 'global' | 'user';
+  startMs: number | null;
+  endMs: number | null;
+  label: string | null;
+  complete: boolean;
+}
+
 export interface ActivityFeedResponse {
   ok: boolean;
   feed: { user: User; activity: Activity }[];
@@ -23,11 +44,14 @@ export interface ActivityFeedResponse {
   hasMore: boolean;
   historyComplete: boolean | null;
   localQualifiedCount: number;
+  activityBreakdown: ActivityBreakdown | null;
+  completenessWindow: CompletenessWindow | null;
   latestActivityAtByUser?: Record<string, number>;
   diagnostics: AddressDiagnostic[];
   summary: ActivityFeedSummary;
   addressAssets: AddressAssetSnapshot[];
   userAssets: UserAssetSnapshot[];
+  prewarm?: FeedPrewarmSnapshot;
   sync?: {
     running?: boolean;
     latestRun?: {
@@ -54,6 +78,7 @@ interface FetchAllActivitiesOptions {
   backfillScope?: 'global' | 'user';
   backfillUserId?: string | null;
   reason?: string;
+  signal?: AbortSignal;
 }
 
 const FEED_REQUEST_TIMEOUT_MS = 25000;
@@ -72,6 +97,44 @@ function buildFallbackSummary(users: User[], feedLength: number): ActivityFeedSu
   };
 }
 
+function normalizeActivityBreakdown(value: unknown): ActivityBreakdown | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Partial<ActivityBreakdown>;
+  return {
+    twitterCount:
+      typeof candidate.twitterCount === 'number' && Number.isFinite(candidate.twitterCount)
+        ? candidate.twitterCount
+        : 0,
+    tradeCount:
+      typeof candidate.tradeCount === 'number' && Number.isFinite(candidate.tradeCount)
+        ? candidate.tradeCount
+        : 0,
+  };
+}
+
+function normalizeCompletenessWindow(value: unknown): CompletenessWindow | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Partial<CompletenessWindow>;
+  const scope = candidate.scope === 'user' ? 'user' : candidate.scope === 'global' ? 'global' : null;
+  if (!scope) {
+    return null;
+  }
+
+  return {
+    scope,
+    startMs: typeof candidate.startMs === 'number' && Number.isFinite(candidate.startMs) ? candidate.startMs : null,
+    endMs: typeof candidate.endMs === 'number' && Number.isFinite(candidate.endMs) ? candidate.endMs : null,
+    label: typeof candidate.label === 'string' && candidate.label.trim() ? candidate.label : null,
+    complete: candidate.complete === true,
+  };
+}
+
 function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | null | undefined, users: User[]) {
   const feed = Array.isArray(payload?.feed) ? payload.feed : [];
   const total = typeof payload?.total === 'number' ? payload.total : feed.length;
@@ -87,6 +150,8 @@ function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | 
     hasMore: payload?.hasMore === true,
     historyComplete: typeof payload?.historyComplete === 'boolean' ? payload.historyComplete : null,
     localQualifiedCount: typeof payload?.localQualifiedCount === 'number' ? payload.localQualifiedCount : total,
+    activityBreakdown: normalizeActivityBreakdown(payload?.activityBreakdown),
+    completenessWindow: normalizeCompletenessWindow(payload?.completenessWindow),
     latestActivityAtByUser:
       payload?.latestActivityAtByUser && typeof payload.latestActivityAtByUser === 'object'
         ? payload.latestActivityAtByUser
@@ -95,6 +160,25 @@ function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | 
     summary: payload?.summary ?? buildFallbackSummary(users, feed.length),
     addressAssets: Array.isArray(payload?.addressAssets) ? payload.addressAssets : [],
     userAssets: Array.isArray(payload?.userAssets) ? payload.userAssets : [],
+    prewarm:
+      payload?.prewarm &&
+      typeof payload.prewarm === 'object' &&
+      typeof payload.prewarm.label === 'string' &&
+      typeof payload.prewarm.done === 'boolean'
+        ? {
+            label: payload.prewarm.label,
+            done: payload.prewarm.done,
+            running: payload.prewarm.running === true,
+            usersTotal:
+              typeof payload.prewarm.usersTotal === 'number' && Number.isFinite(payload.prewarm.usersTotal)
+                ? payload.prewarm.usersTotal
+                : 0,
+            usersCovered:
+              typeof payload.prewarm.usersCovered === 'number' && Number.isFinite(payload.prewarm.usersCovered)
+                ? payload.prewarm.usersCovered
+                : 0,
+          }
+        : undefined,
     sync: payload?.sync,
     syncTrigger: payload?.syncTrigger,
   } satisfies ActivityFeedResponse;
@@ -102,6 +186,13 @@ function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | 
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw new DOMException('The operation was aborted.', 'AbortError');
 }
 
 function is429LikeError(status: number, message: string, payload: unknown) {
@@ -152,7 +243,6 @@ export async function fetchAllActivities(
   const bodyPayload =
     method === 'POST'
       ? {
-          users,
           reason: options?.reason,
           mode: syncStrategy === 'backfill' ? 'backfill' : 'refresh',
           scope: options?.backfillScope === 'user' ? 'user' : 'global',
@@ -164,7 +254,27 @@ export async function fetchAllActivities(
       : null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    throwIfAborted(options?.signal);
+
     const controller = new AbortController();
+    let abortedByExternalSignal = false;
+    let detachExternalAbortListener: (() => void) | null = null;
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        abortedByExternalSignal = true;
+        controller.abort();
+      } else {
+        const handleExternalAbort = () => {
+          abortedByExternalSignal = true;
+          controller.abort();
+        };
+        options.signal.addEventListener('abort', handleExternalAbort, { once: true });
+        detachExternalAbortListener = () => {
+          options.signal?.removeEventListener('abort', handleExternalAbort);
+        };
+      }
+    }
+
     const timer = setTimeout(() => {
       controller.abort();
     }, requestTimeoutMs);
@@ -185,6 +295,12 @@ export async function fetchAllActivities(
       });
     } catch (error) {
       clearTimeout(timer);
+      detachExternalAbortListener?.();
+
+      if (error instanceof Error && error.name === 'AbortError' && abortedByExternalSignal) {
+        throw error;
+      }
+
       throw new Error(
         error instanceof Error && error.name === 'AbortError'
           ? `请求超时（>${requestTimeoutMs}ms）`
@@ -194,6 +310,7 @@ export async function fetchAllActivities(
       );
     }
     clearTimeout(timer);
+    detachExternalAbortListener?.();
 
     const data = await response.json().catch(() => null);
     if (response.ok && data?.ok) {
@@ -208,7 +325,9 @@ export async function fetchAllActivities(
       console.warn(
         `[fetchAllActivities] 429 retry attempt ${attempt + 1}/${maxRetryCount}, wait ${waitMs}ms: ${message}`
       );
+      throwIfAborted(options?.signal);
       await sleep(waitMs);
+      throwIfAborted(options?.signal);
       continue;
     }
 

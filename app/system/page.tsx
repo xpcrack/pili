@@ -30,6 +30,54 @@ interface SyncLogItem {
   createdAt: number;
 }
 
+interface TwitterSyncRunItem {
+  id?: number;
+  status?: string;
+  started_at_ms?: number;
+  finished_at_ms?: number | null;
+  fetched_count?: number;
+  stored_count?: number;
+  projected_count?: number;
+  error_code?: string | null;
+  error_message?: string | null;
+}
+
+interface TwitterStatusPayload {
+  running?: boolean;
+  stale?: boolean;
+  lockOwner?: string | null;
+  leaseExpiresAtMs?: number | null;
+  heartbeatAtMs?: number | null;
+  latestRun?: TwitterSyncRunItem | null;
+  runs?: TwitterSyncRunItem[];
+  latestTweet?: {
+    tweetId: string;
+    authorHandle: string;
+    createdAtMs: number;
+    lastSeenAtMs: number;
+  } | null;
+  latestVisibleEvent?: {
+    eventId: string;
+    timestamp: number;
+    userName: string | null;
+  } | null;
+  latestRelay?: {
+    tweetId: string;
+    authorHandle: string;
+    createdAtMs: number;
+    lastSeenAtMs: number;
+    sourceChatId: string | null;
+    messageId: number | null;
+  } | null;
+}
+
+function formatDateTime(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return '暂无数据';
+  }
+  return new Date(value).toLocaleString('zh-CN');
+}
+
 export default function SystemPage() {
   const [adminToken, setAdminToken] = useState(() => {
     if (typeof window === 'undefined') {
@@ -37,7 +85,10 @@ export default function SystemPage() {
     }
     return (window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '').trim();
   });
-  const [chatId, setChatId] = useState('');
+  const [alertChatId, setAlertChatId] = useState('');
+  const [tradeMonitorChatId, setTradeMonitorChatId] = useState('');
+  const [twitterMonitorChatId, setTwitterMonitorChatId] = useState('');
+  const [conflictAlertChatId, setConflictAlertChatId] = useState('');
   const [status, setStatus] = useState<StatusType>('idle');
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -45,9 +96,9 @@ export default function SystemPage() {
   const [eventStats, setEventStats] = useState<EventStatsPayload | null>(null);
   const [syncingGlobalTwitter, setSyncingGlobalTwitter] = useState(false);
   const [syncingUserTwitter, setSyncingUserTwitter] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<unknown>(null);
-  const [syncLogs, setSyncLogs] = useState<SyncLogItem[]>([]);
-  const [lastLogId, setLastLogId] = useState(0);
+  const [twitterStatus, setTwitterStatus] = useState<TwitterStatusPayload | null>(null);
+  const [twitterLogs, setTwitterLogs] = useState<SyncLogItem[]>([]);
+  const [lastTwitterLogId, setLastTwitterLogId] = useState(0);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const [windowDays, setWindowDays] = useState(7);
@@ -87,7 +138,10 @@ export default function SystemPage() {
       .then((res) => res.json())
       .then((payload) => {
         if (!payload?.ok) return;
-        setChatId(payload.config?.telegramUnknownPersonAlertChatId || '');
+        setAlertChatId(payload.config?.telegramUnknownPersonAlertChatId || '');
+        setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
+        setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
+        setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
       })
       .catch(() => undefined);
 
@@ -114,27 +168,27 @@ export default function SystemPage() {
 
     const poll = async () => {
       const [syncRes, logsRes] = await Promise.all([
-        fetch('/api/sync/status', { cache: 'no-store' }).catch(() => null),
-        fetch(`/api/sync/logs?limit=200&afterId=${lastLogId}`, { cache: 'no-store' }).catch(() => null),
+        fetch('/api/twitter/sync', { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/sync/logs?runKind=twitter&limit=200&afterId=${lastTwitterLogId}`, { cache: 'no-store' }).catch(() => null),
       ]);
 
       if (!cancelled && syncRes) {
         const syncPayload = await syncRes.json().catch(() => null);
         if (syncPayload?.ok) {
-          setSyncStatus(syncPayload.status || null);
+          setTwitterStatus((syncPayload.status as TwitterStatusPayload) || null);
         }
       }
 
       if (!cancelled && logsRes) {
         const logsPayload = await logsRes.json().catch(() => null);
         if (logsPayload?.ok && Array.isArray(logsPayload.logs)) {
-          setSyncLogs((prev) => {
+          setTwitterLogs((prev) => {
             const merged = [...prev, ...(logsPayload.logs as SyncLogItem[])];
             if (merged.length <= 500) return merged;
             return merged.slice(merged.length - 500);
           });
           if (typeof logsPayload.lastId === 'number' && Number.isFinite(logsPayload.lastId)) {
-            setLastLogId(logsPayload.lastId);
+            setLastTwitterLogId(logsPayload.lastId);
           }
         }
       }
@@ -149,14 +203,14 @@ export default function SystemPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [lastLogId]);
+  }, [lastTwitterLogId]);
 
   useEffect(() => {
     if (!logAutoScroll) return;
     const el = logContainerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [syncLogs, logAutoScroll]);
+  }, [twitterLogs, logAutoScroll]);
 
   const timeRangeLabel = useMemo(() => {
     if (!eventStats?.earliestTimestamp || !eventStats?.latestTimestamp) {
@@ -167,6 +221,16 @@ export default function SystemPage() {
     ).toLocaleString('zh-CN')}`;
   }, [eventStats]);
 
+  const twitterFallbackStatusLabel = useMemo(() => {
+    if (twitterStatus?.stale) {
+      return '陈旧租约';
+    }
+    if (twitterStatus?.running) {
+      return '运行中';
+    }
+    return '空闲';
+  }, [twitterStatus]);
+
   const saveConfig = async () => {
     setStatus('saving');
     setError(null);
@@ -174,7 +238,12 @@ export default function SystemPage() {
     const response = await fetch('/api/system-config', {
       method: 'PATCH',
       headers: buildAdminHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ telegramUnknownPersonAlertChatId: chatId.trim() || null }),
+      body: JSON.stringify({
+        telegramUnknownPersonAlertChatId: alertChatId.trim() || null,
+        telegramTradeMonitorSourceChatId: tradeMonitorChatId.trim() || null,
+        telegramTwitterMonitorSourceChatId: twitterMonitorChatId.trim() || null,
+        conflictNotificationTelegramChatId: conflictAlertChatId.trim() || null,
+      }),
     }).catch(() => null);
 
     if (!response) {
@@ -190,7 +259,10 @@ export default function SystemPage() {
       return;
     }
 
-    setChatId(payload.config?.telegramUnknownPersonAlertChatId || '');
+    setAlertChatId(payload.config?.telegramUnknownPersonAlertChatId || '');
+    setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
+    setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
+    setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
     setStatus('saved');
     setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1500);
   };
@@ -300,15 +372,44 @@ export default function SystemPage() {
         </section>
 
         <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5">
-          <h2 className="mb-3 text-sm font-medium">同步进度与实时日志</h2>
-          <div className="mb-3 grid gap-3 md:grid-cols-3">
+          <h2 className="mb-3 text-sm font-medium">推特中转状态与日志</h2>
+          <div className="mb-3 grid gap-3 md:grid-cols-4">
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
-              <div className="text-zinc-500">后台同步状态</div>
-              <div className="mt-1 text-sm text-zinc-100">{(syncStatus as { running?: boolean } | null)?.running ? '运行中' : '空闲'}</div>
+              <div className="text-zinc-500">Fallback Sync</div>
+              <div className="mt-1 text-sm text-zinc-100">{twitterFallbackStatusLabel}</div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                Lease 到期: {formatDateTime(twitterStatus?.leaseExpiresAtMs ?? null)}
+              </div>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
-              <div className="text-zinc-500">最近日志条数</div>
-              <div className="mt-1 text-sm text-zinc-100">{syncLogs.length}</div>
+              <div className="text-zinc-500">最近 Relay 入库</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(twitterStatus?.latestRelay?.lastSeenAtMs ?? null)}</div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                @{twitterStatus?.latestRelay?.authorHandle || '-'} / {twitterStatus?.latestRelay?.tweetId || '-'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">最新可见推文</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(twitterStatus?.latestVisibleEvent?.timestamp ?? null)}</div>
+              <div className="mt-1 text-[11px] text-zinc-500">{twitterStatus?.latestVisibleEvent?.userName || '暂无人物映射'}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">最新抓到推文</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(twitterStatus?.latestTweet?.createdAtMs ?? null)}</div>
+              <div className="mt-1 text-[11px] text-zinc-500">@{twitterStatus?.latestTweet?.authorHandle || '-'}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs md:col-span-3">
+              <div className="text-zinc-500">最近一次 Sync Run</div>
+              <div className="mt-1 text-sm text-zinc-100">
+                #{twitterStatus?.latestRun?.id ?? '-'} / {twitterStatus?.stale ? 'stale' : twitterStatus?.latestRun?.status || '暂无'}
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                抓取 {twitterStatus?.latestRun?.fetched_count ?? 0} / 入库 {twitterStatus?.latestRun?.stored_count ?? 0} / 投影{' '}
+                {twitterStatus?.latestRun?.projected_count ?? 0}
+              </div>
+              {twitterStatus?.latestRun?.error_message && (
+                <div className="mt-1 text-[11px] text-red-400">{twitterStatus.latestRun.error_message}</div>
+              )}
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
               <div className="text-zinc-500">自动滚动</div>
@@ -320,12 +421,24 @@ export default function SystemPage() {
                 {logAutoScroll ? '开启' : '关闭'}
               </button>
             </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">Twitter 日志条数</div>
+              <div className="mt-1 text-sm text-zinc-100">{twitterLogs.length}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">最新心跳</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(twitterStatus?.heartbeatAtMs ?? null)}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">Lease Owner</div>
+              <div className="mt-1 truncate text-sm text-zinc-100">{twitterStatus?.lockOwner || '暂无'}</div>
+            </div>
           </div>
           <div ref={logContainerRef} className="h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-300">
-            {syncLogs.length === 0 ? (
+            {twitterLogs.length === 0 ? (
               <div className="text-zinc-600">暂无日志</div>
             ) : (
-              syncLogs.map((log) => (
+              twitterLogs.map((log) => (
                 <div key={log.id} className="mb-1 break-words">
                   <span className="text-zinc-500">[{new Date(log.createdAt).toLocaleTimeString('zh-CN')}]</span>{' '}
                   <span className="text-zinc-400">{log.runKind}</span>
@@ -390,23 +503,56 @@ export default function SystemPage() {
         </section>
 
         <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5">
-          <h2 className="mb-3 text-sm font-medium">未知人物通知配置</h2>
-          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+          <h2 className="mb-3 text-sm font-medium">Bot-to-Bot 群配置</h2>
+          <div className="grid gap-3 md:grid-cols-4">
             <div>
-              <Label className="text-zinc-400">通知群 Chat ID</Label>
+              <Label className="text-zinc-400">交易监听群 Chat ID</Label>
               <Input
-                value={chatId}
+                value={tradeMonitorChatId}
+                onChange={(e) => setTradeMonitorChatId(e.target.value)}
+                placeholder="例如: -5108676923"
+                className="border-zinc-800 bg-zinc-950"
+              />
+              <p className="mt-2 text-xs text-zinc-500">用于 `/api/telegram/monitor`，仅接收该群消息。</p>
+            </div>
+            <div>
+              <Label className="text-zinc-400">推特监听群 Chat ID</Label>
+              <Input
+                value={twitterMonitorChatId}
+                onChange={(e) => setTwitterMonitorChatId(e.target.value)}
+                placeholder="例如: -5299035575"
+                className="border-zinc-800 bg-zinc-950"
+              />
+              <p className="mt-2 text-xs text-zinc-500">用于 `/api/twitter/relay`，仅接收该群消息。</p>
+            </div>
+            <div>
+              <Label className="text-zinc-400">告警通知群 Chat ID</Label>
+              <Input
+                value={alertChatId}
                 onChange={(e) => {
-                  setChatId(e.target.value);
+                  setAlertChatId(e.target.value);
                   setTestStatus('idle');
                   setTestError(null);
                 }}
                 placeholder="例如: -1001234567890"
                 className="border-zinc-800 bg-zinc-950"
               />
+              <p className="mt-2 text-xs text-zinc-500">用于未知人物与格式异常告警。</p>
               {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
               {testError && <div className="mt-2 text-xs text-red-400">{testError}</div>}
             </div>
+            <div>
+              <Label className="text-zinc-400">冲突通知群 Chat ID</Label>
+              <Input
+                value={conflictAlertChatId}
+                onChange={(e) => setConflictAlertChatId(e.target.value)}
+                placeholder="-1001234567890"
+                className="border-zinc-800 bg-zinc-950"
+              />
+              <p className="mt-2 text-xs text-zinc-500">用于多源冲突实时逐条通知</p>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="outline" onClick={testNotify} disabled={testStatus === 'sending'} className="border-zinc-700">
               <Send className="mr-1 h-4 w-4" />
               {testStatus === 'sending' ? '发送中...' : testStatus === 'sent' ? '已发送' : '测试通知'}

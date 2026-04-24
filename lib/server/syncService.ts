@@ -17,6 +17,7 @@ import {
   saveLastFailureState,
   saveLastSuccessfulSnapshotState,
   upsertFeedSnapshot,
+  upsertRawTransactions,
   type FeedBackfillWindowState,
 } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
@@ -26,6 +27,7 @@ import {
   updateAssetSnapshots,
 } from '@/lib/server/trackedUsersRepo';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
+import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -63,6 +65,14 @@ interface ActiveRunState {
 
 let activeRunState: ActiveRunState | null = null;
 let activeRunPromise: Promise<void> | null = null;
+
+async function flushConflictNotificationsSafely(limit: number) {
+  try {
+    await flushConflictNotifications(limit);
+  } catch (error) {
+    console.error('[syncService] flush conflict notifications failed:', error);
+  }
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -460,6 +470,7 @@ async function runSync(
       phase: 'done',
       message: 'sync run completed with empty snapshot',
     });
+    await flushConflictNotificationsSafely(50);
     return;
   }
 
@@ -546,6 +557,7 @@ async function runSync(
       phase: 'done',
       message: 'sync run completed with zero target users',
     });
+    await flushConflictNotificationsSafely(50);
     return;
   }
 
@@ -573,6 +585,7 @@ async function runSync(
   if (shouldDeleteWindowBeforeWrite) {
     deleteFeedSnapshotWindowForUsers(targetUsers, beginMs, endMs);
   }
+  upsertRawTransactions(result.rawTransactions);
   upsertFeedSnapshot(result.feed);
   updateAssetSnapshots(result.addressAssets, result.userAssets);
 
@@ -635,6 +648,7 @@ async function runSync(
       failedAddressCount: result.summary.failedAddressCount,
     },
   });
+  await flushConflictNotificationsSafely(50);
   pruneSyncLogs();
 }
 
@@ -716,6 +730,15 @@ export async function waitForSyncIdle(timeoutMs = 90_000) {
   ]);
 
   return activeRunPromise === null;
+}
+
+export async function waitForSyncCompletion() {
+  const running = activeRunPromise;
+  if (!running) {
+    return;
+  }
+
+  await running;
 }
 
 function getLatestRun() {

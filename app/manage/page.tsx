@@ -1,7 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -24,6 +23,7 @@ import {
   Save,
   AlertCircle,
   Edit2,
+  RefreshCw,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -201,6 +201,57 @@ export default function ManagePage() {
     [bulkImportText, users]
   );
 
+  useEffect(() => {
+    if (!isClient || typeof window === 'undefined') {
+      return;
+    }
+
+    const localAddressCount = users.reduce((sum, user) => sum + user.addresses.length, 0);
+    if (localAddressCount === 0) {
+      return;
+    }
+
+    const syncKey = `manage-server-sync:${users
+      .map((user) => `${user.id}:${user.addresses.length}`)
+      .join('|')}`;
+    if (window.sessionStorage.getItem(syncKey) === 'done') {
+      return;
+    }
+
+    const usersWithAddresses = users.filter((user) => user.addresses.length > 0);
+    if (usersWithAddresses.length === 0) {
+      return;
+    }
+
+    void fetch('/api/users/import', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        users: usersWithAddresses,
+        replaceExisting: false,
+      }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        window.sessionStorage.setItem(syncKey, 'done');
+        console.info('[manage] synced local users to server', {
+          users: usersWithAddresses.length,
+          addresses: localAddressCount,
+        });
+      })
+      .catch((error) => {
+        console.warn(
+          '[manage] failed to sync local users to server',
+          error instanceof Error ? error.message : error
+        );
+      });
+  }, [isClient, users]);
+
   const resetForm = () => {
     setFormData({ name: '', handle: '', twitter: '', telegram: '', tags: '' });
     setAddressText('');
@@ -296,35 +347,32 @@ export default function ManagePage() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <TopNav
-        active="manage"
-        rightSlot={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={() => void handleExportAllAddresses()}
-              className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
-            >
-              <Copy className="mr-1 h-4 w-4" />
-              {copiedKind === 'all-addresses' ? '已复制全部地址' : '导出全部地址'}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => void handleExportAllTwitter()}
-              className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
-            >
-              <Copy className="mr-1 h-4 w-4" />
-              {copiedKind === 'all-twitter' ? '已复制全部推特' : '导出全部推特'}
-            </Button>
-            <Button onClick={() => setIsCreating(true)} className="bg-blue-600 text-white hover:bg-blue-700">
-              <Plus className="mr-1 h-4 w-4" />
-              手动新建
-            </Button>
-          </div>
-        }
-      />
+      <TopNav active="manage" />
 
       <main className="mx-auto flex max-w-6xl flex-col gap-8 px-4 py-8">
+        <section className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="outline"
+            onClick={() => void handleExportAllAddresses()}
+            className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
+          >
+            <Copy className="mr-1 h-4 w-4" />
+            {copiedKind === 'all-addresses' ? '已复制全部地址' : '导出全部地址'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleExportAllTwitter()}
+            className="border-zinc-700 bg-zinc-900/80 text-zinc-200 hover:bg-zinc-800"
+          >
+            <Copy className="mr-1 h-4 w-4" />
+            {copiedKind === 'all-twitter' ? '已复制全部推特' : '导出全部推特'}
+          </Button>
+          <Button onClick={() => setIsCreating(true)} className="bg-blue-600 text-white hover:bg-blue-700">
+            <Plus className="mr-1 h-4 w-4" />
+            手动新建
+          </Button>
+        </section>
+
         <section className="rounded-2xl border border-zinc-800/50 bg-zinc-900/50 p-6">
           <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
@@ -570,6 +618,12 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                 onDelete={() => deleteUser(user.id)}
                 onRemoveAddress={(address) => removeAddress(user.id, address)}
                 onUpdate={(updates) => updateUser(user.id, updates)}
+                onRefreshAvatar={() => {
+                  if (!user.twitter) return;
+                  updateUser(user.id, {
+                    avatar: buildUserAvatar(user.handle, user.twitter, `${user.twitter}:${Date.now()}`),
+                  });
+                }}
                 onStartEditingAddresses={() => {
                   setEditingAddressUserId(user.id);
                   setEditingAddressText('');
@@ -604,6 +658,7 @@ interface UserCardProps {
   onDelete: () => void;
   onRemoveAddress: (address: string) => void;
   onUpdate: (updates: Partial<User>) => void;
+  onRefreshAvatar: () => void;
   onStartEditingAddresses: () => void;
   onChangeEditingAddressText: (text: string) => void;
   onCancelEditingAddresses: () => void;
@@ -617,6 +672,7 @@ function UserCard({
   onDelete,
   onRemoveAddress,
   onUpdate,
+  onRefreshAvatar,
   onStartEditingAddresses,
   onChangeEditingAddressText,
   onCancelEditingAddresses,
@@ -666,6 +722,15 @@ function UserCard({
         </div>
 
         <div className="flex items-center gap-2">
+          {user.twitter ? (
+            <button
+              onClick={onRefreshAvatar}
+              className="rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="重新获取头像"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+          ) : null}
           <button
             onClick={() => {
               if (!isEditingProfile) {
