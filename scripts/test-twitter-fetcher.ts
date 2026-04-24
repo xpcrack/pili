@@ -289,15 +289,15 @@ async function testFetchUserTweetsUses6551Provider() {
       });
 
       assert.equal(result.provider, '6551');
-      assert.equal(result.credentialId, '6551-key-2');
+      assert.equal(result.credentialId, '6551-key-1');
       assert.equal(result.chargedUnit, 1);
       assert.deepEqual(result.fallbackChain, ['6551']);
       assert.equal(result.coverageEstablished, true);
       assert.equal(result.tweets.length, 1);
       assert.equal(result.tweets[0]?.tweetId, '1901');
       assert.equal(result.tweets[0]?.lane, 'timeline');
-      assert.deepEqual(lookupCalls, ['key-2:elonmusk']);
-      assert.deepEqual(fetchCalls, ['key-2:elonmusk:timeline']);
+      assert.deepEqual(lookupCalls, ['key-1:elonmusk']);
+      assert.deepEqual(fetchCalls, ['key-1:elonmusk:timeline']);
       assert.equal(successCalls.length, 2);
       assert.equal(failureCalls.length, 0);
       assert.equal(identityCache.get('elonmusk')?.userId, '44196397');
@@ -459,7 +459,7 @@ async function testFetchUserTweetsFallsBackToXread() {
   );
 }
 
-async function testBackfillIntentPrefersXreadBeforeSecondary6551() {
+async function testBackfillIntentKeepsSecond6551AheadOfXread() {
   await withEnv(
     {
       TWITTER_6551_API_KEY_1: 'key-1',
@@ -541,10 +541,10 @@ async function testBackfillIntentPrefersXreadBeforeSecondary6551() {
         maxItems: 5,
         intent: 'backfill',
       });
-      assert.equal(backfillResult.provider, 'xread');
-      assert.equal(backfillResult.credentialId, 'xread-default');
-      assert.deepEqual(backfillResult.fallbackChain, ['6551', 'xread']);
-      assert.equal(backfillResult.tweets[0]?.fullText, 'xread backfill');
+      assert.equal(backfillResult.provider, '6551');
+      assert.equal(backfillResult.credentialId, '6551-key-2');
+      assert.deepEqual(backfillResult.fallbackChain, ['6551', '6551']);
+      assert.equal(backfillResult.tweets[0]?.fullText, 'second 6551 key');
     }
   );
 }
@@ -875,7 +875,7 @@ async function main() {
   await testFetchUserTweetsUses6551Provider();
   await testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached();
   await testFetchUserTweetsFallsBackToXread();
-  await testBackfillIntentPrefersXreadBeforeSecondary6551();
+  await testBackfillIntentKeepsSecond6551AheadOfXread();
   await testFetchTweetsByIdsUses6551ChargedUnits();
   await testFetchTweetsByIdsFallsBackWhen6551ReturnsNull();
   await testFetchTweetsByIdsMergesMixedProviderResultsInRequestOrder();
