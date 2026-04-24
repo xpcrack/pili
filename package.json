@@ -16,6 +16,8 @@
     "test:feed-completeness-visibility": "tsx scripts/test-feed-completeness-visibility.ts",
     "test:feed-prewarm-service": "tsx scripts/test-feed-prewarm-service.ts",
     "test:source-reconciliation": "tsx scripts/test-source-reconciliation.ts",
+    "test:search-filters": "tsx scripts/test-search-filters.ts",
+    "test:trade-usd": "tsx scripts/test-trade-usd.ts",
     "test:address-book": "tsx scripts/test-address-book.ts",
     "test:address-assets": "tsx scripts/test-address-assets.ts",
     "test:conflict-repo": "tsx scripts/test-conflict-repo.ts",
