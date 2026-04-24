@@ -138,6 +138,23 @@ function run() {
     true,
     'non-trade categories should ignore trade thresholds'
   );
+  assert.equal(
+    matchesFeedSearchFilters(tradeItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      minTradeAmountUsd: '1,000',
+      minTradeMarketCapUsd: '700,000',
+    }),
+    true,
+    'comma-formatted thresholds should still apply as numeric filters'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(tradeItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      minTradeAmountUsd: '3,000',
+    }),
+    false,
+    'comma-formatted thresholds should still block smaller trade amounts'
+  );
 
   const disabledTypes: FeedSearchFilters['typeFilters'] = {
     trade: false,

@@ -44,7 +44,7 @@ function toComparableNumber(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return null;
 
-  const parsed = Number(trimmed);
+  const parsed = Number.parseFloat(trimmed.replaceAll(',', ''));
   return Number.isFinite(parsed) ? parsed : null;
 }
 

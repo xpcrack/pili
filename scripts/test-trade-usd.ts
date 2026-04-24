@@ -37,6 +37,48 @@ async function run() {
   );
 
   assert.equal(
+    await resolveTradeAmountUsdAtTx(
+      {
+        chain: 'ethereum',
+        quoteToken: 'ETH',
+        quoteAmount: '1.5',
+        token: 'TEST',
+        value: 1,
+        txTimestampMs: 1_710_000_000_000,
+      },
+      {
+        fetchHistoricalTokenPrice: async () => ({
+          priceUsd: 3200,
+          candleTimestampMs: 1_710_000_000_000,
+          bar: '1m',
+        }),
+      }
+    ),
+    4800
+  );
+
+  assert.equal(
+    await resolveTradeAmountUsdAtTx(
+      {
+        chain: 'base',
+        quoteToken: 'WETH',
+        quoteAmount: '0.25',
+        token: 'TEST',
+        value: 1,
+        txTimestampMs: 1_710_000_000_000,
+      },
+      {
+        fetchHistoricalTokenPrice: async () => ({
+          priceUsd: 3200,
+          candleTimestampMs: 1_710_000_000_000,
+          bar: '1m',
+        }),
+      }
+    ),
+    800
+  );
+
+  assert.equal(
     await resolveTradeAmountUsdAtTx({
       chain: 'bsc',
       token: 'TEST',

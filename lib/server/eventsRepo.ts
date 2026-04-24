@@ -211,6 +211,7 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
     metadata: {
       ...mergedMetadata,
       rawText: pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText),
+      tradeAmountUsdAtTx: incoming.metadata.tradeAmountUsdAtTx ?? existing.metadata.tradeAmountUsdAtTx,
       marketCapAtTxUsd: incoming.metadata.marketCapAtTxUsd ?? existing.metadata.marketCapAtTxUsd,
       marketCapAtTxSource: incoming.metadata.marketCapAtTxSource ?? existing.metadata.marketCapAtTxSource,
       marketCapAtTxEstimated: incoming.metadata.marketCapAtTxEstimated ?? existing.metadata.marketCapAtTxEstimated,

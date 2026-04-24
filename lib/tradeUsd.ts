@@ -7,6 +7,14 @@ const WRAPPED_NATIVE_BY_CHAIN: Record<string, { address: string; symbols: Set<st
     address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
     symbols: new Set(['BNB', 'WBNB']),
   },
+  ethereum: {
+    address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+    symbols: new Set(['ETH', 'WETH']),
+  },
+  base: {
+    address: '0x4200000000000000000000000000000000000006',
+    symbols: new Set(['ETH', 'WETH']),
+  },
   solana: {
     address: 'So11111111111111111111111111111111111111112',
     symbols: new Set(['SOL', 'WSOL']),
