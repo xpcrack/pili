@@ -1,5 +1,6 @@
 import { parseGroupedTransaction } from '@/lib/parsing/core';
 import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
+import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import type { GroupedTransaction } from '@/lib/parsing/types';
 import { Activity, ActivityType, User, type AddressInfo } from '@/types';
 
@@ -109,6 +110,17 @@ export async function convertToActivity({
     tokenSymbol: parsed.primaryAsset.symbol,
     tokenAddress: parsed.primaryAsset.tokenAddress,
   });
+  const tradeAmountUsdAtTx =
+    parsed.txAction === 'buy' || parsed.txAction === 'sell'
+      ? await resolveTradeAmountUsdAtTx({
+          chain: addressInfo.chain,
+          txTimestampMs: parsed.timestamp,
+          token: parsed.primaryAsset.symbol,
+          value: parsed.primaryAsset.amount,
+          quoteToken: parsed.quoteAsset?.token,
+          quoteAmount: parsed.quoteAsset?.amount,
+        })
+      : null;
 
   return {
     id: `${user.id}-${group.txHash || parsed.timestamp}-${Math.random().toString(36).slice(2, 11)}`,
@@ -132,6 +144,7 @@ export async function convertToActivity({
       txAction: parsed.txAction,
       trackedAddress: addressInfo.address,
       uncertainFrom: parsed.addressMatch.uncertainFrom,
+      tradeAmountUsdAtTx: tradeAmountUsdAtTx ?? undefined,
       ...displayMetadata,
     },
   };
