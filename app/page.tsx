@@ -652,10 +652,27 @@ export default function Home() {
                   请至少选择一种类型
                 </div>
               ) : matchedFeed.length === 0 && hasActiveLocalFilters ? (
-                <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
-                  {searchFilters.keyword.trim()
-                    ? '没有匹配的人物、推文内容、CA 或地址'
-                    : '当前筛选条件下没有结果'}
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
+                    {searchFilters.keyword.trim()
+                      ? '没有匹配的人物、推文内容、CA 或地址'
+                      : '当前筛选条件下没有结果'}
+                  </div>
+                  <div className="flex items-center justify-end rounded-lg border border-zinc-800/70 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400">
+                    {expandFeedback && (
+                      <span className="mr-3 text-zinc-500">{expandFeedback}</span>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handlePullMoreHistory()}
+                        disabled={isExpanding}
+                        className="rounded border border-zinc-700 px-3 py-1 text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        拉取更多（前推 7 天）
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
