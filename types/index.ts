@@ -134,6 +134,7 @@ export interface Activity {
     coHitUserNames?: string[];
     coHitAddresses?: string[];
     marketCapAtTxUsd?: number;
+    tradeAmountUsdAtTx?: number;
     marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot';
     marketCapAtTxEstimated?: boolean;
     displayWalletLabel?: string;

@@ -3,6 +3,7 @@ import { collectAddressAssetSnapshots } from '@/lib/addressAssetSnapshots';
 import { evaluateActivityForFeed, getDefaultFilterEngineConfig } from '@/lib/filterEngine';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
 import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
+import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
 import { Activity, User } from '@/types';
 
@@ -85,6 +86,39 @@ const OKX_WINDOW_RESULT_LIMIT = 100;
 const MIN_WINDOW_SPLIT_MS = 60 * 1000;
 const MAX_WINDOW_SPLIT_DEPTH = 12;
 const SKIP_TX_MARKET_CAP_BACKFILL = process.env.SKIP_TX_MARKET_CAP_BACKFILL === 'true';
+
+function hasNumericTradeAmountUsdAtTx(activity: Activity) {
+  return (
+    typeof activity.metadata.tradeAmountUsdAtTx === 'number' &&
+    Number.isFinite(activity.metadata.tradeAmountUsdAtTx)
+  );
+}
+
+export async function backfillTradeAmountUsdAtTxForActivity(activity: Activity, fallbackChain?: string | null) {
+  if (activity.metadata.txAction !== 'buy' && activity.metadata.txAction !== 'sell') {
+    return null;
+  }
+
+  if (hasNumericTradeAmountUsdAtTx(activity)) {
+    return activity.metadata.tradeAmountUsdAtTx ?? null;
+  }
+
+  const tradeAmountUsdAtTx = await resolveTradeAmountUsdAtTx({
+    chain: activity.metadata.chain || fallbackChain || null,
+    txTimestampMs: activity.timestamp,
+    token: activity.metadata.token,
+    value: activity.metadata.value,
+    quoteToken: activity.metadata.quoteToken,
+    quoteAmount: activity.metadata.quoteAmount,
+  });
+
+  if (typeof tradeAmountUsdAtTx === 'number' && Number.isFinite(tradeAmountUsdAtTx)) {
+    activity.metadata.tradeAmountUsdAtTx = tradeAmountUsdAtTx;
+    return tradeAmountUsdAtTx;
+  }
+
+  return null;
+}
 
 async function fetchQualifiedWindowTransactions(
   address: string,
@@ -202,6 +236,8 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
           if (!activity) {
             continue;
           }
+
+          await backfillTradeAmountUsdAtTxForActivity(activity, addressInfo.chain);
 
           if (
             !SKIP_TX_MARKET_CAP_BACKFILL &&

@@ -29,6 +29,7 @@ export interface ParserFixtureCase {
     value: string;
     quoteToken?: string;
     quoteAmount?: string;
+    tradeAmountUsdAtTx?: number | null;
     titleIncludes: string;
     contentIncludes: string;
     uncertainFrom: boolean;
@@ -189,6 +190,7 @@ export const parserFixtureCases: ParserFixtureCase[] = [
       value: '1200',
       quoteToken: 'BNB',
       quoteAmount: '0.75',
+      tradeAmountUsdAtTx: 450,
       titleIncludes: '买入资产',
       contentIncludes: '买入 1200 MOON，花费 0.75 BNB',
       uncertainFrom: false,
@@ -232,6 +234,7 @@ export const parserFixtureCases: ParserFixtureCase[] = [
       value: '800',
       quoteToken: 'BNB',
       quoteAmount: '0.5',
+      tradeAmountUsdAtTx: 300,
       titleIncludes: '卖出资产',
       contentIncludes: '卖出 800 MOON，获得 0.5 BNB',
       uncertainFrom: false,
@@ -285,6 +288,7 @@ export const parserFixtureCases: ParserFixtureCase[] = [
       value: '400',
       quoteToken: 'BNB',
       quoteAmount: '0.2',
+      tradeAmountUsdAtTx: 120,
       titleIncludes: '买入资产',
       contentIncludes: '买入 400 OMEGA，花费 0.2 BNB',
       uncertainFrom: true,
@@ -462,6 +466,7 @@ export interface TelegramMonitorFixtureCase {
     walletAliasLabel: string | null;
     trackedWalletAddress: string | null;
     txHash: string | null;
+    tradeAmountUsdAtTx?: number | null;
   };
 }
 
@@ -537,6 +542,7 @@ export const telegramMonitorFixtureCases: TelegramMonitorFixtureCase[] = [
       walletAliasLabel: 'user_d#1',
       trackedWalletAddress: '0x1111111111111111111111111111111111111111',
       txHash: '0x51c5fa650a72458b0a476b3ff85cd7a21b9c76bddcc1bb3f5e35504f2d650ca4',
+      tradeAmountUsdAtTx: 84.324708,
     },
   },
   {

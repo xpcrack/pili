@@ -278,7 +278,7 @@ export async function GET(request: NextRequest) {
     const prewarm = readPrewarmProgressSnapshot();
 
     if (shouldUseTelegramMonitorFeed(request)) {
-      const monitorFeed = readTelegramMonitorFeed(Math.max(pageSize, 200));
+      const monitorFeed = await readTelegramMonitorFeed(Math.max(pageSize, 200));
       const filteredByUser = userId ? monitorFeed.filter((item) => item.user.id === userId) : monitorFeed;
       const paged = filteredByUser.slice(0, pageSize);
       const users = listTrackedUsers();

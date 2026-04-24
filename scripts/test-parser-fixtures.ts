@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { Activity, User } from '@/types';
 
 import {
+  fixtureAddresses,
   parserFixtureCases,
   poisonFixtureCases,
   telegramMonitorFixtureCases,
@@ -90,6 +91,13 @@ function createFixtureFetch(fixture: ParserFixtureCase, metrics: { detailFetches
       });
     }
 
+    if (url.includes('/api/v6/dex/market/historical-candles?')) {
+      return createJsonResponse({
+        code: '0',
+        data: [[String(fixture.transactions[0]?.txTime || 1710000000000), '0', '0', '0', '600', '0', '0', '0']],
+      });
+    }
+
     throw new Error(`Unhandled fixture fetch for ${fixture.name}: ${url} (${init?.method || 'GET'})`);
   };
 }
@@ -102,6 +110,11 @@ function assertActivityMatches(fixture: ParserFixtureCase, activity: Activity) {
   assert.equal(activity.metadata.value, expected.value, `${fixture.name}: value mismatch`);
   assert.equal(activity.metadata.quoteToken, expected.quoteToken, `${fixture.name}: quoteToken mismatch`);
   assert.equal(activity.metadata.quoteAmount, expected.quoteAmount, `${fixture.name}: quoteAmount mismatch`);
+  assert.equal(
+    activity.metadata.tradeAmountUsdAtTx ?? null,
+    expected.tradeAmountUsdAtTx ?? null,
+    `${fixture.name}: tradeAmountUsdAtTx mismatch`
+  );
   assert.equal(activity.metadata.uncertainFrom, expected.uncertainFrom, `${fixture.name}: uncertainFrom mismatch`);
   assert.match(activity.title || '', new RegExp(expected.titleIncludes), `${fixture.name}: title mismatch`);
   assert.match(activity.content, new RegExp(expected.contentIncludes), `${fixture.name}: content mismatch`);
@@ -254,6 +267,7 @@ async function runTelegramMonitorFixtures() {
   const { parseXxyyTelegramText } = await import('@/lib/server/xxyyTelegramParser');
   const { POST } = await import('@/app/api/telegram/monitor/route');
   const { ingestTelegramMonitorUpdate } = await import('@/lib/server/telegramMonitorIngest');
+  const { projectTelegramMonitorEvent } = await import('@/lib/server/telegramMonitorFeed');
   const { createTrackedUser, deleteTrackedUser } = await import('@/lib/server/trackedUsersRepo');
   const { getDb } = await import('@/lib/server/sqlite');
   const { readSystemConfig, saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
@@ -306,6 +320,37 @@ async function runTelegramMonitorFixtures() {
   });
 
   try {
+    const projected = await projectTelegramMonitorEvent({
+      event: {
+        chain: routeFixture.expected.chain!,
+        tokenAddress: routeFixture.expected.tokenAddress!,
+        tokenSymbol: routeFixture.expected.tokenSymbol,
+        txHash: routeFixture.expected.txHash,
+        marketCapUsd: routeFixture.expected.marketCapUsd,
+        priceUsd: 0.0036,
+        quoteAmount: routeFixture.expected.quoteAmount,
+        quoteSymbol: routeFixture.expected.quoteSymbol,
+        action: routeFixture.expected.action,
+        actionLabel: routeFixture.expected.actionLabel,
+        actionVariant: routeFixture.expected.actionVariant,
+        walletLabel: routeFixture.expected.walletAliasLabel,
+        walletGroupLabel: routeFixture.expected.walletGroupLabel,
+        walletAliasLabel: routeFixture.expected.walletAliasLabel,
+        trackedWalletAddress: routeFixture.expected.trackedWalletAddress,
+        eventTimeMs: routeFixture.fallbackTimestampMs,
+        rawText: routeFixture.text,
+        updatedAt: routeFixture.fallbackTimestampMs,
+      },
+    });
+
+    assert.ok(projected, 'telegram projection: expected projected activity');
+    assert.equal(
+      projected?.activity.metadata.tradeAmountUsdAtTx ?? null,
+      routeFixture.expected.tradeAmountUsdAtTx ?? null,
+      'telegram projection: tradeAmountUsdAtTx mismatch'
+    );
+    console.log('PASS telegram-project xxyy-bot-to-bot-buy');
+
     const requestBody = {
       update_id: 900001,
       message: {
@@ -482,6 +527,34 @@ async function runTelegramMonitorFixtures() {
   }
 }
 
+async function runTradeAmountBackfillFixture() {
+  const { backfillTradeAmountUsdAtTxForActivity } = await import('@/lib/activityFeed');
+
+  const activity: Activity = {
+    id: 'trade-backfill',
+    userId: 'fixture-user',
+    source: 'blockchain',
+    type: 'transfer',
+    title: '买入资产',
+    content: '买入 2 TEST，花费 2 USDT',
+    timestamp: 1710001234000,
+    metadata: {
+      chain: 'bsc',
+      txAction: 'buy',
+      token: 'TEST',
+      value: '2',
+      quoteToken: 'USDT',
+      quoteAmount: '2',
+      trackedAddress: fixtureAddresses.trackedA,
+    },
+  };
+
+  await backfillTradeAmountUsdAtTxForActivity(activity, 'bsc');
+
+  assert.equal(activity.metadata.tradeAmountUsdAtTx, 2, 'tradeAmountUsdAtTx backfill mismatch');
+  console.log('PASS activity-feed trade-amount-backfill');
+}
+
 async function runTwitterRelayFixtures() {
   const { POST } = await import('@/app/api/twitter/relay/route');
   const { createTrackedUser, deleteTrackedUser } = await import('@/lib/server/trackedUsersRepo');
@@ -626,6 +699,9 @@ async function main() {
 
   console.log('\nRunning telegram monitor fixtures...');
   await runTelegramMonitorFixtures();
+
+  console.log('\nRunning trade amount backfill fixture...');
+  await runTradeAmountBackfillFixture();
 
   console.log('\nRunning twitter relay fixtures...');
   await runTwitterRelayFixtures();

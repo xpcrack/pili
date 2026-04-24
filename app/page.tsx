@@ -1,6 +1,6 @@
 'use client';
 
-import { KeyboardEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
@@ -19,11 +19,10 @@ import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { shouldShowGlobalCompletenessWindow } from '@/lib/feedCompletenessVisibility';
 import { Input } from '@/components/ui/input';
 import {
-  applySuggestionToInput,
-  buildSearchSuggestionSources,
-  getSearchSuggestions,
-  hasActiveSearchQuery,
-  parseSearchQuery,
+  type FeedSearchFilters,
+  DEFAULT_FEED_SEARCH_FILTERS,
+  hasAnyEnabledFeedType,
+  matchesFeedSearchFilters,
 } from '@/lib/smartSearch';
 import {
   type FeedTimeDisplayMode,
@@ -48,9 +47,7 @@ export default function Home() {
   const [selectedUserVisibleCount, setSelectedUserVisibleCount] = useState(MIN_SELECTED_USER_FEED_ITEMS);
   const [isExpanding, setIsExpanding] = useState(false);
   const [expandFeedback, setExpandFeedback] = useState<string | null>(null);
-  const [searchInput, setSearchInput] = useState('');
-  const [isSuggestionOpen, setIsSuggestionOpen] = useState(false);
-  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+  const [searchFilters, setSearchFilters] = useState<FeedSearchFilters>(DEFAULT_FEED_SEARCH_FILTERS);
   const [timeDisplayMode, setTimeDisplayMode] = useState<FeedTimeDisplayMode>('relative');
   const isClient = useIsClient();
   
@@ -70,7 +67,7 @@ export default function Home() {
     summary,
     diagnostics,
     prewarmLabel,
-  } = useActivityPolling(selectedUserId, searchInput);
+  } = useActivityPolling(selectedUserId, '');
   const { dismissNewForUser } = useUserStore();
 
   useEffect(() => {
@@ -111,16 +108,14 @@ export default function Home() {
     return users.find(u => u.id === selectedUserId) || null;
   }, [selectedUserId, users]);
 
-  const parsedSearchQuery = useMemo(() => parseSearchQuery(searchInput), [searchInput]);
-  const hasSearchQuery = hasActiveSearchQuery(parsedSearchQuery);
-  const suggestionSources = useMemo(
-    () => buildSearchSuggestionSources(feed, users),
-    [feed, users]
-  );
-  const suggestions = useMemo(
-    () => getSearchSuggestions(searchInput, suggestionSources),
-    [searchInput, suggestionSources]
-  );
+  const hasActiveLocalFilters =
+    searchFilters.keyword.trim().length > 0 ||
+    !searchFilters.typeFilters.trade ||
+    !searchFilters.typeFilters.transfer ||
+    !searchFilters.typeFilters.twitter ||
+    searchFilters.minTradeAmountUsd.trim().length > 0 ||
+    searchFilters.minTradeMarketCapUsd.trim().length > 0;
+  const hasEnabledFeedTypes = hasAnyEnabledFeedType(searchFilters.typeFilters);
 
   const selectedUserFeed = useMemo(() => {
     if (!selectedUserId) {
@@ -128,16 +123,20 @@ export default function Home() {
     }
     return feed.filter((item) => item.user.id === selectedUserId);
   }, [feed, selectedUserId]);
-  const pagedSourceFeed = useMemo(() => {
+  const orderedFeed = useMemo(() => {
     if (selectedUserId) {
       return prepareUserFeed(selectedUserFeed);
     }
     return prepareGlobalFeed(selectedUserFeed);
   }, [selectedUserFeed, selectedUserId]);
+  const matchedFeed = useMemo(
+    () => orderedFeed.filter((item) => matchesFeedSearchFilters(item, searchFilters)),
+    [orderedFeed, searchFilters]
+  );
   const filteredFeed = useMemo(() => {
-    if (!selectedUserId) return pagedSourceFeed.slice(0, globalVisibleCount);
-    return pagedSourceFeed.slice(0, selectedUserVisibleCount);
-  }, [selectedUserId, globalVisibleCount, pagedSourceFeed, selectedUserVisibleCount]);
+    if (!selectedUserId) return matchedFeed.slice(0, globalVisibleCount);
+    return matchedFeed.slice(0, selectedUserVisibleCount);
+  }, [selectedUserId, matchedFeed, globalVisibleCount, selectedUserVisibleCount]);
   const isInitialLoading = loading && feed.length === 0;
   const showGlobalCompletenessWindow = shouldShowGlobalCompletenessWindow({
     selectedUserId,
@@ -146,11 +145,11 @@ export default function Home() {
 
   const visibleUserIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const item of feed) {
+    for (const item of matchedFeed) {
       ids.add(item.user.id);
     }
     return ids;
-  }, [feed]);
+  }, [matchedFeed]);
 
   const sidebarUsers = useMemo(() => {
     const sorted = [...users];
@@ -170,12 +169,12 @@ export default function Home() {
       return a.name.localeCompare(b.name, 'zh-CN');
     });
 
-    if (hasSearchQuery) {
+    if (hasActiveLocalFilters) {
       return sorted.filter((user) => visibleUserIds.has(user.id));
     }
 
     return sorted;
-  }, [users, sidebarSortMode, latestActivityAtByUser, hasSearchQuery, visibleUserIds]);
+  }, [users, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds]);
 
   const addressAliasMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -199,48 +198,6 @@ export default function Home() {
     setIsExpanding(false);
   };
 
-  const safeActiveSuggestionIndex = suggestions.length === 0
-    ? 0
-    : Math.min(activeSuggestionIndex, suggestions.length - 1);
-
-  const handleApplySuggestion = (suggestionText: string) => {
-    setSearchInput((current) => applySuggestionToInput(current, suggestionText));
-    setIsSuggestionOpen(false);
-    setActiveSuggestionIndex(0);
-    resetExpandStateForSearch();
-  };
-
-  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (!isSuggestionOpen || suggestions.length === 0) {
-      return;
-    }
-
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setActiveSuggestionIndex((index) => (index + 1) % suggestions.length);
-      return;
-    }
-
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActiveSuggestionIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
-      return;
-    }
-
-    if (event.key === 'Enter' || event.key === 'Tab') {
-      event.preventDefault();
-      const suggestion = suggestions[safeActiveSuggestionIndex];
-      if (!suggestion) return;
-      handleApplySuggestion(suggestion.insertText);
-      return;
-    }
-
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      setIsSuggestionOpen(false);
-    }
-  };
-
   // 处理选择用户
   const handleSelectUser = async (user: User | null) => {
     setSelectedUserId(user?.id || null);
@@ -254,9 +211,8 @@ export default function Home() {
       setIsExpanding(true);
       setExpandFeedback('正在从本地库读取该人物动态...');
       const result = await refetch({
-        targetCount: hasSearchQuery ? undefined : MIN_SELECTED_USER_FEED_ITEMS,
+        targetCount: MIN_SELECTED_USER_FEED_ITEMS,
         selectedUserId: user.id,
-        searchQuery: searchInput,
         syncStrategy: 'local',
       });
       setIsExpanding(false);
@@ -274,7 +230,7 @@ export default function Home() {
       const historySuffix =
         result.historyComplete === true
           ? '（本地历史已补完）'
-          : result.selectedFeedLength < MIN_SELECTED_USER_FEED_ITEMS && !hasSearchQuery
+          : result.selectedFeedLength < MIN_SELECTED_USER_FEED_ITEMS
             ? '（已自动继续补历史）'
             : '';
       setExpandFeedback(
@@ -292,7 +248,7 @@ export default function Home() {
     setExpandFeedback(null);
     setGlobalVisibleCount(MAX_GLOBAL_FEED_ITEMS);
     setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
-    void refetch({ selectedUserId: null, searchQuery: searchInput, syncStrategy: 'local' });
+    void refetch({ selectedUserId: null, syncStrategy: 'local' });
   };
 
   const handlePullMoreHistory = async () => {
@@ -307,14 +263,14 @@ export default function Home() {
 
     if (isSelectedMode) {
       setSelectedUserVisibleCount(nextVisibleCount);
-      if (pagedSourceFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, pagedSourceFeed.length)}/${pagedSourceFeed.length} 条`);
+      if (matchedFeed.length >= nextVisibleCount) {
+        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, matchedFeed.length)}/${matchedFeed.length} 条`);
         return;
       }
     } else {
       setGlobalVisibleCount(nextVisibleCount);
-      if (pagedSourceFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, pagedSourceFeed.length)}/${pagedSourceFeed.length} 条`);
+      if (matchedFeed.length >= nextVisibleCount) {
+        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, matchedFeed.length)}/${matchedFeed.length} 条`);
         return;
       }
     }
@@ -325,7 +281,6 @@ export default function Home() {
       const localResult = await refetch({
         targetCount: nextVisibleCount,
         selectedUserId,
-        searchQuery: searchInput,
         syncStrategy: 'local',
       });
       setIsExpanding(false);
@@ -336,8 +291,12 @@ export default function Home() {
       }
 
       const localCount = isSelectedMode ? localResult.selectedFeedLength : localResult.feedLength;
-      setExpandFeedback(`已从本地库展开到 ${localCount} 条`);
-      if (localCount >= nextVisibleCount || localResult.hasMore) {
+      setExpandFeedback(
+        hasActiveLocalFilters
+          ? '已刷新本地库，筛选结果已更新'
+          : `已从本地库展开到 ${localCount} 条`
+      );
+      if (localResult.hasMore || (!hasActiveLocalFilters && localCount >= nextVisibleCount)) {
         return;
       }
     }
@@ -350,7 +309,6 @@ export default function Home() {
     );
     const result = await refetch({
       selectedUserId,
-      searchQuery: searchInput,
       syncStrategy: 'backfill',
       backfillScope: isSelectedMode ? 'user' : 'global',
     });
@@ -362,6 +320,11 @@ export default function Home() {
     }
     const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
     const autoBackfillSuffix = '（已前推 7 天）';
+
+    if (hasActiveLocalFilters) {
+      setExpandFeedback(`API 拉取完成，筛选结果已更新${autoBackfillSuffix}${partialSuffix}`);
+      return;
+    }
 
     if (!isSelectedMode && result.feedLength >= nextVisibleCount) {
       setExpandFeedback(
@@ -517,27 +480,18 @@ export default function Home() {
             <div className="relative mb-4 rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-3">
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
-                  value={searchInput}
+                  value={searchFilters.keyword}
                   onChange={(event) => {
-                    setSearchInput(event.target.value);
-                    setIsSuggestionOpen(true);
-                    setActiveSuggestionIndex(0);
+                    setSearchFilters((current) => ({ ...current, keyword: event.target.value }));
                     resetExpandStateForSearch();
                   }}
-                  onFocus={() => setIsSuggestionOpen(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setIsSuggestionOpen(false), 120);
-                  }}
-                  onKeyDown={handleSearchKeyDown}
-                  placeholder="智能搜索：person:昵称 address:0x... tx:... ca:... ticker:SOL action:buy"
+                  placeholder="搜索人物名字、推文内容、CA 或地址"
                   className="h-9 border-zinc-700 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500"
                 />
                 <button
                   type="button"
                   onClick={() => {
-                    setSearchInput('');
-                    setIsSuggestionOpen(false);
-                    setActiveSuggestionIndex(0);
+                    setSearchFilters(DEFAULT_FEED_SEARCH_FILTERS);
                     resetExpandStateForSearch();
                   }}
                   className="h-9 rounded border border-zinc-700 px-3 text-sm text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100"
@@ -545,33 +499,72 @@ export default function Home() {
                   清空筛选
                 </button>
               </div>
-              {isSuggestionOpen && suggestions.length > 0 && (
-                <div className="absolute left-3 right-3 top-[calc(100%-2px)] z-40 mt-1 overflow-hidden rounded-md border border-zinc-700 bg-zinc-900 shadow-lg">
-                  <ul className="max-h-64 overflow-y-auto py-1 text-sm">
-                    {suggestions.map((suggestion, index) => (
-                      <li key={`${suggestion.insertText}-${index}`}>
-                        <button
-                          type="button"
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            handleApplySuggestion(suggestion.insertText);
-                          }}
-                          className={`w-full px-3 py-1.5 text-left transition-colors ${
-                            index === safeActiveSuggestionIndex
-                              ? 'bg-zinc-700 text-zinc-100'
-                              : 'text-zinc-300 hover:bg-zinc-800'
-                          }`}
-                        >
-                          {suggestion.label}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {[
+                  ['trade', '交易'],
+                  ['transfer', '转账'],
+                  ['twitter', '推特'],
+                ].map(([key, label]) => {
+                  const typedKey = key as keyof FeedSearchFilters['typeFilters'];
+                  const active = searchFilters.typeFilters[typedKey];
+
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setSearchFilters((current) => ({
+                          ...current,
+                          typeFilters: {
+                            ...current.typeFilters,
+                            [typedKey]: !current.typeFilters[typedKey],
+                          },
+                        }));
+                        resetExpandStateForSearch();
+                      }}
+                      className={`rounded border px-3 py-1.5 text-sm transition-colors ${
+                        active
+                          ? 'border-zinc-600 bg-zinc-700 text-zinc-100'
+                          : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {searchFilters.typeFilters.trade ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <Input
+                    value={searchFilters.minTradeAmountUsd}
+                    onChange={(event) => {
+                      setSearchFilters((current) => ({
+                        ...current,
+                        minTradeAmountUsd: event.target.value,
+                      }));
+                      resetExpandStateForSearch();
+                    }}
+                    placeholder="最低成交金额（USD）"
+                    className="h-9 border-zinc-700 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500"
+                  />
+                  <Input
+                    value={searchFilters.minTradeMarketCapUsd}
+                    onChange={(event) => {
+                      setSearchFilters((current) => ({
+                        ...current,
+                        minTradeMarketCapUsd: event.target.value,
+                      }));
+                      resetExpandStateForSearch();
+                    }}
+                    placeholder="最低成交市值"
+                    className="h-9 border-zinc-700 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500"
+                  />
                 </div>
-              )}
-              <p className="mt-2 text-xs text-zinc-500">
-                支持字段：person / address / tx / ca / ticker / action。空格分隔表示 AND 条件。
-              </p>
+              ) : null}
+              {searchFilters.typeFilters.trade &&
+              (searchFilters.minTradeAmountUsd.trim() || searchFilters.minTradeMarketCapUsd.trim()) ? (
+                <p className="mt-2 text-xs text-zinc-500">交易金额和成交市值筛选仅对交易生效</p>
+              ) : null}
             </div>
 
             {selectedUser && (
@@ -654,6 +647,33 @@ export default function Home() {
                     <div key={i} className="h-16 animate-pulse rounded-xl bg-zinc-900/50" />
                   ))}
                 </div>
+              ) : !hasEnabledFeedTypes ? (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-300">
+                  请至少选择一种类型
+                </div>
+              ) : matchedFeed.length === 0 && hasActiveLocalFilters ? (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
+                    {searchFilters.keyword.trim()
+                      ? '没有匹配的人物、推文内容、CA 或地址'
+                      : '当前筛选条件下没有结果'}
+                  </div>
+                  <div className="flex items-center justify-end rounded-lg border border-zinc-800/70 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400">
+                    {expandFeedback && (
+                      <span className="mr-3 text-zinc-500">{expandFeedback}</span>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handlePullMoreHistory()}
+                        disabled={isExpanding}
+                        className="rounded border border-zinc-700 px-3 py-1 text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        拉取更多（前推 7 天）
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
                   <div className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
@@ -699,13 +719,11 @@ export default function Home() {
                     <div>
                       <UserIcon className="mx-auto mb-3 h-12 w-12 text-zinc-600" />
                       <p className="text-zinc-500">
-                        {historyComplete === false && !hasSearchQuery
+                        {historyComplete === false && !hasActiveLocalFilters
                           ? `${selectedUser.name} 本地动态不足，正在继续补历史...`
-                          : hasSearchQuery
-                            ? `${selectedUser.name} 在当前筛选下暂无动态`
-                            : `${selectedUser.name} 暂无动态`}
+                          : `${selectedUser.name} 暂无动态`}
                       </p>
-                      {selectedUserId && !hasSearchQuery && (
+                      {selectedUserId && !hasActiveLocalFilters && (
                         <p className="mt-2 text-xs text-zinc-600">
                           本地已收录 {localQualifiedCount} 条合格动态
                           {historyComplete === true ? '，历史已补完' : '，历史仍在补齐中'}
@@ -713,9 +731,7 @@ export default function Home() {
                       )}
                     </div>
                   ) : (
-                    <p className="text-zinc-500">
-                      {hasSearchQuery ? '当前筛选条件下暂无动态' : '暂无动态'}
-                    </p>
+                    <p className="text-zinc-500">暂无动态</p>
                   )}
                 </div>
               )}

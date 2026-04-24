@@ -5,7 +5,7 @@ import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Card, CardContent } from '@/components/ui/card';
 import { getUserAvatar } from '@/lib/userProfile';
-import { formatTokenAmount } from '@/lib/assetFormat';
+import { formatTokenAmount, formatTradeAmountUsdLabel } from '@/lib/assetFormat';
 import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
 import {
   formatAbsoluteTimeCompact,
@@ -222,6 +222,13 @@ export function ActivityCard({
   const isTradeAction =
     activity.metadata.txAction === 'buy' ||
     activity.metadata.txAction === 'sell';
+  const tradeAmountUsdAtTx =
+    typeof activity.metadata.tradeAmountUsdAtTx === 'number' &&
+    Number.isFinite(activity.metadata.tradeAmountUsdAtTx) &&
+    activity.metadata.tradeAmountUsdAtTx > 0
+      ? activity.metadata.tradeAmountUsdAtTx
+      : null;
+  const tradeAmountUsdLabel = isTradeAction ? formatTradeAmountUsdLabel(tradeAmountUsdAtTx) : null;
   const isSendReceiveTransfer =
     isTransfer && !isTradeAction;
   const tradeMarketCapUsd =
@@ -740,6 +747,19 @@ export function ActivityCard({
                           >
                             {displayMarketCapText}
                           </button>
+                        ) : isTradeAction ? (
+                          <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-right leading-none tabular-nums">
+                            {tradeAmountUsdLabel ? (
+                              <span className="text-zinc-400">
+                                {tradeAmountUsdLabel}
+                              </span>
+                            ) : null}
+                            {displayMarketCapText ? (
+                              <span className="text-zinc-300" title={marketCapTooltip}>
+                                {displayMarketCapText}
+                              </span>
+                            ) : null}
+                          </div>
                         ) : displayMarketCapText ? (
                           <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
                             {displayMarketCapText}
