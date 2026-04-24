@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { extractTweetTokenMentions } from '../lib/twitter/extractTweetTokenMentions';
+
 import './server-only-shim.cjs';
 
 async function runSchemaTest() {
@@ -73,4 +75,27 @@ async function runSchemaTest() {
   }
 }
 
-void runSchemaTest();
+function testExtractTweetTokenMentions() {
+  const mentions = extractTweetTokenMentions(
+    'Adding more size on $ABC. CA: 0x1234567890abcdef1234567890abcdef12345678 but staying neutral on $XYZ.'
+  );
+
+  assert.deepEqual(
+    mentions.map((item) => ({
+      tokenSymbol: item.tokenSymbol,
+      tokenAddress: item.tokenAddress,
+      matchSource: item.matchSource,
+    })),
+    [
+      { tokenSymbol: 'ABC', tokenAddress: '0x1234567890abcdef1234567890abcdef12345678', matchSource: 'both' },
+      { tokenSymbol: 'XYZ', tokenAddress: null, matchSource: 'ticker' },
+    ]
+  );
+}
+
+async function run() {
+  await runSchemaTest();
+  testExtractTweetTokenMentions();
+}
+
+void run();
