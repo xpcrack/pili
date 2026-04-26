@@ -98,7 +98,7 @@ db.prepare(
   1714104000000
 );
 
-db.prepare("DELETE FROM app_state WHERE key = 'events_fts_address_index_v2'").run();
+db.prepare("DELETE FROM app_state WHERE key IN ('events_fts_address_index_v2', 'events_fts_metadata_index_v3')").run();
 db.prepare("INSERT INTO events_fts(events_fts) VALUES ('delete-all')").run();
 db.prepare(
   \`INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
@@ -422,6 +422,84 @@ function run() {
     now
   );
 
+  insert.run(
+    'test-feed-total:5',
+    'test-source',
+    'post',
+    now - 3500,
+    userId2,
+    'Bob',
+    null,
+    null,
+    'plain unrelated tweet body',
+    null,
+    null,
+    null,
+    'tweet-test-5',
+    null,
+    'test-source',
+    'test-feed-total:5',
+    JSON.stringify({
+      tweetId: 'tweet-test-5',
+      mentionedTickers: ['MOON'],
+      mentionedTokenAddresses: ['0xmoonca'],
+      tokenSentiments: [
+        {
+          tokenSymbol: 'MOON',
+          tokenAddress: '0xmoonca',
+          chain: 'base',
+          sentiment: 'positive',
+          matchSource: 'both',
+        },
+      ],
+    }),
+    '{}',
+    makeUser(userId2, 'Bob'),
+    makeActivity('test-feed-total-a5', userId2, 'twitter', '', 'plain unrelated tweet body', {
+      tweetId: 'tweet-test-5',
+      mentionedTickers: ['MOON'],
+      mentionedTokenAddresses: ['0xmoonca'],
+      tokenSentiments: [
+        {
+          tokenSymbol: 'MOON',
+          tokenAddress: '0xmoonca',
+          chain: 'base',
+          sentiment: 'positive',
+          matchSource: 'both',
+        },
+      ],
+    }),
+    now,
+    now,
+    now
+  );
+  insertFeed.run(
+    userId2,
+    'test-feed-total:5',
+    now - 3500,
+    null,
+    null,
+    null,
+    'twitter',
+    'post',
+    makeUser(userId2, 'Bob'),
+    makeActivity('test-feed-total-a5', userId2, 'twitter', '', 'plain unrelated tweet body', {
+      tweetId: 'tweet-test-5',
+      mentionedTickers: ['MOON'],
+      mentionedTokenAddresses: ['0xmoonca'],
+      tokenSentiments: [
+        {
+          tokenSymbol: 'MOON',
+          tokenAddress: '0xmoonca',
+          chain: 'base',
+          sentiment: 'positive',
+          matchSource: 'both',
+        },
+      ],
+    }),
+    now
+  );
+
   const filteredBySourceAndUser = readEventsFeed({
     limit: 50,
     source: 'test-source',
@@ -549,6 +627,28 @@ function run() {
     filteredByTokenAddress.total,
     1,
     'search should match blockchain activity metadata.tokenAddress values via the FTS index'
+  );
+
+  const filteredByMentionedTicker = readEventsFeed({
+    limit: 50,
+    source: 'test-source',
+    q: 'moon',
+  });
+  assert.equal(
+    filteredByMentionedTicker.feed.some((item) => item.activity.metadata.tweetId === 'tweet-test-5'),
+    true,
+    'search should match enrichment-only mentioned tickers for twitter activities'
+  );
+
+  const filteredByMentionedTokenAddress = readEventsFeed({
+    limit: 50,
+    source: 'test-source',
+    q: '0xmoonca',
+  });
+  assert.equal(
+    filteredByMentionedTokenAddress.feed.some((item) => item.activity.metadata.tweetId === 'tweet-test-5'),
+    true,
+    'search should match enrichment-only mentioned token addresses for twitter activities'
   );
 
   const filteredByChainAndSearch = readEventsFeed({

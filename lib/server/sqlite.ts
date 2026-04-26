@@ -38,12 +38,30 @@ function getLegacyJudgmentFilePath() {
 let dbInstance: Database.Database | null = null;
 let initialized = false;
 
-function buildEventsFtsAddressExpr(record: string) {
-  const activityJson = `${record}.activity_json`;
-  const safeJsonExtract = (jsonPath: string) =>
-    `CASE WHEN json_valid(${activityJson}) THEN coalesce(json_extract(${activityJson}, '${jsonPath}'), '') ELSE '' END`;
+function buildEventsFtsSafeJsonScalarExpr(activityJsonExpr: string, jsonPath: string) {
+  return `CASE WHEN json_valid(${activityJsonExpr}) THEN coalesce(json_extract(${activityJsonExpr}, '${jsonPath}'), '') ELSE '' END`;
+}
 
-  return `trim(coalesce(${record}.address, '') || ' ' || ${safeJsonExtract('$.metadata.tokenAddress')} || ' ' || ${safeJsonExtract('$.metadata.trackedAddress')} || ' ' || ${safeJsonExtract('$.metadata.fromAddress')} || ' ' || ${safeJsonExtract('$.metadata.toAddress')})`;
+function buildEventsFtsSafeJsonTextArrayExpr(activityJsonExpr: string, jsonPath: string) {
+  return `CASE WHEN json_valid(${activityJsonExpr}) THEN coalesce((SELECT group_concat(value, ' ') FROM json_each(${activityJsonExpr}, '${jsonPath}') WHERE typeof(value) = 'text'), '') ELSE '' END`;
+}
+
+function buildEventsFtsSafeJsonObjectArrayFieldExpr(
+  activityJsonExpr: string,
+  jsonPath: string,
+  fieldPath: string
+) {
+  return `CASE WHEN json_valid(${activityJsonExpr}) THEN coalesce((SELECT group_concat(json_extract(json_each.value, '${fieldPath}'), ' ') FROM json_each(${activityJsonExpr}, '${jsonPath}') WHERE json_extract(json_each.value, '${fieldPath}') IS NOT NULL), '') ELSE '' END`;
+}
+
+function buildEventsFtsTokenExpr(record: string) {
+  const activityJsonExpr = `${record}.activity_json`;
+  return `trim(coalesce(${record}.token, '') || ' ' || ${buildEventsFtsSafeJsonScalarExpr(activityJsonExpr, '$.metadata.token')} || ' ' || ${buildEventsFtsSafeJsonTextArrayExpr(activityJsonExpr, '$.metadata.mentionedTickers')} || ' ' || ${buildEventsFtsSafeJsonObjectArrayFieldExpr(activityJsonExpr, '$.metadata.tokenSentiments', '$.tokenSymbol')})`;
+}
+
+function buildEventsFtsAddressExpr(record: string) {
+  const activityJsonExpr = `${record}.activity_json`;
+  return `trim(coalesce(${record}.address, '') || ' ' || ${buildEventsFtsSafeJsonScalarExpr(activityJsonExpr, '$.metadata.tokenAddress')} || ' ' || ${buildEventsFtsSafeJsonScalarExpr(activityJsonExpr, '$.metadata.trackedAddress')} || ' ' || ${buildEventsFtsSafeJsonScalarExpr(activityJsonExpr, '$.metadata.fromAddress')} || ' ' || ${buildEventsFtsSafeJsonScalarExpr(activityJsonExpr, '$.metadata.toAddress')} || ' ' || ${buildEventsFtsSafeJsonTextArrayExpr(activityJsonExpr, '$.metadata.mentionedTokenAddresses')} || ' ' || ${buildEventsFtsSafeJsonObjectArrayFieldExpr(activityJsonExpr, '$.metadata.tokenSentiments', '$.tokenAddress')})`;
 }
 
 const SCHEMA_SQL = `
@@ -493,19 +511,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 
 CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, ${buildEventsFtsTokenExpr('new')}, ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, ${buildEventsFtsTokenExpr('old')}, ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, ${buildEventsFtsTokenExpr('old')}, ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, ${buildEventsFtsTokenExpr('new')}, ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 `;
 
@@ -549,19 +567,19 @@ DROP TRIGGER IF EXISTS events_au;
 
 CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, ${buildEventsFtsTokenExpr('new')}, ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 
 CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, ${buildEventsFtsTokenExpr('old')}, ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
 END;
 
 CREATE TRIGGER events_au AFTER UPDATE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, ${buildEventsFtsTokenExpr('old')}, ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, ${buildEventsFtsTokenExpr('new')}, ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 `);
 }
@@ -573,7 +591,7 @@ function rebuildEventsFtsIndex(db: Database.Database) {
      SELECT rowid,
             event_id,
             content,
-            coalesce(token, ''),
+            ${buildEventsFtsTokenExpr('events')},
             ${buildEventsFtsAddressExpr('events')},
             coalesce(tweet_id, coalesce(tx_hash, coalesce(url, ''))),
             coalesce(user_name, '')
@@ -584,13 +602,13 @@ function rebuildEventsFtsIndex(db: Database.Database) {
 function ensureEventsFtsIndexing(db: Database.Database) {
   recreateEventsFtsTriggers(db);
 
-  const rebuilt = getAppStateFlag(db, 'events_fts_address_index_v2');
+  const rebuilt = getAppStateFlag(db, 'events_fts_metadata_index_v3');
   if (rebuilt) {
     return;
   }
 
   rebuildEventsFtsIndex(db);
-  setAppStateFlag(db, 'events_fts_address_index_v2');
+  setAppStateFlag(db, 'events_fts_metadata_index_v3');
 }
 
 function migrateLegacyJudgments(db: Database.Database) {
