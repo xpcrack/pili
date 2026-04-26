@@ -245,7 +245,7 @@ export interface TelegramMonitorFeedEvent {
   trackedWalletAddress: string | null;
   eventTimeMs: number;
   rawText: string | null;
-  messageLinks: string[];
+  messageLinks?: string[];
   updatedAt: number;
 }
 

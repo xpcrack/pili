@@ -323,6 +323,7 @@ for (const row of rows) {
       trackedWalletAddress: nextTrackedWalletAddress || null,
       eventTimeMs: nextEventTimeMs ?? row.updated_at ?? Date.now(),
       rawText: text,
+      messageLinks: linkCandidates,
       updatedAt: row.updated_at ?? Date.now(),
     },
   });

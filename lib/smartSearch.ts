@@ -40,6 +40,20 @@ function getKeywordTerms(keyword: string) {
     .filter(Boolean);
 }
 
+export function getRemoteFeedSearchKeyword(keyword: string) {
+  const terms = getKeywordTerms(keyword);
+  if (terms.length !== 1) {
+    return '';
+  }
+
+  const [term] = terms;
+  if (term.startsWith('ticker:') || term.startsWith('ca:')) {
+    return '';
+  }
+
+  return term;
+}
+
 function collectCaValues(item: FeedItem) {
   const sentimentTokenAddresses = (item.activity.metadata.tokenSentiments || [])
     .map((entry) => entry.tokenAddress || '')

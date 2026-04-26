@@ -21,9 +21,14 @@ import { Input } from '@/components/ui/input';
 import {
   type FeedSearchFilters,
   DEFAULT_FEED_SEARCH_FILTERS,
+  getRemoteFeedSearchKeyword,
   hasAnyEnabledFeedType,
   matchesFeedSearchFilters,
 } from '@/lib/smartSearch';
+import {
+  normalizeTradeValueDisplayMode,
+  type TradeValueDisplayMode,
+} from '@/lib/tradeDisplay';
 import {
   type FeedTimeDisplayMode,
   normalizeFeedTimeDisplayMode,
@@ -32,6 +37,7 @@ import {
 const MAX_GLOBAL_FEED_ITEMS = 200;
 const MIN_SELECTED_USER_FEED_ITEMS = 50;
 const FEED_TIME_DISPLAY_MODE_STORAGE_KEY = 'pilipili:feed-time-display-mode';
+const TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY = 'pilipili:trade-value-display-mode';
 
 function getActivityRenderKey(userId: string, activityId: string, scopedKey: string) {
   return scopedKey || `${userId}:${activityId}`;
@@ -49,6 +55,7 @@ export default function Home() {
   const [expandFeedback, setExpandFeedback] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<FeedSearchFilters>(DEFAULT_FEED_SEARCH_FILTERS);
   const [timeDisplayMode, setTimeDisplayMode] = useState<FeedTimeDisplayMode>('relative');
+  const [tradeValueDisplayMode, setTradeValueDisplayMode] = useState<TradeValueDisplayMode>('native');
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
@@ -67,7 +74,7 @@ export default function Home() {
     summary,
     diagnostics,
     prewarmLabel,
-  } = useActivityPolling(selectedUserId, '');
+  } = useActivityPolling(selectedUserId, getRemoteFeedSearchKeyword(searchFilters.keyword));
   const { dismissNewForUser } = useUserStore();
 
   useEffect(() => {
@@ -80,8 +87,12 @@ export default function Home() {
         setTimeDisplayMode(
           normalizeFeedTimeDisplayMode(window.localStorage.getItem(FEED_TIME_DISPLAY_MODE_STORAGE_KEY))
         );
+        setTradeValueDisplayMode(
+          normalizeTradeValueDisplayMode(window.localStorage.getItem(TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY))
+        );
       } catch {
         setTimeDisplayMode('relative');
+        setTradeValueDisplayMode('native');
       }
     }, 0);
 
@@ -101,6 +112,18 @@ export default function Home() {
       // Ignore persistence failures and keep the in-memory choice.
     }
   }, [timeDisplayMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY, tradeValueDisplayMode);
+    } catch {
+      // Ignore persistence failures and keep the in-memory choice.
+    }
+  }, [tradeValueDisplayMode]);
 
   // 当前选中的用户对象
   const selectedUser = useMemo(() => {
@@ -450,29 +473,55 @@ export default function Home() {
                     </div>
                   ) : null}
                 </div>
-                <div className="inline-flex shrink-0 rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setTimeDisplayMode('relative')}
-                    className={`rounded px-2.5 py-1 transition-colors ${
-                      timeDisplayMode === 'relative'
-                        ? 'bg-zinc-700 text-zinc-100'
-                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                    }`}
-                  >
-                    相对时间
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTimeDisplayMode('absolute')}
-                    className={`rounded px-2.5 py-1 transition-colors ${
-                      timeDisplayMode === 'absolute'
-                        ? 'bg-zinc-700 text-zinc-100'
-                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                    }`}
-                  >
-                    精确时间
-                  </button>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <div className="inline-flex rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTradeValueDisplayMode('native')}
+                      className={`rounded px-2.5 py-1 transition-colors ${
+                        tradeValueDisplayMode === 'native'
+                          ? 'bg-zinc-700 text-zinc-100'
+                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      原生计价
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTradeValueDisplayMode('usd')}
+                      className={`rounded px-2.5 py-1 transition-colors ${
+                        tradeValueDisplayMode === 'usd'
+                          ? 'bg-zinc-700 text-zinc-100'
+                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      USD计价
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTimeDisplayMode('relative')}
+                      className={`rounded px-2.5 py-1 transition-colors ${
+                        timeDisplayMode === 'relative'
+                          ? 'bg-zinc-700 text-zinc-100'
+                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      相对时间
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimeDisplayMode('absolute')}
+                      className={`rounded px-2.5 py-1 transition-colors ${
+                        timeDisplayMode === 'absolute'
+                          ? 'bg-zinc-700 text-zinc-100'
+                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                      }`}
+                    >
+                      精确时间
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -688,6 +737,7 @@ export default function Home() {
                       activity={activity}
                       user={user}
                       timeDisplayMode={timeDisplayMode}
+                      tradeValueDisplayMode={tradeValueDisplayMode}
                       activeTokenCa={hoveredTokenCa}
                       onTokenCaHover={setHoveredTokenCa}
                       activeAddress={hoveredAddress}

@@ -5,7 +5,7 @@ import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Card, CardContent } from '@/components/ui/card';
 import { getUserAvatar } from '@/lib/userProfile';
-import { formatTokenAmount, formatTradeAmountUsdLabel } from '@/lib/assetFormat';
+import { formatTokenAmount } from '@/lib/assetFormat';
 import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
 import {
   formatAbsoluteTimeCompact,
@@ -15,13 +15,16 @@ import {
 import {
   formatCompactMarketCap,
   formatDisplayTradeAmount,
+  getTradeHeadlineDisplayText,
   normalizeDisplayTradeAmountText,
+  type TradeValueDisplayMode,
 } from '@/lib/tradeDisplay';
 
 interface ActivityCardProps {
   activity: Activity;
   user: User;
   timeDisplayMode?: FeedTimeDisplayMode;
+  tradeValueDisplayMode?: TradeValueDisplayMode;
   onClick?: () => void;
   activeTokenCa?: string | null;
   onTokenCaHover?: (tokenCa: string | null) => void;
@@ -146,6 +149,7 @@ export function ActivityCard({
   activity,
   user,
   timeDisplayMode = 'relative',
+  tradeValueDisplayMode = 'native',
   onClick,
   activeTokenCa = null,
   onTokenCaHover,
@@ -228,7 +232,6 @@ export function ActivityCard({
     activity.metadata.tradeAmountUsdAtTx > 0
       ? activity.metadata.tradeAmountUsdAtTx
       : null;
-  const tradeAmountUsdLabel = isTradeAction ? formatTradeAmountUsdLabel(tradeAmountUsdAtTx) : null;
   const isSendReceiveTransfer =
     isTransfer && !isTradeAction;
   const tradeMarketCapUsd =
@@ -286,6 +289,13 @@ export function ActivityCard({
   const displayTradeAmountText =
     normalizeDisplayTradeAmountText(activity.metadata.displayTradeAmountText) ||
     normalizeDisplayTradeAmountText(tradeHeadlineValue);
+  const displayTradeHeadlineText = isTradeAction
+    ? getTradeHeadlineDisplayText({
+        mode: tradeValueDisplayMode,
+        nativeAmountText: displayTradeAmountText,
+        tradeAmountUsdAtTx,
+      })
+    : displayTradeAmountText;
   const displayTokenSymbol = activity.metadata.displayTokenSymbol || tokenSymbolDisplay;
   const displayMarketCapText = isMergedTradeCard
     ? mergedAverageMarketCapLabel
@@ -626,42 +636,115 @@ export function ActivityCard({
                         )}
                       </div>
 
-                      <div className="flex min-w-0 items-center justify-between gap-1">
-                        {trackedAddress ? (
-                          <button
-                            type="button"
-                            className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10 ${
-                              isTrackedAddressHighlighted
-                                ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
-                                : ''
-                            }`}
-                            title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void copyText(trackedAddress);
-                            }}
-                            onMouseEnter={() => onAddressHover?.(trackedAddress)}
-                            onMouseLeave={() => onAddressHover?.(null)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              openExternalLink(trackedAddressGmgnUrl);
-                            }}
-                          >
-                            {displayWalletLabel}
-                          </button>
-                        ) : (
-                          <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-zinc-300">{displayWalletLabel}</span>
-                        )}
-                        <span
-                          className={
-                            shouldUseOutgoingAmountTone
-                              ? 'min-w-0 shrink truncate text-right leading-none tabular-nums text-red-400'
-                              : 'min-w-0 shrink truncate text-right leading-none tabular-nums text-emerald-400'
-                          }
-                        >
-                          {[displayActionVariantLabel, displayTradeAmountText].filter(Boolean).join(' ')}
-                        </span>
+                      <div className="row-span-2 flex h-10 min-w-0 flex-col justify-between">
+                        <div className="flex min-w-0 items-center justify-between gap-1">
+                          <div className="min-w-0 flex items-center">
+                            {canCopyTokenCa ? (
+                              <button
+                                type="button"
+                                className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10 ${
+                                  isSameCaHighlighted
+                                    ? 'bg-yellow-400/25 text-yellow-100 ring-1 ring-yellow-300/80 shadow-[0_0_16px_rgba(250,204,21,0.55)] animate-pulse'
+                                    : ''
+                                }`}
+                                title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void copyText(tokenCa);
+                                }}
+                                onMouseEnter={() => onTokenCaHover?.(tokenCa)}
+                                onMouseLeave={() => onTokenCaHover?.(null)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  openExternalLink(tokenGmgnUrl);
+                                }}
+                              >
+                                {displayTokenSymbol}
+                              </button>
+                            ) : (
+                              <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-yellow-400">{displayTokenSymbol}</span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex flex-1 items-center justify-end">
+                            {trackedAddress ? (
+                              <button
+                                type="button"
+                                className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-right font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10 ${
+                                  isTrackedAddressHighlighted
+                                    ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
+                                    : ''
+                                }`}
+                                title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void copyText(trackedAddress);
+                                }}
+                                onMouseEnter={() => onAddressHover?.(trackedAddress)}
+                                onMouseLeave={() => onAddressHover?.(null)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  openExternalLink(trackedAddressGmgnUrl);
+                                }}
+                              >
+                                {displayWalletLabel}
+                              </button>
+                            ) : (
+                              <span className="min-w-0 flex-1 truncate text-right font-semibold leading-none text-zinc-300">{displayWalletLabel}</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex min-w-0 items-center justify-between gap-1">
+                          <div className="min-w-0 flex flex-1 items-center">
+                            <span
+                              className={
+                                shouldUseOutgoingAmountTone
+                                  ? 'min-w-0 shrink truncate text-right leading-none tabular-nums text-red-400'
+                                  : 'min-w-0 shrink truncate text-right leading-none tabular-nums text-emerald-400'
+                              }
+                            >
+                              {[displayActionVariantLabel, displayTradeHeadlineText].filter(Boolean).join(' ')}
+                            </span>
+                          </div>
+                          <div className="min-w-0 flex items-center justify-end">
+                            {displayMarketCapText && isSendReceiveTransfer && counterpartyAddress ? (
+                              <button
+                                type="button"
+                                className={`ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10 ${
+                                  isCounterpartyAddressHighlighted
+                                    ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
+                                    : ''
+                                }`}
+                                title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void copyText(counterpartyAddress);
+                                }}
+                                onMouseEnter={() => onAddressHover?.(counterpartyAddress)}
+                                onMouseLeave={() => onAddressHover?.(null)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  openExternalLink(counterpartyGmgnUrl);
+                                }}
+                              >
+                                {displayMarketCapText}
+                              </button>
+                            ) : isTradeAction && displayMarketCapText ? (
+                              <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
+                                {displayMarketCapText}
+                              </span>
+                            ) : displayMarketCapText ? (
+                              <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
+                                {displayMarketCapText}
+                              </span>
+                            ) : (
+                              <span className="min-w-0" />
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       <div className="row-span-2 grid h-10 w-[8.75rem] grid-cols-[2.5rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-0.5 justify-self-end">
@@ -712,77 +795,6 @@ export function ActivityCard({
                         </div>
                       </div>
 
-                      <div className="flex min-w-0 items-center justify-between gap-1">
-                        {canCopyTokenCa ? (
-                          <button
-                            type="button"
-                            className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10 ${
-                              isSameCaHighlighted
-                                ? 'bg-yellow-400/25 text-yellow-100 ring-1 ring-yellow-300/80 shadow-[0_0_16px_rgba(250,204,21,0.55)] animate-pulse'
-                                : ''
-                            }`}
-                            title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void copyText(tokenCa);
-                            }}
-                            onMouseEnter={() => onTokenCaHover?.(tokenCa)}
-                            onMouseLeave={() => onTokenCaHover?.(null)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              openExternalLink(tokenGmgnUrl);
-                            }}
-                          >
-                            {displayTokenSymbol}
-                          </button>
-                        ) : (
-                          <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-yellow-400">{displayTokenSymbol}</span>
-                        )}
-                        {displayMarketCapText && isSendReceiveTransfer && counterpartyAddress ? (
-                          <button
-                            type="button"
-                            className={`ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10 ${
-                              isCounterpartyAddressHighlighted
-                                ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
-                                : ''
-                            }`}
-                            title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void copyText(counterpartyAddress);
-                            }}
-                            onMouseEnter={() => onAddressHover?.(counterpartyAddress)}
-                            onMouseLeave={() => onAddressHover?.(null)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              openExternalLink(counterpartyGmgnUrl);
-                            }}
-                          >
-                            {displayMarketCapText}
-                          </button>
-                        ) : isTradeAction ? (
-                          <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-right leading-none tabular-nums">
-                            {tradeAmountUsdLabel ? (
-                              <span className="text-zinc-400">
-                                {tradeAmountUsdLabel}
-                              </span>
-                            ) : null}
-                            {displayMarketCapText ? (
-                              <span className="text-zinc-300" title={marketCapTooltip}>
-                                {displayMarketCapText}
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : displayMarketCapText ? (
-                          <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
-                            {displayMarketCapText}
-                          </span>
-                        ) : (
-                          <span className="min-w-0" />
-                        )}
-                      </div>
                     </div>
                   </div>
                 )}

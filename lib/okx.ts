@@ -373,6 +373,11 @@ async function fetchOkxHistoricalCandlePrice(
     limit: '1',
   });
   const requestPathWithQuery = `/api/v6/dex/market/historical-candles?${params.toString()}`;
+  const headers = createOkxHeaders(requestPathWithQuery);
+
+  if (!headers) {
+    return null;
+  }
 
   let response: Response;
   try {
@@ -384,6 +389,7 @@ async function fetchOkxHistoricalCandlePrice(
 
       return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
+        headers,
         cache: 'no-store',
         signal: controller.signal,
       }).finally(() => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_FEED_SEARCH_FILTERS,
   getFeedItemCategory,
+  getRemoteFeedSearchKeyword,
   hasAnyEnabledFeedType,
   matchesFeedSearchFilters,
   type FeedSearchFilters,
@@ -142,6 +143,27 @@ function run() {
     }),
     true,
     'ca-prefixed keyword search should match mentioned token addresses'
+  );
+
+  assert.equal(
+    getRemoteFeedSearchKeyword(' Finn '),
+    'finn',
+    'single plain keywords should be forwarded to server-side feed search'
+  );
+  assert.equal(
+    getRemoteFeedSearchKeyword('alice 0xabcdef'),
+    '',
+    'multi-term keyword searches should stay client-side to preserve OR-style matching semantics'
+  );
+  assert.equal(
+    getRemoteFeedSearchKeyword('ticker:abc'),
+    '',
+    'ticker-prefixed searches should stay client-side to preserve enriched mention matching'
+  );
+  assert.equal(
+    getRemoteFeedSearchKeyword('ca:0xabc'),
+    '',
+    'ca-prefixed searches should stay client-side to preserve token-address matching semantics'
   );
 
   assert.equal(

@@ -63,6 +63,7 @@ interface TelegramMessageEntityLike {
 }
 
 interface TelegramInlineKeyboardButtonLike {
+  text?: string;
   url?: string;
 }
 
@@ -363,6 +364,7 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
       trackedWalletAddress: parsed.trackedWalletAddress,
       eventTimeMs,
       rawText: text,
+      messageLinks,
       updatedAt: Date.now(),
     },
   });
