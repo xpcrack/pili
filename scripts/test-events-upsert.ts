@@ -62,6 +62,8 @@ async function run() {
 
   try {
     const { upsertEventsFromFeedRows, readEventsFeed } = await import('@/lib/server/eventsRepo');
+    const { upsertEventTweetRef, listEventTweetRefsByTweetId } = await import('@/lib/server/twitterEnrichmentRepo');
+    const { upsertConflictAndEnqueue } = await import('@/lib/server/conflictRepo');
 
     const user = makeUser();
 
@@ -95,6 +97,185 @@ async function run() {
       rows.feed[0]?.activity.metadata.tradeAmountUsdAtTx,
       600,
       'tradeAmountUsdAtTx should be preserved when an incoming refresh omits it'
+    );
+
+    const monitorAggregateKey = 'xxyy-monitor:bsc:0x1111111111111111111111111111111111111111:0xmonitoraggregate';
+    const monitorProvisional: Activity = {
+      ...makeActivity(300),
+      id: monitorAggregateKey,
+      content: '建仓 0.1181 BNB',
+      metadata: {
+        ...makeActivity(300).metadata,
+        txHash: '0xmonitoraggregate',
+        quoteAmount: '0.1181',
+        value: '45188.989541',
+        monitorTxAggregateKey: monitorAggregateKey,
+        monitorReconciliationStatus: 'pending',
+        monitorReconciledSource: 'xxyy',
+      },
+    };
+    const monitorCanonical: Activity = {
+      ...monitorProvisional,
+      content: '建仓 0.2502 BNB',
+      metadata: {
+        ...monitorProvisional.metadata,
+        quoteAmount: '0.2502',
+        value: '94464.94413',
+        monitorReconciliationStatus: 'reconciled',
+        monitorReconciledSource: 'okx-address',
+      },
+    };
+
+    upsertEventsFromFeedRows(
+      [
+        {
+          user,
+          activity: monitorProvisional,
+        },
+      ],
+      'telegram-monitor'
+    );
+    upsertEventsFromFeedRows(
+      [
+        {
+          user,
+          activity: monitorCanonical,
+        },
+      ],
+      'telegram-monitor-reconcile'
+    );
+
+    const db = (await import('@/lib/server/sqlite')).getDb();
+    const monitorConflictCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) as count
+           FROM feed_conflicts
+           WHERE event_key = ?`
+        )
+        .get(monitorAggregateKey) as { count: number }
+    ).count;
+    assert.equal(
+      monitorConflictCount,
+      0,
+      'expected monitor aggregate reconciliation to overwrite in place without conflict records'
+    );
+
+    const legacyMonitorProvisional: Activity = {
+      ...makeActivity(300),
+      id: 'legacy-monitor-provisional',
+      content: '建仓 0.1181 BNB',
+      metadata: {
+        ...makeActivity(300).metadata,
+        txHash: '0xlegacymonitoraggregate',
+        quoteAmount: '0.1181',
+        value: '45188.989541',
+        rawText: '[xp] [events-upsert-user#1]\n🟢 New buy 0.1181 BNB',
+        monitorWalletLabel: 'events-upsert-user',
+        monitorWalletAliasLabel: 'events-upsert-user#1',
+      },
+    };
+    const legacyMonitorCanonical: Activity = {
+      ...legacyMonitorProvisional,
+      id: 'xxyy-monitor:bsc:0x1111111111111111111111111111111111111111:0xlegacymonitoraggregate',
+      content: '建仓 0.2502 BNB',
+      metadata: {
+        ...legacyMonitorProvisional.metadata,
+        quoteAmount: '0.2502',
+        value: '94464.94413',
+        monitorTxAggregateKey:
+          'xxyy-monitor:bsc:0x1111111111111111111111111111111111111111:0xlegacymonitoraggregate',
+        monitorReconciliationStatus: 'reconciled',
+        monitorReconciledSource: 'okx-address',
+      },
+    };
+
+    upsertEventsFromFeedRows(
+      [
+        {
+          user,
+          activity: legacyMonitorProvisional,
+        },
+      ],
+      'telegram-monitor'
+    );
+    const legacyEventId = (
+      db
+        .prepare(
+          `SELECT event_id
+           FROM events
+           WHERE user_id = ?
+             AND tx_hash = ?
+           ORDER BY updated_at DESC, rowid DESC
+           LIMIT 1`
+        )
+        .get(user.id, '0xlegacymonitoraggregate') as { event_id: string } | undefined
+    )?.event_id;
+    assert.ok(legacyEventId, 'expected provisional legacy monitor event id to be stored');
+    upsertEventTweetRef({
+      eventId: legacyEventId || '',
+      tweetId: 'tweet-legacy-monitor-1',
+      refSource: 'telegram-monitor',
+      discoveredAtMs: 1_710_000_000_100,
+    });
+    upsertConflictAndEnqueue({
+      conflictKey: `onchain:${legacyEventId}:legacy-conflict`,
+      domain: 'onchain',
+      eventKey: legacyEventId || '',
+      winner: 'api',
+      diffJson: [
+        {
+          field: 'quoteAmount',
+          left: '0.1181',
+          right: '0.2502',
+        },
+      ],
+    });
+    upsertEventsFromFeedRows(
+      [
+        {
+          user,
+          activity: legacyMonitorCanonical,
+        },
+      ],
+      'telegram-monitor-reconcile'
+    );
+
+    const rowsAfterLegacyUpgrade = readEventsFeed({
+      limit: 20,
+      userId: user.id,
+    });
+    const upgradedLegacyMonitorRows = rowsAfterLegacyUpgrade.feed.filter(
+      (item) => item.activity.metadata.txHash === '0xlegacymonitoraggregate'
+    );
+    assert.equal(
+      upgradedLegacyMonitorRows.length,
+      1,
+      'expected legacy provisional monitor event to be upgraded in place during reconciliation'
+    );
+    assert.equal(
+      upgradedLegacyMonitorRows[0]?.activity.metadata.quoteAmount,
+      '0.2502',
+      'expected upgraded legacy monitor event to keep the canonical quote amount'
+    );
+    assert.deepEqual(
+      listEventTweetRefsByTweetId('tweet-legacy-monitor-1').map((item) => item.eventId),
+      [legacyMonitorCanonical.metadata.monitorTxAggregateKey],
+      'expected tweet refs to move to the canonical monitor aggregate event id during rekey'
+    );
+    const conflictEventKeys = (
+      db
+        .prepare(
+          `SELECT event_key
+           FROM feed_conflicts
+           WHERE event_key = ? OR event_key = ?`
+        )
+        .all(legacyEventId, legacyMonitorCanonical.metadata.monitorTxAggregateKey) as Array<{ event_key: string }>
+    ).map((row) => row.event_key);
+    assert.deepEqual(
+      conflictEventKeys,
+      [legacyMonitorCanonical.metadata.monitorTxAggregateKey],
+      'expected feed conflict rows to remap to the canonical monitor aggregate event id during rekey'
     );
 
     console.log('events upsert tests: ok');

@@ -56,6 +56,11 @@ function decodeCursor(cursor: string | null | undefined): { timestamp: number; e
 }
 
 function buildBlockchainEventId(activity: Activity) {
+  const monitorAggregateKey = (activity.metadata.monitorTxAggregateKey || '').trim();
+  if (monitorAggregateKey) {
+    return monitorAggregateKey;
+  }
+
   const identity = getBlockchainActivityIdentity(activity);
   if (!identity) {
     return null;
@@ -146,6 +151,21 @@ function isTelegramMonitorActivity(activity: Activity, ingestSource: string) {
   );
 }
 
+function buildTelegramMonitorLogicalTxKey(activity: Activity) {
+  if (!isTelegramMonitorActivity(activity, 'telegram-monitor')) {
+    return null;
+  }
+
+  const chain = normalize(activity.metadata.chain);
+  const trackedAddress = normalize(activity.metadata.trackedAddress);
+  const txHash = normalize(activity.metadata.txHash);
+  if (!chain || !trackedAddress || !txHash) {
+    return null;
+  }
+
+  return `${chain}|${trackedAddress}|${txHash}`;
+}
+
 function buildFallbackOriginalPayload(activity: Activity, ingestSource: string) {
   return {
     schemaVersion: 1,
@@ -231,13 +251,75 @@ function buildConflictKey(domain: string, eventKey: string, diff: ConflictFieldD
   return `${domain}:${eventKey}:${diffSignature}`;
 }
 
+function isExpectedMonitorAggregateCorrection(existing: Activity, incoming: Activity) {
+  const existingKey = (existing.metadata.monitorTxAggregateKey || '').trim();
+  const incomingKey = (incoming.metadata.monitorTxAggregateKey || '').trim();
+  if (existingKey && incomingKey && existingKey === incomingKey) {
+    return true;
+  }
+
+  const existingLogicalKey = buildTelegramMonitorLogicalTxKey(existing);
+  const incomingLogicalKey = buildTelegramMonitorLogicalTxKey(incoming);
+  return Boolean(existingLogicalKey && incomingLogicalKey && existingLogicalKey === incomingLogicalKey);
+}
+
 export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Activity }>, ingestSource: string) {
   if (rows.length === 0) return;
 
   withTransaction(() => {
     const db = getDb();
     const now = Date.now();
-    const existingStmt = db.prepare(`SELECT activity_json FROM events WHERE event_id = ? LIMIT 1`);
+    const existingStmt = db.prepare(`SELECT event_id, activity_json FROM events WHERE event_id = ? LIMIT 1`);
+    const existingMonitorByLogicalTxStmt = db.prepare(
+      `SELECT event_id, activity_json
+       FROM events
+       WHERE user_id = ?
+         AND source = 'blockchain'
+         AND chain = ?
+         AND LOWER(COALESCE(tx_hash, '')) = ?
+         AND address = ?
+         AND ingest_source LIKE 'telegram-monitor%'
+         AND event_id != ?
+       ORDER BY updated_at DESC, rowid DESC
+       LIMIT 1`
+    );
+    const rekeyEventStmt = db.prepare(
+      `UPDATE events
+       SET event_id = ?,
+           dedup_key = ?,
+           updated_at = ?
+       WHERE event_id = ?`
+    );
+    const deleteDuplicateEventTweetRefsStmt = db.prepare(
+      `DELETE FROM event_tweet_refs
+       WHERE event_id = ?
+         AND tweet_id IN (
+           SELECT tweet_id
+           FROM event_tweet_refs
+           WHERE event_id = ?
+         )`
+    );
+    const rekeyEventTweetRefsStmt = db.prepare(
+      `UPDATE event_tweet_refs
+       SET event_id = ?
+       WHERE event_id = ?`
+    );
+    const rekeyFeedConflictsEventKeyStmt = db.prepare(
+      `UPDATE feed_conflicts
+       SET event_key = ?,
+           updated_at = ?
+       WHERE event_key = ?`
+    );
+    const deleteDuplicateMonitorEventsStmt = db.prepare(
+      `DELETE FROM events
+       WHERE user_id = ?
+         AND source = 'blockchain'
+         AND chain = ?
+         AND LOWER(COALESCE(tx_hash, '')) = ?
+         AND address = ?
+         AND ingest_source LIKE 'telegram-monitor%'
+         AND event_id != ?`
+    );
     const rawTransactionStmt = db.prepare(
       `SELECT tracked_address, tx_time, payload_json
        FROM raw_transactions
@@ -343,13 +425,35 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
     for (const row of rows) {
       const { user, activity } = row;
       const eventId = buildEventId(user, activity);
+      const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
+      const exactExistingRow = existingStmt.get(eventId) as
+        | { event_id: string; activity_json?: string }
+        | undefined;
+      const monitorLogicalExistingRow =
+        !exactExistingRow && monitorLogicalKey
+          ? ((existingMonitorByLogicalTxStmt.get(
+              user.id,
+              normalize(activity.metadata.chain),
+              normalize(activity.metadata.txHash),
+              normalize(activity.metadata.trackedAddress),
+              eventId
+            ) as { event_id: string; activity_json?: string } | undefined) ??
+            undefined)
+          : undefined;
+      if (monitorLogicalExistingRow && monitorLogicalExistingRow.event_id !== eventId) {
+        rekeyEventStmt.run(eventId, eventId, now, monitorLogicalExistingRow.event_id);
+        deleteDuplicateEventTweetRefsStmt.run(eventId, monitorLogicalExistingRow.event_id);
+        rekeyEventTweetRefsStmt.run(eventId, monitorLogicalExistingRow.event_id);
+        rekeyFeedConflictsEventKeyStmt.run(eventId, now, monitorLogicalExistingRow.event_id);
+      }
+
       const existingActivity = parseJson<Activity>(
-        (existingStmt.get(eventId) as { activity_json?: string } | undefined)?.activity_json
+        (exactExistingRow || monitorLogicalExistingRow)?.activity_json
       );
       const mergedActivity = mergeActivityForUpsert(user, activity, existingActivity);
       if (existingActivity) {
         const diff = diffActivityForConflict(existingActivity, mergedActivity);
-        if (diff.length > 0) {
+        if (diff.length > 0 && !isExpectedMonitorAggregateCorrection(existingActivity, mergedActivity)) {
           const domain = detectConflictDomain(mergedActivity);
           const winner = chooseConflictWinner(domain);
           const eventKey = eventId;
@@ -521,6 +625,16 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
         now,
         now
       );
+
+      if (monitorLogicalKey) {
+        deleteDuplicateMonitorEventsStmt.run(
+          user.id,
+          normalize(mergedActivity.metadata.chain),
+          normalize(mergedActivity.metadata.txHash),
+          normalize(mergedActivity.metadata.trackedAddress),
+          eventId
+        );
+      }
     }
   });
 }

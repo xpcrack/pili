@@ -26,6 +26,11 @@ function run() {
     /\bnpm run test:trade-usd\b/,
     'npm test should include the trade-usd regression coverage'
   );
+  assert.match(
+    testScript,
+    /\bnpm run test:telegram-monitor-reconciliation\b/,
+    'npm test should include the telegram monitor reconciliation regression coverage'
+  );
 
   console.log('tooling config tests: ok');
 }

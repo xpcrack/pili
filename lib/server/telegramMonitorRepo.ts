@@ -206,6 +206,8 @@ export function findTelegramMonitorMarketCapAtTx(params: TelegramCapAtTxInput) {
 }
 
 interface TelegramFeedRow {
+  source_chat_id: string | null;
+  source_message_id: number | null;
   chain: string;
   token_address: string;
   token_symbol: string | null;
@@ -227,61 +229,10 @@ interface TelegramFeedRow {
   updated_at: number;
 }
 
-export interface TelegramMonitorFeedEvent {
-  chain: string;
-  tokenAddress: string;
-  tokenSymbol: string | null;
-  txHash: string | null;
-  marketCapUsd: number | null;
-  priceUsd: number | null;
-  quoteAmount: number | null;
-  quoteSymbol: string | null;
-  action: 'buy' | 'sell' | 'send' | null;
-  actionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
-  actionVariant: 'open' | 'add' | 'reduce' | 'close' | 'send' | null;
-  walletLabel: string | null;
-  walletGroupLabel: string | null;
-  walletAliasLabel: string | null;
-  trackedWalletAddress: string | null;
-  eventTimeMs: number;
-  rawText: string | null;
-  messageLinks?: string[];
-  updatedAt: number;
-}
-
-export function listRecentTelegramMonitorEvents(limit = 200) {
-  const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT
-         chain,
-         token_address,
-         token_symbol,
-         tx_hash,
-         market_cap_usd,
-         price_usd,
-         quote_amount,
-         quote_symbol,
-         action,
-         action_label,
-         action_variant,
-         wallet_label,
-         wallet_group_label,
-         wallet_alias_label,
-         tracked_wallet_address,
-         event_time_ms,
-         raw_text,
-         message_links_json,
-         updated_at
-       FROM telegram_monitor_events
-       WHERE provider = 'xxyy'
-       ORDER BY COALESCE(event_time_ms, updated_at) DESC, id DESC
-       LIMIT ?`
-    )
-    .all(safeLimit) as TelegramFeedRow[];
-
-  return rows.map((row) => ({
+function mapTelegramFeedRow(row: TelegramFeedRow): TelegramMonitorFeedEvent {
+  return {
+    sourceChatId: row.source_chat_id,
+    sourceMessageId: typeof row.source_message_id === 'number' ? row.source_message_id : null,
     chain: row.chain,
     tokenAddress: row.token_address,
     tokenSymbol: row.token_symbol,
@@ -325,5 +276,172 @@ export function listRecentTelegramMonitorEvents(limit = 200) {
       }
     })(),
     updatedAt: row.updated_at,
-  })) as TelegramMonitorFeedEvent[];
+  } satisfies TelegramMonitorFeedEvent;
+}
+
+export interface TelegramMonitorFeedEvent {
+  sourceChatId?: string | null;
+  sourceMessageId?: number | null;
+  chain: string;
+  tokenAddress: string;
+  tokenSymbol: string | null;
+  txHash: string | null;
+  marketCapUsd: number | null;
+  priceUsd: number | null;
+  quoteAmount: number | null;
+  quoteSymbol: string | null;
+  action: 'buy' | 'sell' | 'send' | null;
+  actionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
+  actionVariant: 'open' | 'add' | 'reduce' | 'close' | 'send' | null;
+  walletLabel: string | null;
+  walletGroupLabel: string | null;
+  walletAliasLabel: string | null;
+  trackedWalletAddress: string | null;
+  eventTimeMs: number;
+  rawText: string | null;
+  messageLinks?: string[];
+  updatedAt: number;
+}
+
+export interface ListTelegramMonitorEventsOptions {
+  limit?: number;
+  fromMs?: number | null;
+  toMs?: number | null;
+  cursor?: {
+    eventTimeMs: number;
+    eventKey: string;
+  } | null;
+}
+
+function buildTelegramMonitorEventKey(row: TelegramFeedRow) {
+  if (row.source_chat_id && typeof row.source_message_id === 'number') {
+    return `xxyy:${row.source_chat_id}:${row.source_message_id}`;
+  }
+
+  return [
+    'xxyy',
+    row.chain || '',
+    row.tracked_wallet_address || '',
+    row.tx_hash || '',
+    row.token_address || '',
+    String(typeof row.event_time_ms === 'number' ? row.event_time_ms : row.updated_at),
+  ].join(':');
+}
+
+export function listTelegramMonitorEvents(options?: ListTelegramMonitorEventsOptions) {
+  const safeLimit = Math.max(1, Math.min(10000, Math.floor(options?.limit || 200)));
+  const clauses = [`provider = 'xxyy'`];
+  const values: Array<number | string> = [];
+
+  if (typeof options?.fromMs === 'number' && Number.isFinite(options.fromMs)) {
+    clauses.push('COALESCE(event_time_ms, updated_at) >= ?');
+    values.push(Math.floor(options.fromMs));
+  }
+
+  if (typeof options?.toMs === 'number' && Number.isFinite(options.toMs)) {
+    clauses.push('COALESCE(event_time_ms, updated_at) <= ?');
+    values.push(Math.floor(options.toMs));
+  }
+
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+         source_chat_id,
+         source_message_id,
+         chain,
+         token_address,
+         token_symbol,
+         tx_hash,
+         market_cap_usd,
+         price_usd,
+         quote_amount,
+         quote_symbol,
+         action,
+         action_label,
+         action_variant,
+         wallet_label,
+         wallet_group_label,
+         wallet_alias_label,
+         tracked_wallet_address,
+         event_time_ms,
+         raw_text,
+         message_links_json,
+         updated_at
+       FROM telegram_monitor_events
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY COALESCE(event_time_ms, updated_at) DESC, id DESC
+       LIMIT ?`
+    )
+    .all(...values, safeLimit) as TelegramFeedRow[];
+
+  if (!options?.cursor) {
+    return rows.map((row) => mapTelegramFeedRow(row));
+  }
+
+  const filteredRows = rows.filter((row) => {
+    const rowEventTimeMs = typeof row.event_time_ms === 'number' ? row.event_time_ms : row.updated_at;
+    const rowEventKey = buildTelegramMonitorEventKey(row);
+    if (rowEventTimeMs < options.cursor!.eventTimeMs) {
+      return true;
+    }
+    if (rowEventTimeMs > options.cursor!.eventTimeMs) {
+      return false;
+    }
+    return rowEventKey < options.cursor!.eventKey;
+  });
+
+  return filteredRows.map((row) => mapTelegramFeedRow(row));
+}
+
+export function listRecentTelegramMonitorEvents(limit = 200) {
+  return listTelegramMonitorEvents({ limit: Math.max(1, Math.min(2000, Math.floor(limit))) });
+}
+
+export function listRecentTelegramMonitorFallbackEventsWithoutTxState(limit = 200) {
+  const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+         e.source_chat_id,
+         e.source_message_id,
+         e.chain,
+         e.token_address,
+         e.token_symbol,
+         e.tx_hash,
+         e.market_cap_usd,
+         e.price_usd,
+         e.quote_amount,
+         e.quote_symbol,
+         e.action,
+         e.action_label,
+         e.action_variant,
+         e.wallet_label,
+         e.wallet_group_label,
+         e.wallet_alias_label,
+         e.tracked_wallet_address,
+         e.event_time_ms,
+         e.raw_text,
+         e.message_links_json,
+         e.updated_at
+       FROM telegram_monitor_events e
+       WHERE e.provider = 'xxyy'
+         AND (
+           e.tx_hash_lower IS NULL
+           OR e.tracked_wallet_address_lower IS NULL
+           OR NOT EXISTS (
+             SELECT 1
+             FROM telegram_monitor_tx_states s
+             WHERE s.chain = e.chain
+               AND s.tracked_wallet_address_lower = e.tracked_wallet_address_lower
+               AND s.tx_hash_lower = e.tx_hash_lower
+           )
+         )
+       ORDER BY COALESCE(e.event_time_ms, e.updated_at) DESC, e.id DESC
+       LIMIT ?`
+    )
+    .all(safeLimit) as TelegramFeedRow[];
+
+  return rows.map((row) => mapTelegramFeedRow(row));
 }

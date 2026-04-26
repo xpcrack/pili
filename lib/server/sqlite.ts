@@ -158,6 +158,53 @@ ON telegram_monitor_events(chain, token_address_lower, tx_hash_lower, updated_at
 CREATE INDEX IF NOT EXISTS idx_telegram_monitor_events_time
 ON telegram_monitor_events(chain, token_address_lower, event_time_ms DESC);
 
+CREATE TABLE IF NOT EXISTS telegram_monitor_tx_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  tracked_wallet_address TEXT NOT NULL,
+  tracked_wallet_address_lower TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  tx_hash_lower TEXT NOT NULL,
+  token_address TEXT,
+  token_address_lower TEXT,
+  token_symbol TEXT,
+  provisional_action TEXT,
+  provisional_action_label TEXT,
+  provisional_action_variant TEXT,
+  provisional_quote_amount REAL,
+  provisional_quote_symbol TEXT,
+  provisional_token_amount REAL,
+  provisional_token_symbol TEXT,
+  provisional_price_usd REAL,
+  provisional_market_cap_usd REAL,
+  provisional_raw_text TEXT NOT NULL DEFAULT '',
+  provisional_message_links_json TEXT NOT NULL DEFAULT '[]',
+  provisional_wallet_label TEXT,
+  provisional_wallet_group_label TEXT,
+  provisional_wallet_alias_label TEXT,
+  event_time_ms INTEGER,
+  canonical_activity_json TEXT,
+  reconciliation_status TEXT NOT NULL DEFAULT 'pending',
+  reconciled_source TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  reconciled_at INTEGER,
+  next_retry_at INTEGER,
+  repair_claimed_at INTEGER,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(chain, tracked_wallet_address_lower, tx_hash_lower),
+  FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_recent
+ON telegram_monitor_tx_states(event_time_ms DESC, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair
+ON telegram_monitor_tx_states(reconciliation_status, next_retry_at, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS activity_judgments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chain TEXT NOT NULL,
@@ -732,6 +779,11 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
   ensureColumn(db, 'telegram_monitor_events', 'action_label', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'action_variant', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'message_links_json', 'TEXT', "'[]'");
+  ensureColumn(db, 'telegram_monitor_tx_states', 'repair_claimed_at', 'INTEGER');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair_claim
+     ON telegram_monitor_tx_states(reconciliation_status, repair_claimed_at, next_retry_at)`
+  );
 }
 
 function ensureActivityJudgmentColumns(db: Database.Database) {
