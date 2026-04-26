@@ -38,6 +38,14 @@ function getLegacyJudgmentFilePath() {
 let dbInstance: Database.Database | null = null;
 let initialized = false;
 
+function buildEventsFtsAddressExpr(record: string) {
+  const activityJson = `${record}.activity_json`;
+  const safeJsonExtract = (jsonPath: string) =>
+    `CASE WHEN json_valid(${activityJson}) THEN coalesce(json_extract(${activityJson}, '${jsonPath}'), '') ELSE '' END`;
+
+  return `trim(coalesce(${record}.address, '') || ' ' || ${safeJsonExtract('$.metadata.tokenAddress')} || ' ' || ${safeJsonExtract('$.metadata.trackedAddress')} || ' ' || ${safeJsonExtract('$.metadata.fromAddress')} || ' ' || ${safeJsonExtract('$.metadata.toAddress')})`;
+}
+
 const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -485,19 +493,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 
 CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), coalesce(new.address, ''), coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), coalesce(old.address, ''), coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
   INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
-  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), coalesce(old.address, ''), coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
   INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
-  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), coalesce(new.address, ''), coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
 END;
 `;
 
@@ -531,6 +539,58 @@ function setAppStateFlag(db: Database.Database, key: string) {
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
   ).run(key, JSON.stringify({ done: true, at: now }), now);
+}
+
+function recreateEventsFtsTriggers(db: Database.Database) {
+  db.exec(`
+DROP TRIGGER IF EXISTS events_ai;
+DROP TRIGGER IF EXISTS events_ad;
+DROP TRIGGER IF EXISTS events_au;
+
+CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+  INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
+  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+END;
+
+CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+  INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
+  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+END;
+
+CREATE TRIGGER events_au AFTER UPDATE ON events BEGIN
+  INSERT INTO events_fts(events_fts, rowid, event_id, content, token, address, reference, user_name)
+  VALUES ('delete', old.rowid, old.event_id, old.content, coalesce(old.token, ''), ${buildEventsFtsAddressExpr('old')}, coalesce(old.tweet_id, coalesce(old.tx_hash, coalesce(old.url, ''))), coalesce(old.user_name, ''));
+  INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
+  VALUES (new.rowid, new.event_id, new.content, coalesce(new.token, ''), ${buildEventsFtsAddressExpr('new')}, coalesce(new.tweet_id, coalesce(new.tx_hash, coalesce(new.url, ''))), coalesce(new.user_name, ''));
+END;
+`);
+}
+
+function rebuildEventsFtsIndex(db: Database.Database) {
+  db.prepare(`INSERT INTO events_fts(events_fts) VALUES ('delete-all')`).run();
+  db.prepare(
+    `INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
+     SELECT rowid,
+            event_id,
+            content,
+            coalesce(token, ''),
+            ${buildEventsFtsAddressExpr('events')},
+            coalesce(tweet_id, coalesce(tx_hash, coalesce(url, ''))),
+            coalesce(user_name, '')
+     FROM events`
+  ).run();
+}
+
+function ensureEventsFtsIndexing(db: Database.Database) {
+  recreateEventsFtsTriggers(db);
+
+  const rebuilt = getAppStateFlag(db, 'events_fts_address_index_v2');
+  if (rebuilt) {
+    return;
+  }
+
+  rebuildEventsFtsIndex(db);
+  setAppStateFlag(db, 'events_fts_address_index_v2');
 }
 
 function migrateLegacyJudgments(db: Database.Database) {
@@ -621,6 +681,7 @@ function initializeDb(db: Database.Database) {
   ensureTelegramMonitorEventColumns(db);
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
+  ensureEventsFtsIndexing(db);
   migrateLegacyJudgments(db);
   initialized = true;
 }

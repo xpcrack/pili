@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 
 import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
 import {
+  getTradeHeadlineDisplayText,
+  normalizeTradeValueDisplayMode,
+} from '@/lib/tradeDisplay';
+import {
   formatAbsoluteTimeCompact,
   getRelativeTimeState,
   normalizeFeedTimeDisplayMode,
@@ -80,6 +84,42 @@ function run() {
     formatTradeAmountUsdLabel(null),
     '金额未知',
     'missing trade USD values should show 金额未知'
+  );
+
+  assert.deepEqual(
+    ['native', 'usd', 'broken'].map((value) => normalizeTradeValueDisplayMode(value)),
+    ['native', 'usd', 'native'],
+    'invalid persisted trade value display modes should fall back to native'
+  );
+
+  assert.equal(
+    getTradeHeadlineDisplayText({
+      mode: 'native',
+      nativeAmountText: '18.28 SOL',
+      tradeAmountUsdAtTx: 1620,
+    }),
+    '18.28 SOL',
+    'native mode should keep the quote token amount as the headline'
+  );
+
+  assert.equal(
+    getTradeHeadlineDisplayText({
+      mode: 'usd',
+      nativeAmountText: '18.28 SOL',
+      tradeAmountUsdAtTx: 1620,
+    }),
+    '$1.62K',
+    'usd mode should use the compact USD amount as the headline'
+  );
+
+  assert.equal(
+    getTradeHeadlineDisplayText({
+      mode: 'usd',
+      nativeAmountText: '18.28 SOL',
+      tradeAmountUsdAtTx: null,
+    }),
+    '金额未知',
+    'usd mode should surface unknown trade amounts when usd data is missing'
   );
 
   console.log('time format tests: ok');

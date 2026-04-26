@@ -1,4 +1,7 @@
 import type { Activity } from '@/types';
+import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
+
+export type TradeValueDisplayMode = 'native' | 'usd';
 
 const ACTION_VARIANT_LABELS: Record<string, string> = {
   open: '建仓',
@@ -10,6 +13,12 @@ const ACTION_VARIANT_LABELS: Record<string, string> = {
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim();
+}
+
+export function normalizeTradeValueDisplayMode(
+  value: string | null | undefined
+): TradeValueDisplayMode {
+  return value === 'usd' ? 'usd' : 'native';
 }
 
 export function formatCompactMarketCap(marketCapUsd: number | null | undefined) {
@@ -56,6 +65,18 @@ export function formatDisplayTradeAmount(value: string | number | null | undefin
   const token = normalize(symbol).toUpperCase();
   if (!amount || !token) return null;
   return `${amount} ${token}`;
+}
+
+export function getTradeHeadlineDisplayText(params: {
+  mode: TradeValueDisplayMode;
+  nativeAmountText: string | null | undefined;
+  tradeAmountUsdAtTx: number | null | undefined;
+}) {
+  if (params.mode === 'usd') {
+    return formatTradeAmountUsdLabel(params.tradeAmountUsdAtTx);
+  }
+
+  return normalize(params.nativeAmountText) || formatTradeAmountUsdLabel(params.tradeAmountUsdAtTx);
 }
 
 export function normalizeDisplayTradeAmountText(text: string | null | undefined) {

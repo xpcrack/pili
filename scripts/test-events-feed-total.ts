@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { getDb } from '@/lib/server/sqlite';
 import { readEventsFeed, readLatestActivityAtByUser } from '@/lib/server/eventsRepo';
@@ -9,6 +13,152 @@ import {
   resolveUnifiedWindowStartMs,
   resolveTwitterCoverageStartMs,
 } from '@/lib/server/feedViewMeta';
+
+const TOKEN_ADDRESS_ONLY_CA = 'CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump';
+
+function runRebuildPathRegression() {
+  const repoRoot = process.cwd();
+  const tempDir = mkdtempSync(join(tmpdir(), 'pilipili-events-fts-'));
+  const dbPath = join(tempDir, 'rebuild.sqlite');
+  const seedScriptPath = join(tempDir, 'seed.ts');
+  const rebuildScriptPath = join(tempDir, 'rebuild.ts');
+  const tsxCliPath = join(repoRoot, 'node_modules/tsx/dist/cli.mjs');
+  const sqliteModulePath = join(repoRoot, 'lib/server/sqlite.ts');
+  const eventsRepoPath = join(repoRoot, 'lib/server/eventsRepo.ts');
+  const shimPath = join(repoRoot, 'scripts/server-only-shim.cjs');
+
+  writeFileSync(
+    seedScriptPath,
+    `
+import assert from 'node:assert/strict';
+import { getDb } from ${JSON.stringify(sqliteModulePath)};
+
+const db = getDb();
+db.prepare("DELETE FROM events WHERE event_id = 'test-rebuild:1'").run();
+db.prepare(
+  \`INSERT INTO events (
+    event_id, source, kind, timestamp, user_id, user_name, chain, address, content, url, action, token, tweet_id, tx_hash, ingest_source, dedup_key, metadata_json, payload_json, user_json, activity_json, indexed_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\`
+).run(
+  'test-rebuild:1',
+  'test-source',
+  'transfer',
+  1714104000000,
+  'rebuild-user',
+  'Rebuild User',
+  'solana',
+  'tracked-wallet-rebuild',
+  'rebuild token address event',
+  null,
+  'buy',
+  'HENRY',
+  null,
+  'rebuild-tx-1',
+  'test-source',
+  'test-rebuild:1',
+  JSON.stringify({
+    token: 'HENRY',
+    chain: 'solana',
+    tokenAddress: ${JSON.stringify(TOKEN_ADDRESS_ONLY_CA)},
+    trackedAddress: 'tracked-wallet-rebuild',
+    txHash: 'rebuild-tx-1',
+    txAction: 'buy',
+  }),
+  '{}',
+  JSON.stringify({
+    id: 'rebuild-user',
+    name: 'Rebuild User',
+    handle: 'rebuild-user',
+    avatar: '',
+    addresses: [],
+    totalAssetUsd: 0,
+    historicalMaxAssetUsd: 0,
+    assetUpdatedAt: null,
+    tags: [],
+  }),
+  JSON.stringify({
+    id: 'test-rebuild-a1',
+    userId: 'rebuild-user',
+    source: 'blockchain',
+    type: 'transfer',
+    title: 'rebuild token address event',
+    content: 'rebuild token address event',
+    timestamp: 1714104000000,
+    metadata: {
+      token: 'HENRY',
+      chain: 'solana',
+      tokenAddress: ${JSON.stringify(TOKEN_ADDRESS_ONLY_CA)},
+      trackedAddress: 'tracked-wallet-rebuild',
+      txHash: 'rebuild-tx-1',
+      txAction: 'buy',
+    },
+  }),
+  1714104000000,
+  1714104000000,
+  1714104000000
+);
+
+db.prepare("DELETE FROM app_state WHERE key = 'events_fts_address_index_v2'").run();
+db.prepare("INSERT INTO events_fts(events_fts) VALUES ('delete-all')").run();
+db.prepare(
+  \`INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
+   SELECT rowid,
+          event_id,
+          content,
+          coalesce(token, ''),
+          coalesce(address, ''),
+          coalesce(tweet_id, coalesce(tx_hash, coalesce(url, ''))),
+          coalesce(user_name, '')
+   FROM events
+   WHERE event_id = 'test-rebuild:1'\`
+).run();
+
+const brokenMatches = db.prepare("SELECT count(1) AS count FROM events_fts WHERE events_fts MATCH ?").get(${JSON.stringify(
+      TOKEN_ADDRESS_ONLY_CA
+    )}) as { count: number };
+assert.equal(brokenMatches.count, 0);
+`
+  );
+
+  writeFileSync(
+    rebuildScriptPath,
+    `
+import assert from 'node:assert/strict';
+import { readEventsFeed } from ${JSON.stringify(eventsRepoPath)};
+
+const result = readEventsFeed({ limit: 10, source: 'test-source', q: ${JSON.stringify(TOKEN_ADDRESS_ONLY_CA)} });
+assert.equal(
+  result.total,
+  1,
+  'FTS rebuild should repair tokenAddress-only search hits for pre-existing rows'
+);
+`
+  );
+
+  try {
+    execFileSync(process.execPath, [tsxCliPath, seedScriptPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require ${shimPath}`,
+        PILIPILI_DB_PATH: dbPath,
+      },
+      stdio: 'pipe',
+    });
+
+    execFileSync(process.execPath, [tsxCliPath, rebuildScriptPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require ${shimPath}`,
+        PILIPILI_DB_PATH: dbPath,
+      },
+      stdio: 'pipe',
+    });
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 function run() {
   const db = getDb();
@@ -81,7 +231,8 @@ function run() {
     userId: string,
     source: 'twitter' | 'blockchain',
     token: string,
-    content: string
+    content: string,
+    metadataOverrides: Record<string, unknown> = {}
   ) =>
     JSON.stringify({
       id: activityId,
@@ -91,7 +242,11 @@ function run() {
       title: content,
       content,
       timestamp: now,
-      metadata: { token, chain: source === 'twitter' ? undefined : 'bsc' },
+      metadata: {
+        token,
+        chain: source === 'twitter' ? undefined : 'bsc',
+        ...metadataOverrides,
+      },
     });
 
   insert.run(
@@ -211,12 +366,68 @@ function run() {
     now
   );
 
+  insert.run(
+    'test-feed-total:4',
+    'test-source',
+    'transfer',
+    now - 500,
+    userId1,
+    'Alice',
+    'solana',
+    'tracked-wallet-1',
+    'henry launch trade',
+    null,
+    'buy',
+    'HENRY',
+    null,
+    'solana-tx-1',
+    'test-source',
+    'test-feed-total:4',
+    JSON.stringify({
+      token: 'HENRY',
+      chain: 'solana',
+      tokenAddress: TOKEN_ADDRESS_ONLY_CA,
+      trackedAddress: 'tracked-wallet-1',
+      txHash: 'solana-tx-1',
+      txAction: 'buy',
+    }),
+    '{}',
+    makeUser(userId1, 'Alice'),
+    makeActivity('test-feed-total-a4', userId1, 'blockchain', 'HENRY', 'henry launch trade', {
+      tokenAddress: TOKEN_ADDRESS_ONLY_CA,
+      trackedAddress: 'tracked-wallet-1',
+      txHash: 'solana-tx-1',
+      txAction: 'buy',
+    }),
+    now,
+    now,
+    now
+  );
+  insertFeed.run(
+    userId1,
+    'test-feed-total:4',
+    now - 500,
+    'solana-tx-1',
+    'solana',
+    'tracked-wallet-1',
+    'blockchain',
+    'transfer',
+    makeUser(userId1, 'Alice'),
+    makeActivity('test-feed-total-a4', userId1, 'blockchain', 'HENRY', 'henry launch trade', {
+      tokenAddress: TOKEN_ADDRESS_ONLY_CA,
+      trackedAddress: 'tracked-wallet-1',
+      txHash: 'solana-tx-1',
+      txAction: 'buy',
+    }),
+    now
+  );
+
   const filteredBySourceAndUser = readEventsFeed({
     limit: 50,
     source: 'test-source',
     userId: userId1,
   });
-  assert.equal(filteredBySourceAndUser.total, 2);
+  assert.equal(filteredBySourceAndUser.total, 3);
 
   const latestByUser = readLatestActivityAtByUser();
   assert.ok((latestByUser[userId1] ?? 0) > 0);
@@ -226,7 +437,7 @@ function run() {
   const userBreakdown = readActivityBreakdownByUser(userId1);
   assert.deepEqual(userBreakdown, {
     twitterCount: 1,
-    tradeCount: 1,
+    tradeCount: 2,
   });
 
   const globalWindow = buildCompletenessWindow({
@@ -329,6 +540,17 @@ function run() {
   });
   assert.equal(filteredBySearch.total, 2);
 
+  const filteredByTokenAddress = readEventsFeed({
+    limit: 50,
+    source: 'test-source',
+    q: TOKEN_ADDRESS_ONLY_CA,
+  });
+  assert.equal(
+    filteredByTokenAddress.total,
+    1,
+    'search should match blockchain activity metadata.tokenAddress values via the FTS index'
+  );
+
   const filteredByChainAndSearch = readEventsFeed({
     limit: 50,
     source: 'test-source',
@@ -337,12 +559,31 @@ function run() {
   });
   assert.equal(filteredByChainAndSearch.total, 1);
 
+  const filteredByUserName = readEventsFeed({
+    limit: 1,
+    source: 'test-source',
+    q: 'alice',
+  });
+  assert.equal(filteredByUserName.total, 3);
+  assert.equal(filteredByUserName.feed.length, 1);
+  assert.equal(filteredByUserName.hasMore, true);
+
+  const filteredByUserNamePage2 = readEventsFeed({
+    limit: 1,
+    source: 'test-source',
+    q: 'alice',
+    cursor: filteredByUserName.nextCursor,
+  });
+  assert.equal(filteredByUserNamePage2.total, 2);
+  assert.equal(filteredByUserNamePage2.feed.length, 1);
+  assert.equal(filteredByUserNamePage2.hasMore, true);
+
   const page1 = readEventsFeed({
     limit: 1,
     source: 'test-source',
     userId: userId1,
   });
-  assert.equal(page1.total, 2);
+  assert.equal(page1.total, 3);
   assert.equal(page1.feed.length, 1);
 
   const page2 = readEventsFeed({
@@ -351,7 +592,9 @@ function run() {
     userId: userId1,
     cursor: page1.nextCursor,
   });
-  assert.equal(page2.total, 1);
+  assert.equal(page2.total, 2);
+
+  runRebuildPathRegression();
 
   db.prepare("DELETE FROM events WHERE event_id LIKE 'test-feed-total:%'").run();
   db.prepare("DELETE FROM activity_feed WHERE activity_key LIKE 'test-feed-total:%'").run();
