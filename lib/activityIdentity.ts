@@ -76,6 +76,11 @@ export function buildActivityScopedDedupKey(activity: Activity, userId?: string 
     return `twitter:${tweetId}`;
   }
 
+  const monitorAggregateKey = normalize(activity.metadata.monitorTxAggregateKey);
+  if (monitorAggregateKey) {
+    return monitorAggregateKey;
+  }
+
   const blockchainIdentity = getBlockchainActivityIdentity(activity);
   if (blockchainIdentity) {
     return `${blockchainIdentity.scopedBaseKey}${buildSignatureSuffix(blockchainIdentity)}`;
@@ -90,6 +95,11 @@ export function buildActivityGlobalDedupKey(activity: Activity) {
   const tweetId = normalize(activity.metadata.tweetId);
   if (tweetId) {
     return `twitter:${tweetId}`;
+  }
+
+  const monitorAggregateKey = normalize(activity.metadata.monitorTxAggregateKey);
+  if (monitorAggregateKey) {
+    return monitorAggregateKey;
   }
 
   const blockchainIdentity = getBlockchainActivityIdentity(activity);

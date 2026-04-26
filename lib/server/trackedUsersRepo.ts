@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activityFeed';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
@@ -100,7 +101,7 @@ function sanitizeAddresses(addresses: User['addresses']) {
     if (!SUPPORTED_CHAINS.has(chain)) {
       continue;
     }
-    const address = item.address.trim();
+    const address = assertValidTrackedAddress(item.address, chain);
     const addressLower = normalize(address);
     if (!addressLower) {
       continue;

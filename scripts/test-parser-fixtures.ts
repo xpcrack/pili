@@ -419,29 +419,19 @@ async function runTelegramMonitorFixtures() {
       .prepare(
         `SELECT event_id, tx_hash
          FROM events
-         WHERE source = 'blockchain'
-           AND user_id = ?
-           AND chain = ?
-           AND address = ?
-           AND tx_hash = ?
-         ORDER BY timestamp DESC, rowid DESC
+         WHERE event_id = ?
          LIMIT 1`
       )
       .get(
-        trackedUser.id,
-        routeFixture.expected.chain,
-        routeFixture.expected.trackedWalletAddress?.toLowerCase(),
-        routeFixture.expected.txHash
+        `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}`
       ) as { event_id: string; tx_hash: string | null } | undefined;
 
     assert.ok(projectedEvent, 'telegram route: expected projected event row');
     assert.equal(projectedEvent?.tx_hash, routeFixture.expected.txHash, 'telegram route: projected txHash mismatch');
-    assert.match(
-      projectedEvent?.event_id || '',
-      new RegExp(
-        `^${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash}`
-      ),
-      'telegram route: projected event_id should use chain:tracked:txHash prefix'
+    assert.equal(
+      projectedEvent?.event_id,
+      `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}`,
+      'telegram route: projected event_id should use stable monitor tx identity'
     );
 
     console.log('PASS telegram-route xxyy-bot-to-bot-buy');

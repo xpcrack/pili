@@ -7,6 +7,7 @@ import { scheduleBackfillCompanionAfterPrimarySync } from '@/lib/server/feedBack
 import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
 import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
 import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
+import { scheduleTelegramMonitorRepairBatch } from '@/lib/server/telegramMonitorReconciler';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { readTelegramMonitorFeed } from '@/lib/server/telegramMonitorFeed';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
@@ -278,6 +279,9 @@ export async function GET(request: NextRequest) {
     const prewarm = readPrewarmProgressSnapshot();
 
     if (shouldUseTelegramMonitorFeed(request)) {
+      void Promise.resolve().then(() => {
+        scheduleTelegramMonitorRepairBatch(5);
+      });
       const monitorFeed = await readTelegramMonitorFeed(Math.max(pageSize, 200));
       const filteredByUser = userId ? monitorFeed.filter((item) => item.user.id === userId) : monitorFeed;
       const paged = filteredByUser.slice(0, pageSize);

@@ -11,6 +11,9 @@ const TX_OTHER = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const TX_TIME = 1710000000000;
 
 process.env.XXYY_API_KEY = 'fixture_xxyy_key';
+process.env.OKX_API_KEY = 'fixture-okx-key';
+process.env.OKX_SECRET_KEY = 'fixture-okx-secret';
+process.env.OKX_API_PASSPHRASE = 'fixture-okx-passphrase';
 
 function createJsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -173,4 +176,3 @@ run().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
-

@@ -3,11 +3,13 @@ import 'server-only';
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
-import { projectTelegramMonitorEvent } from '@/lib/server/telegramMonitorFeed';
+import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
+import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import { upsertTelegramMonitorEvent } from '@/lib/server/telegramMonitorRepo';
+import { upsertTelegramMonitorTxStateProvisional } from '@/lib/server/telegramMonitorTxStateRepo';
 import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
 import {
   parseTweetIdFromUrl,
@@ -169,7 +171,7 @@ function isCompatibleChain(addressChain: string, eventChain: string) {
   return isEvmChain(addressChain) && isEvmChain(eventChain);
 }
 
-function hasTrackedUserMatch(parsed: {
+function findTrackedUserMatch(parsed: {
   chain: string | null;
   walletAliasLabel: string | null;
   walletLabel: string | null;
@@ -189,20 +191,26 @@ function hasTrackedUserMatch(parsed: {
       if (!isCompatibleChain(address.chain, chain)) continue;
 
       if (trackedWalletAddress && address.address.trim().toLowerCase() === trackedWalletAddress) {
-        return true;
+        return {
+          user,
+          address,
+        };
       }
 
       if (aliasLabel) {
         const userAlias = normalizeAlias(user.name);
         const addressAlias = normalizeAlias(address.name);
         if (aliasLabel === `${userAlias}${addressAlias}` || aliasLabel === addressAlias || aliasLabel === userAlias) {
-          return true;
+          return {
+            user,
+            address,
+          };
         }
       }
     }
   }
 
-  return false;
+  return null;
 }
 
 async function notifyUnknownTrackedUser(params: {
@@ -294,7 +302,8 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
     return { ok: true, ignored: true, reason: 'invalid-trade-format' as const };
   }
 
-  if (!hasTrackedUserMatch(parsed)) {
+  const trackedMatch = findTrackedUserMatch(parsed);
+  if (!trackedMatch) {
     await notifyUnknownTrackedUser({
       parsed,
       sourceChatId,
@@ -345,29 +354,64 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
-  const projected = await projectTelegramMonitorEvent({
-    event: {
-      chain: parsed.chain,
-      tokenAddress: parsed.tokenAddress,
-      tokenSymbol: parsed.tokenSymbol,
-      txHash: parsed.txHash,
-      marketCapUsd: parsed.marketCapUsd,
-      priceUsd: parsed.priceUsd,
-      quoteAmount: parsed.quoteAmount,
-      quoteSymbol: parsed.quoteSymbol,
-      action: parsed.action,
-      actionLabel: parsed.actionLabel,
-      actionVariant: parsed.actionVariant,
-      walletLabel: parsed.walletLabel,
-      walletGroupLabel: parsed.walletGroupLabel,
-      walletAliasLabel: parsed.walletAliasLabel,
-      trackedWalletAddress: parsed.trackedWalletAddress,
-      eventTimeMs,
-      rawText: text,
-      messageLinks,
-      updatedAt: Date.now(),
-    },
-  });
+  const txState =
+    parsed.txHash && parsed.trackedWalletAddress
+      ? upsertTelegramMonitorTxStateProvisional({
+          userId: trackedMatch.user.id,
+          chain: parsed.chain,
+          trackedWalletAddress: parsed.trackedWalletAddress,
+          txHash: parsed.txHash,
+          tokenAddress: parsed.tokenAddress,
+          tokenSymbol: parsed.tokenSymbol,
+          provisionalAction: parsed.action,
+          provisionalActionLabel: parsed.actionLabel,
+          provisionalActionVariant: parsed.actionVariant,
+          provisionalQuoteAmount: parsed.quoteAmount,
+          provisionalQuoteSymbol: parsed.quoteSymbol,
+          provisionalTokenAmount: parsed.tokenAmount,
+          provisionalTokenSymbol: parsed.tokenSymbol,
+          provisionalPriceUsd: parsed.priceUsd,
+          provisionalMarketCapUsd: parsed.marketCapUsd,
+          provisionalRawText: text,
+          provisionalMessageLinks: messageLinks,
+          provisionalWalletLabel: parsed.walletLabel,
+          provisionalWalletGroupLabel: parsed.walletGroupLabel,
+          provisionalWalletAliasLabel: parsed.walletAliasLabel,
+          eventTimeMs,
+        })
+      : null;
+
+  const projected = txState
+    ? await projectTelegramMonitorTxState({
+        state: txState,
+        users: [trackedMatch.user],
+      })
+    : await projectTelegramMonitorEvent({
+        event: {
+          sourceChatId,
+          sourceMessageId,
+          chain: parsed.chain,
+          tokenAddress: parsed.tokenAddress,
+          tokenSymbol: parsed.tokenSymbol,
+          txHash: parsed.txHash,
+          marketCapUsd: parsed.marketCapUsd,
+          priceUsd: parsed.priceUsd,
+          quoteAmount: parsed.quoteAmount,
+          quoteSymbol: parsed.quoteSymbol,
+          action: parsed.action,
+          actionLabel: parsed.actionLabel,
+          actionVariant: parsed.actionVariant,
+          walletLabel: parsed.walletLabel,
+          walletGroupLabel: parsed.walletGroupLabel,
+          walletAliasLabel: parsed.walletAliasLabel,
+          trackedWalletAddress: parsed.trackedWalletAddress,
+          eventTimeMs,
+          rawText: text,
+          messageLinks,
+          updatedAt: Date.now(),
+        },
+        users: [trackedMatch.user],
+      });
 
   if (projected) {
     upsertEventsFromFeedRows([projected], 'telegram-monitor-ingest');
@@ -383,6 +427,14 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
         },
       });
     }
+  }
+
+  if (txState) {
+    void triggerTelegramMonitorReconciliation({
+      chain: txState.chain,
+      trackedWalletAddress: txState.trackedWalletAddress,
+      txHash: txState.txHash,
+    });
   }
 
   return {

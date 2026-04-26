@@ -140,6 +140,9 @@ export interface Activity {
     monitorWalletLabel?: string;
     monitorWalletGroupLabel?: string;
     monitorWalletAliasLabel?: string;
+    monitorReconciliationStatus?: 'pending' | 'reconciled' | 'failed';
+    monitorReconciledSource?: 'xxyy' | 'okx-address' | 'okx-detail';
+    monitorTxAggregateKey?: string;
     rawText?: string;
     coHitUserCount?: number;
     coHitAddressCount?: number;
