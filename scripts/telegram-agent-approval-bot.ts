@@ -17,9 +17,24 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function ensureWebhookCleared() {
+  while (true) {
+    try {
+      await deleteTelegramApprovalBotWebhook();
+      console.log('[telegram-agent-approval-bot] webhook cleared');
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[telegram-agent-approval-bot] deleteWebhook failed: ${message} (sleep=${FAILURE_SLEEP_MS}ms)`
+      );
+      await sleep(FAILURE_SLEEP_MS);
+    }
+  }
+}
+
 async function run() {
-  await deleteTelegramApprovalBotWebhook();
-  console.log('[telegram-agent-approval-bot] webhook cleared');
+  await ensureWebhookCleared();
 
   while (true) {
     const cycle = await runTelegramApprovalBotCycle();

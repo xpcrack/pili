@@ -208,6 +208,72 @@ async function run() {
     assert.equal(savedOffset, 10);
     assert.deepEqual(seenMessages, ['/grant -1001234567890']);
 
+    let crossChatHandled = false;
+    const crossChatOffsets: number[] = [];
+    const crossChatCycle = await runTelegramApprovalBotCycle({
+      approvalChatId: '-5130530086',
+      fetchUpdates: async () => [
+        {
+          update_id: 20,
+          message: {
+            chat: { id: '-1000000000001' },
+            from: { id: 42, username: 'xp' },
+            text: '/grant -1001234567890',
+          },
+        },
+      ],
+      handleMessage: async () => {
+        crossChatHandled = true;
+        return { handled: true };
+      },
+      readOffset: () => 0,
+      saveOffset: (value) => {
+        crossChatOffsets.push(value);
+      },
+    });
+    assert.equal(crossChatHandled, false);
+    assert.equal(crossChatCycle.lastUpdateId, 20);
+    assert.deepEqual(crossChatOffsets, [20]);
+
+    const partialBatchOffsets: number[] = [];
+    const partialBatchSeen: string[] = [];
+    const partialBatchCycle = await runTelegramApprovalBotCycle({
+      approvalChatId: '-5130530086',
+      fetchUpdates: async () => [
+        {
+          update_id: 30,
+          message: {
+            chat: { id: '-5130530086' },
+            from: { id: 42, username: 'xp' },
+            text: '/grant -1001234567890',
+          },
+        },
+        {
+          update_id: 31,
+          message: {
+            chat: { id: '-5130530086' },
+            from: { id: 42, username: 'xp' },
+            text: '/agent researcher-a',
+          },
+        },
+      ],
+      handleMessage: async ({ text }) => {
+        partialBatchSeen.push(text);
+        if (text.includes('/agent')) {
+          throw new Error('boom-on-second-update');
+        }
+        return { handled: true };
+      },
+      readOffset: () => 0,
+      saveOffset: (value) => {
+        partialBatchOffsets.push(value);
+      },
+    });
+    assert.deepEqual(partialBatchSeen, ['/grant -1001234567890', '/agent researcher-a']);
+    assert.deepEqual(partialBatchOffsets, [30]);
+    assert.equal(partialBatchCycle.status, 'error');
+    assert.equal(partialBatchCycle.lastUpdateId, 30);
+
     console.log('PASS telegram agent authorization repo');
   } finally {
     if (typeof previousDataDir === 'string') {
