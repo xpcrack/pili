@@ -12,31 +12,36 @@ loadEnvFile(path.join(process.cwd(), '.env.local'));
 
 const IDLE_POLL_DELAY_MS = 100;
 const FAILURE_SLEEP_MS = 3_000;
+let webhookCleared = false;
+let nextWebhookRetryAtMs = 0;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function ensureWebhookCleared() {
-  while (true) {
-    try {
-      await deleteTelegramApprovalBotWebhook();
-      console.log('[telegram-agent-approval-bot] webhook cleared');
-      return;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(
-        `[telegram-agent-approval-bot] deleteWebhook failed: ${message} (sleep=${FAILURE_SLEEP_MS}ms)`
-      );
-      await sleep(FAILURE_SLEEP_MS);
-    }
+async function tryClearWebhook() {
+  const nowMs = Date.now();
+  if (webhookCleared || nowMs < nextWebhookRetryAtMs) {
+    return;
+  }
+
+  try {
+    await deleteTelegramApprovalBotWebhook();
+    webhookCleared = true;
+    console.log('[telegram-agent-approval-bot] webhook cleared');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    nextWebhookRetryAtMs = nowMs + FAILURE_SLEEP_MS;
+    console.error(
+      `[telegram-agent-approval-bot] deleteWebhook failed: ${message} (retry in ${FAILURE_SLEEP_MS}ms)`
+    );
   }
 }
 
 async function run() {
-  await ensureWebhookCleared();
-
   while (true) {
+    await tryClearWebhook();
+
     const cycle = await runTelegramApprovalBotCycle();
     if (cycle.status === 'error' || cycle.status === 'missing-credentials') {
       console.error(
