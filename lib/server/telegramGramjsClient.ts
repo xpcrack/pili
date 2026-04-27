@@ -30,8 +30,8 @@ function normalizeIdLike(value: unknown): string | null {
   if (typeof value === 'bigint') {
     return value.toString();
   }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return String(Math.floor(value));
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    return String(value);
   }
   return normalizeString(value) || null;
 }
@@ -56,19 +56,61 @@ function buildTelegramSenderDisplayName(sender: Record<string, unknown>) {
   return normalizeString(sender.title) || normalizeString(sender.username) || null;
 }
 
-function isUnsupportedTelegramSearchError(error: unknown) {
+function readTelegramRpcErrorCode(record: Record<string, unknown>) {
+  const numericCodeCandidates = [record.errorCode, record.error_code, record.code];
+  for (const candidate of numericCodeCandidates) {
+    if (typeof candidate === 'number' && Number.isSafeInteger(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === 'string' && /^\d{3}$/.test(candidate.trim())) {
+      return Number(candidate.trim());
+    }
+  }
+
+  const messageCandidates = [record.message, record.errorMessage, record.error];
+  for (const candidate of messageCandidates) {
+    const message = normalizeString(candidate);
+    if (!message) {
+      continue;
+    }
+    const codeMatch = message.match(/\b([345]\d{2})\b/);
+    if (codeMatch) {
+      return Number(codeMatch[1]);
+    }
+  }
+  return null;
+}
+
+function extractUnsupportedSearchRpcSignature(record: Record<string, unknown>) {
+  const messageCandidates = [record.errorMessage, record.error, record.message];
+  for (const candidate of messageCandidates) {
+    const message = normalizeString(candidate);
+    if (!message) {
+      continue;
+    }
+    const rpcTokens = message.toUpperCase().match(/\b[A-Z][A-Z0-9_]{2,}\b/g) || [];
+    const unsupportedToken = rpcTokens.find(
+      (token) => /^SEARCH(?:_[A-Z0-9]+)*_(?:NOT_SUPPORTED|UNSUPPORTED)$/.test(token)
+    );
+    if (unsupportedToken) {
+      return unsupportedToken;
+    }
+  }
+  return null;
+}
+
+export function isUnsupportedTelegramSearchError(error: unknown) {
   const record = asRecord(error);
-  const normalized = [normalizeString(record?.message), normalizeString(record?.errorMessage), normalizeString(record?.error)]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ');
-  if (!normalized) {
+  if (!record) {
     return false;
   }
-  const hasSearchHint = normalized.includes('search');
-  const hasUnsupportedHint = normalized.includes('unsupported') || normalized.includes('not supported');
-  return hasSearchHint && hasUnsupportedHint;
+
+  const rpcErrorCode = readTelegramRpcErrorCode(record);
+  if (rpcErrorCode !== 400) {
+    return false;
+  }
+
+  return Boolean(extractUnsupportedSearchRpcSignature(record));
 }
 
 function collectUrlsFromText(text: string) {
