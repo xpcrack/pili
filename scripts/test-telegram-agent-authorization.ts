@@ -20,6 +20,7 @@ async function run() {
       recordTelegramAgentGrantRead,
       listActiveTelegramAgentGrants,
     } = await import('../lib/server/telegramAgentGrantRepo');
+    const { getDb } = await import('../lib/server/sqlite');
     const { hashTelegramAgentToken } = await import('../lib/server/telegramAgentToken');
 
     const pending = savePendingTelegramAgentGrant({
@@ -44,6 +45,8 @@ async function run() {
     });
     assert.equal(grant.status, 'active');
     assert.equal(getTelegramAgentGrantByToken(rawToken)?.agentName, 'researcher-a');
+    assert.equal(getTelegramAgentGrantByToken(rawToken)?.useCount, 0);
+    assert.equal(getTelegramAgentGrantByToken(rawToken)?.lastUsedAt, null);
 
     recordTelegramAgentGrantRead({
       grantId: grant.id,
@@ -57,6 +60,17 @@ async function run() {
       success: true,
       errorCode: null,
     });
+    const readCountRow = getDb()
+      .prepare(
+        `SELECT count(*) AS count
+         FROM telegram_agent_grant_reads
+         WHERE grant_id = ?`
+      )
+      .get(grant.id) as { count: number };
+    assert.equal(readCountRow.count, 1);
+    const usedGrant = getTelegramAgentGrantByToken(rawToken);
+    assert.equal(usedGrant?.useCount, 1);
+    assert.equal(typeof usedGrant?.lastUsedAt, 'number');
     assert.equal(listActiveTelegramAgentGrants().length, 1);
 
     revokeTelegramAgentGrant({
