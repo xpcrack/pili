@@ -274,6 +274,24 @@ async function run() {
     assert.equal(partialBatchCycle.status, 'error');
     assert.equal(partialBatchCycle.lastUpdateId, 30);
 
+    const { mapTelegramMessageToAgentReadItem } = await import('../lib/server/telegramGramjsClient');
+    const mapped = mapTelegramMessageToAgentReadItem({
+      id: 501,
+      message: 'alpha beta',
+      date: new Date(1710000000000),
+      fromId: { userId: 77n },
+      sender: {
+        id: 77,
+        username: 'alice',
+        firstName: 'Alice',
+        lastName: 'Z',
+      },
+    } as Record<string, unknown>);
+    assert.equal(mapped?.messageId, 501);
+    assert.equal(mapped?.text, 'alpha beta');
+    assert.equal(mapped?.sender?.username, 'alice');
+    assert.equal(mapped?.sender?.displayName, 'Alice Z');
+
     console.log('PASS telegram agent authorization repo');
   } finally {
     if (typeof previousDataDir === 'string') {
