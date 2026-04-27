@@ -68,3 +68,14 @@ export function upsertWorkerStatus(input: {
     now
   );
 }
+
+export function touchWorkerHeartbeat(workerKey: string) {
+  const db = getDb();
+  const now = Date.now();
+  db.prepare(
+    `UPDATE worker_status
+     SET last_heartbeat_at_ms = ?,
+         updated_at_ms = ?
+     WHERE worker_key = ?`
+  ).run(now, now, workerKey);
+}

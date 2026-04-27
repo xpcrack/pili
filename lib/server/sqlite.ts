@@ -205,6 +205,59 @@ ON telegram_monitor_tx_states(event_time_ms DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair
 ON telegram_monitor_tx_states(reconciliation_status, next_retry_at, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS telegram_channel_sources (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  channel_ref TEXT NOT NULL,
+  channel_ref_normalized TEXT NOT NULL,
+  channel_title TEXT,
+  channel_username TEXT,
+  channel_chat_id TEXT,
+  access_hash TEXT,
+  source_kind TEXT NOT NULL DEFAULT 'auto',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sync_status TEXT NOT NULL DEFAULT 'pending',
+  last_message_id INTEGER,
+  last_synced_at_ms INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(user_id, channel_ref_normalized),
+  FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_channel_sources_enabled
+ON telegram_channel_sources(enabled, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_channel_sources_chat_id
+ON telegram_channel_sources(channel_chat_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS telegram_channel_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_chat_id TEXT NOT NULL,
+  channel_username TEXT,
+  channel_title TEXT,
+  message_id INTEGER NOT NULL,
+  grouped_id TEXT,
+  posted_at_ms INTEGER NOT NULL,
+  edit_date_ms INTEGER,
+  text TEXT NOT NULL DEFAULT '',
+  text_entities_json TEXT NOT NULL DEFAULT '[]',
+  media_json TEXT NOT NULL DEFAULT '[]',
+  link_urls_json TEXT NOT NULL DEFAULT '[]',
+  forward_info_json TEXT,
+  views INTEGER,
+  forwards INTEGER,
+  replies INTEGER,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(channel_chat_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_channel_posts_recent
+ON telegram_channel_posts(channel_chat_id, message_id DESC, posted_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS activity_judgments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chain TEXT NOT NULL,
@@ -743,6 +796,8 @@ function initializeDb(db: Database.Database) {
   }
 
   db.exec(SCHEMA_SQL);
+  ensureTelegramChannelSourceColumns(db);
+  ensureTelegramChannelPostSchema(db);
   ensureTelegramMonitorEventColumns(db);
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
@@ -784,6 +839,110 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
     `CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair_claim
      ON telegram_monitor_tx_states(reconciliation_status, repair_claimed_at, next_retry_at)`
   );
+}
+
+function ensureTelegramChannelSourceColumns(db: Database.Database) {
+  ensureColumn(db, 'telegram_channel_sources', 'source_kind', 'TEXT', "'auto'");
+}
+
+function ensureTelegramChannelPostSchema(db: Database.Database) {
+  if (!hasColumn(db, 'telegram_channel_posts', 'source_id') && !hasColumn(db, 'telegram_channel_posts', 'user_id')) {
+    db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_source_recent');
+    db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_user_recent');
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_telegram_channel_posts_recent
+       ON telegram_channel_posts(channel_chat_id, message_id DESC, posted_at_ms DESC)`
+    );
+    return;
+  }
+
+  const migrate = db.transaction(() => {
+    db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_source_recent');
+    db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_user_recent');
+    db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_recent');
+    db.exec('ALTER TABLE telegram_channel_posts RENAME TO telegram_channel_posts_legacy_v1');
+    db.exec(`
+CREATE TABLE telegram_channel_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_chat_id TEXT NOT NULL,
+  channel_username TEXT,
+  channel_title TEXT,
+  message_id INTEGER NOT NULL,
+  grouped_id TEXT,
+  posted_at_ms INTEGER NOT NULL,
+  edit_date_ms INTEGER,
+  text TEXT NOT NULL DEFAULT '',
+  text_entities_json TEXT NOT NULL DEFAULT '[]',
+  media_json TEXT NOT NULL DEFAULT '[]',
+  link_urls_json TEXT NOT NULL DEFAULT '[]',
+  forward_info_json TEXT,
+  views INTEGER,
+  forwards INTEGER,
+  replies INTEGER,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(channel_chat_id, message_id)
+);
+CREATE INDEX idx_telegram_channel_posts_recent
+ON telegram_channel_posts(channel_chat_id, message_id DESC, posted_at_ms DESC);
+    `);
+    db.exec(`
+INSERT INTO telegram_channel_posts (
+  id,
+  channel_chat_id,
+  channel_username,
+  channel_title,
+  message_id,
+  grouped_id,
+  posted_at_ms,
+  edit_date_ms,
+  text,
+  text_entities_json,
+  media_json,
+  link_urls_json,
+  forward_info_json,
+  views,
+  forwards,
+  replies,
+  raw_json,
+  created_at,
+  updated_at
+)
+SELECT
+  ranked.id,
+  ranked.channel_chat_id,
+  ranked.channel_username,
+  ranked.channel_title,
+  ranked.message_id,
+  ranked.grouped_id,
+  ranked.posted_at_ms,
+  ranked.edit_date_ms,
+  ranked.text,
+  ranked.text_entities_json,
+  ranked.media_json,
+  ranked.link_urls_json,
+  ranked.forward_info_json,
+  ranked.views,
+  ranked.forwards,
+  ranked.replies,
+  ranked.raw_json,
+  ranked.created_at,
+  ranked.updated_at
+FROM (
+  SELECT
+    legacy.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY legacy.channel_chat_id, legacy.message_id
+      ORDER BY legacy.updated_at DESC, legacy.created_at DESC, legacy.id DESC
+    ) AS row_rank
+  FROM telegram_channel_posts_legacy_v1 AS legacy
+) AS ranked
+WHERE ranked.row_rank = 1;
+    `);
+    db.exec('DROP TABLE telegram_channel_posts_legacy_v1');
+  });
+  migrate();
 }
 
 function ensureActivityJudgmentColumns(db: Database.Database) {

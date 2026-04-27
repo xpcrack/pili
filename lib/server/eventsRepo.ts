@@ -93,7 +93,7 @@ function buildEventId(user: User, activity: Activity) {
 }
 
 function extractUrl(activity: Activity) {
-  return activity.metadata.tweetUrl || null;
+  return activity.metadata.tweetUrl || activity.metadata.telegramPostUrl || null;
 }
 
 function parseQueryTerms(q: string) {

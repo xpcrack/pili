@@ -1,0 +1,87 @@
+import 'server-only';
+
+export type TelegramChannelSourceStatus = 'pending' | 'ready' | 'auth_required' | 'unavailable' | 'error';
+export type TelegramChannelSourceKind = 'auto' | 'manual';
+
+export interface TelegramChannelSource {
+  id: string;
+  userId: string;
+  channelRef: string;
+  channelRefNormalized: string;
+  channelTitle: string | null;
+  channelUsername: string | null;
+  channelChatId: string | null;
+  accessHash: string | null;
+  sourceKind: TelegramChannelSourceKind;
+  enabled: boolean;
+  syncStatus: TelegramChannelSourceStatus;
+  lastMessageId: number | null;
+  lastSyncedAtMs: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TelegramChannelPost {
+  id: number;
+  channelChatId: string;
+  channelUsername: string | null;
+  channelTitle: string | null;
+  messageId: number;
+  groupedId: string | null;
+  postedAtMs: number;
+  editDateMs: number | null;
+  text: string;
+  textEntities: unknown[];
+  media: string[];
+  linkUrls: string[];
+  forwardInfo: Record<string, unknown> | null;
+  views: number | null;
+  forwards: number | null;
+  replies: number | null;
+  raw: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TelegramChannelResolved {
+  channelChatId: string;
+  channelUsername: string | null;
+  channelTitle: string | null;
+  accessHash: string | null;
+}
+
+export interface TelegramChannelResolveInput {
+  channelRef: string;
+  channelUsername?: string | null;
+  channelChatId?: string | null;
+  accessHash?: string | null;
+}
+
+export interface TelegramChannelRemoteMessage {
+  messageId: number;
+  groupedId: string | null;
+  postedAtMs: number;
+  editDateMs: number | null;
+  text: string;
+  textEntities: unknown[];
+  media: string[];
+  linkUrls: string[];
+  forwardInfo: Record<string, unknown> | null;
+  views: number | null;
+  forwards: number | null;
+  replies: number | null;
+  raw: Record<string, unknown>;
+}
+
+export interface TelegramChannelSyncClient {
+  resolveChannel(input: TelegramChannelResolveInput): Promise<TelegramChannelResolved>;
+  listChannelMessages(params: {
+    source: TelegramChannelSource;
+    resolved: TelegramChannelResolved;
+    minMessageId: number | null;
+    limit?: number;
+  }): Promise<TelegramChannelRemoteMessage[]>;
+  listBridgeChatMessages?(params: { chatId: string; limit: number }): Promise<import('../../scripts/telegram-bridge-core').TelegramMessageLike[]>;
+  disconnect?(): Promise<void>;
+}
