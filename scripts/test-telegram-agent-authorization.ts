@@ -9,8 +9,10 @@ async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-telegram-agent-auth-'));
   const previousDataDir = process.env.PILIPILI_DATA_DIR;
   const previousDbPath = process.env.PILIPILI_DB_PATH;
+  const previousApprovalAdminIds = process.env.TELEGRAM_APPROVAL_ADMIN_USER_IDS;
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
+  process.env.TELEGRAM_APPROVAL_ADMIN_USER_IDS = '42';
 
   try {
     const {
@@ -106,6 +108,53 @@ async function run() {
     });
     assert.equal(getTelegramAgentGrantByToken(rawToken)?.status, 'revoked');
 
+    const { handleTelegramApprovalBotMessage } = await import('../lib/server/telegramAgentApprovalBot');
+    const replies: Array<{ chatId: string; text: string }> = [];
+    const sendReply = async ({ chatId, text }: { chatId: string; text: string }) => {
+      replies.push({ chatId, text });
+    };
+
+    const grantReply = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant -1001234567890',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+    });
+    assert.equal(grantReply.handled, true);
+    assert.match(replies.at(-1)?.text || '', /请继续发送/);
+
+    const agentReply = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/agent researcher-a',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+    });
+    assert.equal(agentReply.handled, true);
+    assert.match(replies.at(-1)?.text || '', /授权已创建/);
+    assert.match(replies.at(-1)?.text || '', /researcher-a/);
+
+    const accessReply = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/access agent researcher-a',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+    });
+    assert.equal(accessReply.handled, true);
+    assert.match(replies.at(-1)?.text || '', /active chats/);
+
+    const denied = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant -1009999999999',
+      fromUserId: '100',
+      fromUsername: 'guest',
+      sendMessage: sendReply,
+    });
+    assert.equal(denied.handled, true);
+    assert.match(replies.at(-1)?.text || '', /无权限|not allowed/i);
+
     console.log('PASS telegram agent authorization repo');
   } finally {
     if (typeof previousDataDir === 'string') {
@@ -117,6 +166,11 @@ async function run() {
       process.env.PILIPILI_DB_PATH = previousDbPath;
     } else {
       delete process.env.PILIPILI_DB_PATH;
+    }
+    if (typeof previousApprovalAdminIds === 'string') {
+      process.env.TELEGRAM_APPROVAL_ADMIN_USER_IDS = previousApprovalAdminIds;
+    } else {
+      delete process.env.TELEGRAM_APPROVAL_ADMIN_USER_IDS;
     }
     rmSync(tempDir, { recursive: true, force: true });
   }
