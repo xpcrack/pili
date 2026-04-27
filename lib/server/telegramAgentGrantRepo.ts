@@ -145,6 +145,15 @@ function mapPendingGrantRow(row: TelegramAgentPendingGrantRow): TelegramAgentPen
 }
 
 function mapGrantRow(row: TelegramAgentGrantRow): TelegramAgentGrant {
+  let status: TelegramAgentGrantStatus;
+  if (row.status === 'active') {
+    status = 'active';
+  } else if (row.status === 'revoked') {
+    status = 'revoked';
+  } else {
+    throw new Error(`unknown telegram agent grant status: ${row.status}`);
+  }
+
   return {
     id: row.id,
     approvalChatId: row.approval_chat_id,
@@ -153,7 +162,7 @@ function mapGrantRow(row: TelegramAgentGrantRow): TelegramAgentGrant {
     scope: parseScope(row.scope_json),
     tokenHash: row.token_hash,
     tokenPreview: row.token_preview,
-    status: row.status === 'revoked' ? 'revoked' : ('active' satisfies TelegramAgentGrantStatus),
+    status,
     createdByTelegramUserId: row.created_by_telegram_user_id,
     createdByTelegramUsername: row.created_by_telegram_username,
     createdAt: row.created_at,
@@ -430,6 +439,21 @@ export function revokeTelegramAgentGrant(input: RevokeTelegramAgentGrantInput) {
 export function recordTelegramAgentGrantRead(input: RecordTelegramAgentGrantReadInput) {
   withTransaction((db) => {
     const now = Date.now();
+    const updateResult = db
+      .prepare(
+        `UPDATE telegram_agent_grants
+         SET last_used_at = ?,
+             use_count = use_count + 1,
+             updated_at = ?
+         WHERE id = ?
+           AND status = 'active'`
+      )
+      .run(now, now, input.grantId);
+
+    if (updateResult.changes !== 1) {
+      throw new Error(`telegram agent grant is not active or missing: ${input.grantId}`);
+    }
+
     db.prepare(
       `INSERT INTO telegram_agent_grant_reads (
          grant_id,
@@ -457,14 +481,5 @@ export function recordTelegramAgentGrantRead(input: RecordTelegramAgentGrantRead
       normalizeOptional(input.errorCode),
       now
     );
-
-    db.prepare(
-      `UPDATE telegram_agent_grants
-       SET last_used_at = ?,
-           use_count = use_count + 1,
-           updated_at = ?
-       WHERE id = ?
-         AND status = 'active'`
-    ).run(now, now, input.grantId);
   });
 }
