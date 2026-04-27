@@ -30,17 +30,24 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim();
 }
 
-function normalizeCommand(raw: string) {
-  const withoutSlash = normalize(raw).replace(/^\/+/, '');
-  const [base] = withoutSlash.split('@');
-  return normalize(base).toLowerCase();
-}
-
 function parseText(text: string) {
   const parts = normalize(text).split(/\s+/).filter(Boolean);
-  const command = normalizeCommand(parts[0] || '');
+  const commandToken = normalize(parts[0] || '');
+  const command = parseCommandToken(commandToken);
   const args = parts.slice(1);
   return { command, args };
+}
+
+function parseCommandToken(commandToken: string) {
+  if (!commandToken.startsWith('/')) {
+    return '';
+  }
+
+  if (commandToken.includes('@')) {
+    return '';
+  }
+
+  return normalize(commandToken.slice(1)).toLowerCase();
 }
 
 function isValidTelegramChatId(chatId: string) {
