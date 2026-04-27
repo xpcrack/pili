@@ -165,6 +165,9 @@ export async function runTelegramApprovalBotCycle(
   const approvalChatId = normalize(input.approvalChatId) || DEFAULT_APPROVAL_CHAT_ID;
   const token = normalize(resolveTelegramBotToken());
   const baseOffset = toInteger(readOffset(), 0);
+  let committedOffset = baseOffset;
+  let handledCount = 0;
+  let processedCount = 0;
 
   if (!token && !input.fetchUpdates) {
     const lastError = 'Missing TELEGRAM bot token';
@@ -189,47 +192,43 @@ export async function runTelegramApprovalBotCycle(
       timeoutSeconds: POLL_TIMEOUT_SECONDS,
     });
 
-    let handledCount = 0;
-    let lastUpdateId = baseOffset;
-
     for (const update of updates || []) {
-      const updateId = toInteger(update?.update_id, lastUpdateId);
-      if (updateId > lastUpdateId) {
-        lastUpdateId = updateId;
-      }
+      const updateId = toInteger(update?.update_id, committedOffset);
+      const canCommitUpdateId = updateId > committedOffset;
 
       const message = update?.message || update?.edited_message;
+      const sourceChatId = toStringId(message?.chat?.id);
       const text = normalize(message?.text);
-      if (!message || !text) {
-        continue;
+      if (message && sourceChatId === approvalChatId && text) {
+        const result = await handleMessage({
+          approvalChatId: sourceChatId,
+          text,
+          fromUserId: toStringId(message.from?.id),
+          fromUsername: normalize(message.from?.username) || null,
+          sendMessage: sendTelegramMessage,
+        });
+        if (result.handled) {
+          handledCount += 1;
+        }
       }
+      processedCount += 1;
 
-      const result = await handleMessage({
-        approvalChatId,
-        text,
-        fromUserId: toStringId(message.from?.id),
-        fromUsername: normalize(message.from?.username) || null,
-        sendMessage: sendTelegramMessage,
-      });
-      if (result.handled) {
-        handledCount += 1;
+      if (canCommitUpdateId) {
+        saveOffset(updateId);
+        committedOffset = updateId;
       }
-    }
-
-    if (lastUpdateId > baseOffset) {
-      saveOffset(lastUpdateId);
     }
 
     const status = updates.length > 0 ? 'running' : 'idle';
     upsertApprovalBotStatus({
       status,
-      lastUpdateId,
+      lastUpdateId: committedOffset,
       lastError: null,
     });
     return {
       status,
-      lastUpdateId,
-      updateCount: updates.length,
+      lastUpdateId: committedOffset,
+      updateCount: processedCount,
       handledCount,
       sleepMs: 0,
       lastError: null,
@@ -238,14 +237,14 @@ export async function runTelegramApprovalBotCycle(
     const lastError = error instanceof Error ? error.message : String(error);
     upsertApprovalBotStatus({
       status: 'error',
-      lastUpdateId: baseOffset,
+      lastUpdateId: committedOffset,
       lastError,
     });
     return {
       status: 'error',
-      lastUpdateId: baseOffset,
-      updateCount: 0,
-      handledCount: 0,
+      lastUpdateId: committedOffset,
+      updateCount: processedCount,
+      handledCount,
       sleepMs: FAILURE_SLEEP_MS,
       lastError,
     };
