@@ -154,6 +154,31 @@ async function run() {
     });
     assert.equal(denied.handled, true);
     assert.match(replies.at(-1)?.text || '', /无权限|not allowed/i);
+    assert.equal(readPendingTelegramAgentGrantForUser('100'), null);
+    assert.equal(
+      listActiveTelegramAgentGrants().some(
+        (activeGrant) => activeGrant.chatId === '-1009999999999' && activeGrant.createdByTelegramUserId === '100'
+      ),
+      false
+    );
+
+    const noSlashCommand = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: 'grant -1001234567890',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+    });
+    assert.equal(noSlashCommand.handled, false);
+
+    const mentionedCommand = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant@otherbot -1001234567890',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+    });
+    assert.equal(mentionedCommand.handled, false);
 
     console.log('PASS telegram agent authorization repo');
   } finally {
