@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import './server-only-shim.cjs';
+import type { TelegramChannelSyncClient } from '../lib/server/telegramChannelTypes';
 
 async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-telegram-agent-auth-'));
@@ -101,12 +102,66 @@ async function run() {
 
     assert.equal(listActiveTelegramAgentGrants().length, 1);
 
+    const { runTelegramAgentRead } = await import('../lib/server/telegramAgentReadService');
+    const stubClient: TelegramChannelSyncClient = {
+      async resolveChannel() {
+        throw new Error('unused');
+      },
+      async listChannelMessages() {
+        return [];
+      },
+      async listAgentChatMessages(_params) {
+        return [{ messageId: 1, date: 1710000000, text: 'hello', sender: null }];
+      },
+      async searchAgentChatMessages(_params) {
+        return { searchMode: 'telegram' as const, items: [] };
+      },
+    };
+
+    const okTail = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1001234567890',
+      token: rawToken,
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(okTail.ok, true);
+    if (okTail.ok) {
+      assert.equal(okTail.mode, 'tail');
+      assert.equal(okTail.items.length, 1);
+    }
+
+    const mismatch = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1009999999999',
+      token: rawToken,
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(mismatch.ok, false);
+    if (!mismatch.ok) {
+      assert.equal(mismatch.error, 'chat_mismatch');
+    }
+
     revokeTelegramAgentGrant({
       agentName: 'researcher-a',
       chatId: '-1001234567890',
       revokedByTelegramUserId: '42',
     });
     assert.equal(getTelegramAgentGrantByToken(rawToken)?.status, 'revoked');
+
+    const revoked = await runTelegramAgentRead({
+      mode: 'search',
+      chatId: '-1001234567890',
+      token: rawToken,
+      query: 'hello',
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(revoked.ok, false);
+    if (!revoked.ok) {
+      assert.equal(revoked.error, 'grant_revoked');
+    }
 
     const { handleTelegramApprovalBotMessage } = await import('../lib/server/telegramAgentApprovalBot');
     const replies: Array<{ chatId: string; text: string }> = [];
