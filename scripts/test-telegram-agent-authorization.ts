@@ -180,6 +180,34 @@ async function run() {
     });
     assert.equal(mentionedCommand.handled, false);
 
+    const { runTelegramApprovalBotCycle } = await import('../lib/server/telegramApprovalBotRuntime');
+    const seenMessages: string[] = [];
+    let savedOffset = -1;
+    const cycle = await runTelegramApprovalBotCycle({
+      approvalChatId: '-5130530086',
+      fetchUpdates: async () => [
+        {
+          update_id: 10,
+          message: {
+            chat: { id: '-5130530086' },
+            from: { id: 42, username: 'xp' },
+            text: '/grant -1001234567890',
+          },
+        },
+      ],
+      handleMessage: async ({ text }) => {
+        seenMessages.push(text);
+        return { handled: true };
+      },
+      readOffset: () => 0,
+      saveOffset: (value) => {
+        savedOffset = value;
+      },
+    });
+    assert.equal(cycle.lastUpdateId, 10);
+    assert.equal(savedOffset, 10);
+    assert.deepEqual(seenMessages, ['/grant -1001234567890']);
+
     console.log('PASS telegram agent authorization repo');
   } finally {
     if (typeof previousDataDir === 'string') {
