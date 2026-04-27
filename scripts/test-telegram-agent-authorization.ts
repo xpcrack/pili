@@ -131,6 +131,18 @@ async function run() {
       assert.equal(okTail.items.length, 1);
     }
 
+    const invalidToken = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1001234567890',
+      token: '',
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(invalidToken.ok, false);
+    if (!invalidToken.ok) {
+      assert.equal(invalidToken.error, 'invalid_token');
+    }
+
     const mismatch = await runTelegramAgentRead({
       mode: 'tail',
       chatId: '-1009999999999',
@@ -141,6 +153,147 @@ async function run() {
     assert.equal(mismatch.ok, false);
     if (!mismatch.ok) {
       assert.equal(mismatch.error, 'chat_mismatch');
+    }
+
+    const tailOnlyToken = 'tgagt_tail_only_token';
+    upsertTelegramAgentGrant({
+      approvalChatId: '-5130530086',
+      agentName: 'researcher-tail-only',
+      chatId: '-1001234567890',
+      scope: ['tail'],
+      tokenHash: hashTelegramAgentToken(tailOnlyToken),
+      tokenPreview: tailOnlyToken.slice(0, 8),
+      createdByTelegramUserId: '42',
+      createdByTelegramUsername: 'xp',
+    });
+    const scopeDenied = await runTelegramAgentRead({
+      mode: 'search',
+      chatId: '-1001234567890',
+      token: tailOnlyToken,
+      query: 'hello',
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(scopeDenied.ok, false);
+    if (!scopeDenied.ok) {
+      assert.equal(scopeDenied.error, 'scope_denied');
+    }
+
+    const searchOnlyToken = 'tgagt_search_only_token';
+    upsertTelegramAgentGrant({
+      approvalChatId: '-5130530086',
+      agentName: 'researcher-search-only',
+      chatId: '-1001234567890',
+      scope: ['search'],
+      tokenHash: hashTelegramAgentToken(searchOnlyToken),
+      tokenPreview: searchOnlyToken.slice(0, 8),
+      createdByTelegramUserId: '42',
+      createdByTelegramUsername: 'xp',
+    });
+    const queryRequired = await runTelegramAgentRead({
+      mode: 'search',
+      chatId: '-1001234567890',
+      token: searchOnlyToken,
+      limit: 2,
+      client: stubClient,
+    });
+    assert.equal(queryRequired.ok, false);
+    if (!queryRequired.ok) {
+      assert.equal(queryRequired.error, 'query_required');
+    }
+
+    const chatUnavailableClient: TelegramChannelSyncClient = {
+      async resolveChannel() {
+        throw new Error('unused');
+      },
+      async listChannelMessages() {
+        return [];
+      },
+      async listAgentChatMessages() {
+        throw new Error('CHANNEL_INVALID');
+      },
+      async searchAgentChatMessages() {
+        return { searchMode: 'telegram' as const, items: [] };
+      },
+    };
+    const chatUnavailable = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1001234567890',
+      token: rawToken,
+      limit: 2,
+      client: chatUnavailableClient,
+    });
+    assert.equal(chatUnavailable.ok, false);
+    if (!chatUnavailable.ok) {
+      assert.equal(chatUnavailable.error, 'telegram_chat_unavailable');
+    }
+
+    const authUnavailableClient: TelegramChannelSyncClient = {
+      async resolveChannel() {
+        throw new Error('unused');
+      },
+      async listChannelMessages() {
+        return [];
+      },
+      async listAgentChatMessages() {
+        throw new Error('Missing TELEGRAM_SESSION_STRING');
+      },
+      async searchAgentChatMessages() {
+        return { searchMode: 'telegram' as const, items: [] };
+      },
+    };
+    const authUnavailable = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1001234567890',
+      token: rawToken,
+      limit: 2,
+      client: authUnavailableClient,
+    });
+    assert.equal(authUnavailable.ok, false);
+    if (!authUnavailable.ok) {
+      assert.equal(authUnavailable.error, 'telegram_auth_unavailable');
+    }
+
+    const failClosedToken = 'tgagt_fail_closed_token';
+    upsertTelegramAgentGrant({
+      approvalChatId: '-5130530086',
+      agentName: 'researcher-fail-closed',
+      chatId: '-1001234567890',
+      scope: ['tail'],
+      tokenHash: hashTelegramAgentToken(failClosedToken),
+      tokenPreview: failClosedToken.slice(0, 8),
+      createdByTelegramUserId: '42',
+      createdByTelegramUsername: 'xp',
+    });
+    const auditFailureClient: TelegramChannelSyncClient = {
+      async resolveChannel() {
+        throw new Error('unused');
+      },
+      async listChannelMessages() {
+        return [];
+      },
+      async listAgentChatMessages() {
+        revokeTelegramAgentGrant({
+          agentName: 'researcher-fail-closed',
+          chatId: '-1001234567890',
+          revokedByTelegramUserId: '42',
+        });
+        return [{ messageId: 11, date: 1710001234, text: 'race', sender: null }];
+      },
+      async searchAgentChatMessages() {
+        return { searchMode: 'telegram' as const, items: [] };
+      },
+    };
+    const auditFailure = await runTelegramAgentRead({
+      mode: 'tail',
+      chatId: '-1001234567890',
+      token: failClosedToken,
+      limit: 2,
+      client: auditFailureClient,
+    });
+    assert.equal(auditFailure.ok, false);
+    if (!auditFailure.ok) {
+      assert.equal(auditFailure.error, 'grant_revoked');
     }
 
     revokeTelegramAgentGrant({
