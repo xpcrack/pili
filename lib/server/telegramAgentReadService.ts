@@ -86,7 +86,7 @@ function mapTelegramReadFailure(
   return phase === 'create_client' ? 'telegram_auth_unavailable' : 'telegram_chat_unavailable';
 }
 
-function tryRecordReadAudit(input: {
+function recordReadAudit(input: {
   grant: TelegramAgentGrant;
   mode: TelegramAgentReadMode;
   query: string | null;
@@ -95,21 +95,34 @@ function tryRecordReadAudit(input: {
   success: boolean;
   errorCode: TelegramAgentReadError | null;
 }) {
+  recordTelegramAgentGrantRead({
+    grantId: input.grant.id,
+    agentName: input.grant.agentName,
+    chatId: input.grant.chatId,
+    command: input.mode,
+    scope: input.mode,
+    query: input.query,
+    limitValue: input.limit,
+    resultCount: input.resultCount,
+    success: input.success,
+    errorCode: input.errorCode,
+  });
+}
+
+function recordReadAuditOrReturnRevoked(input: {
+  grant: TelegramAgentGrant;
+  mode: TelegramAgentReadMode;
+  query: string | null;
+  limit: number;
+  resultCount: number | null;
+  success: boolean;
+  errorCode: TelegramAgentReadError | null;
+}): TelegramAgentReadResult | null {
   try {
-    recordTelegramAgentGrantRead({
-      grantId: input.grant.id,
-      agentName: input.grant.agentName,
-      chatId: input.grant.chatId,
-      command: input.mode,
-      scope: input.mode,
-      query: input.query,
-      limitValue: input.limit,
-      resultCount: input.resultCount,
-      success: input.success,
-      errorCode: input.errorCode,
-    });
+    recordReadAudit(input);
+    return null;
   } catch {
-    // ignore audit failures to keep read path stable
+    return { ok: false, error: 'grant_revoked' };
   }
 }
 
@@ -133,7 +146,7 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
   const limitValue = clampLimit(mode, input.limit);
 
   if (chatId !== grant.chatId) {
-    tryRecordReadAudit({
+    const auditFailure = recordReadAuditOrReturnRevoked({
       grant,
       mode,
       query,
@@ -142,11 +155,14 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
       success: false,
       errorCode: 'chat_mismatch',
     });
+    if (auditFailure) {
+      return auditFailure;
+    }
     return { ok: false, error: 'chat_mismatch' };
   }
 
   if (!grant.scope.includes(mode)) {
-    tryRecordReadAudit({
+    const auditFailure = recordReadAuditOrReturnRevoked({
       grant,
       mode,
       query,
@@ -155,11 +171,14 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
       success: false,
       errorCode: 'scope_denied',
     });
+    if (auditFailure) {
+      return auditFailure;
+    }
     return { ok: false, error: 'scope_denied' };
   }
 
   if (mode === 'search' && !query) {
-    tryRecordReadAudit({
+    const auditFailure = recordReadAuditOrReturnRevoked({
       grant,
       mode,
       query: null,
@@ -168,6 +187,9 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
       success: false,
       errorCode: 'query_required',
     });
+    if (auditFailure) {
+      return auditFailure;
+    }
     return { ok: false, error: 'query_required' };
   }
 
@@ -187,7 +209,7 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
         throw new Error('telegram client does not support tail reads');
       }
       const items = await client.listAgentChatMessages({ chatId, limit: limitValue });
-      tryRecordReadAudit({
+      const auditFailure = recordReadAuditOrReturnRevoked({
         grant,
         mode,
         query: null,
@@ -196,6 +218,9 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
         success: true,
         errorCode: null,
       });
+      if (auditFailure) {
+        return auditFailure;
+      }
       return {
         ok: true,
         mode: 'tail',
@@ -213,7 +238,7 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
     }
     const searchResult = await client.searchAgentChatMessages({ chatId, query: query || '', limit: limitValue });
 
-    tryRecordReadAudit({
+    const auditFailure = recordReadAuditOrReturnRevoked({
       grant,
       mode,
       query,
@@ -222,6 +247,9 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
       success: true,
       errorCode: null,
     });
+    if (auditFailure) {
+      return auditFailure;
+    }
     return {
       ok: true,
       mode: 'search',
@@ -236,7 +264,7 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
     };
   } catch (error) {
     const mappedError = mapTelegramReadFailure(error, failurePhase);
-    tryRecordReadAudit({
+    const auditFailure = recordReadAuditOrReturnRevoked({
       grant,
       mode,
       query,
@@ -245,6 +273,9 @@ export async function runTelegramAgentRead(input: RunTelegramAgentReadInput): Pr
       success: false,
       errorCode: mappedError,
     });
+    if (auditFailure) {
+      return auditFailure;
+    }
     return { ok: false, error: mappedError };
   } finally {
     if (createdClient) {
