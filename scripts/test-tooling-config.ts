@@ -31,10 +31,12 @@ function run() {
     /\bnpm run test:telegram-monitor-reconciliation\b/,
     'npm test should include the telegram monitor reconciliation regression coverage'
   );
-  assert.equal(
-    typeof packageJson.scripts['test:telegram-agent-authorization'],
-    'string',
-    'package.json should expose a telegram agent authorization test command'
+  const telegramAgentAuthTestScript =
+    packageJson.scripts?.['test:telegram-agent-authorization'] || '';
+  assert.match(
+    telegramAgentAuthTestScript,
+    /\S/,
+    'package.json should expose a non-empty telegram agent authorization test command'
   );
 
   console.log('tooling config tests: ok');
