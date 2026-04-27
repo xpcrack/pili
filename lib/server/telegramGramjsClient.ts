@@ -113,6 +113,16 @@ export function isUnsupportedTelegramSearchError(error: unknown) {
   return Boolean(extractUnsupportedSearchRpcSignature(record));
 }
 
+export function shouldUseTelegramSearchFallback(error: unknown): boolean {
+  return isUnsupportedTelegramSearchError(error);
+}
+
+export function assertTelegramSearchFallbackOrThrow(error: unknown): void {
+  if (!shouldUseTelegramSearchFallback(error)) {
+    throw error;
+  }
+}
+
 function collectUrlsFromText(text: string) {
   const urls = new Set<string>();
   const matches = text.match(/https?:\/\/[^\s<>"')\]]+/gi) || [];
@@ -563,9 +573,7 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
           items: results.sort((left, right) => left.messageId - right.messageId),
         };
       } catch (error) {
-        if (!isUnsupportedTelegramSearchError(error)) {
-          throw error;
-        }
+        assertTelegramSearchFallbackOrThrow(error);
       }
 
       const queryLower = query.toLowerCase();
