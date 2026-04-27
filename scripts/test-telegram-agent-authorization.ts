@@ -274,7 +274,22 @@ async function run() {
     assert.equal(partialBatchCycle.status, 'error');
     assert.equal(partialBatchCycle.lastUpdateId, 30);
 
-    const { mapTelegramMessageToAgentReadItem } = await import('../lib/server/telegramGramjsClient');
+    const { isUnsupportedTelegramSearchError, mapTelegramMessageToAgentReadItem } = await import(
+      '../lib/server/telegramGramjsClient'
+    );
+    assert.equal(
+      isUnsupportedTelegramSearchError({
+        errorCode: 400,
+        errorMessage: 'SEARCH_WITH_LINK_NOT_SUPPORTED',
+      }),
+      true
+    );
+    assert.equal(
+      isUnsupportedTelegramSearchError({
+        message: 'search is unsupported right now',
+      }),
+      false
+    );
     const mapped = mapTelegramMessageToAgentReadItem({
       id: 501,
       message: 'alpha beta',
