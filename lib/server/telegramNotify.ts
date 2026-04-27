@@ -4,11 +4,16 @@ import { resolveTelegramBotToken } from '@/lib/server/telegramBotToken';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
+export interface TelegramTextMessageInput {
+  chatId: string;
+  text: string;
+}
+
 function getRelayBotToken() {
   return resolveTelegramBotToken();
 }
 
-export async function sendTelegramTextMessage(params: { chatId: string; text: string }) {
+export async function sendTelegramTextMessage(params: TelegramTextMessageInput) {
   const relayBotToken = getRelayBotToken();
   if (!relayBotToken) {
     return { ok: false as const, reason: 'missing_bot_token' as const };
@@ -46,3 +51,12 @@ export async function sendTelegramTextMessage(params: { chatId: string; text: st
   return { ok: true as const };
 }
 
+export async function sendTelegramTextMessageOrThrow(params: TelegramTextMessageInput): Promise<void> {
+  const result = await sendTelegramTextMessage(params);
+  if (result.ok) {
+    return;
+  }
+
+  const detail = 'detail' in result ? result.detail || '' : '';
+  throw new Error(`failed to send telegram message: ${result.reason}${detail ? ` (${detail})` : ''}`);
+}
