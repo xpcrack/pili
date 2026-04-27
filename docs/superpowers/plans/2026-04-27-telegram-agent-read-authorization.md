@@ -654,8 +654,6 @@ assert.equal(
 );
 ```
 
-If the full `npm test` suite is intentionally kept smaller, add the assertion against `packageJson.scripts['test:telegram-agent-authorization']` instead and update the expectation string accordingly.
-
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `tsx scripts/test-tooling-config.ts`
