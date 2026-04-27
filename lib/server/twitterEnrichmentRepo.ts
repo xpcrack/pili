@@ -5,7 +5,7 @@ import { getDb, withTransaction } from '@/lib/server/sqlite';
 export type TweetEnrichmentStatus = 'pending' | 'processing' | 'succeeded' | 'failed';
 export type TweetMentionMatchSource = 'ticker' | 'ca' | 'both';
 export type TweetMentionSentiment = 'positive' | 'negative' | 'neutral';
-export type EventTweetRefSource = 'telegram-monitor' | 'historical-backfill';
+export type EventTweetRefSource = 'telegram-monitor' | 'telegram-channel' | 'historical-backfill';
 
 export interface UpsertTwitterTweetEnrichmentInput {
   tweetId: string;
@@ -101,6 +101,9 @@ function normalizeSentiment(value: string): TweetMentionSentiment {
 }
 
 function normalizeRefSource(value: string): EventTweetRefSource {
+  if (value === 'telegram-channel') {
+    return value;
+  }
   if (value === 'historical-backfill') {
     return value;
   }
