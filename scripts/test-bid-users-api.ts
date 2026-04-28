@@ -11,12 +11,33 @@ function createTempDbDir() {
   return mkdtempSync(path.join(tmpdir(), 'pilipili-bid-users-api-'));
 }
 
+interface BidUserAddressRow {
+  userId: string;
+  userName: string;
+  address: string;
+  chain: string;
+  addressName: string;
+}
+
+interface BidUserRow {
+  userId: string;
+  userName: string;
+  addresses: BidUserAddressRow[];
+}
+
+interface BidUsersPayload {
+  ok: boolean;
+  users: BidUserRow[];
+}
+
 async function run() {
   const tempDir = createTempDbDir();
-  const previousDataDir = process.env.DATA_DIR;
+  const previousDbPath = process.env.PILIPILI_DB_PATH;
+  const previousDataDir = process.env.PILIPILI_DATA_DIR;
   const previousAdminToken = process.env.ADMIN_API_TOKEN;
 
-  process.env.DATA_DIR = tempDir;
+  process.env.PILIPILI_DATA_DIR = tempDir;
+  process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
   process.env.ADMIN_API_TOKEN = 'bid-internal-token';
 
   try {
@@ -84,7 +105,7 @@ async function run() {
     );
     assert.equal(response.status, 200);
 
-    const payload = await response.json();
+    const payload = (await response.json()) as BidUsersPayload;
     assert.equal(payload.ok, true);
     assert.equal(payload.users.length, 1);
     assert.equal(payload.users[0].userId, beta.id);
@@ -106,23 +127,28 @@ async function run() {
         },
       })
     );
-    const allPayload = await allResponse.json();
-    const flatAddresses = allPayload.users.flatMap((user: any) => user.addresses);
+    const allPayload = (await allResponse.json()) as BidUsersPayload;
+    const flatAddresses = allPayload.users.flatMap((user) => user.addresses);
     assert.equal(
-      flatAddresses.some((row: any) => row.address === 'testuser_solana_placeholder_1111111111111111'),
+      flatAddresses.some((row) => row.address === 'testuser_solana_placeholder_1111111111111111'),
       true
     );
     assert.equal(
-      flatAddresses.some((row: any) => row.address === '0xAbCdEf0000000000000000000000000000000001'),
+      flatAddresses.some((row) => row.address === '0xAbCdEf0000000000000000000000000000000001'),
       true
     );
 
     console.log('bid users api tests: ok');
   } finally {
-    if (previousDataDir === undefined) {
-      delete process.env.DATA_DIR;
+    if (previousDbPath === undefined) {
+      delete process.env.PILIPILI_DB_PATH;
     } else {
-      process.env.DATA_DIR = previousDataDir;
+      process.env.PILIPILI_DB_PATH = previousDbPath;
+    }
+    if (previousDataDir === undefined) {
+      delete process.env.PILIPILI_DATA_DIR;
+    } else {
+      process.env.PILIPILI_DATA_DIR = previousDataDir;
     }
     if (previousAdminToken === undefined) {
       delete process.env.ADMIN_API_TOKEN;

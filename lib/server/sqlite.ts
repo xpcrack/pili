@@ -575,6 +575,20 @@ CREATE TABLE IF NOT EXISTS worker_status (
   updated_at_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS worker_leases (
+  worker_key TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  lease_expires_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_processed_updates (
+  worker_key TEXT NOT NULL,
+  update_id INTEGER NOT NULL,
+  processed_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (worker_key, update_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL UNIQUE,

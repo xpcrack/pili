@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { createTrackedUser, listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import {
+  createTrackedUser,
+  listTrackedUsers,
+  TrackedAddressOwnershipConflictError,
+} from '@/lib/server/trackedUsersRepo';
+import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 
 export const runtime = 'nodejs';
@@ -42,6 +47,12 @@ export async function POST(request: NextRequest) {
       user: created,
     });
   } catch (error) {
+    if (error instanceof TrackedAddressOwnershipConflictError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 409 });
+    }
+    if (error instanceof InvalidTrackedAddressError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : '创建用户失败';
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }

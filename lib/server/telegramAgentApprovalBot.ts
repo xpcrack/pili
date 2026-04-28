@@ -9,6 +9,7 @@ import {
   savePendingTelegramAgentGrant,
   upsertTelegramAgentGrant,
 } from '@/lib/server/telegramAgentGrantRepo';
+import { createTelegramGramjsClient } from '@/lib/server/telegramGramjsClient';
 import { generateTelegramAgentToken, hashTelegramAgentToken } from '@/lib/server/telegramAgentToken';
 
 const TELEGRAM_APPROVAL_CHAT_ID = '-5130530086';
@@ -19,7 +20,9 @@ export interface HandleTelegramApprovalBotMessageInput {
   text: string;
   fromUserId: string;
   fromUsername?: string | null;
+  botUsername?: string | null;
   sendMessage: (input: { chatId: string; text: string }) => Promise<void>;
+  resolveGrantTarget?: (target: string) => Promise<{ requestedChatId: string; displayRef?: string | null }>;
 }
 
 export interface HandleTelegramApprovalBotMessageResult {
@@ -30,28 +33,158 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim();
 }
 
-function parseText(text: string) {
+function parseText(text: string, botUsername?: string | null) {
   const parts = normalize(text).split(/\s+/).filter(Boolean);
   const commandToken = normalize(parts[0] || '');
-  const command = parseCommandToken(commandToken);
+  const command = parseCommandToken(commandToken, botUsername);
   const args = parts.slice(1);
   return { command, args };
 }
 
-function parseCommandToken(commandToken: string) {
+function parseCommandToken(commandToken: string, botUsername?: string | null) {
   if (!commandToken.startsWith('/')) {
     return '';
   }
 
-  if (commandToken.includes('@')) {
+  const rawTokenBody = normalize(commandToken.slice(1));
+  if (!rawTokenBody) {
     return '';
   }
 
-  return normalize(commandToken.slice(1)).toLowerCase();
+  const atIndex = rawTokenBody.indexOf('@');
+  if (atIndex >= 0) {
+    const commandName = normalize(rawTokenBody.slice(0, atIndex));
+    const mention = normalize(rawTokenBody.slice(atIndex + 1)).replace(/^@+/, '').toLowerCase();
+    const expectedBotUsername = normalize(botUsername).replace(/^@+/, '').toLowerCase();
+    if (!commandName || !mention || !expectedBotUsername) {
+      return '';
+    }
+    if (mention !== expectedBotUsername) {
+      return '';
+    }
+    return commandName.toLowerCase();
+  }
+
+  return rawTokenBody.toLowerCase();
+}
+
+function buildGrantResolveFailureText(error: unknown) {
+  const message = error instanceof Error ? normalize(error.message) : '';
+  const lower = message.toLowerCase();
+  if (lower.includes('missing telegram_api_id') || lower.includes('missing telegram_api_hash')) {
+    return '解析频道失败：缺少 TELEGRAM_API_ID / TELEGRAM_API_HASH，请先配置 MTProto 凭证。';
+  }
+  if (
+    lower.includes('telegram user session required') ||
+    lower.includes('missing telegram_session_string') ||
+    lower.includes('run telegram-channel-login')
+  ) {
+    return '解析频道失败：缺少 TELEGRAM_SESSION_STRING 或会话未登录，请先执行 telegram:channel:login。';
+  }
+  if (
+    lower.includes('session is not authorized') ||
+    lower.includes('auth_key_unregistered') ||
+    lower.includes('not authorized')
+  ) {
+    return '解析频道失败：Telegram 会话未授权，请重新执行 telegram:channel:login。';
+  }
+  return '解析频道失败。请确认是公开频道链接/用户名，或直接传 chatId。';
 }
 
 function isValidTelegramChatId(chatId: string) {
   return /^-?\d+$/.test(normalize(chatId));
+}
+
+function normalizeTelegramChannelRef(input: string) {
+  const trimmed = normalize(input);
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith('@')) {
+    const username = trimmed.slice(1);
+    if (/^[A-Za-z0-9_]{5,}$/.test(username)) {
+      return `@${username}`;
+    }
+    return null;
+  }
+
+  const normalizedUrlInput =
+    /^https?:\/\//i.test(trimmed) || !/^(t\.me|telegram\.me)\//i.test(trimmed)
+      ? trimmed
+      : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(normalizedUrlInput);
+    const hostname = normalize(parsed.hostname).toLowerCase().replace(/^www\./, '');
+    if (hostname !== 't.me' && hostname !== 'telegram.me') {
+      return null;
+    }
+
+    const segments = parsed.pathname
+      .split('/')
+      .map((segment) => normalize(segment))
+      .filter(Boolean);
+    if (segments.length === 0) {
+      return null;
+    }
+
+    const usernameSegment = segments[0]?.toLowerCase() === 's' ? segments[1] || '' : segments[0] || '';
+    if (!/^[A-Za-z0-9_]{5,}$/.test(usernameSegment)) {
+      return null;
+    }
+    return `@${usernameSegment}`;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGrantRequestedChatId(
+  input: HandleTelegramApprovalBotMessageInput,
+  target: string
+): Promise<{ requestedChatId: string; displayRef: string | null }> {
+  const normalizedTarget = normalize(target);
+  if (isValidTelegramChatId(normalizedTarget)) {
+    return {
+      requestedChatId: normalizedTarget,
+      displayRef: null,
+    };
+  }
+
+  if (input.resolveGrantTarget) {
+    const resolved = await input.resolveGrantTarget(normalizedTarget);
+    const requestedChatId = normalize(resolved.requestedChatId);
+    if (!isValidTelegramChatId(requestedChatId)) {
+      throw new Error('invalid_grant_target');
+    }
+    return {
+      requestedChatId,
+      displayRef: normalize(resolved.displayRef) || null,
+    };
+  }
+
+  const channelRef = normalizeTelegramChannelRef(normalizedTarget);
+  if (!channelRef) {
+    throw new Error('invalid_grant_target');
+  }
+
+  const client = await createTelegramGramjsClient();
+  try {
+    const resolved = await client.resolveChannel({
+      channelRef,
+      channelUsername: channelRef.replace(/^@/, ''),
+    });
+    const requestedChatId = normalize(resolved.channelChatId);
+    if (!isValidTelegramChatId(requestedChatId)) {
+      throw new Error('invalid_grant_target');
+    }
+    return {
+      requestedChatId,
+      displayRef: resolved.channelUsername ? `@${resolved.channelUsername.replace(/^@+/, '')}` : channelRef,
+    };
+  } finally {
+    await client.disconnect?.();
+  }
 }
 
 function isValidAgentName(agentName: string) {
@@ -91,7 +224,7 @@ export async function handleTelegramApprovalBotMessage(
     return { handled: false };
   }
 
-  const { command, args } = parseText(input.text);
+  const { command, args } = parseText(input.text, input.botUsername);
   if (!command) {
     return { handled: false };
   }
@@ -114,22 +247,37 @@ export async function handleTelegramApprovalBotMessage(
   }
 
   if (command === 'grant') {
-    const requestedChatId = normalize(args[0]);
-    if (!isValidTelegramChatId(requestedChatId)) {
-      await sendReply(input.sendMessage, '用法: /grant <chatId>');
+    const grantTarget = normalize(args[0]);
+    if (!grantTarget) {
+      await sendReply(input.sendMessage, '用法: /grant <chatId|@username|https://t.me/...>');
+      return { handled: true };
+    }
+
+    let resolvedGrant: { requestedChatId: string; displayRef: string | null };
+    try {
+      resolvedGrant = await resolveGrantRequestedChatId(input, grantTarget);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'invalid_grant_target') {
+        await sendReply(input.sendMessage, '用法: /grant <chatId|@username|https://t.me/...>');
+        return { handled: true };
+      }
+      await sendReply(input.sendMessage, buildGrantResolveFailureText(error));
       return { handled: true };
     }
 
     savePendingTelegramAgentGrant({
       approvalChatId: TELEGRAM_APPROVAL_CHAT_ID,
-      requestedChatId,
+      requestedChatId: resolvedGrant.requestedChatId,
       requestedByTelegramUserId: fromUserId,
       requestedByTelegramUsername: normalize(input.fromUsername) || null,
     });
 
+    const header = resolvedGrant.displayRef
+      ? `已记录目标群:\n${resolvedGrant.requestedChatId}\n来源: ${resolvedGrant.displayRef}`
+      : `已记录目标群:\n${resolvedGrant.requestedChatId}`;
     await sendReply(
       input.sendMessage,
-      `已记录目标群:\n${requestedChatId}\n\n请继续发送:\n/agent <name>\n\n示例:\n/agent researcher-a`
+      `${header}\n\n请继续发送:\n/agent <name>\n\n示例:\n/agent researcher-a`
     );
     return { handled: true };
   }

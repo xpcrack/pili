@@ -72,6 +72,15 @@ function run() {
     },
     {}
   );
+  const telegramItem = makeItem(
+    alice,
+    {
+      source: 'telegram',
+      type: 'post',
+      content: '频道里发了一个新 CA',
+    },
+    {}
+  );
   const enrichedTwitterItem = makeItem(
     alice,
     {
@@ -103,6 +112,7 @@ function run() {
   assert.equal(getFeedItemCategory(tradeItem), 'trade');
   assert.equal(getFeedItemCategory(transferItem), 'transfer');
   assert.equal(getFeedItemCategory(twitterItem), 'twitter');
+  assert.equal(getFeedItemCategory(telegramItem), 'telegram');
 
   assert.equal(
     matchesFeedSearchFilters(tradeItem, {
@@ -127,6 +137,14 @@ function run() {
     }),
     true,
     'twitter keyword search should match tweet content'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(telegramItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: '频道',
+    }),
+    true,
+    'telegram keyword search should match telegram post content'
   );
   assert.equal(
     matchesFeedSearchFilters(enrichedTwitterItem, {
@@ -218,8 +236,21 @@ function run() {
     trade: false,
     transfer: false,
     twitter: false,
+    telegram: false,
   };
   assert.equal(hasAnyEnabledFeedType(disabledTypes), false);
+
+  assert.equal(
+    matchesFeedSearchFilters(telegramItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      typeFilters: {
+        ...DEFAULT_FEED_SEARCH_FILTERS.typeFilters,
+        telegram: false,
+      },
+    }),
+    false,
+    'telegram type filter should be able to hide telegram posts'
+  );
 
   console.log('search filter tests: ok');
 }

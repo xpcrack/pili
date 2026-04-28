@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { canonicalUsersToLegacy } from '@/lib/canonical';
+import { repairMalformedTrackedAddress } from '@/lib/trackedAddressValidation';
 import { createSafePersistStorage } from '@/lib/safePersistStorage';
 import { type CanonicalAddress, type CanonicalUser, User, DEFAULT_USERS } from '@/types';
 
@@ -161,8 +162,11 @@ function normalizeAddressName(name: string, index: number) {
 }
 
 function normalizeAddress(address: User['addresses'][number], index: number): User['addresses'][number] {
+  const repairedAddress = repairMalformedTrackedAddress(address.address, address.chain) ?? address.address.trim();
+
   return {
     ...address,
+    address: repairedAddress,
     name: normalizeAddressName(address.name, index),
     totalAssetUsd: address.totalAssetUsd ?? null,
     assetUpdatedAt: address.assetUpdatedAt ?? null,
