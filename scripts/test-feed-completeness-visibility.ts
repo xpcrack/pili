@@ -28,7 +28,7 @@ function run() {
         complete: false,
       },
     }),
-    false
+    true
   );
 
   assert.equal(

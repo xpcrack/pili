@@ -1,8 +1,16 @@
 import 'server-only';
 
+import crypto from 'node:crypto';
+
 import { handleTelegramApprovalBotMessage } from '@/lib/server/telegramAgentApprovalBot';
 import { resolveTelegramBotToken } from '@/lib/server/telegramBotToken';
-import { readTelegramIngestCursor, saveTelegramIngestCursor, upsertWorkerStatus } from '@/lib/server/workerStateRepo';
+import {
+  acquireWorkerLease,
+  markWorkerUpdateProcessed,
+  readTelegramIngestCursor,
+  saveTelegramIngestCursor,
+  upsertWorkerStatus,
+} from '@/lib/server/workerStateRepo';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const WORKER_KEY = 'telegram-agent-approval-bot';
@@ -10,6 +18,10 @@ const WORKER_TYPE = 'telegram-agent-approval-bot';
 const DEFAULT_APPROVAL_CHAT_ID = '-5130530086';
 const POLL_TIMEOUT_SECONDS = 30;
 const FAILURE_SLEEP_MS = 3_000;
+const LEASE_DURATION_MS = 90_000;
+const LEASE_WAIT_SLEEP_MS = 500;
+const WORKER_OWNER_ID = `${process.pid}:${crypto.randomUUID()}`;
+const BOT_USERNAME_CACHE = new Map<string, string>();
 
 interface TelegramBotApiPayload<T> {
   ok?: boolean;
@@ -40,12 +52,14 @@ export interface TelegramApprovalUpdate {
 
 export interface RunTelegramApprovalBotCycleInput {
   approvalChatId?: string;
+  botUsername?: string | null;
   fetchUpdates?: (params: { offset: number; timeoutSeconds: number }) => Promise<TelegramApprovalUpdate[]>;
   handleMessage?: (input: {
     approvalChatId: string;
     text: string;
     fromUserId: string;
     fromUsername?: string | null;
+    botUsername?: string | null;
     sendMessage: (params: { chatId: string; text: string }) => Promise<void>;
   }) => Promise<{ handled: boolean }>;
   readOffset?: () => number;
@@ -133,6 +147,44 @@ async function fetchUpdatesFromBotApi(params: { offset: number; timeoutSeconds: 
   });
 }
 
+async function fetchBotUsernameFromBotApi(token: string) {
+  const payload = await telegramApi<{ username?: string }>(token, 'getMe');
+  return normalize(payload?.username).replace(/^@+/, '');
+}
+
+async function resolveApprovalBotUsername(input: { explicitBotUsername?: string | null; token: string }) {
+  const explicitBotUsername = normalize(input.explicitBotUsername).replace(/^@+/, '');
+  if (explicitBotUsername) {
+    return explicitBotUsername;
+  }
+
+  const envBotUsername = normalize(process.env.TELEGRAM_APPROVAL_BOT_USERNAME).replace(/^@+/, '');
+  if (envBotUsername) {
+    return envBotUsername;
+  }
+
+  const token = normalize(input.token);
+  if (!token) {
+    return '';
+  }
+
+  const cached = BOT_USERNAME_CACHE.get(token);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const fromApi = await fetchBotUsernameFromBotApi(token);
+    if (fromApi) {
+      BOT_USERNAME_CACHE.set(token, fromApi);
+      return fromApi;
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
 async function sendTelegramMessage(params: { chatId: string; text: string }) {
   const token = normalize(resolveTelegramBotToken());
   if (!token) {
@@ -164,10 +216,30 @@ export async function runTelegramApprovalBotCycle(
   const handleMessage = input.handleMessage || handleTelegramApprovalBotMessage;
   const approvalChatId = normalize(input.approvalChatId) || DEFAULT_APPROVAL_CHAT_ID;
   const token = normalize(resolveTelegramBotToken());
+  const botUsername = await resolveApprovalBotUsername({
+    explicitBotUsername: input.botUsername,
+    token,
+  });
   const baseOffset = toInteger(readOffset(), 0);
   let committedOffset = baseOffset;
   let handledCount = 0;
   let processedCount = 0;
+  const hasLease = acquireWorkerLease({
+    workerKey: WORKER_KEY,
+    ownerId: WORKER_OWNER_ID,
+    leaseMs: LEASE_DURATION_MS,
+  });
+
+  if (!hasLease) {
+    return {
+      status: 'idle',
+      lastUpdateId: baseOffset,
+      updateCount: 0,
+      handledCount: 0,
+      sleepMs: LEASE_WAIT_SLEEP_MS,
+      lastError: null,
+    };
+  }
 
   if (!token && !input.fetchUpdates) {
     const lastError = 'Missing TELEGRAM bot token';
@@ -200,11 +272,25 @@ export async function runTelegramApprovalBotCycle(
       const sourceChatId = toStringId(message?.chat?.id);
       const text = normalize(message?.text);
       if (message && sourceChatId === approvalChatId && text) {
+        const shouldHandle = markWorkerUpdateProcessed({
+          workerKey: WORKER_KEY,
+          updateId,
+        });
+        if (!shouldHandle) {
+          processedCount += 1;
+          if (canCommitUpdateId) {
+            saveOffset(updateId);
+            committedOffset = updateId;
+          }
+          continue;
+        }
+
         const result = await handleMessage({
           approvalChatId: sourceChatId,
           text,
           fromUserId: toStringId(message.from?.id),
           fromUsername: normalize(message.from?.username) || null,
+          botUsername,
           sendMessage: sendTelegramMessage,
         });
         if (result.handled) {

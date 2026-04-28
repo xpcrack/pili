@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { deleteTrackedUser, updateTrackedUser } from '@/lib/server/trackedUsersRepo';
+import {
+  deleteTrackedUser,
+  TrackedAddressOwnershipConflictError,
+  updateTrackedUser,
+} from '@/lib/server/trackedUsersRepo';
+import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 import { type User } from '@/types';
 
@@ -78,6 +83,12 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 
     return NextResponse.json({ ok: true, user: updated });
   } catch (error) {
+    if (error instanceof TrackedAddressOwnershipConflictError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 409 });
+    }
+    if (error instanceof InvalidTrackedAddressError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : '更新用户失败';
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }

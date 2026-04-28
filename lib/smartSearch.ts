@@ -11,6 +11,7 @@ export interface FeedSearchFilters {
     trade: boolean;
     transfer: boolean;
     twitter: boolean;
+    telegram: boolean;
   };
   minTradeAmountUsd: string;
   minTradeMarketCapUsd: string;
@@ -22,12 +23,13 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
     trade: true,
     transfer: true,
     twitter: true,
+    telegram: true,
   },
   minTradeAmountUsd: '',
   minTradeMarketCapUsd: '',
 };
 
-export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'other';
+export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'other';
 
 function normalizeText(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
@@ -101,7 +103,7 @@ function getKeywordHaystack(item: FeedItem) {
     item.activity.metadata.trackedAddress,
   ];
 
-  if (item.activity.source === 'twitter') {
+  if (item.activity.source === 'twitter' || item.activity.source === 'telegram') {
     values.push(item.activity.content);
   }
 
@@ -149,6 +151,9 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
   if (item.activity.source === 'twitter') {
     return 'twitter';
   }
+  if (item.activity.source === 'telegram') {
+    return 'telegram';
+  }
 
   const action = item.activity.metadata.txAction;
   if (action === 'buy' || action === 'sell') {
@@ -162,7 +167,7 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
 }
 
 export function hasAnyEnabledFeedType(typeFilters: FeedSearchFilters['typeFilters']) {
-  return typeFilters.trade || typeFilters.transfer || typeFilters.twitter;
+  return typeFilters.trade || typeFilters.transfer || typeFilters.twitter || typeFilters.telegram;
 }
 
 export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilters) {
@@ -178,6 +183,9 @@ export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilt
     return false;
   }
   if (category === 'twitter' && !filters.typeFilters.twitter) {
+    return false;
+  }
+  if (category === 'telegram' && !filters.typeFilters.telegram) {
     return false;
   }
   if (category === 'other') {

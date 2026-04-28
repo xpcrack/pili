@@ -136,6 +136,7 @@ export default function Home() {
     !searchFilters.typeFilters.trade ||
     !searchFilters.typeFilters.transfer ||
     !searchFilters.typeFilters.twitter ||
+    !searchFilters.typeFilters.telegram ||
     searchFilters.minTradeAmountUsd.trim().length > 0 ||
     searchFilters.minTradeMarketCapUsd.trim().length > 0;
   const hasEnabledFeedTypes = hasAnyEnabledFeedType(searchFilters.typeFilters);
@@ -553,6 +554,7 @@ export default function Home() {
                   ['trade', '交易'],
                   ['transfer', '转账'],
                   ['twitter', '推特'],
+                  ['telegram', 'TG'],
                 ].map(([key, label]) => {
                   const typedKey = key as keyof FeedSearchFilters['typeFilters'];
                   const active = searchFilters.typeFilters[typedKey];

@@ -353,6 +353,49 @@ async function run() {
     assert.equal(accessReply.handled, true);
     assert.match(replies.at(-1)?.text || '', /active chats/);
 
+    const linkGrantReply = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant https://t.me/publicchan',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+      resolveGrantTarget: async (target) => {
+        assert.equal(target, 'https://t.me/publicchan');
+        return {
+          requestedChatId: '-1007777777777',
+          displayRef: '@publicchan',
+        };
+      },
+    });
+    assert.equal(linkGrantReply.handled, true);
+    assert.match(replies.at(-1)?.text || '', /-1007777777777/);
+    assert.match(replies.at(-1)?.text || '', /来源:\s*@publicchan/);
+    assert.equal(readPendingTelegramAgentGrantForUser('42')?.requestedChatId, '-1007777777777');
+
+    const mentionedCommandForThisBot = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant@xpcrack_god_bot -1001234567890',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+      botUsername: 'xpcrack_god_bot',
+    });
+    assert.equal(mentionedCommandForThisBot.handled, true);
+    assert.match(replies.at(-1)?.text || '', /请继续发送/);
+
+    const infraDeniedGrant = await handleTelegramApprovalBotMessage({
+      approvalChatId: '-5130530086',
+      text: '/grant https://t.me/publicchan',
+      fromUserId: '42',
+      fromUsername: 'xp',
+      sendMessage: sendReply,
+      resolveGrantTarget: async () => {
+        throw new Error('Missing TELEGRAM_SESSION_STRING');
+      },
+    });
+    assert.equal(infraDeniedGrant.handled, true);
+    assert.match(replies.at(-1)?.text || '', /TELEGRAM_SESSION_STRING|会话|登录/i);
+
     const denied = await handleTelegramApprovalBotMessage({
       approvalChatId: '-5130530086',
       text: '/grant -1009999999999',
@@ -385,6 +428,7 @@ async function run() {
       fromUserId: '42',
       fromUsername: 'xp',
       sendMessage: sendReply,
+      botUsername: 'xpcrack_god_bot',
     });
     assert.equal(mentionedCommand.handled, false);
 
@@ -481,6 +525,100 @@ async function run() {
     assert.deepEqual(partialBatchOffsets, [30]);
     assert.equal(partialBatchCycle.status, 'error');
     assert.equal(partialBatchCycle.lastUpdateId, 30);
+
+    const duplicateSeen: string[] = [];
+    await runTelegramApprovalBotCycle({
+      approvalChatId: '-5130530086',
+      fetchUpdates: async () => [
+        {
+          update_id: 77,
+          message: {
+            chat: { id: '-5130530086' },
+            from: { id: 42, username: 'xp' },
+            text: '/grant -1001234567890',
+          },
+        },
+      ],
+      handleMessage: async ({ text }) => {
+        duplicateSeen.push(text);
+        return { handled: true };
+      },
+      readOffset: () => 0,
+      saveOffset: () => {},
+    });
+    await runTelegramApprovalBotCycle({
+      approvalChatId: '-5130530086',
+      fetchUpdates: async () => [
+        {
+          update_id: 77,
+          message: {
+            chat: { id: '-5130530086' },
+            from: { id: 42, username: 'xp' },
+            text: '/grant -1001234567890',
+          },
+        },
+      ],
+      handleMessage: async ({ text }) => {
+        duplicateSeen.push(text);
+        return { handled: true };
+      },
+      readOffset: () => 0,
+      saveOffset: () => {},
+    });
+    assert.deepEqual(duplicateSeen, ['/grant -1001234567890']);
+
+    const concurrentSeen: string[] = [];
+    const concurrentRuns = await Promise.all([
+      runTelegramApprovalBotCycle({
+        approvalChatId: '-5130530086',
+        fetchUpdates: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          return [
+            {
+              update_id: 88,
+              message: {
+                chat: { id: '-5130530086' },
+                from: { id: 42, username: 'xp' },
+                text: '/grant -1001234567890',
+              },
+            },
+          ];
+        },
+        handleMessage: async ({ text }) => {
+          concurrentSeen.push(text);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { handled: true };
+        },
+        readOffset: () => 0,
+        saveOffset: () => {},
+      }),
+      runTelegramApprovalBotCycle({
+        approvalChatId: '-5130530086',
+        fetchUpdates: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          return [
+            {
+              update_id: 88,
+              message: {
+                chat: { id: '-5130530086' },
+                from: { id: 42, username: 'xp' },
+                text: '/grant -1001234567890',
+              },
+            },
+          ];
+        },
+        handleMessage: async ({ text }) => {
+          concurrentSeen.push(text);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { handled: true };
+        },
+        readOffset: () => 0,
+        saveOffset: () => {},
+      }),
+    ]);
+    assert.equal(concurrentRuns[0].status === 'idle' || concurrentRuns[0].status === 'running', true);
+    assert.equal(concurrentRuns[1].status === 'idle' || concurrentRuns[1].status === 'running', true);
+    assert.equal(concurrentSeen.length, 1);
 
     const {
       assertTelegramSearchFallbackOrThrow,

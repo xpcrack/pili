@@ -3,6 +3,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 
 import { canonicalUsersToLegacy, normalizeTelegramUrl, normalizeTwitterUrl } from '@/lib/canonical';
+import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { type CanonicalAddress, type CanonicalUser, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set(['bsc', 'solana', 'ethereum', 'base']);
@@ -46,7 +47,7 @@ export function sanitizeUsersPayload(value: unknown): User[] {
           SUPPORTED_CHAINS.has(address.chain)
       )
       .map((address) => ({
-        address: address.address,
+        address: assertValidTrackedAddress(address.address, address.chain),
         name: address.name,
         chain: address.chain,
         totalAssetUsd: toNumberOrNull(address.totalAssetUsd),

@@ -79,3 +79,46 @@ export function touchWorkerHeartbeat(workerKey: string) {
      WHERE worker_key = ?`
   ).run(now, now, workerKey);
 }
+
+export function acquireWorkerLease(input: {
+  workerKey: string;
+  ownerId: string;
+  leaseMs: number;
+  nowMs?: number;
+}) {
+  const db = getDb();
+  const nowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs) ? Math.floor(input.nowMs) : Date.now();
+  const leaseMs = Math.max(1_000, Math.floor(input.leaseMs));
+  const leaseExpiresAtMs = nowMs + leaseMs;
+  const result = db
+    .prepare(
+      `INSERT INTO worker_leases (worker_key, owner_id, lease_expires_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(worker_key) DO UPDATE SET
+         owner_id = excluded.owner_id,
+         lease_expires_at_ms = excluded.lease_expires_at_ms,
+         updated_at_ms = excluded.updated_at_ms
+       WHERE worker_leases.owner_id = excluded.owner_id
+          OR worker_leases.lease_expires_at_ms <= excluded.updated_at_ms`
+    )
+    .run(input.workerKey, input.ownerId, leaseExpiresAtMs, nowMs);
+
+  return result.changes > 0;
+}
+
+export function markWorkerUpdateProcessed(input: { workerKey: string; updateId: number; nowMs?: number }) {
+  const db = getDb();
+  const nowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs) ? Math.floor(input.nowMs) : Date.now();
+  const updateId = Math.floor(input.updateId);
+  if (!Number.isFinite(updateId) || updateId <= 0) {
+    return true;
+  }
+  const result = db
+    .prepare(
+      `INSERT INTO worker_processed_updates (worker_key, update_id, processed_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(worker_key, update_id) DO NOTHING`
+    )
+    .run(input.workerKey, updateId, nowMs);
+  return result.changes > 0;
+}

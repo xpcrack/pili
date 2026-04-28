@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import type { Activity, User } from '@/types';
+import './server-only-shim.cjs';
 
 import {
   fixtureAddresses,
@@ -15,6 +19,15 @@ process.env.OKX_API_KEY ??= 'fixture-okx-key';
 process.env.OKX_SECRET_KEY ??= 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE ??= 'fixture-okx-passphrase';
 process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
+
+const INTENTIONAL_CRASH_AFTER_SYSTEM_CONFIG = 'PARSER_FIXTURE_TEST_CRASH_AFTER_SYSTEM_CONFIG';
+
+function configureIsolatedTestDb() {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-parser-fixtures-'));
+  process.env.PILIPILI_DATA_DIR = tempDir;
+  process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
+  return tempDir;
+}
 
 function createUser(userId: string, userName: string, trackedAddress: string, chain: ParserFixtureCase['chain']): User {
   return {
@@ -277,6 +290,10 @@ async function runTelegramMonitorFixtures() {
   saveSystemConfig({
     telegramTradeMonitorSourceChatId: '-100123456',
   });
+
+  if (process.env[INTENTIONAL_CRASH_AFTER_SYSTEM_CONFIG] === '1') {
+    throw new Error('parser-fixtures-intentional-crash-after-system-config');
+  }
 
   for (const fixture of telegramMonitorFixtureCases) {
     const parsed = parseXxyyTelegramText(fixture.text, fixture.fallbackTimestampMs, fixture.linkCandidates);
@@ -681,22 +698,28 @@ async function runTwitterRelayFixtures() {
 }
 
 async function main() {
-  console.log('Running parser fixtures...');
-  await runParserFixtures();
+  const tempDir = configureIsolatedTestDb();
 
-  console.log('\nRunning poison fixtures...');
-  runPoisonFixtures();
+  try {
+    console.log('Running parser fixtures...');
+    await runParserFixtures();
 
-  console.log('\nRunning telegram monitor fixtures...');
-  await runTelegramMonitorFixtures();
+    console.log('\nRunning poison fixtures...');
+    runPoisonFixtures();
 
-  console.log('\nRunning trade amount backfill fixture...');
-  await runTradeAmountBackfillFixture();
+    console.log('\nRunning telegram monitor fixtures...');
+    await runTelegramMonitorFixtures();
 
-  console.log('\nRunning twitter relay fixtures...');
-  await runTwitterRelayFixtures();
+    console.log('\nRunning trade amount backfill fixture...');
+    await runTradeAmountBackfillFixture();
 
-  console.log('\n✅ All fixtures passed');
+    console.log('\nRunning twitter relay fixtures...');
+    await runTwitterRelayFixtures();
+
+    console.log('\n✅ All fixtures passed');
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => {
