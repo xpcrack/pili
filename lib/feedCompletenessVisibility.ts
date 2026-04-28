@@ -8,5 +8,5 @@ interface GlobalCompletenessVisibilityInput {
 }
 
 export function shouldShowGlobalCompletenessWindow(input: GlobalCompletenessVisibilityInput) {
-  return input.selectedUserId === null && input.completenessWindow?.complete === true;
+  return input.selectedUserId === null && input.completenessWindow !== null;
 }

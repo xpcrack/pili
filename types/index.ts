@@ -128,6 +128,17 @@ export interface Activity {
     media?: string[];
     likes?: number;
     replies?: number;
+    telegramChatId?: string;
+    telegramChannelUsername?: string;
+    telegramChannelTitle?: string;
+    telegramMessageId?: number;
+    telegramPostUrl?: string;
+    telegramGroupedId?: string;
+    telegramViews?: number;
+    telegramForwards?: number;
+    telegramReplies?: number;
+    telegramLinkUrls?: string[];
+    telegramSyncSource?: 'telegram-channel';
     chain?: string;
     fromAddress?: string;
     toAddress?: string;

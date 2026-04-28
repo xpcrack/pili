@@ -8,6 +8,7 @@ import {
   inferChainFromAddress,
   isEvmChain,
 } from '@/lib/addressBook';
+import { isValidTrackedAddress, repairMalformedTrackedAddress } from '@/lib/trackedAddressValidation';
 
 function createUser(name: string, addresses: User['addresses']): User {
   return {
@@ -28,6 +29,12 @@ function createUser(name: string, addresses: User['addresses']): User {
 function run() {
   assert.equal(inferChainFromAddress('0xAbCdEf0123456789AbCdEf0123456789AbCdEf02'), 'bsc');
   assert.equal(inferChainFromAddress('Aqa8H5hmHe9MFY9sW6widbqEuaYv7q2KnRo25ApPhWhA'), 'solana');
+  assert.equal(isValidTrackedAddress('0xAbCdEf0123456789AbCdEf0123456789AbCdEf02', 'bsc'), true);
+  assert.equal(isValidTrackedAddress('0xAbCdEf0123456789AbCdEf0123456789AbCdEf02#7', 'bsc'), false);
+  assert.equal(
+    repairMalformedTrackedAddress('0xAbCdEf0123456789AbCdEf0123456789AbCdEf02#7', 'bsc'),
+    '0xAbCdEf0123456789AbCdEf0123456789AbCdEf02'
+  );
 
   const expanded = expandTrackedAddresses([
     {

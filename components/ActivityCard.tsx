@@ -7,6 +7,13 @@ import { Card, CardContent } from '@/components/ui/card';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatTokenAmount } from '@/lib/assetFormat';
 import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
+import { getActivityCardContentColumnClass } from '@/lib/activityCardLayout';
+import {
+  collapseActivityCardText,
+  getActivityCardTypeLabel,
+  getTelegramCardPrimaryText,
+  usesSocialBodyLayout,
+} from '@/lib/activityCardSocial';
 import {
   formatAbsoluteTimeCompact,
   type FeedTimeDisplayMode,
@@ -32,14 +39,6 @@ interface ActivityCardProps {
   onAddressHover?: (address: string | null) => void;
   addressAliasMap?: Map<string, string>;
 }
-
-const typeLabels: Record<string, string> = {
-  post: '发布',
-  transfer: '转账',
-  swap: '兑换',
-  nft_trade: 'NFT交易',
-  mint: '铸造'
-};
 
 const NATIVE_OR_STABLE_SYMBOLS = new Set(['sol', 'bnb', 'usdt']);
 interface TokenInfoSnapshot {
@@ -103,14 +102,6 @@ function getExplorerTxUrl(chain: string | undefined, txHash: string) {
   return `https://web3.okx.com/explorer/solana/tx/${txHash}`;
 }
 
-function collapseEmptyLines(text: string) {
-  if (!text) return '';
-  return text
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n[ \t]*\n+/g, '\n')
-    .trim();
-}
-
 function mapTxActionLabel(metadata: Activity['metadata'], fallbackAction: string) {
   if (metadata.txActionLabel) {
     return metadata.txActionLabel;
@@ -171,6 +162,7 @@ export function ActivityCard({
 
   const isBlockchain = activity.source === 'blockchain';
   const isTwitter = activity.source === 'twitter';
+  const isTelegram = activity.source === 'telegram';
   const hasMedia = Boolean(activity.metadata.media && activity.metadata.media.length > 0);
   const isTransfer = isBlockchain && activity.type === 'transfer';
   const fromAddress = activity.metadata.fromAddress || '';
@@ -325,7 +317,8 @@ export function ActivityCard({
     : isBlockchain
       ? activity.content
       : activity.title || activity.content;
-  const secondaryText = !isBlockchain && activity.title && !isTwitter ? activity.content : null;
+  const secondaryText =
+    !isBlockchain && activity.title && !usesSocialBodyLayout(activity.source) ? activity.content : null;
   const twitterKindLabel =
     activity.metadata.tweetKind === 'reply'
       ? '回复'
@@ -340,12 +333,17 @@ export function ActivityCard({
               : isTwitter
                 ? '发推'
                 : null;
-  const typeLabel = isTwitter ? twitterKindLabel : (typeLabels[activity.type] || activity.type);
-  const twitterContent = isTwitter ? collapseEmptyLines(activity.content) : activity.content;
+  const typeLabel = getActivityCardTypeLabel({
+    source: activity.source,
+    activityType: activity.type,
+    twitterKindLabel,
+  });
+  const twitterContent = isTwitter ? collapseActivityCardText(activity.content) : activity.content;
   const twitterPrimaryText =
-    isTwitter ? collapseEmptyLines(activity.metadata.translationZh || twitterContent) : primaryText;
+    isTwitter ? collapseActivityCardText(activity.metadata.translationZh || twitterContent) : primaryText;
   const twitterSecondaryText =
-    isTwitter && activity.metadata.translationZh ? collapseEmptyLines(twitterContent) : secondaryText;
+    isTwitter && activity.metadata.translationZh ? collapseActivityCardText(twitterContent) : secondaryText;
+  const telegramPrimaryText = isTelegram ? getTelegramCardPrimaryText(activity.content) : null;
   const tweetSentimentChips = isTwitter
     ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
         const key = `${item.tokenAddress || ''}|${item.tokenSymbol || ''}`.toLowerCase();
@@ -366,7 +364,7 @@ export function ActivityCard({
   const counterpartyGmgnUrl = counterpartyAddress
     ? buildGmgnAddressUrl(activity.metadata.chain, counterpartyAddress)
     : null;
-  const tweetUrl = activity.metadata.tweetUrl || '';
+  const socialPostUrl = activity.metadata.tweetUrl || activity.metadata.telegramPostUrl || '';
   const copyText = useCallback(async (text: string) => {
     if (!text) return;
     try {
@@ -514,14 +512,14 @@ export function ActivityCard({
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-semibold text-zinc-300">{user.name}</span>
-                  {isTwitter && tweetUrl ? (
+                  {(isTwitter || isTelegram) && socialPostUrl ? (
                     <button
                       type="button"
                       className="shrink-0 rounded px-1 py-0 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-                      title="左键复制推文链接，右键打开推文"
+                      title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
                       onClick={async (event) => {
                         event.stopPropagation();
-                        await copyText(tweetUrl);
+                        await copyText(socialPostUrl);
                         setTweetLinkCopied(true);
                         if (tweetCopyTimerRef.current !== null) {
                           window.clearTimeout(tweetCopyTimerRef.current);
@@ -533,7 +531,7 @@ export function ActivityCard({
                       onContextMenu={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        window.open(tweetUrl, '_blank', 'noopener,noreferrer');
+                        window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
                       }}
                     >
                         {tweetLinkCopied ? '已复制' : timeAgo}
@@ -581,17 +579,16 @@ export function ActivityCard({
           )}
 
           <div
-            className={`min-w-0 md:row-start-1 ${
-              isTransfer
-                ? 'md:col-start-1 md:col-span-3 md:justify-self-stretch md:pl-1 md:pr-1'
-                : isBlockchain || isTwitter
-                ? 'md:col-start-1 md:col-span-2 md:justify-self-stretch md:pl-1 md:pr-1'
-                : 'md:col-start-3 md:justify-self-stretch md:pl-1 md:pr-1'
-            }`}
+            className={`min-w-0 md:row-start-1 ${getActivityCardContentColumnClass({
+              isTransfer,
+              isBlockchain,
+              isTwitter,
+              isTelegram,
+            })}`}
           >
             <div className="space-y-0.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1 text-[13px] leading-5">
-                {!isTwitter && !isTransfer && (
+                {!isTwitter && !isTelegram && !isTransfer && (
                   <span className="line-clamp-1 text-zinc-300">{primaryText}</span>
                 )}
                 {isTransfer && (
@@ -825,6 +822,11 @@ export function ActivityCard({
                         ))}
                       </div>
                     ) : null}
+                  </div>
+                )}
+                {!isTransfer && isTelegram && (
+                  <div className="w-full space-y-1">
+                    <p className="whitespace-pre-wrap break-words text-zinc-100">{telegramPrimaryText}</p>
                   </div>
                 )}
               </div>

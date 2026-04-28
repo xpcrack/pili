@@ -42,6 +42,44 @@ export interface TrackedAddressSyncCursor {
   lastSyncedAt: number | null;
 }
 
+interface NormalizedTrackedAddress {
+  chain: ChainType;
+  address: string;
+  addressLower: string;
+}
+
+export interface AddressOwnershipRepairResult {
+  ownerUserId: string;
+  ownerUserName: string;
+  chain: ChainType;
+  address: string;
+  removedOwnerCount: number;
+  reassignedEventCount: number;
+  reassignedFeedCount: number;
+  reassignedTxStateCount: number;
+}
+
+export class TrackedAddressOwnershipConflictError extends Error {
+  readonly chain: ChainType;
+  readonly address: string;
+  readonly existingUserId: string;
+  readonly existingUserName: string;
+
+  constructor(params: {
+    chain: ChainType;
+    address: string;
+    existingUserId: string;
+    existingUserName: string;
+  }) {
+    super(`地址已归属于其他人物: ${params.address} (${params.chain}) -> ${params.existingUserName}`);
+    this.name = 'TrackedAddressOwnershipConflictError';
+    this.chain = params.chain;
+    this.address = params.address;
+    this.existingUserId = params.existingUserId;
+    this.existingUserName = params.existingUserName;
+  }
+}
+
 function normalize(value: string | undefined) {
   return (value || '').trim().toLowerCase();
 }
@@ -119,6 +157,30 @@ function sanitizeAddresses(addresses: User['addresses']) {
   return Array.from(deduped.values());
 }
 
+function toNormalizedTrackedAddresses(addresses: User['addresses']): NormalizedTrackedAddress[] {
+  const normalized = new Map<string, NormalizedTrackedAddress>();
+
+  for (const item of addresses) {
+    const chain = item.chain;
+    if (!SUPPORTED_CHAINS.has(chain)) {
+      continue;
+    }
+    const address = assertValidTrackedAddress(item.address, chain);
+    const addressLower = normalize(address);
+    if (!addressLower) {
+      continue;
+    }
+
+    normalized.set(`${chain}|${addressLower}`, {
+      chain,
+      address,
+      addressLower,
+    });
+  }
+
+  return Array.from(normalized.values());
+}
+
 function sanitizeUser(user: User): User {
   const totalAssetUsd =
     typeof user.totalAssetUsd === 'number' ? user.totalAssetUsd : user.currentChainAssetTotal ?? 0;
@@ -142,6 +204,96 @@ function sanitizeUser(user: User): User {
     tags: Array.isArray(user.tags) ? user.tags.filter((tag) => typeof tag === 'string') : [],
     addresses: sanitizeAddresses(user.addresses),
   };
+}
+
+function assertNoIncomingBatchAddressConflicts(users: User[]) {
+  const ownershipByAddress = new Map<
+    string,
+    {
+      userId: string;
+      userName: string;
+      chain: ChainType;
+      address: string;
+    }
+  >();
+
+  for (const user of users) {
+    const normalizedAddresses = toNormalizedTrackedAddresses(user.addresses);
+    for (const item of normalizedAddresses) {
+      const key = `${item.chain}|${item.addressLower}`;
+      const existing = ownershipByAddress.get(key);
+      if (existing && existing.userId !== user.id) {
+        throw new TrackedAddressOwnershipConflictError({
+          chain: item.chain,
+          address: item.address,
+          existingUserId: existing.userId,
+          existingUserName: existing.userName,
+        });
+      }
+
+      ownershipByAddress.set(key, {
+        userId: user.id,
+        userName: user.name,
+        chain: item.chain,
+        address: item.address,
+      });
+    }
+  }
+}
+
+function assertNoTrackedAddressOwnershipConflicts(userId: string, addresses: User['addresses']) {
+  const normalizedAddresses = toNormalizedTrackedAddresses(addresses);
+  if (normalizedAddresses.length === 0) {
+    return;
+  }
+
+  const db = getDb();
+  const existingStmt = db.prepare(
+    `SELECT ta.user_id, tu.name, ta.address, ta.chain
+     FROM tracked_addresses ta
+     INNER JOIN tracked_users tu ON tu.id = ta.user_id
+     WHERE ta.chain = ?
+       AND ta.address_lower = ?
+       AND ta.user_id != ?
+     LIMIT 1`
+  );
+
+  for (const item of normalizedAddresses) {
+    const existing = existingStmt.get(item.chain, item.addressLower, userId) as
+      | {
+          user_id: string;
+          name: string;
+          address: string;
+          chain: ChainType;
+        }
+      | undefined;
+    if (!existing) {
+      continue;
+    }
+
+    throw new TrackedAddressOwnershipConflictError({
+      chain: existing.chain,
+      address: existing.address,
+      existingUserId: existing.user_id,
+      existingUserName: existing.name,
+    });
+  }
+}
+
+function rewriteActivityOwner(activityJson: string, ownerUserId: string) {
+  try {
+    const parsed = JSON.parse(activityJson) as { userId?: string };
+    if (!parsed || typeof parsed !== 'object') {
+      return activityJson;
+    }
+
+    return JSON.stringify({
+      ...parsed,
+      userId: ownerUserId,
+    });
+  } catch {
+    return activityJson;
+  }
 }
 
 function refreshPersistedUserSnapshots(user: User) {
@@ -406,14 +558,19 @@ export function importTrackedUsers(users: User[], options?: { replaceExisting?: 
     }
 
     const importedIds: string[] = [];
-
-    for (const incomingUser of users) {
+    const sanitizedUsers = users.map((incomingUser) => {
       const baseUser = sanitizeUser(incomingUser);
       const id = baseUser.id.trim() || crypto.randomUUID();
-      const user: User = {
+      return {
         ...baseUser,
         id,
-      };
+      } satisfies User;
+    });
+
+    assertNoIncomingBatchAddressConflicts(sanitizedUsers);
+
+    for (const user of sanitizedUsers) {
+      assertNoTrackedAddressOwnershipConflicts(user.id, user.addresses);
 
       upsertUserRow(user, now);
       upsertAddressRows(user.id, user.addresses, now, true);
@@ -437,6 +594,7 @@ export function createTrackedUser(input: Omit<User, 'id'>) {
   });
 
   withTransaction(() => {
+    assertNoTrackedAddressOwnershipConflicts(user.id, user.addresses);
     upsertUserRow(user, now);
     upsertAddressRows(user.id, user.addresses, now, true);
   });
@@ -460,6 +618,7 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
     });
     const now = Date.now();
 
+    assertNoTrackedAddressOwnershipConflicts(next.id, next.addresses);
     upsertUserRow(next, now);
     if (updates.addresses) {
       upsertAddressRows(next.id, next.addresses, now, true);
@@ -504,6 +663,7 @@ export function addTrackedAddresses(userId: string, addresses: User['addresses']
     }
 
     const sanitized = sanitizeAddresses(addresses);
+    assertNoTrackedAddressOwnershipConflicts(userId, sanitized);
     const now = Date.now();
     upsertAddressRows(userId, sanitized, now, false);
 
@@ -555,6 +715,151 @@ export function removeTrackedAddress(userId: string, address: string, chain?: Ch
     }
 
     return true;
+  });
+}
+
+export function repairTrackedAddressOwnership(params: {
+  chain: ChainType;
+  address: string;
+  ownerUserId: string;
+}): AddressOwnershipRepairResult {
+  return withTransaction(() => {
+    const db = getDb();
+    const chain = params.chain;
+    const address = assertValidTrackedAddress(params.address, chain);
+    const addressLower = normalize(address);
+    const owner = listTrackedUsers().find((user) => user.id === params.ownerUserId) || null;
+    if (!owner) {
+      throw new Error(`Owner user not found: ${params.ownerUserId}`);
+    }
+
+    const ownerHasAddress = owner.addresses.some(
+      (item) => item.chain === chain && normalize(item.address) === addressLower
+    );
+    if (!ownerHasAddress) {
+      throw new Error(`Owner user does not currently track address: ${address}`);
+    }
+
+    const conflictingOwners = db
+      .prepare(
+        `SELECT DISTINCT ta.user_id
+         FROM tracked_addresses ta
+         WHERE ta.chain = ?
+           AND ta.address_lower = ?
+           AND ta.user_id != ?`
+      )
+      .all(chain, addressLower, owner.id) as Array<{ user_id: string }>;
+    const conflictingUserIds = conflictingOwners.map((row) => row.user_id);
+
+    if (conflictingUserIds.length === 0) {
+      return {
+        ownerUserId: owner.id,
+        ownerUserName: owner.name,
+        chain,
+        address,
+        removedOwnerCount: 0,
+        reassignedEventCount: 0,
+        reassignedFeedCount: 0,
+        reassignedTxStateCount: 0,
+      };
+    }
+
+    const ownerUserJson = JSON.stringify(owner);
+    const placeholderParams = conflictingUserIds.map(() => '?').join(', ');
+    const now = Date.now();
+
+    const eventRows = db
+      .prepare(
+        `SELECT event_id, activity_json
+         FROM events
+         WHERE chain = ?
+           AND LOWER(COALESCE(address, '')) = ?
+           AND user_id IN (${placeholderParams})`
+      )
+      .all(chain, addressLower, ...conflictingUserIds) as Array<{ event_id: string; activity_json: string }>;
+    const updateEventStmt = db.prepare(
+      `UPDATE events
+       SET user_id = ?,
+           user_name = ?,
+           user_json = ?,
+           activity_json = ?,
+           updated_at = ?
+       WHERE event_id = ?`
+    );
+    for (const row of eventRows) {
+      updateEventStmt.run(
+        owner.id,
+        owner.name,
+        ownerUserJson,
+        rewriteActivityOwner(row.activity_json, owner.id),
+        now,
+        row.event_id
+      );
+    }
+
+    const feedRows = db
+      .prepare(
+        `SELECT activity_key, activity_json
+         FROM activity_feed
+         WHERE chain = ?
+           AND tracked_address_lower = ?
+           AND user_id IN (${placeholderParams})`
+      )
+      .all(chain, addressLower, ...conflictingUserIds) as Array<{ activity_key: string; activity_json: string }>;
+    const updateFeedStmt = db.prepare(
+      `UPDATE activity_feed
+       SET user_id = ?,
+           user_json = ?,
+           activity_json = ?
+       WHERE activity_key = ?`
+    );
+    for (const row of feedRows) {
+      updateFeedStmt.run(
+        owner.id,
+        ownerUserJson,
+        rewriteActivityOwner(row.activity_json, owner.id),
+        row.activity_key
+      );
+    }
+
+    const updateTxStatesStmt = db.prepare(
+      `UPDATE telegram_monitor_tx_states
+       SET user_id = ?,
+           updated_at = ?
+       WHERE chain = ?
+         AND tracked_wallet_address_lower = ?
+         AND user_id = ?`
+    );
+    let reassignedTxStateCount = 0;
+    for (const conflictingUserId of conflictingUserIds) {
+      const result = updateTxStatesStmt.run(owner.id, now, chain, addressLower, conflictingUserId);
+      reassignedTxStateCount += result.changes;
+    }
+
+    const deleteTrackedAddressStmt = db.prepare(
+      `DELETE FROM tracked_addresses
+       WHERE chain = ?
+         AND address_lower = ?
+         AND user_id = ?`
+    );
+    let removedOwnerCount = 0;
+    for (const conflictingUserId of conflictingUserIds) {
+      const result = deleteTrackedAddressStmt.run(chain, addressLower, conflictingUserId);
+      if (result.changes > 0) {
+        removedOwnerCount += 1;
+      }
+    }
+
+    return {
+      ownerUserId: owner.id,
+      ownerUserName: owner.name,
+      chain,
+      address,
+      removedOwnerCount,
+      reassignedEventCount: eventRows.length,
+      reassignedFeedCount: feedRows.length,
+      reassignedTxStateCount,
+    };
   });
 }
 

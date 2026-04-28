@@ -258,6 +258,59 @@ CREATE TABLE IF NOT EXISTS telegram_channel_posts (
 CREATE INDEX IF NOT EXISTS idx_telegram_channel_posts_recent
 ON telegram_channel_posts(channel_chat_id, message_id DESC, posted_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS telegram_agent_pending_grants (
+  id TEXT PRIMARY KEY,
+  approval_chat_id TEXT NOT NULL,
+  requested_chat_id TEXT NOT NULL,
+  requested_by_telegram_user_id TEXT NOT NULL,
+  requested_by_telegram_username TEXT,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_agent_pending_grants_waiting_user
+ON telegram_agent_pending_grants(requested_by_telegram_user_id)
+WHERE status = 'waiting_agent_name';
+
+CREATE TABLE IF NOT EXISTS telegram_agent_grants (
+  id TEXT PRIMARY KEY,
+  approval_chat_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  scope_json TEXT NOT NULL DEFAULT '[]',
+  token_hash TEXT NOT NULL,
+  token_preview TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_by_telegram_user_id TEXT NOT NULL,
+  created_by_telegram_username TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoked_by_telegram_user_id TEXT,
+  last_used_at INTEGER,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(agent_name, chat_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_agent_grants_token_hash
+ON telegram_agent_grants(token_hash);
+
+CREATE TABLE IF NOT EXISTS telegram_agent_grant_reads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  command TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  query TEXT,
+  limit_value INTEGER,
+  result_count INTEGER,
+  success INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  used_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS activity_judgments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chain TEXT NOT NULL,
@@ -520,6 +573,20 @@ CREATE TABLE IF NOT EXISTS worker_status (
   last_update_id INTEGER,
   last_error TEXT,
   updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_leases (
+  worker_key TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  lease_expires_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_processed_updates (
+  worker_key TEXT NOT NULL,
+  update_id INTEGER NOT NULL,
+  processed_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (worker_key, update_id)
 );
 
 CREATE TABLE IF NOT EXISTS events (

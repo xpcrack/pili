@@ -7,6 +7,7 @@ import { StringSession } from 'telegram/sessions';
 import { readTelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import type {
+  TelegramAgentReadItem,
   TelegramChannelRemoteMessage,
   TelegramChannelResolveInput,
   TelegramChannelResolved,
@@ -23,6 +24,103 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function normalizeString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeIdLike(value: unknown): string | null {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    return String(value);
+  }
+  return normalizeString(value) || null;
+}
+
+function readTelegramDateSeconds(value: unknown) {
+  if (value instanceof Date) {
+    return Math.floor(value.getTime() / 1000);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  return Math.floor(Date.now() / 1000);
+}
+
+function buildTelegramSenderDisplayName(sender: Record<string, unknown>) {
+  const firstName = normalizeString(sender.firstName);
+  const lastName = normalizeString(sender.lastName);
+  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+  if (fullName) {
+    return fullName;
+  }
+  return normalizeString(sender.title) || normalizeString(sender.username) || null;
+}
+
+function readTelegramRpcErrorCode(record: Record<string, unknown>) {
+  const numericCodeCandidates = [record.errorCode, record.error_code, record.code];
+  for (const candidate of numericCodeCandidates) {
+    if (typeof candidate === 'number' && Number.isSafeInteger(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === 'string' && /^\d{3}$/.test(candidate.trim())) {
+      return Number(candidate.trim());
+    }
+  }
+
+  const messageCandidates = [record.message, record.errorMessage, record.error];
+  for (const candidate of messageCandidates) {
+    const message = normalizeString(candidate);
+    if (!message) {
+      continue;
+    }
+    const codeMatch = message.match(/\b([345]\d{2})\b/);
+    if (codeMatch) {
+      return Number(codeMatch[1]);
+    }
+  }
+  return null;
+}
+
+function extractUnsupportedSearchRpcSignature(record: Record<string, unknown>) {
+  const messageCandidates = [record.errorMessage, record.error, record.message];
+  for (const candidate of messageCandidates) {
+    const message = normalizeString(candidate);
+    if (!message) {
+      continue;
+    }
+    const rpcTokens = message.toUpperCase().match(/\b[A-Z][A-Z0-9_]{2,}\b/g) || [];
+    const unsupportedToken = rpcTokens.find(
+      (token) => /^SEARCH(?:_[A-Z0-9]+)*_(?:NOT_SUPPORTED|UNSUPPORTED)$/.test(token)
+    );
+    if (unsupportedToken) {
+      return unsupportedToken;
+    }
+  }
+  return null;
+}
+
+export function isUnsupportedTelegramSearchError(error: unknown) {
+  const record = asRecord(error);
+  if (!record) {
+    return false;
+  }
+
+  const rpcErrorCode = readTelegramRpcErrorCode(record);
+  if (rpcErrorCode !== 400) {
+    return false;
+  }
+
+  return Boolean(extractUnsupportedSearchRpcSignature(record));
+}
+
+export function shouldUseTelegramSearchFallback(error: unknown): boolean {
+  return isUnsupportedTelegramSearchError(error);
+}
+
+export function assertTelegramSearchFallbackOrThrow(error: unknown): void {
+  if (!shouldUseTelegramSearchFallback(error)) {
+    throw error;
+  }
 }
 
 function collectUrlsFromText(text: string) {
@@ -288,6 +386,38 @@ export function mapTelegramMessageToRemoteMessage(message: Record<string, unknow
   };
 }
 
+export function mapTelegramMessageToAgentReadItem(message: Record<string, unknown>): TelegramAgentReadItem | null {
+  const messageId = typeof message.id === 'number' && Number.isFinite(message.id) ? Math.floor(message.id) : 0;
+  if (messageId <= 0) {
+    return null;
+  }
+
+  const senderRecord = asRecord(message.sender);
+  const fromIdRecord = asRecord(message.fromId);
+  const senderId =
+    normalizeIdLike(senderRecord?.id) ||
+    normalizeIdLike(fromIdRecord?.userId) ||
+    normalizeIdLike(fromIdRecord?.channelId) ||
+    normalizeIdLike(fromIdRecord?.chatId);
+  const senderUsername = senderRecord ? normalizeString(senderRecord.username) || null : null;
+  const senderDisplayName = senderRecord ? buildTelegramSenderDisplayName(senderRecord) : null;
+  const sender =
+    senderId || senderUsername || senderDisplayName
+      ? {
+          id: senderId,
+          username: senderUsername,
+          displayName: senderDisplayName,
+        }
+      : null;
+
+  return {
+    messageId,
+    date: readTelegramDateSeconds(message.date),
+    text: normalizeString(message.text) || normalizeString(message.message),
+    sender,
+  };
+}
+
 function toBridgeMessage(chatId: string, message: Record<string, unknown>): TelegramMessageLike | null {
   const messageId = typeof message.id === 'number' && Number.isFinite(message.id) ? Math.floor(message.id) : 0;
   if (messageId <= 0) {
@@ -396,6 +526,70 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
         }
       }
       return results.sort((left, right) => (left.message_id || 0) - (right.message_id || 0));
+    },
+    async listAgentChatMessages(params: { chatId: string; limit: number }) {
+      const results: TelegramAgentReadItem[] = [];
+      await client.getDialogs({
+        limit: 1000,
+      });
+      const entity = await client.getEntity(params.chatId);
+      for await (const message of client.iterMessages(entity, {
+        limit: params.limit,
+      })) {
+        const mapped = mapTelegramMessageToAgentReadItem(message as unknown as Record<string, unknown>);
+        if (mapped) {
+          results.push(mapped);
+        }
+      }
+      return results.sort((left, right) => left.messageId - right.messageId);
+    },
+    async searchAgentChatMessages(params: { chatId: string; query: string; limit: number }) {
+      const query = normalizeString(params.query);
+      if (!query) {
+        return {
+          searchMode: 'telegram' as const,
+          items: [],
+        };
+      }
+
+      await client.getDialogs({
+        limit: 1000,
+      });
+      const entity = await client.getEntity(params.chatId);
+
+      try {
+        const results: TelegramAgentReadItem[] = [];
+        for await (const message of client.iterMessages(entity, {
+          search: query,
+          limit: params.limit,
+        })) {
+          const mapped = mapTelegramMessageToAgentReadItem(message as unknown as Record<string, unknown>);
+          if (mapped) {
+            results.push(mapped);
+          }
+        }
+        return {
+          searchMode: 'telegram' as const,
+          items: results.sort((left, right) => left.messageId - right.messageId),
+        };
+      } catch (error) {
+        assertTelegramSearchFallbackOrThrow(error);
+      }
+
+      const queryLower = query.toLowerCase();
+      const fallbackResults: TelegramAgentReadItem[] = [];
+      for await (const message of client.iterMessages(entity, {
+        limit: params.limit,
+      })) {
+        const mapped = mapTelegramMessageToAgentReadItem(message as unknown as Record<string, unknown>);
+        if (mapped && mapped.text.toLowerCase().includes(queryLower)) {
+          fallbackResults.push(mapped);
+        }
+      }
+      return {
+        searchMode: 'recent-scan' as const,
+        items: fallbackResults.sort((left, right) => left.messageId - right.messageId),
+      };
     },
     async disconnect() {
       await client.disconnect();
