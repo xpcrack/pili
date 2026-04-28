@@ -74,6 +74,17 @@ export interface TelegramChannelRemoteMessage {
   raw: Record<string, unknown>;
 }
 
+export interface TelegramAgentReadItem {
+  messageId: number;
+  date: number;
+  text: string;
+  sender: {
+    id: string | null;
+    username: string | null;
+    displayName: string | null;
+  } | null;
+}
+
 export interface TelegramChannelSyncClient {
   resolveChannel(input: TelegramChannelResolveInput): Promise<TelegramChannelResolved>;
   listChannelMessages(params: {
@@ -83,5 +94,10 @@ export interface TelegramChannelSyncClient {
     limit?: number;
   }): Promise<TelegramChannelRemoteMessage[]>;
   listBridgeChatMessages?(params: { chatId: string; limit: number }): Promise<import('../../scripts/telegram-bridge-core').TelegramMessageLike[]>;
+  listAgentChatMessages?(params: { chatId: string; limit: number }): Promise<TelegramAgentReadItem[]>;
+  searchAgentChatMessages?(params: { chatId: string; query: string; limit: number }): Promise<{
+    searchMode: 'telegram' | 'recent-scan';
+    items: TelegramAgentReadItem[];
+  }>;
   disconnect?(): Promise<void>;
 }

@@ -56,10 +56,12 @@ function buildEventInput(params: {
 
 async function run() {
   const tempDir = createTempDbDir();
-  const previousDataDir = process.env.DATA_DIR;
+  const previousDbPath = process.env.PILIPILI_DB_PATH;
+  const previousDataDir = process.env.PILIPILI_DATA_DIR;
   const previousAdminToken = process.env.ADMIN_API_TOKEN;
 
-  process.env.DATA_DIR = tempDir;
+  process.env.PILIPILI_DATA_DIR = tempDir;
+  process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
   process.env.ADMIN_API_TOKEN = 'bid-internal-token';
 
   try {
@@ -172,10 +174,15 @@ async function run() {
 
     console.log('bid onchain events api tests: ok');
   } finally {
-    if (previousDataDir === undefined) {
-      delete process.env.DATA_DIR;
+    if (previousDbPath === undefined) {
+      delete process.env.PILIPILI_DB_PATH;
     } else {
-      process.env.DATA_DIR = previousDataDir;
+      process.env.PILIPILI_DB_PATH = previousDbPath;
+    }
+    if (previousDataDir === undefined) {
+      delete process.env.PILIPILI_DATA_DIR;
+    } else {
+      process.env.PILIPILI_DATA_DIR = previousDataDir;
     }
     if (previousAdminToken === undefined) {
       delete process.env.ADMIN_API_TOKEN;
