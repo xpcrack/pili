@@ -320,6 +320,116 @@ async function testXreadParsers() {
   assert.equal(timeline.tweets[1]?.createdAtMs, 1_768_226_755_000);
   assert.equal(timeline.tweets[1]?.likeCount, 40);
 
+  const repliesTimeline = parseXreadUserTweetsResponse(
+    {
+      data: {
+        user_result_by_rest_id: {
+          rest_id: '44196397',
+          result: {
+            profile_with_replies_timeline_v2: {
+              timeline: {
+                instructions: [
+                  {
+                    __typename: 'TimelineAddEntries',
+                    entries: [
+                      {
+                        content: {
+                          __typename: 'TimelineTimelineModule',
+                          items: [
+                            {
+                              item: {
+                                content: {
+                                  __typename: 'TimelineTweet',
+                                  tweet_results: {
+                                    rest_id: '2010705621524292009',
+                                    result: {
+                                      __typename: 'Tweet',
+                                      core: {
+                                        user_results: {
+                                          rest_id: '44196397',
+                                          result: {
+                                            core: {
+                                              name: 'Elon Musk',
+                                              screen_name: 'elonmusk',
+                                            },
+                                          },
+                                        },
+                                      },
+                                      legacy: {
+                                        full_text: '@another_user reply from alternate timeline',
+                                        created_at: 'Mon Jan 12 14:44:55 +0000 2026',
+                                        in_reply_to_status_id_str: '2010700000000000000',
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                            },
+                          ],
+                        },
+                      },
+                      {
+                        content: {
+                          __typename: 'TimelineTimelineCursor',
+                          cursor_type: 'Bottom',
+                          value: 'next-replies',
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+    { expectedHandle: 'elonmusk' }
+  );
+
+  assert.equal(repliesTimeline.nextCursor, 'next-replies');
+  assert.equal(repliesTimeline.tweets.length, 1);
+  assert.equal(repliesTimeline.tweets[0]?.tweetId, '2010705621524292009');
+  assert.equal(repliesTimeline.tweets[0]?.replyToTweetId, '2010700000000000000');
+
+  const noteTweet = parseXreadTweetDetailResponse({
+    data: {
+      tweet_result: {
+        result: {
+          __typename: 'Tweet',
+          rest_id: '2010705621524292010',
+          core: {
+            user_result: {
+              result: {
+                rest_id: '44196397',
+                legacy: {
+                  name: 'Elon Musk',
+                  screen_name: 'elonmusk',
+                },
+              },
+            },
+          },
+          legacy: {
+            full_text: '@tesla short text only',
+            created_at: 'Mon Jan 12 15:44:55 +0000 2026',
+            in_reply_to_status_id_str: '2010700000000000000',
+          },
+          note_tweet: {
+            is_expandable: true,
+            note_tweet_results: {
+              result: {
+                __typename: 'NoteTweet',
+                text: 'long note tweet text\n\nwith the complete second paragraph',
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(noteTweet.tweet?.fullText, 'long note tweet text\n\nwith the complete second paragraph');
+
   const detail = parseXreadTweetDetailResponse({
     data: {
       tweet_result: {

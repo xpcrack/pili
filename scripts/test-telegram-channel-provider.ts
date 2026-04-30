@@ -117,29 +117,28 @@ async function run() {
       replies: { replies: 4 },
     });
     assert.ok(mappedRemote, 'should map gramjs message into remote message shape');
-    const mappedRaw = mappedRemote?.raw as
-      | {
-          id?: number;
-          groupedId?: string;
-          entities?: unknown[];
-          replyMarkup?: { rows?: unknown[] };
-          forwardInfo?: { fromName?: string };
-          media?: string[];
-        }
-      | undefined;
-    assert.equal(mappedRaw?.id, 77);
-    assert.equal(mappedRaw?.groupedId, '999');
-    assert.equal(mappedRaw?.entities?.length, 1);
-    assert.equal(mappedRaw?.replyMarkup?.rows?.length, 1);
-    assert.equal(mappedRaw?.forwardInfo?.fromName, 'forward-source');
-    assert.equal(mappedRaw?.media?.includes('photo'), true);
+    const mappedRaw = mappedRemote.raw as {
+      id?: unknown;
+      groupedId?: unknown;
+      entities?: unknown[];
+      replyMarkup?: { rows?: unknown[] };
+      forwardInfo?: { fromName?: unknown };
+      media?: string[];
+    };
+    assert.equal(mappedRaw.id, 77);
+    assert.equal(mappedRaw.groupedId, '999');
+    assert.equal(mappedRaw.entities?.length, 1);
+    assert.equal(mappedRaw.replyMarkup?.rows?.length, 1);
+    assert.equal(mappedRaw.forwardInfo?.fromName, 'forward-source');
+    assert.equal(mappedRaw.media?.includes('photo'), true);
     const channelEntityRef = buildTelegramChannelEntityRef({
       channelRef: '@jiuyicall',
       channelChatId: '-100123',
       accessHash: '456',
       channelUsername: 'jiuyicall',
-    }) as { className?: string } | null;
-    assert.equal(channelEntityRef?.className, 'InputPeerChannel');
+    });
+    assert.notEqual(typeof channelEntityRef, 'string');
+    assert.equal((channelEntityRef as { className?: string } | null)?.className, 'InputPeerChannel');
 
     const projected = projectTelegramChannelPostToFeed({
       source: readySource,

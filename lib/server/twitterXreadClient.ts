@@ -57,6 +57,19 @@ function parseXreadUser(value: unknown): StructuredTwitterUser {
   };
 }
 
+function readXreadNoteTweetText(payload: Record<string, unknown>, legacy: Record<string, unknown> | null) {
+  const noteTweet =
+    asRecord(payload.note_tweet) ||
+    asRecord(payload.noteTweet) ||
+    asRecord(legacy?.note_tweet) ||
+    asRecord(legacy?.noteTweet);
+  const noteResult =
+    readNestedRecord(noteTweet, 'note_tweet_results', 'result') ||
+    readNestedRecord(noteTweet, 'result') ||
+    noteTweet;
+  return readString(noteResult, 'text', 'full_text', 'fullText');
+}
+
 function parseXreadTweet(value: unknown, fallbackHandle?: string): StructuredTwitterTweet | null {
   const wrapper = asRecord(value);
   const tweetResults = readNestedRecord(wrapper, 'tweet_results') || wrapper;
@@ -86,10 +99,10 @@ function parseXreadTweet(value: unknown, fallbackHandle?: string): StructuredTwi
   const authorHandle = normalizeTwitterUsername(
     readString(userCore, 'screen_name', 'userName', 'screenName', 'username') ||
       readString(payload, 'userName', 'screenName', 'username') ||
-      fallbackHandle ||
+    fallbackHandle ||
       ''
   );
-  const fullText = readString(legacy, 'full_text', 'text', 'fullText', 'note_tweet');
+  const fullText = readXreadNoteTweetText(payload, legacy) || readString(legacy, 'full_text', 'text', 'fullText');
   const createdAtMs =
     toCreatedAtMs(legacy.created_at) ||
     toCreatedAtMs(payload.createdAt) ||
@@ -142,7 +155,10 @@ export function parseXreadUserTweetsResponse(
   options: { expectedHandle?: string } = {}
 ): TwitterProviderTweetsResult {
   const root = resolveXreadPayload(payload);
-  const timeline = readNestedRecord(root, 'user_result_by_rest_id', 'result', 'profile_timeline_v2', 'timeline');
+  const userResult = readNestedRecord(root, 'user_result_by_rest_id', 'result');
+  const timeline =
+    readNestedRecord(userResult, 'profile_timeline_v2', 'timeline') ||
+    readNestedRecord(userResult, 'profile_with_replies_timeline_v2', 'timeline');
   const instructions = readArray(timeline, 'instructions');
   const candidates: unknown[] = [];
   let nextCursor: string | undefined;
