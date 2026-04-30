@@ -93,6 +93,11 @@ export interface User {
   historicalMaxAssetUsd: number;
   assetUpdatedAt: number | null;
   tags: string[];
+  relayCoverage?: {
+    latestTweetId: string;
+    latestLastSeenAtMs: number;
+    tweetCount: number;
+  } | null;
 }
 
 export interface Activity {

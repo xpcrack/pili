@@ -116,7 +116,7 @@ function createBudgetSnapshot(remainingUnitsByCredential: Record<string, number>
   });
 }
 
-function testProviderPlanIncludesStructuredAndCliFallbacks() {
+function testProviderPlanUsesStructuredProvidersOnlyInAutoMode() {
   const plan = buildTwitterFetcherProviderPlan({
     intent: 'sync',
     providerMode: 'auto',
@@ -133,10 +133,28 @@ function testProviderPlanIncludesStructuredAndCliFallbacks() {
       ['6551', '6551-key-2'],
       ['6551', '6551-key-1'],
       ['xread', 'xread-default'],
-      ['opencli', null],
-      ['dokobot', null],
-      ['fixture', null],
     ]
+  );
+}
+
+function testProviderPlanPreservesExplicitCliModes() {
+  const route = createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100)]);
+
+  assert.deepEqual(
+    buildTwitterFetcherProviderPlan({
+      intent: 'sync',
+      providerMode: 'opencli',
+      route,
+    }).map((item) => item.provider),
+    ['opencli']
+  );
+  assert.deepEqual(
+    buildTwitterFetcherProviderPlan({
+      intent: 'sync',
+      providerMode: 'dokobot',
+      route,
+    }).map((item) => item.provider),
+    ['dokobot']
   );
 }
 
@@ -299,8 +317,152 @@ async function testFetchUserTweetsUses6551Provider() {
       assert.deepEqual(lookupCalls, ['key-1:elonmusk']);
       assert.deepEqual(fetchCalls, ['key-1:elonmusk:timeline']);
       assert.equal(successCalls.length, 2);
+      assert.equal(successCalls[0]?.successUnits, 1);
+      assert.equal(successCalls[1]?.successUnits, 1);
       assert.equal(failureCalls.length, 0);
       assert.equal(identityCache.get('elonmusk')?.userId, '44196397');
+    }
+  );
+}
+
+async function testFetcherDiscoversFour6551Keys() {
+  await withEnv(
+    {
+      TWITTER_FETCH_PROVIDER: '6551',
+      TWITTER_6551_API_KEY_1: 'key-1',
+      TWITTER_6551_API_KEY_2: 'key-2',
+      TWITTER_6551_API_KEY_3: 'key-3',
+      TWITTER_6551_API_KEY_4: 'key-4',
+      TWITTER_XREAD_API_KEY: undefined,
+    },
+    async () => {
+      let credentialIds: string[] = [];
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => {
+            throw new Error('unexpected lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected detail fetch');
+          },
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected xread detail fetch');
+          },
+        } as never,
+        routeChooser: (input) => {
+          credentialIds = input.providers.keys6551.map((item) => item.credentialId);
+          return createRouteResult([]);
+        },
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+          '6551-key-2': 100,
+          '6551-key-3': 100,
+          '6551-key-4': 100,
+        }),
+        readIdentityCache: () => null,
+        upsertIdentityCache: () => {},
+        markProviderSuccess: () => {},
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      await fetcher.fetchUserTweets({
+        handle: 'elonmusk',
+        lane: 'timeline',
+        sinceMs: 0,
+        maxItems: 5,
+        intent: 'sync',
+      });
+
+      assert.deepEqual(credentialIds, ['6551-key-1', '6551-key-2', '6551-key-3', '6551-key-4']);
+    }
+  );
+}
+
+async function testFetchUserRepliesRecordsTwo6551Units() {
+  await withEnv(
+    {
+      TWITTER_6551_API_KEY_1: 'key-1',
+    },
+    async () => {
+      const successCalls: Array<Record<string, unknown>> = [];
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => ({
+            provider: '6551',
+            user: {
+              id: '44196397',
+              handle: 'elonmusk',
+              raw: {},
+            },
+            raw: {},
+          }),
+          fetchUserTweets: async () => ({
+            provider: '6551',
+            tweets: [createStructuredTweet('1910')],
+            hasMore: false,
+            raw: {},
+          }),
+          fetchTweetById: async () => {
+            throw new Error('unexpected detail fetch');
+          },
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected xread user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected xread detail fetch');
+          },
+        } as never,
+        routeChooser: () => createRouteResult([create6551Candidate('6551-key-1', 'key-1', 100)]),
+        readBudgetSnapshot: createBudgetSnapshot({
+          '6551-key-1': 100,
+        }),
+        readIdentityCache: () => ({
+          handle: 'elonmusk',
+          provider: '6551',
+          userId: '44196397',
+          username: 'elonmusk',
+          resolvedAtMs: NOW_MS,
+          expiresAtMs: NOW_MS + 60_000,
+          lastError: null,
+          updatedAtMs: NOW_MS,
+        }),
+        upsertIdentityCache: () => {},
+        markProviderSuccess: (input) => {
+          successCalls.push(input as unknown as Record<string, unknown>);
+        },
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchUserTweets({
+        handle: 'elonmusk',
+        lane: 'replies',
+        sinceMs: 0,
+        maxItems: 5,
+        intent: 'sync',
+      });
+
+      assert.equal(result.provider, '6551');
+      assert.equal(result.chargedUnit, 2);
+      assert.equal(successCalls.length, 1);
+      assert.equal(successCalls[0]?.successUnits, 2);
     }
   );
 }
@@ -609,7 +771,7 @@ async function testFetchTweetsByIdsUses6551ChargedUnits() {
         ['501', '502']
       );
       assert.equal(successCalls.length, 1);
-      assert.equal(successCalls[0]?.successUnits, undefined);
+      assert.equal(successCalls[0]?.successUnits, 2);
     }
   );
 }
@@ -677,7 +839,8 @@ async function testFetchTweetsByIdsFallsBackWhen6551ReturnsNull() {
         ['601']
       );
       assert.equal(result.tweets[0]?.fullText, 'xread detail 601');
-      assert.equal(successCalls.length, 0);
+      assert.equal(successCalls.length, 1);
+      assert.equal(successCalls[0]?.successUnits, 1);
     }
   );
 }
@@ -868,11 +1031,14 @@ async function testSeedResultsStillShortCircuitFetcher() {
 }
 
 async function main() {
-  testProviderPlanIncludesStructuredAndCliFallbacks();
+  testProviderPlanUsesStructuredProvidersOnlyInAutoMode();
+  testProviderPlanPreservesExplicitCliModes();
   testProviderPlanPreservesFixtureOnlyMode();
   testDokobotArtifactFilterStillRejectsNavigationChrome();
   testFetcherResultMetadataIncludesFallbackChain();
   await testFetchUserTweetsUses6551Provider();
+  await testFetcherDiscoversFour6551Keys();
+  await testFetchUserRepliesRecordsTwo6551Units();
   await testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached();
   await testFetchUserTweetsFallsBackToXread();
   await testBackfillIntentKeepsSecond6551AheadOfXread();

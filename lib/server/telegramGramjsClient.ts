@@ -1,6 +1,7 @@
 import 'server-only';
 
-import { TelegramClient, utils } from 'telegram';
+import bigInt from 'big-integer';
+import { TelegramClient } from 'telegram';
 import { Api } from 'telegram/tl';
 import { StringSession } from 'telegram/sessions';
 
@@ -293,8 +294,8 @@ export function buildTelegramChannelEntityRef(input: TelegramChannelResolveInput
   const accessHash = normalizeString(input.accessHash);
   if (channelId && accessHash && /^\d+$/.test(channelId) && /^-?\d+$/.test(accessHash)) {
     return new Api.InputPeerChannel({
-      channelId: BigInt(channelId),
-      accessHash: BigInt(accessHash),
+      channelId: bigInt(channelId),
+      accessHash: bigInt(accessHash),
     });
   }
 

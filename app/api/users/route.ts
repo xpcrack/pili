@@ -7,14 +7,43 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import { listTwitterRelayCoverageByHandles } from '@/lib/server/twitterRepo';
+import { normalizeTwitterHandle } from '@/lib/userProfile';
+import { type User } from '@/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+function addTwitterRelayCoverage(users: User[]) {
+  const coverageByHandle = listTwitterRelayCoverageByHandles(
+    users.map((user) => normalizeTwitterHandle(user.twitter || '')).filter((handle): handle is string => Boolean(handle))
+  );
+
+  return users.map((user) => {
+    const handle = normalizeTwitterHandle(user.twitter || '').toLowerCase();
+    const coverage = handle ? coverageByHandle.get(handle) || null : null;
+    if (!coverage) {
+      return {
+        ...user,
+        relayCoverage: null,
+      };
+    }
+
+    return {
+      ...user,
+      relayCoverage: {
+        latestTweetId: coverage.latestTweetId,
+        latestLastSeenAtMs: coverage.latestLastSeenAtMs,
+        tweetCount: coverage.tweetCount,
+      },
+    };
+  });
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    users: listTrackedUsers(),
+    users: addTwitterRelayCoverage(listTrackedUsers()),
   });
 }
 

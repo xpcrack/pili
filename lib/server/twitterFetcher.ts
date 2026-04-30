@@ -87,6 +87,7 @@ const DEFAULT_6551_DAILY_LIMIT = 100;
 const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
 const DEFAULT_IDENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
+const TWITTER_6551_CREDENTIAL_IDS = ['6551-key-1', '6551-key-2', '6551-key-3', '6551-key-4'] as const;
 
 const STATUS_URL_PATTERN = /https?:\/\/(?:x|twitter)\.com\/([A-Za-z0-9_]+)\/status\/(\d+)/gi;
 
@@ -179,14 +180,11 @@ export function buildTwitterFetcherProviderPlan(input: {
     plan.push(...input.route.orderedProviders.map(toPlanItem));
   }
 
-  if (input.providerMode === 'auto' || input.providerMode === 'opencli') {
+  if (input.providerMode === 'opencli') {
     plan.push(toPlanItem({ provider: 'opencli', credentialId: null }));
   }
-  if (input.providerMode === 'auto' || input.providerMode === 'dokobot') {
+  if (input.providerMode === 'dokobot') {
     plan.push(toPlanItem({ provider: 'dokobot', credentialId: null }));
-  }
-  if (input.providerMode === 'auto') {
-    plan.push(toPlanItem({ provider: 'fixture', credentialId: null }));
   }
 
   return plan;
@@ -792,9 +790,9 @@ function toUpsertTwitterTweet(tweet: StructuredTwitterTweet, lane: TwitterLane):
 }
 
 function get6551ApiKey(credentialId: string) {
-  return credentialId === '6551-key-2'
-    ? (process.env.TWITTER_6551_API_KEY_2 || '').trim()
-    : (process.env.TWITTER_6551_API_KEY_1 || '').trim();
+  const match = credentialId.match(/^6551-key-([1-4])$/);
+  const index = match ? match[1] : '1';
+  return (process.env[`TWITTER_6551_API_KEY_${index}`] || '').trim();
 }
 
 function getXreadApiKey() {
@@ -805,18 +803,11 @@ function createRouteCandidates(
   nowMs: number,
   dependencies: Required<Pick<TwitterFetcherDependencies, 'readBudgetSnapshot'>>
 ) {
-  const keys6551 = [
-    {
-      provider: '6551' as const,
-      credentialId: '6551-key-1',
-      apiKey: (process.env.TWITTER_6551_API_KEY_1 || '').trim(),
-    },
-    {
-      provider: '6551' as const,
-      credentialId: '6551-key-2',
-      apiKey: (process.env.TWITTER_6551_API_KEY_2 || '').trim(),
-    },
-  ].map((candidate) => {
+  const keys6551 = TWITTER_6551_CREDENTIAL_IDS.map((credentialId, index) => ({
+    provider: '6551' as const,
+    credentialId,
+    apiKey: (process.env[`TWITTER_6551_API_KEY_${index + 1}`] || '').trim(),
+  })).map((candidate) => {
     const snapshot = dependencies.readBudgetSnapshot({
       provider: candidate.provider,
       credentialId: candidate.credentialId,
@@ -890,6 +881,7 @@ async function resolveTwitterIdentity(params: {
           credentialId: item.credentialId,
           nowMs: params.dependencies.now(),
           dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+          successUnits: 1,
         });
         params.dependencies.upsertIdentityCache({
           handle: params.handle,
@@ -1028,6 +1020,7 @@ export function createTwitterFetcher(
             }
 
             try {
+              const successUnits = params.lane === 'replies' ? 2 : 1;
               const result = await dependencies.client6551.fetchUserTweets({
                 apiKey,
                 username: normalizeTwitterUsername(handle),
@@ -1039,8 +1032,9 @@ export function createTwitterFetcher(
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                successUnits,
               });
-              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: 1 });
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: successUnits });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
                 tweets: result.tweets,
@@ -1106,7 +1100,7 @@ export function createTwitterFetcher(
         }
       }
 
-      const tryOpencli = providerMode === 'auto' || providerMode === 'opencli';
+      const tryOpencli = providerMode === 'opencli';
       if (tryOpencli) {
         const opencli = fetchFromOpencliUser({
           handle,
@@ -1129,7 +1123,7 @@ export function createTwitterFetcher(
         }
       }
 
-      const tryDokobot = providerMode === 'auto' || providerMode === 'dokobot';
+      const tryDokobot = providerMode === 'dokobot';
       if (tryDokobot) {
         const dokobot = fetchFromDokobotUser({
           handle,
@@ -1152,7 +1146,7 @@ export function createTwitterFetcher(
         }
       }
 
-      if (providerMode === 'auto' || providerMode === 'fixture') {
+      if (providerMode === 'fixture') {
         const fixtureFile = path.join(fixtureRoot, `${handle}-${params.lane}.json`);
         const fixtureTweets = readTweetsFromFile(fixtureFile, params.lane);
         if (fixtureTweets.length > 0) {
@@ -1252,12 +1246,13 @@ export function createTwitterFetcher(
                 resolvedCount += 1;
               }
             }
-            if (resolvedCount > 0) {
+            if (chargedUnit > 0) {
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                successUnits: chargedUnit,
               });
             }
             attempts.push({
@@ -1268,12 +1263,13 @@ export function createTwitterFetcher(
             });
             continue;
           } catch (error) {
-            if (resolvedCount > 0) {
+            if (chargedUnit > 0) {
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                successUnits: chargedUnit,
               });
             }
             dependencies.markProviderFailure({
@@ -1335,7 +1331,7 @@ export function createTwitterFetcher(
         };
       }
 
-      const tryOpencli = providerMode === 'auto' || providerMode === 'opencli';
+      const tryOpencli = providerMode === 'opencli';
       if (tryOpencli) {
         const opencliMatches = fetchFromOpencliByIds(Array.from(unresolvedIds));
         if (opencliMatches.length > 0) {
@@ -1357,7 +1353,7 @@ export function createTwitterFetcher(
         attempts.push({ provider: 'opencli', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
-      const tryDokobot = providerMode === 'auto' || providerMode === 'dokobot';
+      const tryDokobot = providerMode === 'dokobot';
       if (tryDokobot) {
         const dokobotMatches = fetchFromDokobotByIds(Array.from(unresolvedIds));
         if (dokobotMatches.length > 0) {
@@ -1379,7 +1375,7 @@ export function createTwitterFetcher(
         attempts.push({ provider: 'dokobot', credentialId: null, ok: false, chargedUnit: 0 });
       }
 
-      if (providerMode === 'auto' || providerMode === 'fixture') {
+      if (providerMode === 'fixture') {
         const fixtureMap = readFixtureById(byIdFixtureFile);
         const fixtureMatches = Array.from(unresolvedIds)
           .map((id) => fixtureMap.get(id))

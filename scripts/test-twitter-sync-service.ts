@@ -55,6 +55,7 @@ async function run() {
 
   try {
     const { getDb } = await import('@/lib/server/sqlite');
+    const { readSystemConfig, saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
     const twitterRepo = await import('@/lib/server/twitterRepo');
     const twitterSyncService = await import('@/lib/server/twitterSyncService');
 
@@ -106,6 +107,104 @@ async function run() {
         now,
         now
       );
+    }
+
+    async function withSystemConfig(
+      config: Parameters<typeof saveSystemConfig>[0],
+      callback: () => Promise<void>
+    ) {
+      const original = readSystemConfig();
+      saveSystemConfig(config);
+      try {
+        await callback();
+      } finally {
+        saveSystemConfig(original);
+      }
+    }
+
+    function insertRelayTweet(lastSeenAtMs: number) {
+      const db = getDb();
+      db.prepare(
+        `INSERT INTO twitter_tweets (
+          tweet_id,
+          author_handle,
+          author_name,
+          full_text,
+          created_at_ms,
+          lane,
+          conversation_id,
+          in_reply_to_tweet_id,
+          quoted_tweet_id,
+          metrics_reply_count,
+          metrics_retweet_count,
+          metrics_like_count,
+          metrics_view_count,
+          source_json,
+          first_seen_at_ms,
+          last_seen_at_ms,
+          updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        'test-twitter-sync-relay-1',
+        TEST_TWITTER_HANDLE,
+        null,
+        'relay tweet',
+        lastSeenAtMs - 60_000,
+        'timeline',
+        null,
+        null,
+        null,
+        0,
+        0,
+        0,
+        0,
+        JSON.stringify({ provider: 'bot2bot' }),
+        lastSeenAtMs,
+        lastSeenAtMs,
+        lastSeenAtMs
+      );
+    }
+
+    function setLaneSuccessCursors(lastSuccessAtMs: number) {
+      for (const lane of ['timeline', 'replies'] as const) {
+        twitterRepo.upsertTwitterCursor({
+          userId: TEST_USER_ID,
+          lane,
+          coveredSinceMs: lastSuccessAtMs - DAY_MS,
+          watermarkCreatedAtMs: lastSuccessAtMs - 60_000,
+          watermarkTweetId: `test-twitter-sync-${lane}-cursor`,
+          lastSuccessAtMs,
+        });
+      }
+    }
+
+    function createCountingFetcher(fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }>) {
+      return {
+        async fetchUserTweets(params: { lane: 'timeline' | 'replies'; sinceMs: number }) {
+          fetchCalls.push({
+            lane: params.lane,
+            sinceMs: params.sinceMs,
+          });
+          return {
+            provider: 'seed' as const,
+            credentialId: null,
+            chargedUnit: 0,
+            fallbackChain: ['seed' as const],
+            coverageEstablished: true,
+            tweets: [],
+          };
+        },
+        async fetchTweetsByIds() {
+          return {
+            provider: 'noop' as const,
+            credentialId: null,
+            chargedUnit: 0,
+            fallbackChain: ['noop' as const],
+            coverageEstablished: false,
+            tweets: [],
+          };
+        },
+      };
     }
 
     function testStructuredIncompleteFetchDoesNotAdvanceCoverageCursor() {
@@ -268,6 +367,7 @@ async function run() {
         const first = await twitterSyncService.runTwitterSyncAction({
           action: 'sync',
           userId: TEST_USER_ID,
+          force: true,
           fetcherOverride,
         });
         assert.equal(first.ok, true);
@@ -280,6 +380,7 @@ async function run() {
         const second = await twitterSyncService.runTwitterSyncAction({
           action: 'sync',
           userId: TEST_USER_ID,
+          force: true,
           fetcherOverride,
         });
         assert.equal(second.ok, true);
@@ -449,6 +550,110 @@ async function run() {
       assert.equal(repliesCalls[1]?.sinceMs, secondExpectedSinceMs);
     }
 
+    async function testRelayCoveredUserSkipsUntilCoveredIntervalElapsed() {
+      cleanup();
+      insertTrackedUser();
+
+      const nowMs = Date.UTC(2026, 3, 24, 8, 0, 0);
+      setLaneSuccessCursors(nowMs - 2 * 60 * 60 * 1000);
+      insertRelayTweet(nowMs - 30 * 60 * 1000);
+      const fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }> = [];
+
+      await withSystemConfig(
+        {
+          twitterRelayCoveredPollingIntervalMinutes: 360,
+          twitterUncoveredPollingIntervalMinutes: 30,
+        },
+        async () => {
+          await withMockedDateNow(nowMs, async () => {
+            const result = await twitterSyncService.runTwitterSyncAction({
+              action: 'sync',
+              userId: TEST_USER_ID,
+              fetcherOverride: createCountingFetcher(fetchCalls),
+            });
+            assert.equal(result.ok, true);
+          });
+        }
+      );
+
+      assert.equal(fetchCalls.length, 0);
+    }
+
+    async function testUncoveredUserUsesConfiguredUncoveredInterval() {
+      cleanup();
+      insertTrackedUser();
+
+      const nowMs = Date.UTC(2026, 3, 24, 8, 0, 0);
+      const fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }> = [];
+
+      await withSystemConfig(
+        {
+          twitterRelayCoveredPollingIntervalMinutes: 360,
+          twitterUncoveredPollingIntervalMinutes: 30,
+        },
+        async () => {
+          setLaneSuccessCursors(nowMs - 29 * 60 * 1000);
+          await withMockedDateNow(nowMs, async () => {
+            const first = await twitterSyncService.runTwitterSyncAction({
+              action: 'sync',
+              userId: TEST_USER_ID,
+              fetcherOverride: createCountingFetcher(fetchCalls),
+            });
+            assert.equal(first.ok, true);
+          });
+          assert.equal(fetchCalls.length, 0);
+
+          setLaneSuccessCursors(nowMs - 31 * 60 * 1000);
+          await withMockedDateNow(nowMs, async () => {
+            const second = await twitterSyncService.runTwitterSyncAction({
+              action: 'sync',
+              userId: TEST_USER_ID,
+              fetcherOverride: createCountingFetcher(fetchCalls),
+            });
+            assert.equal(second.ok, true);
+          });
+        }
+      );
+
+      assert.deepEqual(
+        fetchCalls.map((item) => item.lane),
+        ['timeline', 'replies']
+      );
+    }
+
+    async function testForcedManualSyncBypassesRelayCoveredInterval() {
+      cleanup();
+      insertTrackedUser();
+
+      const nowMs = Date.UTC(2026, 3, 24, 8, 0, 0);
+      setLaneSuccessCursors(nowMs - 60_000);
+      insertRelayTweet(nowMs - 30 * 60 * 1000);
+      const fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }> = [];
+
+      await withSystemConfig(
+        {
+          twitterRelayCoveredPollingIntervalMinutes: 360,
+          twitterUncoveredPollingIntervalMinutes: 30,
+        },
+        async () => {
+          await withMockedDateNow(nowMs, async () => {
+            const result = await twitterSyncService.runTwitterSyncAction({
+              action: 'sync',
+              userId: TEST_USER_ID,
+              force: true,
+              fetcherOverride: createCountingFetcher(fetchCalls),
+            });
+            assert.equal(result.ok, true);
+          });
+        }
+      );
+
+      assert.deepEqual(
+        fetchCalls.map((item) => item.lane),
+        ['timeline', 'replies']
+      );
+    }
+
     try {
       testStructuredIncompleteFetchDoesNotAdvanceCoverageCursor();
       await testNoopFetchDoesNotAdvanceCoverageCursor();
@@ -456,6 +661,9 @@ async function run() {
       await testStructuredIncompleteFetchKeepsExistingWatermarkWindow();
       await testStructuredIncompleteFirstSyncKeepsBootstrapWindowSticky();
       await testStructuredCompleteEmptyBootstrapDoesNotStaySticky();
+      await testRelayCoveredUserSkipsUntilCoveredIntervalElapsed();
+      await testUncoveredUserUsesConfiguredUncoveredInterval();
+      await testForcedManualSyncBypassesRelayCoveredInterval();
     } finally {
       cleanup();
     }

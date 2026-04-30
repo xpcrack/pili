@@ -21,6 +21,7 @@ import {
 } from '@/lib/server/twitterProviderTypes';
 
 const DEFAULT_6551_BASE_URL = 'https://ai.6551.io';
+const USER_TWEETS_MAX_RESULTS = 100;
 
 function resolve6551Payload(value: unknown) {
   return readNestedRecord(value, 'data') || asRecord(value) || value;
@@ -181,7 +182,9 @@ export function createTwitter6551Client(fetchImpl: TwitterProviderFetch = fetch)
       const payload = await postJson(fetchImpl, `${baseUrl}/open/twitter_user_tweets`, params.apiKey, {
         username: normalizeTwitterUsername(params.username),
         includeReplies: params.lane === 'replies',
-        maxResults: params.maxResults ?? 40,
+        includeRetweets: false,
+        maxResults: USER_TWEETS_MAX_RESULTS,
+        product: 'Latest',
         cursor: params.cursor || undefined,
       });
       return parse6551UserTweetsResponse(payload, {

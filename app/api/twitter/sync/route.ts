@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
       userId: typeof body?.userId === 'string' && body.userId.trim() ? body.userId.trim() : null,
       windowDays: parseWindowDays(body?.windowDays),
       seedByHandle: parseSeedByHandle(body?.seedByHandle),
+      force: true,
     });
 
     if (!result.ok) {

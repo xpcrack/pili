@@ -110,10 +110,10 @@ async function run() {
       async listChannelMessages() {
         return [];
       },
-      async listAgentChatMessages(_params) {
+      async listAgentChatMessages() {
         return [{ messageId: 1, date: 1710000000, text: 'hello', sender: null }];
       },
-      async searchAgentChatMessages(_params) {
+      async searchAgentChatMessages() {
         return { searchMode: 'telegram' as const, items: [] };
       },
     };
@@ -655,7 +655,7 @@ async function run() {
       id: 501,
       message: 'alpha beta',
       date: new Date(1710000000000),
-      fromId: { userId: 77n },
+      fromId: { userId: BigInt(77) },
       sender: {
         id: 77,
         username: 'alice',
