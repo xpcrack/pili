@@ -32,6 +32,10 @@ import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
 import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 import { collectTwitterStatusUrls, upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
+import {
+  notifyTwitterProviderFailures,
+  type TwitterProviderFailureItem,
+} from '@/lib/server/twitterProviderAlertNotifier';
 
 const TWITTER_SYNC_LOCK_KEY = 'twitter-sync-global';
 const LEASE_TTL_MS = 180000;
@@ -71,6 +75,36 @@ interface SyncSummary {
 }
 
 type TwitterSyncFetcher = Pick<ReturnType<typeof createTwitterFetcher>, 'fetchUserTweets' | 'fetchTweetsByIds'>;
+
+function isStructuredProviderFetchFailure(input: {
+  provider: TwitterFetcherProvider;
+  fallbackChain?: TwitterFetcherProvider[];
+}) {
+  return input.provider === 'noop' && Boolean(input.fallbackChain?.some((provider) => isStructuredProvider(provider)));
+}
+
+async function notifyTwitterProviderFailuresSafely(input: {
+  runId: number | null;
+  failures: TwitterProviderFailureItem[];
+}) {
+  try {
+    const alertResult = await notifyTwitterProviderFailures(input);
+    if (alertResult.sent || alertResult.reason === 'telegram-request-failed') {
+      appendSyncLog({
+        runKind: 'twitter',
+        runId: input.runId,
+        level: alertResult.sent ? 'warn' : 'error',
+        phase: 'alert',
+        message: alertResult.sent
+          ? 'twitter provider failure alert sent'
+          : 'twitter provider failure alert send failed',
+        payload: { ...alertResult },
+      });
+    }
+  } catch (error) {
+    console.error('[twitterSyncService] notify provider failures failed:', error);
+  }
+}
 
 export function shouldAdvanceTwitterCoverageCursor(input: {
   provider: TwitterFetcherProvider;
@@ -381,6 +415,7 @@ async function runSyncAction(options: {
   });
 
   const budgetReasons = new Set<string>();
+  const providerFailures: TwitterProviderFailureItem[] = [];
   const windowDaysOverride =
     typeof options.windowDays === 'number' && Number.isFinite(options.windowDays)
       ? Math.max(1, Math.min(30, Math.floor(options.windowDays)))
@@ -459,6 +494,16 @@ async function runSyncAction(options: {
           fetchedCount: fetched.tweets.length,
         },
       });
+
+      if (isStructuredProviderFetchFailure(fetched)) {
+        providerFailures.push({
+          userId: user.id,
+          userName: user.name,
+          handle: user.twitterHandle,
+          lane,
+          providerChain: fetched.fallbackChain || [],
+        });
+      }
       const laneTweets = dedupeLaneTweets(fetched.tweets, lane);
 
       for (const tweet of laneTweets) {
@@ -483,7 +528,19 @@ async function runSyncAction(options: {
         accountDeadlineMs,
         knownTweetIds,
         providerHits: summary.providerHits,
-        fetchByIds: (ids: string[]) => fetcher.fetchTweetsByIds({ ids, intent: 'detail' }),
+        fetchByIds: async (ids: string[]) => {
+          const result = await fetcher.fetchTweetsByIds({ ids, intent: 'detail' });
+          if (isStructuredProviderFetchFailure(result)) {
+            providerFailures.push({
+              userId: user.id,
+              userName: user.name,
+              handle: user.twitterHandle,
+              lane,
+              providerChain: result.fallbackChain || [],
+            });
+          }
+          return result;
+        },
       });
       summary.backfillEnqueuedCount += backfill.enqueuedCount;
       summary.backfillFetchedCount += backfill.fetchedCount;
@@ -544,6 +601,11 @@ async function runSyncAction(options: {
       },
     });
   }
+
+  await notifyTwitterProviderFailuresSafely({
+    runId,
+    failures: providerFailures,
+  });
 
   summary.budgetExhausted = budgetReasons.size > 0;
   summary.budgetReasons = Array.from(budgetReasons.values());

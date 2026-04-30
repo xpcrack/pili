@@ -20,6 +20,11 @@ import {
   inferChainFromAddress,
 } from '@/lib/addressBook';
 import {
+  buildManageServerSyncKey,
+  filterManageUsers,
+  getManageAddressDisplayText,
+} from '@/lib/manageUsers';
+import {
   Plus,
   Copy,
   Trash2,
@@ -31,6 +36,7 @@ import {
   AlertCircle,
   Edit2,
   RefreshCw,
+  Search,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -213,6 +219,7 @@ export default function ManagePage() {
 
   const [addressText, setAddressText] = useState('');
   const [bulkImportText, setBulkImportText] = useState('');
+  const [searchText, setSearchText] = useState('');
 
   const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
   const [editingAddressText, setEditingAddressText] = useState('');
@@ -225,6 +232,7 @@ export default function ManagePage() {
     () => parseBulkImportText(bulkImportText, users.map((user) => user.handle)),
     [bulkImportText, users]
   );
+  const filteredUsers = useMemo(() => filterManageUsers(users, searchText), [users, searchText]);
 
   useEffect(() => {
     if (!isClient || typeof window === 'undefined') {
@@ -236,9 +244,7 @@ export default function ManagePage() {
       return;
     }
 
-    const syncKey = `manage-server-sync:${users
-      .map((user) => `${user.id}:${user.addresses.length}`)
-      .join('|')}`;
+    const syncKey = buildManageServerSyncKey(users);
     if (window.sessionStorage.getItem(syncKey) === 'done') {
       return;
     }
@@ -483,9 +489,9 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                             >
                               {getAddressBadgeMeta(address).label}
                             </span>
-                            <span className="truncate text-zinc-300">{address.name}</span>
-                            <span className="truncate text-xs text-zinc-600">
-                              {address.address.slice(0, 10)}...{address.address.slice(-6)}
+                            <span className="shrink-0 text-zinc-300">{address.name}</span>
+                            <span className="min-w-0 flex-1 break-all font-mono text-xs text-zinc-600">
+                              {getManageAddressDisplayText(address.address)}
                             </span>
                           </div>
                         ))}
@@ -613,9 +619,9 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                             >
                               {getAddressBadgeMeta(address).label}
                             </span>
-                            <span className="flex-1 truncate text-zinc-300">{address.name}</span>
-                            <span className="max-w-[120px] truncate text-xs text-zinc-600">
-                              {address.address.slice(0, 12)}...{address.address.slice(-6)}
+                            <span className="shrink-0 text-zinc-300">{address.name}</span>
+                            <span className="min-w-0 flex-1 break-all font-mono text-xs text-zinc-600">
+                              {getManageAddressDisplayText(address.address)}
                             </span>
                           </div>
                         ))}
@@ -650,10 +656,32 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
         )}
 
         <section className="space-y-4">
-          <h2 className="text-sm font-medium text-zinc-400">已关注人物 ({users.length})</h2>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <h2 className="text-sm font-medium text-zinc-400">
+              已关注人物 ({searchText.trim() ? `${filteredUsers.length} / ${users.length}` : users.length})
+            </h2>
+            <div className="relative w-full md:w-80">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
+              <Input
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="搜索人物、社交账号、标签或完整地址"
+                className="border-zinc-800 bg-zinc-950 pl-9 pr-9 text-zinc-100"
+              />
+              {searchText.trim() ? (
+                <button
+                  onClick={() => setSearchText('')}
+                  className="absolute right-2 top-1/2 rounded p-1 text-zinc-600 transition-colors -translate-y-1/2 hover:text-zinc-300"
+                  title="清空搜索"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {users.map((user) => (
+            {filteredUsers.map((user) => (
               <UserCard
                 key={user.id}
                 user={user}
@@ -690,6 +718,14 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
               <AlertCircle className="mx-auto mb-3 h-12 w-12 text-zinc-600" />
               <p className="mb-2 text-zinc-500">暂无关注人物</p>
               <p className="text-sm text-zinc-600">先批量导入，或者点击右上角手动新建</p>
+            </div>
+          )}
+
+          {users.length > 0 && filteredUsers.length === 0 && (
+            <div className="rounded-xl border-2 border-dashed border-zinc-800 py-16 text-center">
+              <AlertCircle className="mx-auto mb-3 h-12 w-12 text-zinc-600" />
+              <p className="mb-2 text-zinc-500">没有匹配的人物或地址</p>
+              <p className="text-sm text-zinc-600">换个名称、社交账号、标签或完整地址再试</p>
             </div>
           )}
         </section>
@@ -953,15 +989,15 @@ function UserCard({
                 key={address.address}
                 className="flex items-center justify-between rounded-lg bg-zinc-950/50 px-3 py-2"
               >
-                <div className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                   <span
                     className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
                   >
                     {address.networkLabel}
                   </span>
-                  <span className="truncate text-sm text-zinc-300">{address.name}</span>
-                  <span className="truncate text-xs text-zinc-600">
-                    {address.address.slice(0, 8)}...{address.address.slice(-6)}
+                  <span className="shrink-0 text-sm text-zinc-300">{address.name}</span>
+                  <span className="min-w-0 flex-[1_1_260px] break-all font-mono text-xs text-zinc-600">
+                    {getManageAddressDisplayText(address.address)}
                   </span>
                   <span className="shrink-0 rounded bg-zinc-800/60 px-2 py-0.5 text-xs text-zinc-300">
                     {formatUsdOrDash(address.totalAssetUsd)}

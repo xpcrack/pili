@@ -621,6 +621,82 @@ async function testFetchUserTweetsFallsBackToXread() {
   );
 }
 
+async function testFetchUserTweetsFiltersStructuredTweetsToRequestedHandle() {
+  await withEnv(
+    {
+      TWITTER_XREAD_API_KEY: 'xread-key',
+    },
+    async () => {
+      const fetcher = createTwitterFetcher(undefined, {
+        client6551: {
+          lookupUser: async () => {
+            throw new Error('unexpected 6551 lookup');
+          },
+          fetchUserTweets: async () => {
+            throw new Error('unexpected 6551 user fetch');
+          },
+          fetchTweetById: async () => {
+            throw new Error('unexpected 6551 detail fetch');
+          },
+        } as never,
+        clientXread: {
+          lookupUser: async () => {
+            throw new Error('unexpected xread lookup');
+          },
+          fetchUserTweets: async () => ({
+            provider: 'xread',
+            tweets: [
+              {
+                ...createStructuredTweet('3001', { handle: 'elonmusk', text: 'requested reply' }),
+                replyToTweetId: '2999',
+              },
+              {
+                ...createStructuredTweet('3002', { handle: 'otheruser', text: 'conversation context' }),
+                replyToTweetId: '2998',
+              },
+              createStructuredTweet('3003', { handle: 'elonmusk', text: 'regular tweet in with-replies payload' }),
+            ],
+            hasMore: false,
+            raw: {},
+          }),
+          fetchTweetById: async () => {
+            throw new Error('unexpected xread detail fetch');
+          },
+        } as never,
+        routeChooser: () => createRouteResult([createXreadCandidate('xread-key')]),
+        readBudgetSnapshot: createBudgetSnapshot({}),
+        readIdentityCache: () => ({
+          handle: 'elonmusk',
+          provider: 'xread',
+          userId: '44196397',
+          username: 'elonmusk',
+          resolvedAtMs: NOW_MS,
+          expiresAtMs: NOW_MS + 60_000,
+          lastError: null,
+          updatedAtMs: NOW_MS,
+        }),
+        upsertIdentityCache: () => {},
+        markProviderSuccess: () => {},
+        markProviderFailure: () => {},
+        now: () => NOW_MS,
+      });
+
+      const result = await fetcher.fetchUserTweets({
+        handle: 'elonmusk',
+        lane: 'replies',
+        sinceMs: 0,
+        maxItems: 10,
+        intent: 'sync',
+      });
+
+      assert.deepEqual(
+        result.tweets.map((tweet) => tweet.tweetId),
+        ['3001']
+      );
+    }
+  );
+}
+
 async function testBackfillIntentKeepsSecond6551AheadOfXread() {
   await withEnv(
     {
@@ -1041,6 +1117,7 @@ async function main() {
   await testFetchUserRepliesRecordsTwo6551Units();
   await testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached();
   await testFetchUserTweetsFallsBackToXread();
+  await testFetchUserTweetsFiltersStructuredTweetsToRequestedHandle();
   await testBackfillIntentKeepsSecond6551AheadOfXread();
   await testFetchTweetsByIdsUses6551ChargedUnits();
   await testFetchTweetsByIdsFallsBackWhen6551ReturnsNull();

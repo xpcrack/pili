@@ -789,6 +789,12 @@ function toUpsertTwitterTweet(tweet: StructuredTwitterTweet, lane: TwitterLane):
   };
 }
 
+function filterStructuredUserTweets(tweets: StructuredTwitterTweet[], handle: string, lane: TwitterLane) {
+  return tweets
+    .filter((tweet) => normalize(tweet.authorHandle) === handle)
+    .filter((tweet) => (lane === 'replies' ? Boolean(tweet.replyToTweetId) : !tweet.replyToTweetId));
+}
+
 function get6551ApiKey(credentialId: string) {
   const match = credentialId.match(/^6551-key-([1-4])$/);
   const index = match ? match[1] : '1';
@@ -1027,6 +1033,7 @@ export function createTwitterFetcher(
                 lane: params.lane,
                 maxResults: params.maxItems,
               });
+              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane);
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
@@ -1037,7 +1044,7 @@ export function createTwitterFetcher(
               attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: successUnits });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
-                tweets: result.tweets,
+                tweets: authoredTweets,
                 hasMore: result.hasMore,
                 sinceMs: params.sinceMs,
               });
@@ -1045,7 +1052,7 @@ export function createTwitterFetcher(
                 ...metadata,
                 coverageEstablished,
                 tweets: sortAndFilterTweets(
-                  result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
+                  authoredTweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
                   params.sinceMs,
                   params.maxItems
                 ),
@@ -1077,10 +1084,11 @@ export function createTwitterFetcher(
                 lane: params.lane,
                 maxResults: params.maxItems,
               });
+              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane);
               attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
-                tweets: result.tweets,
+                tweets: authoredTweets,
                 hasMore: result.hasMore,
                 sinceMs: params.sinceMs,
               });
@@ -1088,7 +1096,7 @@ export function createTwitterFetcher(
                 ...metadata,
                 coverageEstablished,
                 tweets: sortAndFilterTweets(
-                  result.tweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
+                  authoredTweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
                   params.sinceMs,
                   params.maxItems
                 ),
