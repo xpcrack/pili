@@ -3,13 +3,22 @@ import 'server-only';
 import { getDb } from '@/lib/server/sqlite';
 
 const SYSTEM_CONFIG_KEY = 'system_config_v1';
+const DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES = 360;
+const DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES = 30;
+const MAX_TWITTER_POLLING_INTERVAL_MINUTES = 60 * 24 * 7;
 
 export interface SystemConfigSnapshot {
   telegramUnknownPersonAlertChatId: string | null;
   telegramTradeMonitorSourceChatId: string | null;
   telegramTwitterMonitorSourceChatId: string | null;
   conflictNotificationTelegramChatId: string | null;
+  twitterRelayCoveredPollingIntervalMinutes: number;
+  twitterUncoveredPollingIntervalMinutes: number;
 }
+
+type SystemConfigUpdate = {
+  [Key in keyof SystemConfigSnapshot]?: unknown;
+};
 
 function parseJSON<T>(value: string, fallback: T): T {
   try {
@@ -27,6 +36,21 @@ function normalizeOptionalString(value: unknown) {
   return trimmed ? trimmed : null;
 }
 
+function normalizePollingIntervalMinutes(value: unknown, fallback: number) {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(MAX_TWITTER_POLLING_INTERVAL_MINUTES, Math.floor(parsed)));
+}
+
 function normalizeSnapshot(value: unknown): SystemConfigSnapshot {
   const candidate = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 
@@ -35,6 +59,14 @@ function normalizeSnapshot(value: unknown): SystemConfigSnapshot {
     telegramTradeMonitorSourceChatId: normalizeOptionalString(candidate.telegramTradeMonitorSourceChatId),
     telegramTwitterMonitorSourceChatId: normalizeOptionalString(candidate.telegramTwitterMonitorSourceChatId),
     conflictNotificationTelegramChatId: normalizeOptionalString(candidate.conflictNotificationTelegramChatId),
+    twitterRelayCoveredPollingIntervalMinutes: normalizePollingIntervalMinutes(
+      candidate.twitterRelayCoveredPollingIntervalMinutes,
+      DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES
+    ),
+    twitterUncoveredPollingIntervalMinutes: normalizePollingIntervalMinutes(
+      candidate.twitterUncoveredPollingIntervalMinutes,
+      DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES
+    ),
   };
 }
 
@@ -50,13 +82,15 @@ export function readSystemConfig() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: null,
+      twitterRelayCoveredPollingIntervalMinutes: DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES,
+      twitterUncoveredPollingIntervalMinutes: DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES,
     } satisfies SystemConfigSnapshot;
   }
 
   return normalizeSnapshot(parseJSON(row.value_json, {}));
 }
 
-export function saveSystemConfig(input: Partial<SystemConfigSnapshot>) {
+export function saveSystemConfig(input: SystemConfigUpdate) {
   const current = readSystemConfig();
   const next: SystemConfigSnapshot = {
     telegramUnknownPersonAlertChatId:
@@ -75,6 +109,20 @@ export function saveSystemConfig(input: Partial<SystemConfigSnapshot>) {
       input.conflictNotificationTelegramChatId !== undefined
         ? normalizeOptionalString(input.conflictNotificationTelegramChatId)
         : current.conflictNotificationTelegramChatId,
+    twitterRelayCoveredPollingIntervalMinutes:
+      input.twitterRelayCoveredPollingIntervalMinutes !== undefined
+        ? normalizePollingIntervalMinutes(
+            input.twitterRelayCoveredPollingIntervalMinutes,
+            DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES
+          )
+        : current.twitterRelayCoveredPollingIntervalMinutes,
+    twitterUncoveredPollingIntervalMinutes:
+      input.twitterUncoveredPollingIntervalMinutes !== undefined
+        ? normalizePollingIntervalMinutes(
+            input.twitterUncoveredPollingIntervalMinutes,
+            DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES
+          )
+        : current.twitterUncoveredPollingIntervalMinutes,
   };
 
   const db = getDb();

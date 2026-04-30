@@ -18,10 +18,10 @@ function buildInput(
           credentialId: '6551-key-1',
           apiKey: 'key-1',
           dailyLimit: 100,
-          remainingUnits: 10,
+          remainingUnits: 5,
           cooldownUntilMs: null,
-          lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 55, 0),
-          lastFailureAtMs: null,
+          lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 0, 0),
+          lastFailureAtMs: Date.UTC(2026, 3, 23, 3, 59, 0),
         },
         {
           provider: '6551',
@@ -30,7 +30,7 @@ function buildInput(
           dailyLimit: 100,
           remainingUnits: 40,
           cooldownUntilMs: null,
-          lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 50, 0),
+          lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 59, 0),
           lastFailureAtMs: null,
         },
       ],
@@ -45,13 +45,56 @@ function buildInput(
   };
 }
 
-function testPrefersHealthy6551KeyWithoutUsingLocalBudgetAsGate() {
+function testUsesDeclared6551BucketOrderInsteadOfRecency() {
   const route = chooseTwitterProviderRoute(buildInput());
   assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['6551', '6551', 'xread']);
   assert.equal(route.orderedProviders[0]?.credentialId, '6551-key-1');
   assert.equal(route.orderedProviders[1]?.credentialId, '6551-key-2');
   assert.equal(route.primaryProvider?.provider, '6551');
   assert.equal(route.primaryProvider?.credentialId, '6551-key-1');
+}
+
+function testSkipsLocalBudgetExhausted6551Keys() {
+  const route = chooseTwitterProviderRoute(
+    buildInput({
+      providers: {
+        keys6551: [
+          {
+            provider: '6551',
+            credentialId: '6551-key-1',
+            apiKey: 'key-1',
+            dailyLimit: 100,
+            remainingUnits: 0,
+            cooldownUntilMs: null,
+            lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 59, 0),
+            lastFailureAtMs: null,
+          },
+          {
+            provider: '6551',
+            credentialId: '6551-key-2',
+            apiKey: 'key-2',
+            dailyLimit: 100,
+            remainingUnits: 1,
+            cooldownUntilMs: null,
+            lastSuccessAtMs: null,
+            lastFailureAtMs: null,
+          },
+        ],
+        xread: {
+          provider: 'xread',
+          credentialId: 'xread-default',
+          apiKey: 'xread-key',
+        },
+      },
+    })
+  );
+
+  assert.deepEqual(
+    route.orderedProviders.map((item) => `${item.provider}:${item.credentialId}`),
+    ['6551:6551-key-2', 'xread:xread-default']
+  );
+  assert.equal(route.unavailableProviders[0]?.credentialId, '6551-key-1');
+  assert.equal(route.unavailableProviders[0]?.reason, 'local_budget_exhausted');
 }
 
 function testSkipsCooldownAndUsesHealthy6551Key() {
@@ -153,7 +196,8 @@ function testBackfillKeepsHealthy6551AheadOfXread() {
 }
 
 function main() {
-  testPrefersHealthy6551KeyWithoutUsingLocalBudgetAsGate();
+  testUsesDeclared6551BucketOrderInsteadOfRecency();
+  testSkipsLocalBudgetExhausted6551Keys();
   testSkipsCooldownAndUsesHealthy6551Key();
   testFallsBackToXreadWhen6551IsUnavailable();
   testReturnsNoopRouteWithoutStructuredProviders();

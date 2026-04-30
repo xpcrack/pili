@@ -62,6 +62,12 @@ interface ProfileFormState {
   tags: string;
 }
 
+interface TwitterRelayCoverageView {
+  latestTweetId: string;
+  latestLastSeenAtMs: number;
+  tweetCount: number;
+}
+
 const CHAIN_VALUES = new Set(CHAIN_OPTIONS.map((option) => option.value));
 
 function buildHandle(base: string, usedHandles: Set<string>) {
@@ -211,6 +217,7 @@ export default function ManagePage() {
   const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
   const [editingAddressText, setEditingAddressText] = useState('');
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
+  const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -269,6 +276,30 @@ export default function ManagePage() {
         );
       });
   }, [isClient, users]);
+
+  useEffect(() => {
+    if (!isClient) {
+      return;
+    }
+
+    void fetch('/api/users', { cache: 'no-store' })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload?.ok || !Array.isArray(payload.users)) {
+          return;
+        }
+        const next: Record<string, TwitterRelayCoverageView> = {};
+        for (const user of payload.users as User[]) {
+          const handle = normalizeTwitterHandle(user.twitter || '').toLowerCase();
+          if (!handle || !user.relayCoverage) {
+            continue;
+          }
+          next[handle] = user.relayCoverage;
+        }
+        setRelayCoverageByHandle(next);
+      })
+      .catch(() => undefined);
+  }, [isClient, users.length]);
 
   const resetForm = () => {
     setFormData({ name: '', handle: '', twitter: '', telegram: '', tags: '' });
@@ -626,6 +657,9 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
               <UserCard
                 key={user.id}
                 user={user}
+                relayCoverage={
+                  user.twitter ? relayCoverageByHandle[normalizeTwitterHandle(user.twitter).toLowerCase()] || null : null
+                }
                 isEditingAddresses={editingAddressUserId === user.id}
                 editingAddressText={editingAddressUserId === user.id ? editingAddressText : ''}
                 onDelete={() => deleteUser(user.id)}
@@ -666,6 +700,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
 
 interface UserCardProps {
   user: User;
+  relayCoverage: TwitterRelayCoverageView | null;
   isEditingAddresses: boolean;
   editingAddressText: string;
   onDelete: () => void;
@@ -680,6 +715,7 @@ interface UserCardProps {
 
 function UserCard({
   user,
+  relayCoverage,
   isEditingAddresses,
   editingAddressText,
   onDelete,
@@ -855,6 +891,11 @@ function UserCard({
           <div className="mt-3 flex flex-wrap gap-4 text-sm text-zinc-400">
             <span className="text-zinc-600">Twitter</span>
             <span>{user.twitter ? `@${user.twitter}` : '未填写'}</span>
+            {user.twitter && relayCoverage ? (
+              <Badge className="border-0 bg-emerald-500/15 text-xs text-emerald-300">
+                Relay {new Date(relayCoverage.latestLastSeenAtMs).toLocaleDateString('zh-CN')}
+              </Badge>
+            ) : null}
             <span className="text-zinc-600">Telegram</span>
             <span>{user.telegram || '未填写'}</span>
             <span className="text-zinc-600">总资产</span>

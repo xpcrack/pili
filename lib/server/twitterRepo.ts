@@ -81,6 +81,13 @@ export interface TwitterLatestRelaySnapshot {
   messageId: number | null;
 }
 
+export interface TwitterRelayCoverageSnapshot {
+  handle: string;
+  latestTweetId: string;
+  latestLastSeenAtMs: number;
+  tweetCount: number;
+}
+
 interface TwitterRunSummary {
   fetchedCount?: number;
   storedCount?: number;
@@ -696,7 +703,8 @@ export function readLatestTwitterRelay() {
               json_extract(source_json, '$.sourceChatId') AS source_chat_id,
               json_extract(source_json, '$.messageId') AS message_id
        FROM twitter_tweets
-       WHERE json_extract(source_json, '$.provider') = 'bot2bot'
+       WHERE json_valid(source_json)
+         AND json_extract(source_json, '$.provider') = 'bot2bot'
        ORDER BY last_seen_at_ms DESC, tweet_id DESC
        LIMIT 1`
     )
@@ -723,4 +731,62 @@ export function readLatestTwitterRelay() {
     sourceChatId: row.source_chat_id || null,
     messageId: typeof row.message_id === 'number' ? row.message_id : null,
   } satisfies TwitterLatestRelaySnapshot;
+}
+
+export function listTwitterRelayCoverageByHandles(handles: string[]) {
+  const normalizedHandles = Array.from(
+    new Set(handles.map((handle) => normalizeTwitterHandle(handle)).map(normalize).filter(Boolean))
+  );
+
+  if (normalizedHandles.length === 0) {
+    return new Map<string, TwitterRelayCoverageSnapshot>();
+  }
+
+  const db = getDb();
+  const placeholders = normalizedHandles.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT
+         lower(t.author_handle) AS author_handle,
+         COUNT(1) AS tweet_count,
+         MAX(t.last_seen_at_ms) AS latest_last_seen_at_ms,
+         (
+           SELECT tt.tweet_id
+           FROM twitter_tweets tt
+           WHERE lower(tt.author_handle) = lower(t.author_handle)
+             AND json_valid(tt.source_json)
+             AND json_extract(tt.source_json, '$.provider') = 'bot2bot'
+           ORDER BY tt.last_seen_at_ms DESC, tt.tweet_id DESC
+           LIMIT 1
+         ) AS latest_tweet_id
+       FROM twitter_tweets t
+       WHERE lower(t.author_handle) IN (${placeholders})
+         AND json_valid(t.source_json)
+         AND json_extract(t.source_json, '$.provider') = 'bot2bot'
+       GROUP BY lower(t.author_handle)`
+    )
+    .all(...normalizedHandles) as Array<{
+    author_handle: string;
+    tweet_count: number;
+    latest_last_seen_at_ms: number;
+    latest_tweet_id: string | null;
+  }>;
+
+  const coverageByHandle = new Map<string, TwitterRelayCoverageSnapshot>();
+  for (const row of rows) {
+    const handle = normalize(row.author_handle);
+    const latestTweetId = row.latest_tweet_id?.trim() || '';
+    if (!handle || !latestTweetId) {
+      continue;
+    }
+
+    coverageByHandle.set(handle, {
+      handle,
+      latestTweetId,
+      latestLastSeenAtMs: toSafeInt(row.latest_last_seen_at_ms),
+      tweetCount: toSafeInt(row.tweet_count),
+    });
+  }
+
+  return coverageByHandle;
 }

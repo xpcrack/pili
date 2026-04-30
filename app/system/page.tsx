@@ -89,6 +89,8 @@ export default function SystemPage() {
   const [tradeMonitorChatId, setTradeMonitorChatId] = useState('');
   const [twitterMonitorChatId, setTwitterMonitorChatId] = useState('');
   const [conflictAlertChatId, setConflictAlertChatId] = useState('');
+  const [relayCoveredPollingIntervalMinutes, setRelayCoveredPollingIntervalMinutes] = useState('360');
+  const [uncoveredPollingIntervalMinutes, setUncoveredPollingIntervalMinutes] = useState('30');
   const [status, setStatus] = useState<StatusType>('idle');
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -142,6 +144,8 @@ export default function SystemPage() {
         setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
         setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
         setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
+        setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
+        setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
       })
       .catch(() => undefined);
 
@@ -243,6 +247,8 @@ export default function SystemPage() {
         telegramTradeMonitorSourceChatId: tradeMonitorChatId.trim() || null,
         telegramTwitterMonitorSourceChatId: twitterMonitorChatId.trim() || null,
         conflictNotificationTelegramChatId: conflictAlertChatId.trim() || null,
+        twitterRelayCoveredPollingIntervalMinutes: relayCoveredPollingIntervalMinutes.trim(),
+        twitterUncoveredPollingIntervalMinutes: uncoveredPollingIntervalMinutes.trim(),
       }),
     }).catch(() => null);
 
@@ -263,6 +269,8 @@ export default function SystemPage() {
     setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
     setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
     setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
+    setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
+    setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
     setStatus('saved');
     setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1500);
   };
@@ -504,6 +512,28 @@ export default function SystemPage() {
 
         <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5">
           <h2 className="mb-3 text-sm font-medium">Bot-to-Bot 群配置</h2>
+          <div className="mb-5 grid gap-3 md:grid-cols-2">
+            <div>
+              <Label className="text-zinc-400">Relay 覆盖账号自动同步间隔（分钟）</Label>
+              <Input
+                inputMode="numeric"
+                value={relayCoveredPollingIntervalMinutes}
+                onChange={(e) => setRelayCoveredPollingIntervalMinutes(e.target.value)}
+                className="border-zinc-800 bg-zinc-950"
+              />
+              <p className="mt-2 text-xs text-zinc-500">仅影响自动 Twitter sync；手动同步不受限制。</p>
+            </div>
+            <div>
+              <Label className="text-zinc-400">未 Relay 账号自动同步间隔（分钟）</Label>
+              <Input
+                inputMode="numeric"
+                value={uncoveredPollingIntervalMinutes}
+                onChange={(e) => setUncoveredPollingIntervalMinutes(e.target.value)}
+                className="border-zinc-800 bg-zinc-950"
+              />
+              <p className="mt-2 text-xs text-zinc-500">保存时会限制在 1 分钟到 7 天之间。</p>
+            </div>
+          </div>
           <div className="grid gap-3 md:grid-cols-4">
             <div>
               <Label className="text-zinc-400">交易监听群 Chat ID</Label>

@@ -4,6 +4,7 @@ import { type StructuredTwitterProvider, type TwitterProviderIntent } from '@/li
 
 export type TwitterProviderUnavailableReason =
   | 'cooldown_active'
+  | 'local_budget_exhausted'
   | 'missing_api_key';
 
 export interface Twitter6551RouteCandidate {
@@ -44,22 +45,6 @@ export interface TwitterStructuredProviderRouteResult {
   unavailableProviders: TwitterStructuredProviderUnavailable[];
 }
 
-function compare6551Candidates(a: Twitter6551RouteCandidate, b: Twitter6551RouteCandidate) {
-  const aFailure = a.lastFailureAtMs || 0;
-  const bFailure = b.lastFailureAtMs || 0;
-  if (aFailure !== bFailure) {
-    return aFailure - bFailure;
-  }
-
-  const aSuccess = a.lastSuccessAtMs || 0;
-  const bSuccess = b.lastSuccessAtMs || 0;
-  if (bSuccess !== aSuccess) {
-    return bSuccess - aSuccess;
-  }
-
-  return a.credentialId.localeCompare(b.credentialId);
-}
-
 function markUnavailable(
   candidate: Twitter6551RouteCandidate,
   reason: TwitterProviderUnavailableReason
@@ -87,30 +72,22 @@ export function chooseTwitterProviderRoute(
       continue;
     }
 
+    if (candidate.remainingUnits <= 0) {
+      unavailableProviders.push(markUnavailable(candidate, 'local_budget_exhausted'));
+      continue;
+    }
+
     available6551.push(candidate);
   }
 
-  available6551.sort(compare6551Candidates);
-
   const orderedProviders: TwitterStructuredRouteCandidate[] = [];
-  if (input.intent === 'backfill') {
-    orderedProviders.push(
-      ...available6551.map((candidate) => ({
-        ...candidate,
-      }))
-    );
-    if (input.providers.xread?.apiKey.trim()) {
-      orderedProviders.push(input.providers.xread);
-    }
-  } else {
-    orderedProviders.push(
-      ...available6551.map((candidate) => ({
-        ...candidate,
-      }))
-    );
-    if (input.providers.xread?.apiKey.trim()) {
-      orderedProviders.push(input.providers.xread);
-    }
+  orderedProviders.push(
+    ...available6551.map((candidate) => ({
+      ...candidate,
+    }))
+  );
+  if (input.providers.xread?.apiKey.trim()) {
+    orderedProviders.push(input.providers.xread);
   }
 
   return {

@@ -26,6 +26,8 @@ export async function PATCH(request: NextRequest) {
           telegramTradeMonitorSourceChatId?: string | null;
           telegramTwitterMonitorSourceChatId?: string | null;
           conflictNotificationTelegramChatId?: string | null;
+          twitterRelayCoveredPollingIntervalMinutes?: number | string | null;
+          twitterUncoveredPollingIntervalMinutes?: number | string | null;
         }
       | null;
 
@@ -57,6 +59,20 @@ export async function PATCH(request: NextRequest) {
           ? null
           : typeof body.conflictNotificationTelegramChatId === 'string'
             ? body.conflictNotificationTelegramChatId
+            : undefined,
+      twitterRelayCoveredPollingIntervalMinutes:
+        body.twitterRelayCoveredPollingIntervalMinutes === null
+          ? ''
+          : typeof body.twitterRelayCoveredPollingIntervalMinutes === 'number' ||
+              typeof body.twitterRelayCoveredPollingIntervalMinutes === 'string'
+            ? body.twitterRelayCoveredPollingIntervalMinutes
+            : undefined,
+      twitterUncoveredPollingIntervalMinutes:
+        body.twitterUncoveredPollingIntervalMinutes === null
+          ? ''
+          : typeof body.twitterUncoveredPollingIntervalMinutes === 'number' ||
+              typeof body.twitterUncoveredPollingIntervalMinutes === 'string'
+            ? body.twitterUncoveredPollingIntervalMinutes
             : undefined,
     });
 

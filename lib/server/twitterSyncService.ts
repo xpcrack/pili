@@ -13,6 +13,7 @@ import {
   createTwitterSyncRun,
   finishTwitterSyncRun,
   heartbeatIngestionLease,
+  listTwitterRelayCoverageByHandles,
   listTrackedTwitterUsers,
   listTwitterTweetsForReconcile,
   readIngestionLease,
@@ -28,6 +29,7 @@ import {
   type UpsertTwitterTweetInput,
 } from '@/lib/server/twitterRepo';
 import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
+import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 import { collectTwitterStatusUrls, upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 
@@ -96,6 +98,56 @@ function computeSinceMs(userId: string, lane: TwitterLane, nowMs: number) {
   const floorMs = nowMs - LOOKBACK_WINDOW_FLOOR_SEC * 1000;
   const sinceMs = cursor.watermarkCreatedAtMs - lookbackMs;
   return Math.min(sinceMs, floorMs);
+}
+
+function readTwitterUserFreshnessMs(userId: string) {
+  const cursors = (['timeline', 'replies'] as const).map((lane) => readTwitterCursor(userId, lane));
+  if (cursors.some((cursor) => typeof cursor?.lastSuccessAtMs !== 'number')) {
+    return null;
+  }
+
+  return Math.min(...cursors.map((cursor) => cursor?.lastSuccessAtMs || 0));
+}
+
+function getTwitterPollingIntervalMinutes(input: {
+  relayCovered: boolean;
+  config: SystemConfigSnapshot;
+}) {
+  return input.relayCovered
+    ? input.config.twitterRelayCoveredPollingIntervalMinutes
+    : input.config.twitterUncoveredPollingIntervalMinutes;
+}
+
+function shouldSkipAutomaticTwitterUserSync(input: {
+  userId: string;
+  relayCovered: boolean;
+  config: SystemConfigSnapshot;
+  nowMs: number;
+  force: boolean;
+}) {
+  if (input.force) {
+    return {
+      skip: false,
+      intervalMinutes: getTwitterPollingIntervalMinutes(input),
+      freshnessMs: readTwitterUserFreshnessMs(input.userId),
+    };
+  }
+
+  const intervalMinutes = getTwitterPollingIntervalMinutes(input);
+  const freshnessMs = readTwitterUserFreshnessMs(input.userId);
+  if (freshnessMs === null) {
+    return {
+      skip: false,
+      intervalMinutes,
+      freshnessMs,
+    };
+  }
+
+  return {
+    skip: input.nowMs - freshnessMs < intervalMinutes * 60 * 1000,
+    intervalMinutes,
+    freshnessMs,
+  };
 }
 
 function chooseLaneWatermark(tweets: UpsertTwitterTweetInput[]) {
@@ -278,12 +330,17 @@ async function runSyncAction(options: {
   seedByHandle?: TwitterFetcherSeedByHandle;
   windowDays?: number;
   runId?: number;
+  force?: boolean;
   fetcherOverride?: TwitterSyncFetcher;
 }) {
   const runId = typeof options.runId === 'number' ? options.runId : null;
   const fetcher = options.fetcherOverride || createTwitterFetcher(options.seedByHandle);
   const trackedUsers = listTrackedTwitterUsers().filter((user) =>
     options.userId?.trim() ? user.id === options.userId.trim() : true
+  );
+  const systemConfig = readSystemConfig();
+  const relayCoverageByHandle = listTwitterRelayCoverageByHandles(
+    trackedUsers.map((user) => user.twitterHandle)
   );
   const lanes: TwitterLane[] = ['timeline', 'replies'];
 
@@ -333,6 +390,33 @@ async function runSyncAction(options: {
     : null;
 
   for (const user of trackedUsers) {
+    const userRelayCoverage = relayCoverageByHandle.get(user.twitterHandle) || null;
+    const dueDecision = shouldSkipAutomaticTwitterUserSync({
+      userId: user.id,
+      relayCovered: Boolean(userRelayCoverage),
+      config: systemConfig,
+      nowMs: Date.now(),
+      force: options.force === true,
+    });
+
+    if (dueDecision.skip) {
+      appendSyncLog({
+        runKind: 'twitter',
+        runId,
+        level: 'debug',
+        phase: 'user-skip',
+        message: `skip user @${user.twitterHandle}: polling interval not due`,
+        payload: {
+          userId: user.id,
+          relayCovered: Boolean(userRelayCoverage),
+          intervalMinutes: dueDecision.intervalMinutes,
+          freshnessMs: dueDecision.freshnessMs,
+          latestRelayTweetId: userRelayCoverage?.latestTweetId || null,
+        },
+      });
+      continue;
+    }
+
     appendSyncLog({
       runKind: 'twitter',
       runId,
@@ -579,6 +663,7 @@ export async function runTwitterSyncAction(input?: {
   windowDays?: number;
   seedByHandle?: TwitterFetcherSeedByHandle;
   fetcherOverride?: TwitterSyncFetcher;
+  force?: boolean;
 }) {
   const action: TwitterSyncAction =
     input?.action === 'replay' || input?.action === 'reconcile' ? input.action : 'sync';
@@ -625,6 +710,7 @@ export async function runTwitterSyncAction(input?: {
             seedByHandle: input?.seedByHandle,
             windowDays: input?.windowDays,
             runId: run.id,
+            force: input?.force === true,
             fetcherOverride: input?.fetcherOverride,
           })
         : action === 'replay'
