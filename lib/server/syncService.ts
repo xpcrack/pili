@@ -28,6 +28,7 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
+import { notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -71,6 +72,35 @@ async function flushConflictNotificationsSafely(limit: number) {
     await flushConflictNotifications(limit);
   } catch (error) {
     console.error('[syncService] flush conflict notifications failed:', error);
+  }
+}
+
+async function notifySyncFailuresSafely(input: {
+  runId: number;
+  reason: string;
+  mode: 'refresh' | 'backfill';
+  scope: 'global' | 'user';
+  userId: string | null;
+  beginMs: number;
+  endMs: number;
+  diagnostics: AddressDiagnostic[];
+}) {
+  try {
+    const alertResult = await notifySyncAddressFetchFailures(input);
+    if (alertResult.sent || alertResult.reason === 'telegram-request-failed') {
+      appendSyncLog({
+        runKind: 'sync',
+        runId: input.runId,
+        level: alertResult.sent ? 'warn' : 'error',
+        phase: 'alert',
+        message: alertResult.sent
+          ? 'sync failure alert sent'
+          : 'sync failure alert send failed',
+        payload: { ...alertResult },
+      });
+    }
+  } catch (error) {
+    console.error('[syncService] notify sync failures failed:', error);
   }
 }
 
@@ -579,6 +609,17 @@ async function runSync(
       failedAddressCount: result.summary.failedAddressCount,
       emptyAddressCount: result.summary.emptyAddressCount,
     },
+  });
+
+  await notifySyncFailuresSafely({
+    runId,
+    reason,
+    mode: options.mode,
+    scope: options.scope,
+    userId: options.userId,
+    beginMs,
+    endMs,
+    diagnostics: result.diagnostics,
   });
 
   clearParserArtifactSnapshots();

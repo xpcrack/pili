@@ -7,6 +7,14 @@ import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
 import { Activity, User } from '@/types';
 
+type OkxTransactionsByAddressResult = Awaited<ReturnType<typeof fetchOkxTransactionsByAddress>>;
+type OkxTransactionsByAddressFetcher = (
+  address: string,
+  chain: string,
+  options?: { beginMs?: number; endMs?: number }
+) => Promise<OkxTransactionsByAddressResult>;
+type AssetSnapshotCollection = Awaited<ReturnType<typeof collectAddressAssetSnapshots>>;
+
 export interface AddressDiagnostic {
   userId: string;
   userName: string;
@@ -16,6 +24,8 @@ export interface AddressDiagnostic {
   ok: boolean;
   transactionCount: number;
   error: string | null;
+  fetchAttempts?: number;
+  retryExhausted?: boolean;
 }
 
 export interface ActivityFeedSummary {
@@ -51,6 +61,30 @@ export interface BuildActivityFeedOptions {
   beginMs?: number;
   endMs?: number;
   requireTrackedInitiator?: boolean;
+  fetchTransactionsByAddress?: OkxTransactionsByAddressFetcher;
+  retryPolicy?: BuildActivityFeedRetryPolicy;
+  onAddressFetchRetryExhausted?: (failure: BuildActivityFeedFetchFailure) => Promise<void> | void;
+  assetSnapshotCollector?: (users: User[]) => Promise<AssetSnapshotCollection>;
+}
+
+export interface BuildActivityFeedRetryPolicy {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  shouldRetry?: (error: string | null | undefined, attempt: number) => boolean;
+}
+
+export interface BuildActivityFeedFetchFailure {
+  userId: string;
+  userName: string;
+  address: string;
+  addressName: string;
+  chain: string;
+  attemptCount: number;
+  error: string | null;
+  beginMs: number;
+  endMs: number;
 }
 
 export interface RawTransactionSnapshotRecord {
@@ -86,6 +120,74 @@ const OKX_WINDOW_RESULT_LIMIT = 100;
 const MIN_WINDOW_SPLIT_MS = 60 * 1000;
 const MAX_WINDOW_SPLIT_DEPTH = 12;
 const SKIP_TX_MARKET_CAP_BACKFILL = process.env.SKIP_TX_MARKET_CAP_BACKFILL === 'true';
+const DEFAULT_OKX_RETRY_MAX_ATTEMPTS = readPositiveIntFromEnv('OKX_FETCH_MAX_ATTEMPTS', 3);
+const DEFAULT_OKX_RETRY_BASE_DELAY_MS = readPositiveIntFromEnv('OKX_FETCH_RETRY_BASE_DELAY_MS', 1500);
+const DEFAULT_OKX_RETRY_MAX_DELAY_MS = readPositiveIntFromEnv('OKX_FETCH_RETRY_MAX_DELAY_MS', 12000);
+
+function readPositiveIntFromEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function defaultShouldRetryOkxError(error: string | null | undefined) {
+  const normalized = (error || '').toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (normalized.includes('okx api 429')) {
+    return true;
+  }
+  if (/okx api 5\d\d/.test(normalized)) {
+    return true;
+  }
+  if (normalized.includes('okx 网络错误') || normalized.includes('network')) {
+    return true;
+  }
+  if (normalized.includes('超时') || normalized.includes('timeout') || normalized.includes('fetch failed')) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeRetryPolicy(policy: BuildActivityFeedRetryPolicy | undefined) {
+  const maxAttempts =
+    typeof policy?.maxAttempts === 'number' && Number.isFinite(policy.maxAttempts)
+      ? Math.max(1, Math.floor(policy.maxAttempts))
+      : DEFAULT_OKX_RETRY_MAX_ATTEMPTS;
+  const baseDelayMs =
+    typeof policy?.baseDelayMs === 'number' && Number.isFinite(policy.baseDelayMs)
+      ? Math.max(1, Math.floor(policy.baseDelayMs))
+      : DEFAULT_OKX_RETRY_BASE_DELAY_MS;
+  const maxDelayMs =
+    typeof policy?.maxDelayMs === 'number' && Number.isFinite(policy.maxDelayMs)
+      ? Math.max(baseDelayMs, Math.floor(policy.maxDelayMs))
+      : DEFAULT_OKX_RETRY_MAX_DELAY_MS;
+
+  return {
+    maxAttempts,
+    baseDelayMs,
+    maxDelayMs,
+    sleep: policy?.sleep || sleep,
+    shouldRetry: policy?.shouldRetry || ((error: string | null | undefined) => defaultShouldRetryOkxError(error)),
+  };
+}
+
+function computeRetryDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number) {
+  const retryIndex = Math.max(1, attempt);
+  const raw = baseDelayMs * 2 ** (retryIndex - 1);
+  return Math.min(maxDelayMs, raw);
+}
 
 function hasNumericTradeAmountUsdAtTx(activity: Activity) {
   return (
@@ -125,9 +227,13 @@ async function fetchQualifiedWindowTransactions(
   chain: string,
   beginMs: number,
   endMs: number,
-  depth = 0
-): Promise<Awaited<ReturnType<typeof fetchOkxTransactionsByAddress>>> {
-  const result = await fetchOkxTransactionsByAddress(address, chain, {
+  depth = 0,
+  deps?: {
+    fetchTransactionsByAddress?: OkxTransactionsByAddressFetcher;
+  }
+): Promise<OkxTransactionsByAddressResult> {
+  const fetchTransactionsByAddress = deps?.fetchTransactionsByAddress || fetchOkxTransactionsByAddress;
+  const result = await fetchTransactionsByAddress(address, chain, {
     beginMs,
     endMs,
   });
@@ -150,8 +256,8 @@ async function fetchQualifiedWindowTransactions(
   }
 
   const [left, right] = await Promise.all([
-    fetchQualifiedWindowTransactions(address, chain, beginMs, middleMs, depth + 1),
-    fetchQualifiedWindowTransactions(address, chain, middleMs + 1, endMs, depth + 1),
+    fetchQualifiedWindowTransactions(address, chain, beginMs, middleMs, depth + 1, deps),
+    fetchQualifiedWindowTransactions(address, chain, middleMs + 1, endMs, depth + 1, deps),
   ]);
 
   if (!left.ok) {
@@ -176,6 +282,76 @@ async function fetchQualifiedWindowTransactions(
   return {
     ...result,
     transactions: Array.from(merged.values()),
+  };
+}
+
+async function fetchQualifiedWindowTransactionsWithRetry(input: {
+  address: string;
+  chain: string;
+  beginMs: number;
+  endMs: number;
+  fetchTransactionsByAddress?: OkxTransactionsByAddressFetcher;
+  retryPolicy?: BuildActivityFeedRetryPolicy;
+}) {
+  const retryPolicy = normalizeRetryPolicy(input.retryPolicy);
+  let attemptCount = 0;
+  let lastResult: OkxTransactionsByAddressResult | null = null;
+  let retryExhausted = false;
+
+  while (attemptCount < retryPolicy.maxAttempts) {
+    attemptCount += 1;
+    let result: OkxTransactionsByAddressResult;
+    try {
+      result = await fetchQualifiedWindowTransactions(
+        input.address,
+        input.chain,
+        input.beginMs,
+        input.endMs,
+        0,
+        {
+          fetchTransactionsByAddress: input.fetchTransactionsByAddress,
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'unknown error');
+      result = {
+        ok: false,
+        configured: true,
+        transactions: [],
+        error: `OKX 拉取失败：${message}`,
+      };
+    }
+    lastResult = result;
+    if (result.ok) {
+      retryExhausted = false;
+      break;
+    }
+
+    const retryable = retryPolicy.shouldRetry(result.error, attemptCount);
+    if (!retryable) {
+      retryExhausted = false;
+      break;
+    }
+    if (attemptCount >= retryPolicy.maxAttempts) {
+      retryExhausted = true;
+      break;
+    }
+
+    const delayMs = computeRetryDelayMs(attemptCount, retryPolicy.baseDelayMs, retryPolicy.maxDelayMs);
+    await retryPolicy.sleep(delayMs);
+  }
+
+  return {
+    result:
+      lastResult ||
+      ({
+        ok: false,
+        configured: true,
+        transactions: [],
+        error: 'OKX 拉取失败：未知错误',
+      } satisfies OkxTransactionsByAddressResult),
+    attemptCount,
+    retryExhausted,
   };
 }
 
@@ -205,7 +381,34 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
         );
       }
       try {
-        const result = await fetchQualifiedWindowTransactions(addressInfo.address, addressInfo.chain, beginMs, endMs);
+        const { result, attemptCount, retryExhausted } = await fetchQualifiedWindowTransactionsWithRetry({
+          address: addressInfo.address,
+          chain: addressInfo.chain,
+          beginMs,
+          endMs,
+          fetchTransactionsByAddress: options?.fetchTransactionsByAddress,
+          retryPolicy: options?.retryPolicy,
+        });
+        if (!result.ok && retryExhausted && options?.onAddressFetchRetryExhausted) {
+          try {
+            await options.onAddressFetchRetryExhausted({
+              userId: user.id,
+              userName: user.name,
+              address: addressInfo.address,
+              addressName: addressInfo.name,
+              chain: addressInfo.chain,
+              attemptCount,
+              error: result.error,
+              beginMs,
+              endMs,
+            });
+          } catch (callbackError) {
+            console.error(
+              `[buildActivityFeed] onAddressFetchRetryExhausted failed user=${user.name} address=${addressInfo.address}:`,
+              callbackError
+            );
+          }
+        }
         const transactions = result.ok ? result.transactions : [];
         for (const tx of transactions) {
           const txHash = typeof tx.txHash === 'string' ? tx.txHash.trim() : '';
@@ -300,6 +503,8 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
           ok: result.ok,
           transactionCount: convertedCount,
           error: result.error,
+          fetchAttempts: attemptCount,
+          retryExhausted: result.ok ? false : retryExhausted,
         });
       } catch (error) {
         diagnostics.push({
@@ -311,13 +516,16 @@ export async function buildActivityFeed(users: User[], options?: BuildActivityFe
           ok: false,
           transactionCount: 0,
           error: error instanceof Error ? error.message : '地址抓取异常',
+          fetchAttempts: undefined,
+          retryExhausted: false,
         });
       }
     }
   }
 
   const sortedFeed = feed.sort((a, b) => b.activity.timestamp - a.activity.timestamp);
-  const assetSnapshots = await collectAddressAssetSnapshots(users);
+  const collectAssets = options?.assetSnapshotCollector || collectAddressAssetSnapshots;
+  const assetSnapshots = await collectAssets(users);
   const summary: ActivityFeedSummary = {
     userCount: users.length,
     addressCount: diagnostics.length,
