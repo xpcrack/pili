@@ -45,23 +45,61 @@ function writeState(state: IngestAlertRateState, nowMs: number) {
   ).run(INGEST_ALERT_STATE_KEY, JSON.stringify(state), nowMs);
 }
 
-export function consumeIngestAlertQuota(rateKey: string, windowMs: number) {
+function normalizeQuotaInput(rateKey: string, windowMs: number) {
   const key = rateKey.trim();
-  if (!key) {
-    return true;
-  }
-
   const safeWindowMs = Math.max(1_000, Math.floor(windowMs));
-  const nowMs = Date.now();
-  const state = readState();
+  return {
+    key,
+    safeWindowMs,
+  };
+}
 
+function pruneStateByWindow(state: IngestAlertRateState, cutoff: number) {
   const nextState: IngestAlertRateState = {};
-  const cutoff = nowMs - safeWindowMs;
   for (const [entryKey, ts] of Object.entries(state)) {
     if (ts >= cutoff) {
       nextState[entryKey] = ts;
     }
   }
+  return nextState;
+}
+
+export function isIngestAlertQuotaAvailable(rateKey: string, windowMs: number, nowMs = Date.now()) {
+  const { key, safeWindowMs } = normalizeQuotaInput(rateKey, windowMs);
+  if (!key) {
+    return true;
+  }
+
+  const state = readState();
+  const cutoff = nowMs - safeWindowMs;
+  const recentState = pruneStateByWindow(state, cutoff);
+  const lastAt = recentState[key] || 0;
+  return lastAt < cutoff;
+}
+
+export function markIngestAlertQuotaConsumed(rateKey: string, windowMs: number, nowMs = Date.now()) {
+  const { key, safeWindowMs } = normalizeQuotaInput(rateKey, windowMs);
+  if (!key) {
+    return;
+  }
+
+  const state = readState();
+  const cutoff = nowMs - safeWindowMs;
+  const nextState = pruneStateByWindow(state, cutoff);
+  nextState[key] = nowMs;
+  writeState(nextState, nowMs);
+}
+
+export function consumeIngestAlertQuota(rateKey: string, windowMs: number) {
+  const { key, safeWindowMs } = normalizeQuotaInput(rateKey, windowMs);
+  if (!key) {
+    return true;
+  }
+
+  const nowMs = Date.now();
+  const state = readState();
+  const cutoff = nowMs - safeWindowMs;
+  const nextState = pruneStateByWindow(state, cutoff);
 
   const lastAt = nextState[key] || 0;
   if (lastAt >= cutoff) {
