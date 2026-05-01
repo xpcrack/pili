@@ -7,17 +7,23 @@ import { FeedRequestArbiter } from '@/lib/feed/requestArbiter';
 import { resolveFeedSyncStrategy, type FeedSyncStrategy } from '@/lib/feed/fetchPolicy';
 import {
   type ActivityFeedSummary,
-  type AddressAssetSnapshot,
   type AddressDiagnostic,
-  type UserAssetSnapshot,
 } from '@/lib/activityFeed';
-import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
+import {
+  buildActivitiesByUser,
+  filterFeedByExistingUsers,
+  mergeFeedItems,
+} from '@/lib/feed/feedItemMerge';
+import {
+  buildFeedDebugEntries,
+  filterPoisonFromFeed,
+  type FeedDebugEntry,
+} from '@/lib/feed/feedPoisonFilter';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
-const MAX_PERSISTED_FEED_ITEMS = 3000;
 const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
 const SERVER_BACKFILL_TIMEOUT_MS = 10000;
 
@@ -63,506 +69,6 @@ interface FetchActivitiesOptions {
   replace?: boolean;
   syncStrategy?: FeedSyncStrategy;
   backfillScope?: 'global' | 'user';
-}
-
-interface PersistedFeedCache {
-  savedAt: number;
-  lastUpdate: number | null;
-  feed: { user: User; activity: Activity }[];
-  summary: ActivityFeedSummary | null;
-  diagnostics: AddressDiagnostic[];
-  addressAssets: AddressAssetSnapshot[];
-  userAssets: UserAssetSnapshot[];
-}
-const CACHE_POISON_MIN_UNIQUE_RECIPIENTS = 3;
-const CACHE_POISON_MIN_TRANSFER_COUNT = 3;
-const CACHE_POISON_MAX_SENDER_ADDRESSES = 3;
-const CACHE_POISON_REPEAT_MIN_TRANSFER_COUNT = 2;
-const CACHE_POISON_REPEAT_TIME_WINDOW_MS = 48 * 60 * 60 * 1000;
-const CACHE_POISON_SENDER_FANOUT_MIN_RECIPIENTS = 3;
-const CACHE_POISON_SENDER_FANOUT_MIN_TRANSFERS = 3;
-
-const CACHE_NATIVE_DUST_THRESHOLDS: Record<string, number> = {
-  'solana|sol': 0.00002,
-  'bsc|bnb': 0.00002,
-};
-const CACHE_NATIVE_UNCERTAIN_RECEIVE_MAX_AMOUNTS: Record<string, number> = {
-  solana: 0.05,
-  bsc: 0.005,
-};
-const CACHE_UNCERTAIN_LOW_VALUE_MAX_AMOUNTS: Record<string, number> = {
-  solana: 0.1,
-  bsc: 5,
-};
-const CACHE_NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
-  solana: new Set(['sol', 'wsol']),
-  bsc: new Set(['bnb', 'wbnb']),
-};
-const CACHE_SAFE_SYMBOLS = new Set(['sol', 'wsol', 'bnb', 'wbnb', 'usdt', 'usdc', 'dai']);
-
-interface FeedDebugEntry {
-  userId: string;
-  userName: string;
-  txHash: string;
-  chain?: string;
-  token?: string;
-  tokenAddress?: string;
-  value?: string;
-  txAction?: Activity['metadata']['txAction'];
-  uncertainFrom: boolean;
-  matches: {
-    nativeDust: boolean;
-    uncertainNative: boolean;
-    uncertainLowValueToken: boolean;
-    uncertainUnknownToken: boolean;
-  };
-}
-
-function buildActivitiesByUser(feed: { user: User; activity: Activity }[]) {
-  const activitiesByUser = new Map<string, Activity[]>();
-  feed.forEach(({ user, activity }) => {
-    const existing = activitiesByUser.get(user.id) || [];
-    activitiesByUser.set(user.id, [...existing, activity]);
-  });
-  return activitiesByUser;
-}
-
-function filterFeedByExistingUsers(feed: { user: User; activity: Activity }[], users: User[]) {
-  const userIdSet = new Set(users.map((user) => user.id));
-  return feed.filter((item) => userIdSet.has(item.user.id));
-}
-
-function getActivityDedupKey(item: { user: User; activity: Activity }) {
-  return buildActivityScopedDedupKey(item.activity, item.user.id);
-}
-
-function getActionPriority(action: Activity['metadata']['txAction']) {
-  if (action === 'sell' || action === 'buy') return 4;
-  if (action === 'send') return 3;
-  if (action === 'receive') return 2;
-  return 1;
-}
-
-function hasPositiveAmount(value: string | undefined) {
-  const parsed = Number.parseFloat((value || '').trim());
-  return Number.isFinite(parsed) && parsed > 0;
-}
-
-function isNativeTokenLike(activity: Activity) {
-  const chain = normalizeCacheAddress(activity.metadata.chain);
-  const symbol = normalizeCacheAddress(activity.metadata.token);
-  if (!chain || !symbol) return false;
-  return CACHE_NATIVE_SYMBOLS_BY_CHAIN[chain]?.has(symbol) ?? false;
-}
-
-function isIncomingLikeCacheAction(action: Activity['metadata']['txAction']) {
-  return action === 'receive' || action === 'buy';
-}
-
-function isOutgoingLikeCacheAction(action: Activity['metadata']['txAction']) {
-  return action === 'send' || action === 'sell';
-}
-
-function isNonNativeIncomingLikeToken(activity: Activity) {
-  if (!isIncomingLikeCacheAction(activity.metadata.txAction)) return false;
-  const hasAmount = hasPositiveAmount(activity.metadata.value);
-  if (!hasAmount) return false;
-  if (isNativeTokenLike(activity)) return false;
-  const tokenAddress = normalizeCacheAddress(activity.metadata.tokenAddress);
-  return Boolean(tokenAddress) || Boolean(normalizeCacheAddress(activity.metadata.token));
-}
-
-function isNonNativeOutgoingLikeToken(activity: Activity) {
-  if (!isOutgoingLikeCacheAction(activity.metadata.txAction)) return false;
-  const hasAmount = hasPositiveAmount(activity.metadata.value);
-  if (!hasAmount) return false;
-  if (isNativeTokenLike(activity)) return false;
-  const tokenAddress = normalizeCacheAddress(activity.metadata.tokenAddress);
-  return Boolean(tokenAddress) || Boolean(normalizeCacheAddress(activity.metadata.token));
-}
-
-function isNativeIncomingLikeToken(activity: Activity) {
-  if (!isIncomingLikeCacheAction(activity.metadata.txAction)) return false;
-  return hasPositiveAmount(activity.metadata.value) && isNativeTokenLike(activity);
-}
-
-function isNativeOutgoingLikeToken(activity: Activity) {
-  if (!isOutgoingLikeCacheAction(activity.metadata.txAction)) return false;
-  return hasPositiveAmount(activity.metadata.value) && isNativeTokenLike(activity);
-}
-
-function cloneWithAction(
-  item: { user: User; activity: Activity },
-  nextAction: NonNullable<Activity['metadata']['txAction']>
-) {
-  return {
-    ...item,
-    activity: {
-      ...item.activity,
-      metadata: {
-        ...item.activity.metadata,
-        txAction: nextAction,
-      },
-    },
-  };
-}
-
-function promoteTradeActionFromPair(
-  left: { user: User; activity: Activity },
-  right: { user: User; activity: Activity },
-  selected: { user: User; activity: Activity }
-) {
-  if (isNonNativeOutgoingLikeToken(left.activity) && isNativeIncomingLikeToken(right.activity)) {
-    return cloneWithAction(left, 'sell');
-  }
-  if (isNonNativeIncomingLikeToken(left.activity) && isNativeOutgoingLikeToken(right.activity)) {
-    return cloneWithAction(left, 'buy');
-  }
-  if (isNonNativeOutgoingLikeToken(right.activity) && isNativeIncomingLikeToken(left.activity)) {
-    return cloneWithAction(right, 'sell');
-  }
-  if (isNonNativeIncomingLikeToken(right.activity) && isNativeOutgoingLikeToken(left.activity)) {
-    return cloneWithAction(right, 'buy');
-  }
-
-  return selected;
-}
-
-function chooseBetterTxRepresentative(
-  current: { user: User; activity: Activity },
-  candidate: { user: User; activity: Activity }
-) {
-  let selected: { user: User; activity: Activity };
-  const currentActionPriority = getActionPriority(current.activity.metadata.txAction);
-  const candidateActionPriority = getActionPriority(candidate.activity.metadata.txAction);
-  if (candidateActionPriority !== currentActionPriority) {
-    selected = candidateActionPriority > currentActionPriority ? candidate : current;
-    return promoteTradeActionFromPair(current, candidate, selected);
-  }
-
-  const currentTokenAddress = normalizeCacheAddress(current.activity.metadata.tokenAddress);
-  const candidateTokenAddress = normalizeCacheAddress(candidate.activity.metadata.tokenAddress);
-  const currentHasTokenAddress = Boolean(currentTokenAddress);
-  const candidateHasTokenAddress = Boolean(candidateTokenAddress);
-  if (candidateHasTokenAddress !== currentHasTokenAddress) {
-    selected = candidateHasTokenAddress ? candidate : current;
-    return promoteTradeActionFromPair(current, candidate, selected);
-  }
-
-  const currentIsNative = isNativeTokenLike(current.activity);
-  const candidateIsNative = isNativeTokenLike(candidate.activity);
-  if (currentIsNative !== candidateIsNative) {
-    selected = candidateIsNative ? current : candidate;
-    return promoteTradeActionFromPair(current, candidate, selected);
-  }
-
-  const currentPositiveAmount = hasPositiveAmount(current.activity.metadata.value);
-  const candidatePositiveAmount = hasPositiveAmount(candidate.activity.metadata.value);
-  if (candidatePositiveAmount !== currentPositiveAmount) {
-    selected = candidatePositiveAmount ? candidate : current;
-    return promoteTradeActionFromPair(current, candidate, selected);
-  }
-
-  selected = candidate.activity.timestamp >= current.activity.timestamp ? candidate : current;
-  return promoteTradeActionFromPair(current, candidate, selected);
-}
-
-function mergeFeedItems(
-  previous: { user: User; activity: Activity }[],
-  incoming: { user: User; activity: Activity }[]
-) {
-  const merged = new Map<string, { user: User; activity: Activity }>();
-
-  for (const item of [...previous, ...incoming]) {
-    const key = getActivityDedupKey(item);
-    const existing = merged.get(key);
-    merged.set(key, existing ? chooseBetterTxRepresentative(existing, item) : item);
-  }
-
-  const mergedFeed = Array.from(merged.values())
-    .sort((a, b) => b.activity.timestamp - a.activity.timestamp)
-    .slice(0, MAX_PERSISTED_FEED_ITEMS);
-
-  return mergedFeed;
-}
-
-function normalizeCacheAddress(value: string | undefined) {
-  return (value || '').trim().toLowerCase();
-}
-
-function parseCachePositiveAmount(value: string | undefined) {
-  const parsed = Number.parseFloat((value || '').trim());
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
-}
-
-function getCacheNativeDustThreshold(chain: string, tokenAddress: string, tokenSymbol: string) {
-  if (!chain || tokenAddress || !tokenSymbol) {
-    return null;
-  }
-  return CACHE_NATIVE_DUST_THRESHOLDS[`${chain}|${tokenSymbol}`] ?? null;
-}
-
-function isCacheNativeDustPoison(item: { user: User; activity: Activity }) {
-  const { activity } = item;
-  if (activity.source !== 'blockchain') return false;
-  if (!activity.metadata.uncertainFrom) return false;
-
-  const chain = normalizeCacheAddress(activity.metadata.chain);
-  const tokenAddress = normalizeCacheAddress(activity.metadata.tokenAddress);
-  const tokenSymbol = normalizeCacheAddress(activity.metadata.token);
-  const dustThreshold = getCacheNativeDustThreshold(chain, tokenAddress, tokenSymbol);
-  if (dustThreshold === null) return false;
-
-  const amount = parseCachePositiveAmount(activity.metadata.value);
-  if (amount === null) return false;
-
-  return amount <= dustThreshold;
-}
-
-function isCacheUncertainNativeReceivePoison(item: { user: User; activity: Activity }) {
-  const { activity } = item;
-  if (activity.source !== 'blockchain') return false;
-  if (!activity.metadata.uncertainFrom) return false;
-
-  const chain = normalizeCacheAddress(activity.metadata.chain);
-  const tokenSymbol = normalizeCacheAddress(activity.metadata.token);
-  if (!chain) return false;
-  const nativeSymbols = CACHE_NATIVE_SYMBOLS_BY_CHAIN[chain];
-  if (!nativeSymbols || !nativeSymbols.has(tokenSymbol)) return false;
-
-  const maxAmount = CACHE_NATIVE_UNCERTAIN_RECEIVE_MAX_AMOUNTS[chain];
-  if (typeof maxAmount !== 'number') return false;
-
-  const amount = parseCachePositiveAmount(activity.metadata.value);
-  if (amount === null) return false;
-  return amount <= maxAmount;
-}
-
-function isCacheUncertainLowValueTokenPoison(item: { user: User; activity: Activity }) {
-  const { activity } = item;
-  if (activity.source !== 'blockchain') return false;
-  if (!activity.metadata.uncertainFrom) return false;
-
-  const chain = normalizeCacheAddress(activity.metadata.chain);
-  const tokenSymbol = normalizeCacheAddress(activity.metadata.token);
-  if (!chain || !tokenSymbol) return false;
-  if (CACHE_SAFE_SYMBOLS.has(tokenSymbol)) return false;
-
-  const maxAmount = CACHE_UNCERTAIN_LOW_VALUE_MAX_AMOUNTS[chain];
-  if (typeof maxAmount !== 'number') return false;
-  const amount = parseCachePositiveAmount(activity.metadata.value);
-  if (amount === null) return false;
-  return amount <= maxAmount;
-}
-
-function isCacheUncertainUnknownTokenReceivePoison(item: { user: User; activity: Activity }) {
-  void item;
-  // 与服务端过滤保持一致：未知 symbol 不再单独判投毒。
-  return false;
-}
-
-function normalizeCacheTxHash(value: string | undefined) {
-  const normalized = (value || '').trim();
-  if (normalized.startsWith('0x') || normalized.startsWith('0X')) {
-    return normalized.toLowerCase();
-  }
-  return normalized;
-}
-
-function buildFeedDebugEntries(feed: { user: User; activity: Activity }[], txHash: string) {
-  const normalizedTxHash = normalizeCacheTxHash(txHash);
-  return feed
-    .filter((item) => normalizeCacheTxHash(item.activity.metadata.txHash) === normalizedTxHash)
-    .map((item): FeedDebugEntry => ({
-      userId: item.user.id,
-      userName: item.user.name,
-      txHash: item.activity.metadata.txHash || '',
-      chain: item.activity.metadata.chain,
-      token: item.activity.metadata.token,
-      tokenAddress: item.activity.metadata.tokenAddress,
-      value: item.activity.metadata.value,
-      txAction: item.activity.metadata.txAction,
-      uncertainFrom: Boolean(item.activity.metadata.uncertainFrom),
-      matches: {
-        nativeDust: isCacheNativeDustPoison(item),
-        uncertainNative: isCacheUncertainNativeReceivePoison(item),
-        uncertainLowValueToken: isCacheUncertainLowValueTokenPoison(item),
-        uncertainUnknownToken: isCacheUncertainUnknownTokenReceivePoison(item),
-      },
-    }));
-}
-
-function filterPoisonFromFeed(feed: { user: User; activity: Activity }[]) {
-  const tokenStats = new Map<
-    string,
-    {
-      transferCount: number;
-      recipientUsers: Set<string>;
-      senderAddresses: Set<string>;
-      amounts: number[];
-    }
-  >();
-  const repeatStats = new Map<
-    string,
-    {
-      chain: string;
-      tokenAddress: string;
-      tokenSymbol: string;
-      transferCount: number;
-      senderAddresses: Set<string>;
-      amounts: number[];
-      minTimestamp: number;
-      maxTimestamp: number;
-    }
-  >();
-  const senderFanOutStats = new Map<
-    string,
-    {
-      transferCount: number;
-      recipientUsers: Set<string>;
-    }
-  >();
-
-  for (const item of feed) {
-    const { activity } = item;
-    if (activity.source !== 'blockchain') continue;
-    if (activity.metadata.txAction !== 'receive') continue;
-    if (!activity.metadata.uncertainFrom) continue;
-
-    const chain = normalizeCacheAddress(activity.metadata.chain);
-    const tokenAddress = normalizeCacheAddress(activity.metadata.tokenAddress);
-    const tokenSymbol = normalizeCacheAddress(activity.metadata.token);
-    const token = tokenAddress || tokenSymbol;
-    if (!chain || !token) continue;
-
-    const tokenKey = `${chain}|${token}`;
-    const tokenExisting = tokenStats.get(tokenKey) ?? {
-      transferCount: 0,
-      recipientUsers: new Set<string>(),
-      senderAddresses: new Set<string>(),
-      amounts: [],
-    };
-    tokenExisting.transferCount += 1;
-    tokenExisting.recipientUsers.add(item.user.id);
-    const fromAddress = normalizeCacheAddress(activity.metadata.fromAddress);
-    if (fromAddress) tokenExisting.senderAddresses.add(fromAddress);
-    const amount = parseCachePositiveAmount(activity.metadata.value);
-    if (amount !== null) tokenExisting.amounts.push(amount);
-    tokenStats.set(tokenKey, tokenExisting);
-
-    if (fromAddress) {
-      const recipientAddress = normalizeCacheAddress(activity.metadata.toAddress) || item.user.id;
-      const repeatKey = `${chain}|${token}|${fromAddress}|${recipientAddress}`;
-      const repeatExisting = repeatStats.get(repeatKey) ?? {
-        chain,
-        tokenAddress,
-        tokenSymbol,
-        transferCount: 0,
-        senderAddresses: new Set<string>(),
-        amounts: [],
-        minTimestamp: activity.timestamp,
-        maxTimestamp: activity.timestamp,
-      };
-      repeatExisting.transferCount += 1;
-      repeatExisting.senderAddresses.add(fromAddress);
-      if (amount !== null) repeatExisting.amounts.push(amount);
-      repeatExisting.minTimestamp = Math.min(repeatExisting.minTimestamp, activity.timestamp);
-      repeatExisting.maxTimestamp = Math.max(repeatExisting.maxTimestamp, activity.timestamp);
-      repeatStats.set(repeatKey, repeatExisting);
-    }
-
-    if (chain && fromAddress) {
-      const senderKey = `${chain}|${fromAddress}`;
-      const fanOutExisting = senderFanOutStats.get(senderKey) ?? {
-        transferCount: 0,
-        recipientUsers: new Set<string>(),
-      };
-      fanOutExisting.transferCount += 1;
-      fanOutExisting.recipientUsers.add(item.user.id);
-      senderFanOutStats.set(senderKey, fanOutExisting);
-    }
-  }
-
-  const suspiciousTokenKeys = new Set(
-    Array.from(tokenStats.entries())
-      .filter(([, value]) => {
-        const hasFanOut =
-          value.transferCount >= CACHE_POISON_MIN_TRANSFER_COUNT &&
-          value.recipientUsers.size >= CACHE_POISON_MIN_UNIQUE_RECIPIENTS;
-        if (!hasFanOut) return false;
-        const hasSenderPattern =
-          value.senderAddresses.size > 0 && value.senderAddresses.size <= CACHE_POISON_MAX_SENDER_ADDRESSES;
-        const amountSpreadRatio =
-          value.amounts.length >= 2 ? Math.max(...value.amounts) / Math.min(...value.amounts) : null;
-        const hasAmountPattern = typeof amountSpreadRatio === 'number' ? amountSpreadRatio <= 1.03 : false;
-        return hasSenderPattern || hasAmountPattern;
-      })
-      .map(([key]) => key)
-  );
-
-  const suspiciousRepeatKeys = new Set(
-    Array.from(repeatStats.entries())
-      .filter(([, value]) => {
-        if (value.transferCount < CACHE_POISON_REPEAT_MIN_TRANSFER_COUNT) return false;
-        const dustThreshold = getCacheNativeDustThreshold(value.chain, value.tokenAddress, value.tokenSymbol);
-        if (dustThreshold === null || value.amounts.length < CACHE_POISON_REPEAT_MIN_TRANSFER_COUNT) {
-          return false;
-        }
-        if (Math.max(...value.amounts) > dustThreshold) return false;
-        if (value.maxTimestamp - value.minTimestamp > CACHE_POISON_REPEAT_TIME_WINDOW_MS) return false;
-        return true;
-      })
-      .map(([key]) => key)
-  );
-  const suspiciousSenderKeys = new Set(
-    Array.from(senderFanOutStats.entries())
-      .filter(([, value]) =>
-        value.transferCount >= CACHE_POISON_SENDER_FANOUT_MIN_TRANSFERS &&
-        value.recipientUsers.size >= CACHE_POISON_SENDER_FANOUT_MIN_RECIPIENTS
-      )
-      .map(([key]) => key)
-  );
-
-  if (suspiciousTokenKeys.size === 0 && suspiciousRepeatKeys.size === 0) {
-    return feed;
-  }
-
-  return feed.filter((item) => {
-    if (
-      isCacheNativeDustPoison(item) ||
-      isCacheUncertainNativeReceivePoison(item) ||
-      isCacheUncertainLowValueTokenPoison(item) ||
-      isCacheUncertainUnknownTokenReceivePoison(item)
-    ) return false;
-
-    const { activity } = item;
-    if (activity.source !== 'blockchain') return true;
-    if (activity.metadata.txAction !== 'receive') return true;
-    if (!activity.metadata.uncertainFrom) return true;
-
-    const chain = normalizeCacheAddress(activity.metadata.chain);
-    const tokenAddress = normalizeCacheAddress(activity.metadata.tokenAddress);
-    const tokenSymbol = normalizeCacheAddress(activity.metadata.token);
-    const token = tokenAddress || tokenSymbol;
-    const fromAddress = normalizeCacheAddress(activity.metadata.fromAddress);
-    if (!chain || !token) return true;
-
-    const tokenKey = `${chain}|${token}`;
-    const recipientAddress = normalizeCacheAddress(activity.metadata.toAddress) || item.user.id;
-    const repeatKey = fromAddress ? `${chain}|${token}|${fromAddress}|${recipientAddress}` : '';
-    const senderKey = fromAddress ? `${chain}|${fromAddress}` : '';
-    if (suspiciousTokenKeys.has(tokenKey)) return false;
-    if (repeatKey && suspiciousRepeatKeys.has(repeatKey)) return false;
-    if (senderKey && suspiciousSenderKeys.has(senderKey)) return false;
-    return true;
-  });
-}
-
-function readFeedCache(): PersistedFeedCache | null {
-  return null;
 }
 
 export function useActivityPolling(
@@ -805,8 +311,6 @@ export function useActivityPolling(
     const requestId = ++requestIdRef.current;
     const currentUsers = usersRef.current;
 
-    console.log('[fetchActivities] 开始请求，users 数量:', currentUsers.length, '严格模式: true');
-
     try {
       if (isMountedRef.current) {
         setLoading(true);
@@ -825,7 +329,6 @@ export function useActivityPolling(
           };
         }
 
-        console.log('[fetchActivities] users 为空，清空所有数据');
         feedRef.current = [];
         setFeed([]);
         setUserActivities(new Map());
@@ -862,7 +365,6 @@ export function useActivityPolling(
       const requestLimit = selectedUserId
         ? Math.max(targetCount ?? 50, 1)
         : Math.max(targetCount ?? 200, 200);
-      console.log('[fetchActivities] 开始从 API 获取数据，strategy:', syncStrategy);
 
       const requestFeed = async (strategy: 'refresh' | 'local' | 'backfill') =>
         fetchAllActivities(currentUsers, {
@@ -893,7 +395,6 @@ export function useActivityPolling(
       const mergedFeed = filterFeedByExistingUsers(serverMergedFeed, currentUsers);
 
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
-        console.log('[fetchActivities] 组件已卸载或请求过期，放弃更新');
         return {
           feedLength: feedRef.current.length,
           selectedFeedLength: currentSelectedFeedLength,
@@ -908,7 +409,6 @@ export function useActivityPolling(
         };
       }
 
-      console.log('[fetchActivities] API 返回', result.feed.length, '条数据，合并后', mergedFeed.length, '条');
       feedRef.current = mergedFeed;
       setFeed(mergedFeed);
       setSummary(result.summary);
@@ -1084,12 +584,7 @@ export function useActivityPolling(
   useEffect(() => {
     isMountedRef.current = true;
 
-    // 严格模式：不从本地缓存恢复，始终以本次 API 为准
-    if (!hydratedFromCacheRef.current) {
-      hydratedFromCacheRef.current = true;
-      const cached = readFeedCache();
-      void cached;
-    }
+    hydratedFromCacheRef.current = true;
 
     usersFingerprintRef.current = usersRef.current
       .map((user) => `${user.id}:${user.addresses.length}`)
