@@ -14,7 +14,6 @@ import { ArrowLeft, User as UserIcon } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
-import { prepareGlobalFeed, prepareUserFeed } from '@/lib/feedOrdering';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { shouldShowGlobalCompletenessWindow } from '@/lib/feedCompletenessVisibility';
 import { Input } from '@/components/ui/input';
@@ -22,9 +21,8 @@ import {
   type FeedSearchFilters,
   DEFAULT_FEED_SEARCH_FILTERS,
   getRemoteFeedSearchKeyword,
-  hasAnyEnabledFeedType,
-  matchesFeedSearchFilters,
 } from '@/lib/smartSearch';
+import { buildAddressAliasMap, selectFeedPageState } from '@/lib/feed/feedPageState';
 import {
   normalizeTradeValueDisplayMode,
   type TradeValueDisplayMode,
@@ -131,49 +129,27 @@ export default function Home() {
     return users.find(u => u.id === selectedUserId) || null;
   }, [selectedUserId, users]);
 
-  const hasActiveLocalFilters =
-    searchFilters.keyword.trim().length > 0 ||
-    !searchFilters.typeFilters.trade ||
-    !searchFilters.typeFilters.transfer ||
-    !searchFilters.typeFilters.twitter ||
-    !searchFilters.typeFilters.telegram ||
-    searchFilters.minTradeAmountUsd.trim().length > 0 ||
-    searchFilters.minTradeMarketCapUsd.trim().length > 0;
-  const hasEnabledFeedTypes = hasAnyEnabledFeedType(searchFilters.typeFilters);
-
-  const selectedUserFeed = useMemo(() => {
-    if (!selectedUserId) {
-      return feed;
-    }
-    return feed.filter((item) => item.user.id === selectedUserId);
-  }, [feed, selectedUserId]);
-  const orderedFeed = useMemo(() => {
-    if (selectedUserId) {
-      return prepareUserFeed(selectedUserFeed);
-    }
-    return prepareGlobalFeed(selectedUserFeed);
-  }, [selectedUserFeed, selectedUserId]);
-  const matchedFeed = useMemo(
-    () => orderedFeed.filter((item) => matchesFeedSearchFilters(item, searchFilters)),
-    [orderedFeed, searchFilters]
+  const {
+    matchedFeed,
+    filteredFeed,
+    visibleUserIds,
+    hasActiveLocalFilters,
+    hasEnabledFeedTypes,
+  } = useMemo(
+    () => selectFeedPageState({
+      feed,
+      selectedUserId,
+      searchFilters,
+      globalVisibleCount,
+      selectedUserVisibleCount,
+    }),
+    [feed, selectedUserId, searchFilters, globalVisibleCount, selectedUserVisibleCount]
   );
-  const filteredFeed = useMemo(() => {
-    if (!selectedUserId) return matchedFeed.slice(0, globalVisibleCount);
-    return matchedFeed.slice(0, selectedUserVisibleCount);
-  }, [selectedUserId, matchedFeed, globalVisibleCount, selectedUserVisibleCount]);
   const isInitialLoading = loading && feed.length === 0;
   const showGlobalCompletenessWindow = shouldShowGlobalCompletenessWindow({
     selectedUserId,
     completenessWindow,
   });
-
-  const visibleUserIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of matchedFeed) {
-      ids.add(item.user.id);
-    }
-    return ids;
-  }, [matchedFeed]);
 
   const sidebarUsers = useMemo(() => {
     const sorted = [...users];
@@ -200,20 +176,7 @@ export default function Home() {
     return sorted;
   }, [users, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds]);
 
-  const addressAliasMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const trackedUser of users) {
-      for (const address of trackedUser.addresses) {
-        const key = address.address.toLowerCase();
-        if (map.has(key)) continue;
-        const alias = address.name.startsWith('#')
-          ? `${trackedUser.name}${address.name}`
-          : `${trackedUser.name}#${address.name}`;
-        map.set(key, alias);
-      }
-    }
-    return map;
-  }, [users]);
+  const addressAliasMap = useMemo(() => buildAddressAliasMap(users), [users]);
 
   const resetExpandStateForSearch = () => {
     setGlobalVisibleCount(MAX_GLOBAL_FEED_ITEMS);
