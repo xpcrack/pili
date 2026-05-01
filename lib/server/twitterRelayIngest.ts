@@ -162,22 +162,26 @@ export async function ingestTwitterRelayPayload(payload: TwitterRelayPayload) {
   const lane = payload.action === 'reply' ? 'replies' : 'timeline';
 
   const users = listTrackedUsers();
-  const knownTwitterHandles = new Set(
-    users.map((user) => normalizeTwitterHandle(user.twitter || '')).filter((value): value is string => Boolean(value)).map(normalize)
+  const knownUserByTwitterHandle = new Map(
+    users
+      .map((user) => [normalize(normalizeTwitterHandle(user.twitter || '')), user] as const)
+      .filter(([handle]) => Boolean(handle))
   );
-  if (!knownTwitterHandles.has(normalizedAuthorHandle)) {
+  const matchedUser = knownUserByTwitterHandle.get(normalizedAuthorHandle) || null;
+  if (!matchedUser) {
     await notifyTwitterRelayIssue({
-      reason: 'invalid-twitter-format',
+      reason: 'unknown-tracked-twitter-handle',
       sourceChatId,
       sourceMessageId,
       previewText: `${payload.authorHandle || ''} ${fullText}`.trim(),
     });
-    return { ok: true, ignored: true, reason: 'invalid-twitter-format' as const };
+    return { ok: true, ignored: true, reason: 'unknown-tracked-twitter-handle' as const };
   }
 
   const createdAtMs = Number.isFinite(payload.createdAtMs) ? Math.floor(payload.createdAtMs as number) : Date.now();
   const input: UpsertTwitterTweetInput = {
     tweetId,
+    authorUserId: matchedUser.twitterUserId,
     authorHandle: normalizedAuthorHandle,
     fullText,
     createdAtMs,

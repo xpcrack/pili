@@ -183,6 +183,20 @@ export function collectTwitterUrls(message: TelegramMessageLike) {
   return Array.from(urls.values());
 }
 
+function collectStructuredTwitterUrls(text: string) {
+  const urls: string[] = [];
+  for (const line of text.replace(/\r/g, '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('🔗')) {
+      continue;
+    }
+    for (const match of trimmed.match(TWITTER_URL_PATTERN) || []) {
+      urls.push(match);
+    }
+  }
+  return urls;
+}
+
 function parseTwitterUrl(urlText: string) {
   const text = normalize(urlText);
   if (!text) {
@@ -239,13 +253,23 @@ function parseTwitterUrl(urlText: string) {
 }
 
 function findTwitterRefs(message: TelegramMessageLike) {
+  const text = getMessageText(message);
+  const structuredParsed = collectStructuredTwitterUrls(text)
+    .map((candidate) => parseTwitterUrl(candidate))
+    .filter((candidate): candidate is NonNullable<ReturnType<typeof parseTwitterUrl>> => Boolean(candidate));
   const parsed = collectTwitterUrls(message)
     .map((candidate) => parseTwitterUrl(candidate))
     .filter((candidate): candidate is NonNullable<ReturnType<typeof parseTwitterUrl>> => Boolean(candidate));
 
   return {
-    status: parsed.find((candidate) => candidate.kind === 'status') || null,
-    profile: parsed.find((candidate) => candidate.kind === 'profile') || null,
+    status:
+      structuredParsed.find((candidate) => candidate.kind === 'status') ||
+      parsed.find((candidate) => candidate.kind === 'status') ||
+      null,
+    profile:
+      structuredParsed.find((candidate) => candidate.kind === 'profile') ||
+      parsed.find((candidate) => candidate.kind === 'profile') ||
+      null,
   };
 }
 
@@ -272,25 +296,26 @@ function extractAuthorHandleFromText(text: string) {
   return '';
 }
 
+const TWITTER_CONTENT_LABEL_PATTERN = /^(?:推文内容|📝\s*推文)[:：]\s*/;
+const TWITTER_CONTENT_STOP_PATTERN =
+  /^(监控到新推文|✨监控到新推文|你关注的用户[:：]|用户所属分组[:：]|共建|X \(formerly Twitter\)|View Details\b|👤\s*原推作者[:：]|原推作者[:：]|📝\s*原推[:：]|🔗)/;
+
 function extractTwitterContent(text: string) {
   const lines = text.replace(/\r/g, '').split('\n');
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] || '';
-    if (!/^推文内容[:：]/.test(line.trim())) {
+    if (!TWITTER_CONTENT_LABEL_PATTERN.test(line.trim())) {
       continue;
     }
 
-    const firstLine = line.replace(/^推文内容[:：]\s*/, '').trimEnd();
+    const firstLine = line.replace(TWITTER_CONTENT_LABEL_PATTERN, '').trimEnd();
     const contentLines = firstLine ? [firstLine] : [];
 
     for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
       const nextLine = lines[nextIndex] || '';
       const trimmed = nextLine.trim();
-      if (!trimmed) {
-        break;
-      }
-      if (/^(监控到新推文|✨监控到新推文|你关注的用户[:：]|用户所属分组[:：]|共建|X \(formerly Twitter\)|View Details\b)/.test(trimmed)) {
+      if (TWITTER_CONTENT_STOP_PATTERN.test(trimmed)) {
         break;
       }
       contentLines.push(nextLine.trimEnd());
@@ -305,7 +330,18 @@ function extractTwitterContent(text: string) {
   return '';
 }
 
-function inferTwitterAction(content: string): 'tweet' | 'quote' | 'reply' {
+function inferTwitterAction(text: string, content: string): 'tweet' | 'quote' | 'reply' {
+  const headline = text.split(/\r?\n/)[0]?.trim() || '';
+  if (/回复了(?:\s|@|$)/.test(headline)) {
+    return 'reply';
+  }
+  if (/(?:引用推文|转推)/.test(headline)) {
+    return 'quote';
+  }
+  if (/发推/.test(headline)) {
+    return 'tweet';
+  }
+
   const trimmed = content.trim();
   if (/^RT\s*@/i.test(trimmed)) {
     return 'quote';
@@ -358,7 +394,7 @@ export function parseTwitterRelayPayload(message: TelegramMessageLike): ParsedTw
     sourceChatId,
     messageId,
     tweetId: tweetId || undefined,
-    action: inferTwitterAction(content),
+    action: inferTwitterAction(text, content),
     content,
     url: url || undefined,
     authorHandle,

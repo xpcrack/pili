@@ -565,7 +565,7 @@ async function runTradeAmountBackfillFixture() {
 async function runTwitterRelayFixtures() {
   const { POST } = await import('@/app/api/twitter/relay/route');
   const { createTrackedUser, deleteTrackedUser } = await import('@/lib/server/trackedUsersRepo');
-  const { listTwitterTweetsByIds } = await import('@/lib/server/twitterRepo');
+  const { listTwitterTweetsByIds, upsertTwitterTweets } = await import('@/lib/server/twitterRepo');
   const { getDb } = await import('@/lib/server/sqlite');
   const { readSystemConfig, saveSystemConfig } = await import('@/lib/server/systemConfigRepo');
   const previousConfig = readSystemConfig();
@@ -578,6 +578,7 @@ async function runTwitterRelayFixtures() {
     handle: 'relayuser',
     avatar: 'relayuser.png',
     twitter: 'relay_user',
+    twitterUserId: 'relay-user-id-1',
     telegram: undefined,
     addresses: [],
     totalAssetUsd: 0,
@@ -612,7 +613,68 @@ async function runTwitterRelayFixtures() {
     assert.equal(validPayload.ok, true, 'twitter relay: valid payload should pass');
     const stored = listTwitterTweetsByIds([validBody.tweetId]);
     assert.equal(stored.length, 1, 'twitter relay: tweet should be stored');
+    const relaySource = getDb()
+      .prepare(`SELECT source_json FROM twitter_tweets WHERE tweet_id = ?`)
+      .get(validBody.tweetId) as { source_json: string } | undefined;
+    assert.equal(
+      JSON.parse(relaySource?.source_json || '{}').provider,
+      'bot2bot',
+      'twitter relay: valid payload should preserve bot2bot source'
+    );
     console.log('PASS twitter-relay valid payload');
+
+    upsertTwitterTweets([
+      {
+        tweetId: validBody.tweetId,
+        authorHandle: validBody.authorHandle,
+        fullText: 'provider refresh should not erase relay source',
+        createdAtMs: validBody.createdAtMs,
+        lane: 'timeline',
+        source: { provider: 'xread' },
+      },
+    ]);
+    const preservedRelaySource = getDb()
+      .prepare(`SELECT author_user_id, source_json FROM twitter_tweets WHERE tweet_id = ?`)
+      .get(validBody.tweetId) as { author_user_id: string | null; source_json: string } | undefined;
+    assert.equal(
+      JSON.parse(preservedRelaySource?.source_json || '{}').provider,
+      'bot2bot',
+      'twitter relay: provider refresh should not erase bot2bot source'
+    );
+    assert.equal(
+      preservedRelaySource?.author_user_id,
+      'relay-user-id-1',
+      'twitter relay: provider refresh should not erase author user id'
+    );
+    console.log('PASS twitter-relay source preservation');
+
+    const quoteBody = {
+      ...validBody,
+      messageId: 2,
+      tweetId: '2050000000000000004',
+      action: 'quote',
+      content: 'quoted relay content',
+      url: 'https://x.com/relay_user/status/2050000000000000004',
+    };
+    const quoteRequest = new Request('http://localhost:3005/api/twitter/relay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.TWITTER_RELAY_INGEST_TOKEN}`,
+      },
+      body: JSON.stringify(quoteBody),
+    });
+
+    const quoteResponse = await POST(quoteRequest as never);
+    const quotePayload = await quoteResponse.json();
+    assert.equal(quotePayload.ok, true, 'twitter relay: quote payload should pass');
+    const quoteEvent = getDb()
+      .prepare(`SELECT activity_json FROM events WHERE tweet_id = ?`)
+      .get(quoteBody.tweetId) as { activity_json: string } | undefined;
+    const quoteActivity = JSON.parse(quoteEvent?.activity_json || '{}') as Activity;
+    assert.equal(quoteActivity.title, '引用推文', 'twitter relay: quote action should project as quote');
+    assert.equal(quoteActivity.metadata.tweetKind, 'quote', 'twitter relay: quote action should set tweet kind');
+    console.log('PASS twitter-relay quote projection');
 
     const duplicateRequest = new Request('http://localhost:3005/api/twitter/relay', {
       method: 'POST',
@@ -681,15 +743,19 @@ async function runTwitterRelayFixtures() {
       body: JSON.stringify({
         ...validBody,
         tweetId: '2050000000000000003',
-        authorHandle: 'unknown_fixture_user',
-        url: 'https://x.com/unknown_fixture_user/status/2050000000000000003',
+        authorHandle: 'unknown_user',
+        url: 'https://x.com/unknown_user/status/2050000000000000003',
       }),
     });
 
     const unknownHandleResponse = await POST(unknownHandleRequest as never);
     const unknownHandlePayload = await unknownHandleResponse.json();
     assert.equal(unknownHandlePayload.ignored, true, 'twitter relay: unknown handle should be ignored');
-    assert.equal(unknownHandlePayload.reason, 'invalid-twitter-format', 'twitter relay: unknown handle reason mismatch');
+    assert.equal(
+      unknownHandlePayload.reason,
+      'unknown-tracked-twitter-handle',
+      'twitter relay: unknown handle reason mismatch'
+    );
     console.log('PASS twitter-relay unknown-handle');
   } finally {
     saveSystemConfig(previousConfig);

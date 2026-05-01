@@ -14,6 +14,8 @@ export interface TrackedTwitterUser {
   name: string;
   handle: string;
   twitterHandle: string;
+  twitterUserId: string | null;
+  twitterAvatarUrl: string | null;
 }
 
 export interface TwitterCursor {
@@ -28,6 +30,7 @@ export interface TwitterCursor {
 
 export interface UpsertTwitterTweetInput {
   tweetId: string;
+  authorUserId?: string;
   authorHandle: string;
   authorName?: string;
   fullText: string;
@@ -45,6 +48,7 @@ export interface UpsertTwitterTweetInput {
 
 export interface StoredTwitterTweet {
   tweetId: string;
+  authorUserId: string | null;
   authorHandle: string;
   authorName: string | null;
   fullText: string;
@@ -57,6 +61,7 @@ export interface StoredTwitterTweet {
   retweetCount: number;
   likeCount: number;
   viewCount: number;
+  sourceJson: string;
 }
 
 export interface TwitterLatestTweetSnapshot {
@@ -119,6 +124,7 @@ function safeJsonStringify(value: unknown) {
 function parseRowTweet(row: Record<string, unknown>): StoredTwitterTweet {
   return {
     tweetId: String(row.tweet_id || ''),
+    authorUserId: row.author_user_id ? String(row.author_user_id) : null,
     authorHandle: String(row.author_handle || ''),
     authorName: row.author_name ? String(row.author_name) : null,
     fullText: String(row.full_text || ''),
@@ -131,6 +137,7 @@ function parseRowTweet(row: Record<string, unknown>): StoredTwitterTweet {
     retweetCount: Number(row.metrics_retweet_count || 0),
     likeCount: Number(row.metrics_like_count || 0),
     viewCount: Number(row.metrics_view_count || 0),
+    sourceJson: typeof row.source_json === 'string' ? row.source_json : '{}',
   };
 }
 
@@ -138,7 +145,7 @@ export function listTrackedTwitterUsers() {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT id, name, handle, twitter
+      `SELECT id, name, handle, twitter, twitter_user_id, twitter_avatar_url
        FROM tracked_users
        WHERE twitter IS NOT NULL
        ORDER BY updated_at DESC, created_at DESC`
@@ -148,6 +155,8 @@ export function listTrackedTwitterUsers() {
     name: string;
     handle: string;
     twitter: string | null;
+    twitter_user_id: string | null;
+    twitter_avatar_url: string | null;
   }>;
 
   return rows
@@ -161,6 +170,8 @@ export function listTrackedTwitterUsers() {
         name: row.name,
         handle: row.handle,
         twitterHandle: normalize(twitterHandle),
+        twitterUserId: row.twitter_user_id?.trim() || null,
+        twitterAvatarUrl: row.twitter_avatar_url?.trim() || null,
       } satisfies TrackedTwitterUser;
     })
     .filter((row): row is TrackedTwitterUser => Boolean(row));
@@ -421,6 +432,7 @@ export function upsertTwitterTweets(tweets: UpsertTwitterTweetInput[]) {
     const upsertTweetStmt = db.prepare(
       `INSERT INTO twitter_tweets (
          tweet_id,
+         author_user_id,
          author_handle,
          author_name,
          full_text,
@@ -437,8 +449,9 @@ export function upsertTwitterTweets(tweets: UpsertTwitterTweetInput[]) {
          first_seen_at_ms,
          last_seen_at_ms,
          updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(tweet_id) DO UPDATE SET
+         author_user_id = COALESCE(excluded.author_user_id, twitter_tweets.author_user_id),
          author_handle = excluded.author_handle,
          author_name = excluded.author_name,
          full_text = excluded.full_text,
@@ -451,7 +464,16 @@ export function upsertTwitterTweets(tweets: UpsertTwitterTweetInput[]) {
          metrics_retweet_count = excluded.metrics_retweet_count,
          metrics_like_count = excluded.metrics_like_count,
          metrics_view_count = excluded.metrics_view_count,
-         source_json = excluded.source_json,
+         source_json = CASE
+           WHEN json_valid(twitter_tweets.source_json)
+            AND json_extract(twitter_tweets.source_json, '$.provider') = 'bot2bot'
+            AND NOT (
+              json_valid(excluded.source_json)
+              AND json_extract(excluded.source_json, '$.provider') = 'bot2bot'
+            )
+           THEN twitter_tweets.source_json
+           ELSE excluded.source_json
+         END,
          last_seen_at_ms = excluded.last_seen_at_ms,
          updated_at_ms = excluded.updated_at_ms`
     );
@@ -483,6 +505,7 @@ export function upsertTwitterTweets(tweets: UpsertTwitterTweetInput[]) {
       seenTweetIds.add(tweetId);
       upsertTweetStmt.run(
         tweetId,
+        tweet.authorUserId?.trim() || null,
         authorHandle,
         tweet.authorName?.trim() || null,
         fullText,
@@ -559,9 +582,10 @@ export function listTwitterTweetsByIds(tweetIds: string[]) {
   const placeholders = uniqueIds.map(() => '?').join(',');
   const rows = db
     .prepare(
-      `SELECT tweet_id, author_handle, author_name, full_text, created_at_ms, lane,
+      `SELECT tweet_id, author_user_id, author_handle, author_name, full_text, created_at_ms, lane,
               conversation_id, in_reply_to_tweet_id, quoted_tweet_id,
-              metrics_reply_count, metrics_retweet_count, metrics_like_count, metrics_view_count
+              metrics_reply_count, metrics_retweet_count, metrics_like_count, metrics_view_count,
+              source_json
        FROM twitter_tweets
        WHERE tweet_id IN (${placeholders})`
     )
@@ -572,20 +596,37 @@ export function listTwitterTweetsByIds(tweetIds: string[]) {
 
 export function listTwitterTweetsByAuthorAndWindow(options: {
   authorHandle: string;
+  authorUserId?: string | null;
   sinceMs: number;
 }) {
   const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT tweet_id, author_handle, author_name, full_text, created_at_ms, lane,
-              conversation_id, in_reply_to_tweet_id, quoted_tweet_id,
-              metrics_reply_count, metrics_retweet_count, metrics_like_count, metrics_view_count
-       FROM twitter_tweets
-       WHERE author_handle = ?
-         AND created_at_ms >= ?
-       ORDER BY created_at_ms DESC, tweet_id DESC`
-    )
-    .all(normalize(options.authorHandle), options.sinceMs) as Array<Record<string, unknown>>;
+  const authorUserId = options.authorUserId?.trim() || '';
+  const authorHandle = normalize(options.authorHandle);
+  const rows = authorUserId
+    ? (db
+        .prepare(
+          `SELECT tweet_id, author_user_id, author_handle, author_name, full_text, created_at_ms, lane,
+                  conversation_id, in_reply_to_tweet_id, quoted_tweet_id,
+                  metrics_reply_count, metrics_retweet_count, metrics_like_count, metrics_view_count,
+                  source_json
+           FROM twitter_tweets
+           WHERE (author_user_id = ? OR author_handle = ?)
+             AND created_at_ms >= ?
+           ORDER BY created_at_ms DESC, tweet_id DESC`
+        )
+        .all(authorUserId, authorHandle, options.sinceMs) as Array<Record<string, unknown>>)
+    : (db
+        .prepare(
+          `SELECT tweet_id, author_user_id, author_handle, author_name, full_text, created_at_ms, lane,
+                  conversation_id, in_reply_to_tweet_id, quoted_tweet_id,
+                  metrics_reply_count, metrics_retweet_count, metrics_like_count, metrics_view_count,
+                  source_json
+           FROM twitter_tweets
+           WHERE author_handle = ?
+             AND created_at_ms >= ?
+           ORDER BY created_at_ms DESC, tweet_id DESC`
+        )
+        .all(authorHandle, options.sinceMs) as Array<Record<string, unknown>>);
 
   return rows.map(parseRowTweet);
 }
@@ -598,7 +639,9 @@ export function listTwitterTweetsForReconcile(options: { userId?: string | null;
         .prepare(
           `SELECT t.tweet_id
            FROM twitter_tweets t
-           INNER JOIN tracked_users u ON lower(u.twitter) = t.author_handle
+           INNER JOIN tracked_users u
+             ON (u.twitter_user_id IS NOT NULL AND u.twitter_user_id != '' AND u.twitter_user_id = t.author_user_id)
+             OR lower(u.twitter) = t.author_handle
            LEFT JOIN activity_feed f ON f.activity_key = ('twitter:' || t.tweet_id)
            WHERE u.id = ?
              AND t.created_at_ms >= ?
@@ -609,7 +652,9 @@ export function listTwitterTweetsForReconcile(options: { userId?: string | null;
         .prepare(
           `SELECT t.tweet_id
            FROM twitter_tweets t
-           INNER JOIN tracked_users u ON lower(u.twitter) = t.author_handle
+           INNER JOIN tracked_users u
+             ON (u.twitter_user_id IS NOT NULL AND u.twitter_user_id != '' AND u.twitter_user_id = t.author_user_id)
+             OR lower(u.twitter) = t.author_handle
            LEFT JOIN activity_feed f ON f.activity_key = ('twitter:' || t.tweet_id)
            WHERE t.created_at_ms >= ?
              AND f.id IS NULL`

@@ -34,6 +34,20 @@ function uniqStrings(values: Array<string | null>) {
   return result;
 }
 
+function readRelayAction(sourceJson: string): 'tweet' | 'quote' | 'reply' | null {
+  try {
+    const source = JSON.parse(sourceJson || '{}') as { provider?: unknown; action?: unknown };
+    if (source.provider !== 'bot2bot') {
+      return null;
+    }
+    return source.action === 'reply' || source.action === 'quote' || source.action === 'tweet'
+      ? source.action
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function toActivity(
   tweet: StoredTwitterTweet,
   user: User,
@@ -42,8 +56,9 @@ function toActivity(
     mentions?: StoredTwitterTweetTokenMention[];
   }
 ): Activity {
-  const isReply = tweet.lane === 'replies' || Boolean(tweet.replyToTweetId);
-  const isQuote = !isReply && Boolean(tweet.quoteTweetId);
+  const relayAction = readRelayAction(tweet.sourceJson);
+  const isReply = relayAction === 'reply' || tweet.lane === 'replies' || Boolean(tweet.replyToTweetId);
+  const isQuote = !isReply && (relayAction === 'quote' || Boolean(tweet.quoteTweetId));
   const tweetKind: Activity['metadata']['tweetKind'] = isReply ? 'reply' : isQuote ? 'quote' : 'tweet';
   const title = isReply ? '回复推文' : isQuote ? '引用推文' : '发布推文';
   const enrichment = options.enrichment || null;
@@ -143,8 +158,13 @@ export function projectTwitterTweetsToFeed(options: {
   tweetIds?: string[];
 }) {
   const users = listTrackedUsers();
+  const userByTwitterUserId = new Map<string, User>();
   const userByTwitter = new Map<string, User>();
   for (const user of users) {
+    const twitterUserId = (user.twitterUserId || '').trim();
+    if (twitterUserId) {
+      userByTwitterUserId.set(twitterUserId, user);
+    }
     const twitterHandle = normalizeTwitterHandle(user.twitter || '');
     if (!twitterHandle) {
       continue;
@@ -167,6 +187,7 @@ export function projectTwitterTweetsToFeed(options: {
           }
           return listTwitterTweetsByAuthorAndWindow({
             authorHandle: twitterHandle,
+            authorUserId: user.twitterUserId || null,
             sinceMs: options.sinceMs,
           });
         });
@@ -183,7 +204,9 @@ export function projectTwitterTweetsToFeed(options: {
 
   const upsertRows: Array<{ user: User; activity: Activity }> = [];
   for (const tweet of tweetCandidates) {
-    const matchedUser = userByTwitter.get(normalize(tweet.authorHandle));
+    const matchedUser =
+      (tweet.authorUserId ? userByTwitterUserId.get(tweet.authorUserId) : null) ||
+      userByTwitter.get(normalize(tweet.authorHandle));
     if (!matchedUser) {
       continue;
     }
