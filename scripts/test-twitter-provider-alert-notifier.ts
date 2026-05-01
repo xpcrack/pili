@@ -6,6 +6,7 @@ import {
   buildTwitterProviderFailureAlertMessage,
   notifyTwitterProviderFailures,
 } from '@/lib/server/twitterProviderAlertNotifier';
+import type { TwitterFetcherProvider } from '@/lib/server/twitterFetcher';
 
 async function run() {
   const baseInput = {
@@ -16,7 +17,7 @@ async function run() {
         userName: '孙哥',
         handle: '0xsunnft',
         lane: 'replies' as const,
-        providerChain: ['6551', 'xread'],
+        providerChain: ['6551', 'xread'] as TwitterFetcherProvider[],
       },
     ],
   };
@@ -27,6 +28,8 @@ async function run() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: null,
+      twitterRelayCoveredPollingIntervalMinutes: 360,
+      twitterUncoveredPollingIntervalMinutes: 30,
     }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: () => {},
@@ -41,6 +44,8 @@ async function run() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: '-100',
+      twitterRelayCoveredPollingIntervalMinutes: 360,
+      twitterUncoveredPollingIntervalMinutes: 30,
     }),
     isQuotaAvailable: () => false,
     markQuotaConsumed: () => {},
@@ -57,6 +62,8 @@ async function run() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: '-100',
+      twitterRelayCoveredPollingIntervalMinutes: 360,
+      twitterUncoveredPollingIntervalMinutes: 30,
     }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: (key) => {
@@ -81,6 +88,8 @@ async function run() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: '-100',
+      twitterRelayCoveredPollingIntervalMinutes: 360,
+      twitterUncoveredPollingIntervalMinutes: 30,
     }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: () => {},

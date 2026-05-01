@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS tracked_users (
   handle TEXT NOT NULL,
   avatar TEXT NOT NULL,
   twitter TEXT,
+  twitter_user_id TEXT,
+  twitter_avatar_url TEXT,
   telegram TEXT,
   tags_json TEXT NOT NULL DEFAULT '[]',
   total_asset_usd REAL NOT NULL DEFAULT 0,
@@ -359,6 +361,7 @@ ON activity_feed(timestamp DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS twitter_tweets (
   tweet_id TEXT PRIMARY KEY,
+  author_user_id TEXT,
   author_handle TEXT NOT NULL,
   author_name TEXT,
   full_text TEXT NOT NULL,
@@ -436,6 +439,7 @@ CREATE TABLE IF NOT EXISTS twitter_identity_cache (
   provider TEXT NOT NULL,
   user_id TEXT,
   username TEXT,
+  avatar_url TEXT,
   resolved_at_ms INTEGER NOT NULL,
   expires_at_ms INTEGER,
   last_error TEXT,
@@ -868,6 +872,7 @@ function initializeDb(db: Database.Database) {
   ensureTelegramMonitorEventColumns(db);
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
+  ensureTwitterIdentityColumns(db);
   ensureEventsFtsIndexing(db);
   migrateLegacyJudgments(db);
   initialized = true;
@@ -1024,6 +1029,17 @@ function ensureActivityJudgmentColumns(db: Database.Database) {
 
 function ensureTwitterSyncCursorColumns(db: Database.Database) {
   ensureColumn(db, 'twitter_sync_cursor', 'covered_since_ms', 'INTEGER');
+}
+
+function ensureTwitterIdentityColumns(db: Database.Database) {
+  ensureColumn(db, 'tracked_users', 'twitter_user_id', 'TEXT');
+  ensureColumn(db, 'tracked_users', 'twitter_avatar_url', 'TEXT');
+  ensureColumn(db, 'twitter_tweets', 'author_user_id', 'TEXT');
+  ensureColumn(db, 'twitter_identity_cache', 'avatar_url', 'TEXT');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_twitter_tweets_author_user_created
+     ON twitter_tweets(author_user_id, created_at_ms DESC)`
+  );
 }
 
 export function getDb() {

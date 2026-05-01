@@ -773,6 +773,7 @@ function logProviderFailure(provider: 'opencli' | 'dokobot', context: string, er
 function toUpsertTwitterTweet(tweet: StructuredTwitterTweet, lane: TwitterLane): UpsertTwitterTweetInput {
   return {
     tweetId: tweet.tweetId,
+    authorUserId: tweet.authorId,
     authorHandle: normalize(tweet.authorHandle),
     authorName: tweet.authorName,
     fullText: tweet.fullText,
@@ -789,9 +790,19 @@ function toUpsertTwitterTweet(tweet: StructuredTwitterTweet, lane: TwitterLane):
   };
 }
 
-function filterStructuredUserTweets(tweets: StructuredTwitterTweet[], handle: string, lane: TwitterLane) {
+function filterStructuredUserTweets(
+  tweets: StructuredTwitterTweet[],
+  handle: string,
+  lane: TwitterLane,
+  authorUserId?: string | null
+) {
+  const normalizedAuthorUserId = (authorUserId || '').trim();
   return tweets
-    .filter((tweet) => normalize(tweet.authorHandle) === handle)
+    .filter((tweet) =>
+      normalizedAuthorUserId
+        ? tweet.authorId === normalizedAuthorUserId || normalize(tweet.authorHandle) === handle
+        : normalize(tweet.authorHandle) === handle
+    )
     .filter((tweet) => (lane === 'replies' ? Boolean(tweet.replyToTweetId) : !tweet.replyToTweetId));
 }
 
@@ -1033,7 +1044,7 @@ export function createTwitterFetcher(
                 lane: params.lane,
                 maxResults: params.maxItems,
               });
-              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane);
+              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane, resolvedUserId);
               dependencies.markProviderSuccess({
                 provider: '6551',
                 credentialId: item.credentialId,
@@ -1084,7 +1095,7 @@ export function createTwitterFetcher(
                 lane: params.lane,
                 maxResults: params.maxItems,
               });
-              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane);
+              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane, resolvedUserId);
               attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({

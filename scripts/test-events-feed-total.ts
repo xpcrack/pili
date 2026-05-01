@@ -500,6 +500,62 @@ function run() {
     now
   );
 
+  insert.run(
+    'test-feed-total:6',
+    'test-source',
+    'transfer',
+    now - 4500,
+    userId2,
+    'Profit',
+    'ethereum',
+    '0xprofit',
+    'upegstr opening trade',
+    null,
+    'buy',
+    'UPEGSTR',
+    null,
+    '0xtx6',
+    'test-source',
+    'test-feed-total:6',
+    JSON.stringify({
+      token: 'UPEGSTR',
+      chain: 'ethereum',
+      tokenAddress: '0xupegstr',
+      trackedAddress: '0xprofit',
+      txHash: '0xtx6',
+      txAction: 'buy',
+    }),
+    '{}',
+    makeUser(userId2, 'Profit'),
+    makeActivity('test-feed-total-a6', userId2, 'blockchain', 'UPEGSTR', 'upegstr opening trade', {
+      tokenAddress: '0xupegstr',
+      trackedAddress: '0xprofit',
+      txHash: '0xtx6',
+      txAction: 'buy',
+    }),
+    now,
+    now,
+    now
+  );
+  insertFeed.run(
+    userId2,
+    'test-feed-total:6',
+    now - 4500,
+    '0xtx6',
+    'ethereum',
+    '0xprofit',
+    'blockchain',
+    'transfer',
+    makeUser(userId2, 'Profit'),
+    makeActivity('test-feed-total-a6', userId2, 'blockchain', 'UPEGSTR', 'upegstr opening trade', {
+      tokenAddress: '0xupegstr',
+      trackedAddress: '0xprofit',
+      txHash: '0xtx6',
+      txAction: 'buy',
+    }),
+    now
+  );
+
   const filteredBySourceAndUser = readEventsFeed({
     limit: 50,
     source: 'test-source',
@@ -649,6 +705,17 @@ function run() {
     filteredByMentionedTokenAddress.feed.some((item) => item.activity.metadata.tweetId === 'tweet-test-5'),
     true,
     'search should match enrichment-only mentioned token addresses for twitter activities'
+  );
+
+  const filteredByTokenPrefix = readEventsFeed({
+    limit: 50,
+    source: 'test-source',
+    q: 'upeg',
+  });
+  assert.equal(
+    filteredByTokenPrefix.feed.some((item) => item.activity.metadata.token === 'UPEGSTR'),
+    true,
+    'plain token search should match token prefixes such as UPEGSTR'
   );
 
   const filteredByChainAndSearch = readEventsFeed({

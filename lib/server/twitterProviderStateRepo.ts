@@ -7,6 +7,7 @@ export interface TwitterIdentityCacheRow {
   provider: string;
   userId: string | null;
   username: string | null;
+  avatarUrl: string | null;
   resolvedAtMs: number;
   expiresAtMs: number | null;
   lastError: string | null;
@@ -48,6 +49,7 @@ export function readTwitterIdentityCache(handle: string): TwitterIdentityCacheRo
          provider,
          user_id,
          username,
+         avatar_url,
          resolved_at_ms,
          expires_at_ms,
          last_error,
@@ -62,6 +64,7 @@ export function readTwitterIdentityCache(handle: string): TwitterIdentityCacheRo
         provider: string;
         user_id: string | null;
         username: string | null;
+        avatar_url: string | null;
         resolved_at_ms: number;
         expires_at_ms: number | null;
         last_error: string | null;
@@ -82,6 +85,7 @@ export function readTwitterIdentityCache(handle: string): TwitterIdentityCacheRo
     provider: row.provider,
     userId: row.user_id,
     username: row.username,
+    avatarUrl: row.avatar_url,
     resolvedAtMs: row.resolved_at_ms,
     expiresAtMs: row.expires_at_ms,
     lastError: row.last_error,
@@ -94,6 +98,7 @@ export function upsertTwitterIdentityCache(input: {
   provider: string;
   userId: string | null;
   username: string | null;
+  avatarUrl?: string | null;
   expiresAtMs: number | null;
   lastError: string | null;
 }) {
@@ -105,15 +110,17 @@ export function upsertTwitterIdentityCache(input: {
        provider,
        user_id,
        username,
+       avatar_url,
        resolved_at_ms,
        expires_at_ms,
        last_error,
        updated_at_ms
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(handle) DO UPDATE SET
        provider = excluded.provider,
        user_id = excluded.user_id,
        username = excluded.username,
+       avatar_url = excluded.avatar_url,
        resolved_at_ms = excluded.resolved_at_ms,
        expires_at_ms = excluded.expires_at_ms,
        last_error = excluded.last_error,
@@ -123,6 +130,7 @@ export function upsertTwitterIdentityCache(input: {
     input.provider,
     input.userId,
     input.username,
+    input.avatarUrl || null,
     now,
     input.expiresAtMs,
     input.lastError,

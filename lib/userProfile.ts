@@ -42,9 +42,13 @@ export function buildUserAvatar(handle: string, twitter?: string, avatar?: strin
   return buildFallbackAvatar(handle);
 }
 
-export function getUserAvatar(user: Pick<User, 'handle' | 'twitter' | 'avatar'>) {
+export function getUserAvatar(user: Pick<User, 'handle' | 'twitter' | 'avatar' | 'twitterAvatarUrl'>) {
   if (typeof user.avatar === 'string' && user.avatar.trim()) {
     return user.avatar.trim();
+  }
+
+  if ('twitterAvatarUrl' in user && typeof user.twitterAvatarUrl === 'string' && user.twitterAvatarUrl.trim()) {
+    return user.twitterAvatarUrl.trim();
   }
 
   if (user.twitter) {

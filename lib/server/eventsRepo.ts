@@ -106,7 +106,7 @@ function parseQueryTerms(q: string) {
 
   if (terms.length === 0) return null;
   return terms
-    .map((term) => `"${term.replace(/"/g, '""')}"`)
+    .map((term) => `"${term.replace(/"/g, '""')}"*`)
     .join(' AND ');
 }
 
