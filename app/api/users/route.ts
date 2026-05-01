@@ -7,6 +7,10 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import {
+  mergeTwitterIdentityIntoUser,
+  resolveTwitterIdentityForHandle,
+} from '@/lib/server/twitterIdentityService';
 import { listTwitterRelayCoverageByHandles } from '@/lib/server/twitterRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { type User } from '@/types';
@@ -57,12 +61,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: '用户参数无效' }, { status: 400 });
     }
 
-    const source = users[0];
+    const source = mergeTwitterIdentityIntoUser(
+      users[0],
+      await resolveTwitterIdentityForHandle(users[0].twitter)
+    );
     const created = createTrackedUser({
       name: source.name,
       handle: source.handle,
       avatar: source.avatar,
       twitter: source.twitter,
+      twitterUserId: source.twitterUserId,
+      twitterAvatarUrl: source.twitterAvatarUrl,
       telegram: source.telegram,
       addresses: source.addresses,
       totalAssetUsd: source.totalAssetUsd,

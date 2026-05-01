@@ -23,6 +23,7 @@ import {
   formatCompactMarketCap,
   formatDisplayTradeAmount,
   getTradeHeadlineDisplayText,
+  isTradeDisplayAction,
   normalizeDisplayTradeAmountText,
   type TradeValueDisplayMode,
 } from '@/lib/tradeDisplay';
@@ -215,9 +216,7 @@ export function ActivityCard({
     Boolean(activity.metadata.quoteAmount) &&
     Boolean(quoteToken) &&
     (activity.metadata.txAction === 'sell' || activity.metadata.txAction === 'buy');
-  const isTradeAction =
-    activity.metadata.txAction === 'buy' ||
-    activity.metadata.txAction === 'sell';
+  const isTradeAction = isTradeDisplayAction(activity.metadata);
   const tradeAmountUsdAtTx =
     typeof activity.metadata.tradeAmountUsdAtTx === 'number' &&
     Number.isFinite(activity.metadata.tradeAmountUsdAtTx) &&

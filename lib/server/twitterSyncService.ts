@@ -30,6 +30,7 @@ import {
 } from '@/lib/server/twitterRepo';
 import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
 import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
+import { updateTrackedUser } from '@/lib/server/trackedUsersRepo';
 import { collectTwitterStatusUrls, upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 import {
@@ -505,6 +506,18 @@ async function runSyncAction(options: {
         });
       }
       const laneTweets = dedupeLaneTweets(fetched.tweets, lane);
+      const currentIdentityTweet = user.twitterUserId
+        ? laneTweets.find(
+            (tweet) =>
+              tweet.authorUserId === user.twitterUserId &&
+              tweet.authorHandle &&
+              tweet.authorHandle !== user.twitterHandle
+          )
+        : null;
+      if (currentIdentityTweet) {
+        updateTrackedUser(user.id, { twitter: currentIdentityTweet.authorHandle });
+        user.twitterHandle = currentIdentityTweet.authorHandle;
+      }
 
       for (const tweet of laneTweets) {
         knownTweetIds.add(tweet.tweetId);

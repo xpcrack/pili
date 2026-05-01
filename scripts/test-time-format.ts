@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
 import {
   getTradeHeadlineDisplayText,
+  isTradeDisplayAction,
   normalizeTradeValueDisplayMode,
 } from '@/lib/tradeDisplay';
 import {
@@ -120,6 +121,24 @@ function run() {
     }),
     '金额未知',
     'usd mode should surface unknown trade amounts when usd data is missing'
+  );
+
+  assert.equal(
+    isTradeDisplayAction({ txActionVariant: 'open' }),
+    true,
+    'activity cards should treat monitor action variants as trade actions for USD display'
+  );
+
+  assert.equal(
+    isTradeDisplayAction({ displayActionVariantLabel: '清仓' }),
+    true,
+    'activity cards should treat monitor display action labels as trade actions for USD display'
+  );
+
+  assert.equal(
+    isTradeDisplayAction({ txAction: 'send', displayActionVariantLabel: '发送' }),
+    false,
+    'activity cards should not apply trade USD display to pure sends'
   );
 
   console.log('time format tests: ok');

@@ -87,6 +87,8 @@ export interface User {
   currentChainAssetTotal?: number;
   historicalMaxChainAssetTotal?: number;
   twitter?: string;
+  twitterUserId?: string;
+  twitterAvatarUrl?: string;
   telegram?: string;
   addresses: AddressInfo[];
   totalAssetUsd: number;

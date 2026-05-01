@@ -61,6 +61,8 @@ export function sanitizeUsersPayload(value: unknown): User[] {
         handle: candidate.handle,
         avatar: candidate.avatar,
         twitter: typeof candidate.twitter === 'string' ? candidate.twitter : undefined,
+        twitterUserId: typeof candidate.twitterUserId === 'string' ? candidate.twitterUserId : undefined,
+        twitterAvatarUrl: typeof candidate.twitterAvatarUrl === 'string' ? candidate.twitterAvatarUrl : undefined,
         telegram: typeof candidate.telegram === 'string' ? candidate.telegram : undefined,
         tags: Array.isArray(candidate.tags)
           ? candidate.tags.filter((tag): tag is string => typeof tag === 'string')

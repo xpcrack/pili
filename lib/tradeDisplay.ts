@@ -21,6 +21,29 @@ export function normalizeTradeValueDisplayMode(
   return value === 'usd' ? 'usd' : 'native';
 }
 
+export function isTradeDisplayAction(
+  metadata: Pick<
+    Activity['metadata'],
+    'txAction' | 'txActionVariant' | 'txActionLabel' | 'displayActionVariantLabel'
+  >
+) {
+  if (metadata.txAction === 'buy' || metadata.txAction === 'sell') {
+    return true;
+  }
+
+  if (
+    metadata.txActionVariant === 'open' ||
+    metadata.txActionVariant === 'add' ||
+    metadata.txActionVariant === 'reduce' ||
+    metadata.txActionVariant === 'close'
+  ) {
+    return true;
+  }
+
+  const label = normalize(metadata.displayActionVariantLabel || metadata.txActionLabel);
+  return label === '建仓' || label === '加仓' || label === '减仓' || label === '清仓';
+}
+
 export function formatCompactMarketCap(marketCapUsd: number | null | undefined) {
   if (marketCapUsd === null || marketCapUsd === undefined || !Number.isFinite(marketCapUsd) || marketCapUsd <= 0) {
     return null;

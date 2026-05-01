@@ -7,6 +7,10 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import {
+  mergeTwitterIdentityIntoUser,
+  resolveTwitterIdentityForHandle,
+} from '@/lib/server/twitterIdentityService';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,7 +24,12 @@ export async function POST(request: NextRequest) {
     }
 
     const replaceExisting = body?.replaceExisting === true;
-    const result = importTrackedUsers(users, { replaceExisting });
+    const hydratedUsers = await Promise.all(
+      users.map(async (user) =>
+        mergeTwitterIdentityIntoUser(user, await resolveTwitterIdentityForHandle(user.twitter))
+      )
+    );
+    const result = importTrackedUsers(hydratedUsers, { replaceExisting });
 
     return NextResponse.json({
       ok: true,

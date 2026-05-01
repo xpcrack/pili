@@ -15,6 +15,8 @@ interface TrackedUserRow {
   handle: string;
   avatar: string;
   twitter: string | null;
+  twitter_user_id: string | null;
+  twitter_avatar_url: string | null;
   telegram: string | null;
   tags_json: string;
   total_asset_usd: number;
@@ -120,6 +122,8 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
     handle: row.handle,
     avatar: row.avatar,
     twitter: row.twitter || undefined,
+    twitterUserId: row.twitter_user_id || undefined,
+    twitterAvatarUrl: row.twitter_avatar_url || undefined,
     telegram: row.telegram || undefined,
     addresses,
     currentChainAssetTotal: totalAssetUsd,
@@ -195,6 +199,8 @@ function sanitizeUser(user: User): User {
     handle: user.handle.trim() || `user-${user.id.slice(0, 8)}`,
     avatar: user.avatar.trim(),
     twitter: user.twitter?.trim() || undefined,
+    twitterUserId: user.twitterUserId?.trim() || undefined,
+    twitterAvatarUrl: user.twitterAvatarUrl?.trim() || undefined,
     telegram: user.telegram?.trim() || undefined,
     currentChainAssetTotal: totalAssetUsd,
     historicalMaxChainAssetTotal: Math.max(totalAssetUsd, historicalMaxAssetUsd),
@@ -330,6 +336,8 @@ function upsertUserRow(user: User, now: number) {
       handle,
       avatar,
       twitter,
+      twitter_user_id,
+      twitter_avatar_url,
       telegram,
       tags_json,
       total_asset_usd,
@@ -337,12 +345,14 @@ function upsertUserRow(user: User, now: number) {
       asset_updated_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       handle = excluded.handle,
       avatar = excluded.avatar,
       twitter = excluded.twitter,
+      twitter_user_id = excluded.twitter_user_id,
+      twitter_avatar_url = excluded.twitter_avatar_url,
       telegram = excluded.telegram,
       tags_json = excluded.tags_json,
       updated_at = excluded.updated_at`
@@ -352,6 +362,8 @@ function upsertUserRow(user: User, now: number) {
     user.handle,
     user.avatar,
     user.twitter ?? null,
+    user.twitterUserId ?? null,
+    user.twitterAvatarUrl ?? null,
     user.telegram ?? null,
     JSON.stringify(user.tags),
     totalAssetUsd,
@@ -498,6 +510,8 @@ export function listTrackedUsers() {
         handle,
         avatar,
         twitter,
+        twitter_user_id,
+        twitter_avatar_url,
         telegram,
         tags_json,
         total_asset_usd,

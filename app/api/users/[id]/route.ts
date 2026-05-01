@@ -2,11 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import {
   deleteTrackedUser,
+  listTrackedUsers,
   TrackedAddressOwnershipConflictError,
   updateTrackedUser,
 } from '@/lib/server/trackedUsersRepo';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import {
+  mergeTwitterIdentityIntoUser,
+  resolveTwitterIdentityForHandle,
+} from '@/lib/server/twitterIdentityService';
+import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { type User } from '@/types';
 
 export const runtime = 'nodejs';
@@ -43,6 +49,12 @@ function sanitizeUpdatePayload(id: string, body: unknown): Partial<User> {
   if ('twitter' in candidate) {
     updates.twitter = normalizeOptionalString(candidate.twitter);
   }
+  if ('twitterUserId' in candidate) {
+    updates.twitterUserId = normalizeOptionalString(candidate.twitterUserId);
+  }
+  if ('twitterAvatarUrl' in candidate) {
+    updates.twitterAvatarUrl = normalizeOptionalString(candidate.twitterAvatarUrl);
+  }
   if ('telegram' in candidate) {
     updates.telegram = normalizeOptionalString(candidate.telegram);
   }
@@ -75,7 +87,27 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
     const updates = sanitizeUpdatePayload(id, body);
-    const updated = updateTrackedUser(id, updates);
+    const hasTwitterUpdate = Object.prototype.hasOwnProperty.call(updates, 'twitter');
+    const currentUser = hasTwitterUpdate ? listTrackedUsers().find((user) => user.id === id) || null : null;
+    const normalizedIncomingTwitter = normalizeTwitterHandle(updates.twitter || '').toLowerCase();
+    const normalizedCurrentTwitter = normalizeTwitterHandle(currentUser?.twitter || '').toLowerCase();
+    const twitterChanged = hasTwitterUpdate && normalizedIncomingTwitter !== normalizedCurrentTwitter;
+    const identity = hasTwitterUpdate && updates.twitter ? await resolveTwitterIdentityForHandle(updates.twitter) : null;
+    const resolvedUpdates =
+      hasTwitterUpdate && updates.twitter
+        ? identity
+          ? mergeTwitterIdentityIntoUser(updates, identity)
+          : twitterChanged
+            ? { ...updates, twitterUserId: undefined, twitterAvatarUrl: undefined }
+            : {
+                ...updates,
+                twitterUserId: currentUser?.twitterUserId,
+                twitterAvatarUrl: currentUser?.twitterAvatarUrl,
+              }
+        : hasTwitterUpdate
+          ? { ...updates, twitterUserId: undefined, twitterAvatarUrl: undefined }
+          : updates;
+    const updated = updateTrackedUser(id, resolvedUpdates);
 
     if (!updated) {
       return NextResponse.json({ ok: false, error: '用户不存在' }, { status: 404 });
