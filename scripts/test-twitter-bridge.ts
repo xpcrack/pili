@@ -45,6 +45,12 @@ function makeTwitterUpdate(params?: {
   } satisfies TelegramUpdateLike;
 }
 
+function makeXxyyUpdate(text: string) {
+  return makeTwitterUpdate({
+    text,
+  });
+}
+
 async function testParserHappyPath() {
   const update = makeTwitterUpdate({
     inlineUrls: ['https://x.com/corleonefnf/status/1912345678901234567'],
@@ -85,6 +91,116 @@ async function testParserRtAndReply() {
   const replyPayload = parseTwitterRelayPayload(replyUpdate.message!);
   assert.equal(replyPayload?.action, 'reply', 'reply-like content should map to reply');
   console.log('PASS twitter-bridge parser rt-reply');
+}
+
+async function testParserXxyyTweetFormat() {
+  const update = makeXxyyUpdate(
+    [
+      '[Cooker.hl | Kms.eth | 版本之子 | Cooker] 发推',
+      '📝 推文:',
+      "it's not even the same pic 😭😭",
+      '🔗 https://twitter.com/CookerFlips/status/2050077692759089323',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+
+  assert.ok(payload, 'xxyy tweet: payload should parse');
+  assert.equal(payload?.authorHandle, 'cookerflips');
+  assert.equal(payload?.tweetId, '2050077692759089323');
+  assert.equal(payload?.content, "it's not even the same pic 😭😭");
+  assert.equal(payload?.action, 'tweet');
+  console.log('PASS twitter-bridge parser xxyy-tweet');
+}
+
+async function testParserXxyyMultilineTweetFormat() {
+  const content = [
+    '这波美股上涨真给了我一点小小的震撼，看了一下之前在TradeXYZ的仓位，如果多拿半个月，到现在利润能多接近$2M。',
+    '',
+    '这个钱包最开始是为了交互TradeXYZ，大概从去年11月开始，因为听说美股主打一个长牛，所以选择了持有NDX100。',
+    '',
+    '芒格说过“鱼在哪里，就到哪里钓鱼”，选择大于努力。',
+  ].join('\n');
+  const update = makeXxyyUpdate(
+    [
+      '[0xSun] 发推',
+      '📝 推文:',
+      content,
+      '🔗 https://twitter.com/0xSunNFT/status/2050092859215470952',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+
+  assert.ok(payload, 'xxyy multiline tweet: payload should parse');
+  assert.equal(payload?.authorHandle, '0xsunnft');
+  assert.equal(payload?.tweetId, '2050092859215470952');
+  assert.equal(payload?.content, content);
+  assert.equal(payload?.action, 'tweet');
+  console.log('PASS twitter-bridge parser xxyy-multiline-tweet');
+}
+
+async function testParserXxyyReplyFormat() {
+  const update = makeXxyyUpdate(
+    [
+      '[gake] 回复了 @JazzyBearMiner',
+      '📝 推文:',
+      'Sell',
+      '👤 原推作者: @JazzyBearMiner',
+      '🔗 https://twitter.com/Ga__ke/status/2050081850602017189',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+
+  assert.ok(payload, 'xxyy reply: payload should parse');
+  assert.equal(payload?.authorHandle, 'ga__ke');
+  assert.equal(payload?.tweetId, '2050081850602017189');
+  assert.equal(payload?.content, 'Sell');
+  assert.equal(payload?.action, 'reply');
+  console.log('PASS twitter-bridge parser xxyy-reply');
+}
+
+async function testParserXxyyQuotePrefersStructuredStatusUrl() {
+  const update = makeXxyyUpdate(
+    [
+      '[LEFF] 引用推文',
+      '📝 推文:',
+      'structured link should win',
+      '👤 原推作者: @other_user',
+      '📝 原推:',
+      'original text includes https://twitter.com/other_user/status/1111111111111111111 before metadata',
+      '🔗 https://twitter.com/0xleff/status/2050081648151298115',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+
+  assert.ok(payload, 'xxyy quote structured url: payload should parse');
+  assert.equal(payload?.authorHandle, '0xleff');
+  assert.equal(payload?.tweetId, '2050081648151298115');
+  assert.equal(payload?.content, 'structured link should win');
+  assert.equal(payload?.action, 'quote');
+  console.log('PASS twitter-bridge parser xxyy-structured-url');
+}
+
+async function testParserXxyyQuoteFormat() {
+  const update = makeXxyyUpdate(
+    [
+      '[LEFF] 引用推文',
+      '📝 推文:',
+      '$uASTER ATH，这个板块的东西看起来要🔥',
+      '👤 原推作者: @0xleff',
+      '📝 原推:',
+      '$uPEG 和 ethereum:0xf280b16ef293d8e534e370794ef26bf312694126  都在涨',
+      '买了点这个 $uASTER ，UNIv4新赛道，还带着太空狗的概念',
+      '🔗 https://twitter.com/0xleff/status/2050081648151298115',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+
+  assert.ok(payload, 'xxyy quote: payload should parse');
+  assert.equal(payload?.authorHandle, '0xleff');
+  assert.equal(payload?.tweetId, '2050081648151298115');
+  assert.equal(payload?.content, '$uASTER ATH，这个板块的东西看起来要🔥');
+  assert.equal(payload?.action, 'quote');
+  console.log('PASS twitter-bridge parser xxyy-quote');
 }
 
 async function testParserMissingTweetUrl() {
@@ -185,6 +301,11 @@ async function testRoutingBehavior() {
 async function main() {
   await testParserHappyPath();
   await testParserRtAndReply();
+  await testParserXxyyTweetFormat();
+  await testParserXxyyMultilineTweetFormat();
+  await testParserXxyyReplyFormat();
+  await testParserXxyyQuotePrefersStructuredStatusUrl();
+  await testParserXxyyQuoteFormat();
   await testParserMissingTweetUrl();
   await testRoutingBehavior();
 
