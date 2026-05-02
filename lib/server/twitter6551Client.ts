@@ -182,7 +182,7 @@ export function createTwitter6551Client(fetchImpl: TwitterProviderFetch = fetch)
       const payload = await postJson(fetchImpl, `${baseUrl}/open/twitter_user_tweets`, params.apiKey, {
         username: normalizeTwitterUsername(params.username),
         includeReplies: params.lane === 'replies',
-        includeRetweets: false,
+        includeRetweets: true,
         maxResults: USER_TWEETS_MAX_RESULTS,
         product: 'Latest',
         cursor: params.cursor || undefined,
