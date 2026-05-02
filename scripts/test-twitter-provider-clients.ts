@@ -175,7 +175,7 @@ async function test6551Client() {
 
   const timelineBody = JSON.parse(String(calls[1]?.init?.body)) as Record<string, unknown>;
   assert.equal(timelineBody.includeReplies, true);
-  assert.equal(timelineBody.includeRetweets, false);
+  assert.equal(timelineBody.includeRetweets, true);
   assert.equal(timelineBody.maxResults, 100);
   assert.equal(timelineBody.product, 'Latest');
   assert.equal(timelineBody.cursor, 'cursor-1');
