@@ -1,3 +1,5 @@
+import type { ActivityImportance } from '@/lib/activityImportance';
+
 export type ActivitySource = 'twitter' | 'telegram' | 'blockchain';
 export type ActivityType = 'post' | 'transfer' | 'swap' | 'nft_trade' | 'mint';
 
@@ -179,6 +181,7 @@ export interface Activity {
     mergedTradeCount?: number;
     mergedTradeWindowMs?: number;
     mergedTradeAverageMarketCapUsd?: number | null;
+    importance?: ActivityImportance;
   };
 }
 
