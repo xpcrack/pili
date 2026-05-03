@@ -1,5 +1,6 @@
 import 'server-only';
 
+import type { Activity } from '@/types';
 import { getDb } from '@/lib/server/sqlite';
 
 function normalize(value: string | null | undefined) {
@@ -16,6 +17,17 @@ function normalizeMessageLinks(input: string[] | null | undefined) {
     links.push(normalized);
   }
   return links;
+}
+
+function parseJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 export interface UpsertTelegramMonitorEventInput {
@@ -226,6 +238,7 @@ interface TelegramFeedRow {
   event_time_ms: number | null;
   raw_text: string | null;
   message_links_json: string | null;
+  projected_activity_json: string | null;
   updated_at: number;
 }
 
@@ -275,6 +288,7 @@ function mapTelegramFeedRow(row: TelegramFeedRow): TelegramMonitorFeedEvent {
         return [] as string[];
       }
     })(),
+    projectedActivity: parseJson<Activity | null>(row.projected_activity_json, null),
     updatedAt: row.updated_at,
   } satisfies TelegramMonitorFeedEvent;
 }
@@ -300,7 +314,32 @@ export interface TelegramMonitorFeedEvent {
   eventTimeMs: number;
   rawText: string | null;
   messageLinks?: string[];
+  projectedActivity?: Activity | null;
   updatedAt: number;
+}
+
+export function updateTelegramMonitorEventProjectedActivity(input: {
+  sourceChatId: string | null;
+  sourceMessageId: number | null;
+  txHash: string | null;
+  activity: Activity;
+}) {
+  const db = getDb();
+  db.prepare(
+    `UPDATE telegram_monitor_events
+     SET projected_activity_json = ?,
+         updated_at = ?
+     WHERE provider = 'xxyy'
+       AND source_chat_id IS ?
+       AND source_message_id IS ?
+       AND tx_hash IS ?`
+  ).run(
+    JSON.stringify(input.activity),
+    Date.now(),
+    input.sourceChatId,
+    input.sourceMessageId,
+    input.txHash
+  );
 }
 
 export interface ListTelegramMonitorEventsOptions {
@@ -367,6 +406,7 @@ export function listTelegramMonitorEvents(options?: ListTelegramMonitorEventsOpt
          event_time_ms,
          raw_text,
          message_links_json,
+         projected_activity_json,
          updated_at
        FROM telegram_monitor_events
        WHERE ${clauses.join(' AND ')}
@@ -424,6 +464,7 @@ export function listRecentTelegramMonitorFallbackEventsWithoutTxState(limit = 20
          e.event_time_ms,
          e.raw_text,
          e.message_links_json,
+         e.projected_activity_json,
          e.updated_at
        FROM telegram_monitor_events e
        WHERE e.provider = 'xxyy'
