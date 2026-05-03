@@ -11,6 +11,7 @@ import {
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import {
   claimTelegramMonitorTxStatesForRepair,
   getTelegramMonitorTxState,
@@ -155,15 +156,17 @@ function persistReconciledMonitorActivity(params: {
     walletGroupLabel: params.state.provisionalWalletGroupLabel,
     walletAliasLabel: params.state.provisionalWalletAliasLabel,
   });
+  const [scoredCanonical] = scoreFeedRowsAgainstDatabase([{ user: params.user, activity }]);
+  const canonicalForWrite = scoredCanonical || { user: params.user, activity };
 
   markTelegramMonitorTxStateReconciled({
     chain: params.state.chain,
     trackedWalletAddress: params.state.trackedWalletAddress,
     txHash: params.state.txHash,
-    activity,
+    activity: canonicalForWrite.activity,
     source: params.source,
   });
-  upsertEventsFromFeedRows([{ user: params.user, activity }], 'telegram-monitor-reconcile');
+  upsertEventsFromFeedRows([canonicalForWrite], 'telegram-monitor-reconcile');
 
   return {
     ok: true,

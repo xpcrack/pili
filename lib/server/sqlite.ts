@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS telegram_monitor_events (
   raw_text TEXT NOT NULL DEFAULT '',
   message_links_json TEXT NOT NULL DEFAULT '[]',
   payload_json TEXT NOT NULL DEFAULT '{}',
+  projected_activity_json TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(provider, source_chat_id, source_message_id)
@@ -906,6 +907,7 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
   ensureColumn(db, 'telegram_monitor_events', 'action_label', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'action_variant', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'message_links_json', 'TEXT', "'[]'");
+  ensureColumn(db, 'telegram_monitor_events', 'projected_activity_json', 'TEXT');
   ensureColumn(db, 'telegram_monitor_tx_states', 'repair_claimed_at', 'INTEGER');
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair_claim

@@ -2,6 +2,7 @@ import 'server-only';
 
 import { type Activity, type User } from '@/types';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
+import { scoreFeedRowsChronologically } from '@/lib/server/activityImportanceService';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 
@@ -295,7 +296,24 @@ function buildActivityKey(item: { user: User; activity: Activity }, index: numbe
 }
 
 export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity }>) {
-  const dedupedRows: Array<{ user: User; activity: Activity }> = [];
+  const seenKeys = new Set<string>();
+  const dedupedFeed: Array<{ item: typeof feed[number]; index: number }> = [];
+  feed.forEach((item, index) => {
+    const activityKey = buildActivityKey(item, index);
+    if (seenKeys.has(activityKey)) {
+      return;
+    }
+    seenKeys.add(activityKey);
+    dedupedFeed.push({ item, index });
+  });
+
+  const scoredRows = scoreFeedRowsChronologically(
+    dedupedFeed.map(({ item, index }) => ({
+      user: item.user,
+      activity: item.activity,
+      stableId: buildActivityKey(item, index),
+    }))
+  );
 
   withTransaction(() => {
     const db = getDb();
@@ -318,37 +336,25 @@ export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
-    const seenKeys = new Set<string>();
-    const dedupedFeed: Array<{ item: typeof feed[number]; index: number }> = [];
-    feed.forEach((item, index) => {
-      const activityKey = buildActivityKey(item, index);
-      if (seenKeys.has(activityKey)) {
-        return;
-      }
-      seenKeys.add(activityKey);
-      dedupedFeed.push({ item, index });
-    });
-
-    for (const { item, index } of dedupedFeed) {
-      const activityKey = buildActivityKey(item, index);
-      dedupedRows.push(item);
+    for (const row of scoredRows) {
+      const activityKey = row.stableId || row.activity.id;
       insertStmt.run(
-        item.user.id,
+        row.user.id,
         activityKey,
-        item.activity.timestamp,
-        normalize(item.activity.metadata.txHash) || null,
-        normalize(item.activity.metadata.chain) || null,
-        normalize(item.activity.metadata.trackedAddress) || null,
-        item.activity.source,
-        item.activity.type,
-        JSON.stringify(item.user),
-        JSON.stringify(item.activity),
+        row.activity.timestamp,
+        normalize(row.activity.metadata.txHash) || null,
+        normalize(row.activity.metadata.chain) || null,
+        normalize(row.activity.metadata.trackedAddress) || null,
+        row.activity.source,
+        row.activity.type,
+        JSON.stringify(row.user),
+        JSON.stringify(row.activity),
         now
       );
     }
   });
 
-  upsertEventsFromFeedRows(dedupedRows, 'feed-snapshot-replace');
+  upsertEventsFromFeedRows(scoredRows, 'feed-snapshot-replace');
 }
 
 export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity }>) {
@@ -356,7 +362,45 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
     return;
   }
 
-  const dedupedRows: Array<{ user: User; activity: Activity }> = [];
+  // Group activities by dedup key and prioritize Telegram monitoring sources
+  const activityGroups = new Map<string, Array<{ item: { user: User; activity: Activity }; index: number }>>();
+
+  for (let index = 0; index < feed.length; index += 1) {
+    const item = feed[index];
+    const activityKey = buildActivityKey(item, index);
+
+    if (!activityGroups.has(activityKey)) {
+      activityGroups.set(activityKey, []);
+    }
+    activityGroups.get(activityKey)!.push({ item, index });
+  }
+
+  const dedupedFeedRows: Array<{ activityKey: string; item: { user: User; activity: Activity } }> = [];
+  // For each group, select the highest priority activity
+  for (const [activityKey, group] of activityGroups) {
+    // Sort by priority: Telegram monitoring (xxyy-monitor: prefix) first, then by timestamp desc
+    const prioritized = group.sort((a, b) => {
+      const aIsTelegram = a.item.activity.id.startsWith('xxyy-monitor:');
+      const bIsTelegram = b.item.activity.id.startsWith('xxyy-monitor:');
+
+      if (aIsTelegram && !bIsTelegram) return -1;
+      if (!aIsTelegram && bIsTelegram) return 1;
+
+      // If both are same source type, prefer newer timestamp
+      return b.item.activity.timestamp - a.item.activity.timestamp;
+    });
+
+    const selectedActivity = prioritized[0];
+    dedupedFeedRows.push({ activityKey, item: selectedActivity.item });
+  }
+
+  const scoredRows = scoreFeedRowsChronologically(
+    dedupedFeedRows.map(({ activityKey, item }) => ({
+      user: item.user,
+      activity: item.activity,
+      stableId: activityKey,
+    }))
+  );
 
   withTransaction(() => {
     const db = getDb();
@@ -388,54 +432,25 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
         activity_json = excluded.activity_json`
     );
 
-    // Group activities by dedup key and prioritize Telegram monitoring sources
-    const activityGroups = new Map<string, Array<{ item: { user: User; activity: Activity }; index: number }>>();
-
-    for (let index = 0; index < feed.length; index += 1) {
-      const item = feed[index];
-      const activityKey = buildActivityKey(item, index);
-
-      if (!activityGroups.has(activityKey)) {
-        activityGroups.set(activityKey, []);
-      }
-      activityGroups.get(activityKey)!.push({ item, index });
-    }
-
-    // For each group, select the highest priority activity
-    for (const [activityKey, group] of activityGroups) {
-      // Sort by priority: Telegram monitoring (xxyy-monitor: prefix) first, then by timestamp desc
-      const prioritized = group.sort((a, b) => {
-        const aIsTelegram = a.item.activity.id.startsWith('xxyy-monitor:');
-        const bIsTelegram = b.item.activity.id.startsWith('xxyy-monitor:');
-
-        if (aIsTelegram && !bIsTelegram) return -1;
-        if (!aIsTelegram && bIsTelegram) return 1;
-
-        // If both are same source type, prefer newer timestamp
-        return b.item.activity.timestamp - a.item.activity.timestamp;
-      });
-
-      const selectedActivity = prioritized[0];
-      const item = selectedActivity.item;
-      dedupedRows.push(item);
-
+    for (const row of scoredRows) {
+      const activityKey = row.stableId || row.activity.id;
       insertStmt.run(
-        item.user.id,
+        row.user.id,
         activityKey,
-        item.activity.timestamp,
-        normalize(item.activity.metadata.txHash) || null,
-        normalize(item.activity.metadata.chain) || null,
-        normalize(item.activity.metadata.trackedAddress) || null,
-        item.activity.source,
-        item.activity.type,
-        JSON.stringify(item.user),
-        JSON.stringify(item.activity),
+        row.activity.timestamp,
+        normalize(row.activity.metadata.txHash) || null,
+        normalize(row.activity.metadata.chain) || null,
+        normalize(row.activity.metadata.trackedAddress) || null,
+        row.activity.source,
+        row.activity.type,
+        JSON.stringify(row.user),
+        JSON.stringify(row.activity),
         now
       );
     }
   });
 
-  upsertEventsFromFeedRows(dedupedRows, 'feed-snapshot-upsert');
+  upsertEventsFromFeedRows(scoredRows, 'feed-snapshot-upsert');
 }
 
 function parseFeedRows(rows: FeedRow[]) {

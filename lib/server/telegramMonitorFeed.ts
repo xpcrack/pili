@@ -3,8 +3,10 @@ import 'server-only';
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import {
   listRecentTelegramMonitorFallbackEventsWithoutTxState,
+  updateTelegramMonitorEventProjectedActivityIfMissing,
   type TelegramMonitorFeedEvent,
 } from '@/lib/server/telegramMonitorRepo';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import {
   listRecentTelegramMonitorTxStates,
   type TelegramMonitorTxState,
@@ -271,6 +273,16 @@ export async function projectTelegramMonitorEvent(params: {
   const trackedAddressIndex = buildTrackedAddressIndex(users);
   const event = params.event;
 
+  if (event.projectedActivity) {
+    const persistedUser = users.find((candidate) => candidate.id === event.projectedActivity?.userId) || null;
+    if (persistedUser) {
+      return {
+        user: persistedUser,
+        activity: event.projectedActivity,
+      };
+    }
+  }
+
   const fallbackParsed = event.rawText ? parseXxyyTelegramText(event.rawText, event.eventTimeMs, []) : null;
 
   const action = event.action || fallbackParsed?.action || null;
@@ -350,7 +362,7 @@ export async function projectTelegramMonitorTxState(params: {
     return null;
   }
 
-  if (params.state.canonicalActivity) {
+  if (params.state.reconciliationStatus === 'reconciled' && params.state.canonicalActivity) {
     return {
       user,
       activity: params.state.canonicalActivity,
@@ -401,6 +413,49 @@ export async function readTelegramMonitorFeed(limit = 200): Promise<TelegramMoni
   const projectedFallbackEvents = await Promise.all(
     fallbackEvents.map((event) => projectTelegramMonitorEvent({ event, users }))
   );
+
+  const fallbackPersistCandidates: Array<{
+    event: TelegramMonitorFeedEvent;
+    row: TelegramMonitorFeedRow;
+    stableId: string;
+  }> = [];
+  for (let index = 0; index < fallbackEvents.length; index += 1) {
+    const event = fallbackEvents[index];
+    const row = projectedFallbackEvents[index];
+    if (!row || event?.projectedActivity) {
+      continue;
+    }
+    fallbackPersistCandidates.push({
+      event,
+      row,
+      stableId: `fallback-${String(index).padStart(12, '0')}`,
+    });
+  }
+
+  if (fallbackPersistCandidates.length > 0) {
+    const scoredFallbackRows = scoreFeedRowsAgainstDatabase(
+      fallbackPersistCandidates.map((item) => ({
+        user: item.row.user,
+        activity: item.row.activity,
+        stableId: item.stableId,
+      }))
+    );
+    const scoredByStableId = new Map(scoredFallbackRows.map((row) => [row.stableId || '', row] as const));
+    for (const candidate of fallbackPersistCandidates) {
+      const scored = scoredByStableId.get(candidate.stableId);
+      if (!scored) {
+        continue;
+      }
+      candidate.row.activity = scored.activity;
+      updateTelegramMonitorEventProjectedActivityIfMissing({
+        sourceChatId: candidate.event.sourceChatId ?? null,
+        sourceMessageId: candidate.event.sourceMessageId ?? null,
+        txHash: candidate.event.txHash ?? null,
+        activity: scored.activity,
+      });
+    }
+  }
+
   const fallbackFeed = projectedFallbackEvents.filter((item): item is TelegramMonitorFeedRow => Boolean(item));
 
   const deduped = new Map<string, TelegramMonitorFeedRow>();

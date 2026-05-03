@@ -478,11 +478,28 @@ async function run() {
     globalThis.fetch = createSuccessfulFetch() as typeof fetch;
     const provisionalResult = await ingestTelegramMonitorUpdate(buildTelegramUpdate(501));
     assert.equal(provisionalResult.ok, true, 'ingest should accept the telegram update');
+    const txStateAfterIngest = getTelegramMonitorTxState({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: TX_HASH,
+    });
+    assert.ok(txStateAfterIngest?.canonicalActivity?.metadata.importance?.score !== undefined);
 
     const provisionalFeed = await readTelegramMonitorFeed(20);
     assert.equal(provisionalFeed.length, 1, 'provisional monitor feed should have one row');
     assert.equal(provisionalFeed[0]?.activity.metadata.quoteAmount, '0.1181');
     assert.equal(provisionalFeed[0]?.activity.metadata.monitorReconciliationStatus, 'pending');
+
+    const replayedProvisional = await ingestTelegramMonitorUpdate(buildLegacyOnlyTelegramUpdate(598, TX_HASH, '0.2222'));
+    assert.equal(replayedProvisional.ok, true, 'replayed provisional ingest should still be accepted');
+    const replayedFeed = await readTelegramMonitorFeed(20);
+    const replayedPrimaryRow = replayedFeed.find((item) => item.activity.metadata.txHash === TX_HASH);
+    assert.equal(
+      replayedPrimaryRow?.activity.metadata.quoteAmount,
+      '0.2222',
+      'pending tx-state projection should reflect latest provisional payload rather than stale canonical cache'
+    );
+    assert.equal(replayedPrimaryRow?.activity.metadata.monitorReconciliationStatus, 'pending');
 
     const legacyOnlyTxHash = '5KjD4n9hB2dMRY3oM4pX1oKZEFZ9cL5qUT8R76v9kqebCzK84j7zW8nW2vxx3G7Yd1Ny8KkG5X5hKw4mPoGdYq1V';
     const legacyOnlyUpdate = buildLegacyOnlyTelegramUpdate(599, legacyOnlyTxHash, '0.3333');
@@ -555,6 +572,17 @@ async function run() {
       null,
       'legacy-only fixture should not create a tx-state row'
     );
+    const reparsedFallback = await readTelegramMonitorFeed(20);
+    const fallbackActivity = reparsedFallback.find((item) => item.activity.metadata.txHash === legacyOnlyTxHash);
+    assert.ok(fallbackActivity?.activity.metadata.importance?.score !== undefined);
+    const fallbackRows = getDb()
+      .prepare(
+        `SELECT projected_activity_json
+         FROM telegram_monitor_events
+         WHERE tx_hash = ?`
+      )
+      .all(legacyOnlyTxHash) as Array<{ projected_activity_json: string | null }>;
+    assert.ok(fallbackRows[0]?.projected_activity_json, 'fallback monitor row should persist projected activity json');
 
     const feedWithLegacyFallback = await readTelegramMonitorFeed(20);
     const legacyFallbackRows = feedWithLegacyFallback.filter(
@@ -596,6 +624,12 @@ async function run() {
     });
     assert.equal(reconciled.status, 'reconciled', 'address reconciliation should succeed');
     assert.equal(reconciled.source, 'okx-detail');
+    const reconciledState = getTelegramMonitorTxState({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: TX_HASH,
+    });
+    assert.ok(reconciledState?.canonicalActivity?.metadata.importance?.score !== undefined);
 
     const reconciledFeed = await readTelegramMonitorFeed(20);
     const reconciledPrimaryRow = reconciledFeed.find((item) => item.activity.metadata.txHash === TX_HASH);
@@ -668,6 +702,13 @@ async function run() {
       force: true,
     });
     assert.equal(failureResult.status, 'failed', 'network failures should surface as failed reconciliations');
+    const failedFeed = await readTelegramMonitorFeed(20);
+    const failedRow = failedFeed.find((item) => item.activity.metadata.txHash === failingTxHash);
+    assert.equal(
+      failedRow?.activity.metadata.monitorReconciliationStatus,
+      'failed',
+      'failed reconciliation status should be visible in projected feed activity metadata'
+    );
 
     globalThis.fetch = createSuccessfulFetch() as typeof fetch;
     const retryResult = await reconcileTelegramMonitorTxState({

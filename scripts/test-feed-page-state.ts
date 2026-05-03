@@ -22,7 +22,27 @@ function makeUser(id: string, name: string): User {
   };
 }
 
-function makeActivity(id: string, userId: string, timestamp: number, source: Activity['source'] = 'twitter'): Activity {
+function makeActivity(
+  id: string,
+  userId: string,
+  timestamp: number,
+  source: Activity['source'] = 'twitter',
+  importanceScore = 60
+): Activity {
+  const importance = {
+    version: 1 as const,
+    score: importanceScore,
+    sourceKind: source === 'blockchain' ? ('wallet' as const) : ('social' as const),
+    sourceCount7d: 1,
+    socialCount7d: source === 'blockchain' ? 0 : 1,
+    walletCount7d: source === 'blockchain' ? 1 : 0,
+    totalCount7d: 1,
+    historicalMaxAssetUsd: 250_000,
+    sourceRarity: 1,
+    assetWeight: 0.7,
+    totalFrequencyFactor: 1,
+    dataConfidenceFactor: 1,
+  };
   return {
     id,
     userId,
@@ -31,7 +51,10 @@ function makeActivity(id: string, userId: string, timestamp: number, source: Act
     content: id,
     title: id,
     timestamp,
-    metadata: source === 'twitter' ? { tweetId: id } : { txHash: id, chain: 'solana', trackedAddress: `${userId}Wallet` },
+    metadata:
+      source === 'twitter'
+        ? { tweetId: id, importance }
+        : { txHash: id, chain: 'solana', trackedAddress: `${userId}Wallet`, importance },
   };
 }
 
@@ -40,9 +63,9 @@ function run() {
   const bob = makeUser('bob', 'Bob');
   const base = 1_700_000_000_000;
   const feed = [
-    { user: alice, activity: makeActivity('old-alice', alice.id, base - 10_000) },
-    { user: bob, activity: makeActivity('new-bob', bob.id, base) },
-    { user: alice, activity: makeActivity('new-alice', alice.id, base - 1000) },
+    { user: alice, activity: makeActivity('old-alice', alice.id, base - 10_000, 'twitter', 95) },
+    { user: bob, activity: makeActivity('new-bob', bob.id, base, 'twitter', 45) },
+    { user: alice, activity: makeActivity('new-alice', alice.id, base - 1000, 'twitter', 55) },
   ];
 
   const globalState = selectFeedPageState({

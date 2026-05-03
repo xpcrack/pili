@@ -458,6 +458,29 @@ export function markTelegramMonitorTxStateReconciled(input: {
   return getTelegramMonitorTxState(input);
 }
 
+export function setTelegramMonitorTxStateCanonicalActivity(input: {
+  chain: string;
+  trackedWalletAddress: string;
+  txHash: string;
+  activity: Activity;
+}) {
+  const db = getDb();
+  db.prepare(
+    `UPDATE telegram_monitor_tx_states
+     SET canonical_activity_json = ?,
+         updated_at = ?
+     WHERE chain = ?
+       AND tracked_wallet_address_lower = ?
+       AND tx_hash_lower = ?`
+  ).run(
+    JSON.stringify(input.activity),
+    Date.now(),
+    normalize(input.chain),
+    normalize(input.trackedWalletAddress),
+    normalize(input.txHash)
+  );
+}
+
 export function markTelegramMonitorTxStateFailed(input: {
   chain: string;
   trackedWalletAddress: string;
