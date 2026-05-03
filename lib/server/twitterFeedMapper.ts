@@ -3,6 +3,7 @@ import 'server-only';
 import { type Activity, type User } from '@/types';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import {
   listTwitterTweetEnrichmentsByTweetIds,
   listTwitterTweetTokenMentionsByTweetIds,
@@ -148,7 +149,6 @@ function upsertFeedRows(rows: Array<{ user: User; activity: Activity }>) {
     return updatedCount;
   });
 
-  upsertEventsFromFeedRows(rows, 'twitter-projector');
   return updated;
 }
 
@@ -226,7 +226,9 @@ export function projectTwitterTweetsToFeed(options: {
     });
   }
 
-  const projectedCount = upsertFeedRows(upsertRows);
+  const scoredRows = scoreFeedRowsAgainstDatabase(upsertRows);
+  const projectedCount = upsertFeedRows(scoredRows);
+  upsertEventsFromFeedRows(scoredRows, 'twitter-projector');
   return {
     projectedCount,
   };
