@@ -11,6 +11,7 @@ import {
   diffActivityForConflict,
   type ConflictFieldDiff,
 } from '@/lib/server/sourceReconciliation';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
@@ -265,6 +266,21 @@ function isExpectedMonitorAggregateCorrection(existing: Activity, incoming: Acti
 
 export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Activity }>, ingestSource: string) {
   if (rows.length === 0) return;
+  const scoredRows = scoreFeedRowsAgainstDatabase(
+    rows.map((row, index) => ({
+      ...row,
+      stableId: `input-${index}`,
+    }))
+  );
+  const scoredByStableId = new Map(scoredRows.map((row) => [row.stableId || '', row] as const));
+  for (let index = 0; index < rows.length; index += 1) {
+    const scored = scoredByStableId.get(`input-${index}`);
+    if (!scored) {
+      continue;
+    }
+    rows[index].user = scored.user;
+    rows[index].activity = scored.activity;
+  }
 
   withTransaction(() => {
     const db = getDb();
@@ -422,7 +438,7 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
          updated_at = excluded.updated_at`
     );
 
-    for (const row of rows) {
+    for (const row of scoredRows) {
       const { user, activity } = row;
       const eventId = buildEventId(user, activity);
       const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
