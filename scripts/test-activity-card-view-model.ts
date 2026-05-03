@@ -48,6 +48,20 @@ function run() {
       fromAddress: 'TrackedWallet111',
       tradeAmountUsdAtTx: 115.5,
       marketCapAtTxUsd: 2_500_000,
+      importance: {
+        version: 1,
+        score: 88,
+        sourceKind: 'wallet',
+        sourceCount7d: 0,
+        socialCount7d: 0,
+        walletCount7d: 0,
+        totalCount7d: 0,
+        historicalMaxAssetUsd: 2_500_000,
+        sourceRarity: 1,
+        assetWeight: 0.91,
+        totalFrequencyFactor: 1,
+        dataConfidenceFactor: 1,
+      },
     }),
     user,
     tradeValueDisplayMode: 'usd',
@@ -61,6 +75,10 @@ function run() {
   assert.equal(trade.displayMarketCapText, '$2.5M');
   assert.equal(trade.explorerTxUrl, 'https://web3.okx.com/explorer/solana/tx/SwapTx111');
   assert.equal(trade.tokenGmgnUrl, 'https://gmgn.ai/sol/token/OgreMint111');
+  assert.equal(trade.importanceBadgeText, '88分');
+  assert.equal(trade.importanceLevelLabel, '高重要');
+  assert.match(trade.importanceTooltip || '', /同源稀缺分/);
+  assert.match(trade.importanceTooltip || '', /总频率因子/);
 
   const send = buildActivityCardViewModel({
     activity: makeTransfer({

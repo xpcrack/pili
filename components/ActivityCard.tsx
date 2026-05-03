@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { getUserAvatar } from '@/lib/userProfile';
 import { getActivityCardContentColumnClass } from '@/lib/activityCardLayout';
@@ -117,6 +118,10 @@ export function ActivityCard({
     tokenGmgnUrl,
     trackedAddressGmgnUrl,
     counterpartyGmgnUrl,
+    importanceBadgeText,
+    importanceLevelLabel,
+    importanceTooltip,
+    importanceBadgeClassName,
   } = buildActivityCardViewModel({
     activity,
     user,
@@ -291,7 +296,7 @@ export function ActivityCard({
 
   return (
     <Card 
-      className={`group cursor-pointer gap-0 rounded-none py-0 shadow-none ring-0 transition-all ${
+      className={`group relative cursor-pointer gap-0 rounded-none py-0 shadow-none ring-0 transition-all ${
         isMergedTradeCard
           ? 'border-y border-sky-500/20 bg-gradient-to-r from-sky-500/8 via-cyan-500/6 to-transparent hover:bg-sky-500/10'
           : 'border-0 bg-transparent hover:bg-zinc-900/60'
@@ -302,7 +307,16 @@ export function ActivityCard({
       }`}
       onClick={onClick}
     >
-      <CardContent className="px-3 py-2">
+      <CardContent className="px-3 py-2 pr-14">
+        {importanceBadgeText ? (
+          <Badge
+            variant="secondary"
+            className={`absolute right-3 top-2 border-0 text-[10px] font-medium ${importanceBadgeClassName}`}
+            title={importanceTooltip || undefined}
+          >
+            {importanceBadgeText}
+          </Badge>
+        ) : null}
         <div className="grid gap-y-1 md:grid-cols-[minmax(0,0.78fr)_8.75rem_minmax(0,1.22fr)] md:gap-x-1">
           {!isTransfer && (
             <div className="flex min-w-0 items-start gap-1.5 text-[13px] md:col-start-3 md:row-start-1 md:self-start">
@@ -315,6 +329,9 @@ export function ActivityCard({
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-semibold text-zinc-300">{user.name}</span>
+                  {importanceLevelLabel ? (
+                    <span className="truncate text-[11px] text-zinc-500">{importanceLevelLabel}</span>
+                  ) : null}
                   {(isTwitter || isTelegram) && socialPostUrl ? (
                     <button
                       type="button"
@@ -556,6 +573,9 @@ export function ActivityCard({
                         </Avatar>
                         <div className="flex min-w-0 items-center gap-1.5">
                           <span className="min-w-0 flex-1 truncate font-semibold leading-none text-zinc-300">{user.name}</span>
+                          {importanceLevelLabel ? (
+                            <span className="truncate text-[11px] leading-none text-zinc-500">{importanceLevelLabel}</span>
+                          ) : null}
                           {isMergedTradeCard && (
                             <span className="ml-auto shrink-0 rounded-full border border-sky-400/40 bg-sky-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-200">
                               合并 {mergedTradeCount} 笔
