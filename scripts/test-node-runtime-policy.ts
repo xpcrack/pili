@@ -6,6 +6,33 @@ function readRepoFile(relativePath: string) {
   return readFileSync(join(process.cwd(), relativePath), 'utf8').trim();
 }
 
+function readMarkedBlock(content: string, startMarker: string, endMarker: string) {
+  const startIndex = content.indexOf(startMarker);
+  const endIndex = content.indexOf(endMarker);
+
+  assert.notEqual(startIndex, -1, `Missing start marker: ${startMarker}`);
+  assert.notEqual(endIndex, -1, `Missing end marker: ${endMarker}`);
+  assert.ok(endIndex > startIndex, `${endMarker} should appear after ${startMarker}`);
+
+  return content.slice(startIndex, endIndex + endMarker.length);
+}
+
+function readSection(content: string, startHeading: string, endHeading?: string) {
+  const startIndex = content.indexOf(startHeading);
+
+  assert.notEqual(startIndex, -1, `Missing section heading: ${startHeading}`);
+
+  if (!endHeading) {
+    return content.slice(startIndex);
+  }
+
+  const endIndex = content.indexOf(endHeading);
+  assert.notEqual(endIndex, -1, `Missing section heading: ${endHeading}`);
+  assert.ok(endIndex > startIndex, `${endHeading} should appear after ${startHeading}`);
+
+  return content.slice(startIndex, endIndex);
+}
+
 function run() {
   const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
     engines?: { node?: string };
@@ -14,6 +41,13 @@ function run() {
   const agents = readRepoFile('AGENTS.md');
   const readme = readRepoFile('README.md');
   const troubleshooting = readRepoFile('TROUBLESHOOTING.md');
+  const agentsRuntimeBlock = readMarkedBlock(agents, '<!-- BEGIN:runtime-rules -->', '<!-- END:runtime-rules -->');
+  const readmeRuntimeBlock = readSection(readme, '## Runtime', '## Getting Started');
+  const troubleshootingTopSection = readSection(
+    troubleshooting,
+    '## Node runtime and better-sqlite3',
+    '# Web3动态看板数据不显示问题排查和修复'
+  );
 
   assert.equal(readRepoFile('.nvmrc'), '24.11.1', '.nvmrc should pin Node 24.11.1');
   assert.equal(readRepoFile('.node-version'), '24.11.1', '.node-version should pin Node 24.11.1');
@@ -34,42 +68,65 @@ function run() {
   );
 
   assert.match(
-    agents,
-    /Use Node `24\.11\.1` for this repo\./,
-    'AGENTS.md should declare the pinned Node version'
+    agentsRuntimeBlock,
+    /Node `24\.11\.1`/,
+    'AGENTS.md runtime block should declare the pinned Node version'
   );
   assert.match(
-    agents,
-    /Do not switch to Node `25\+` unless you first reinstall or rebuild native dependencies and then verify `npm run build` and `npm test` both pass\./,
-    'AGENTS.md should warn agents not to jump to Node 25+ without revalidation'
-  );
-
-  assert.match(readme, /## Runtime/, 'README.md should expose a Runtime section near the top');
-  assert.match(
-    readme,
-    /Use Node `24\.11\.1` for this repo\./,
-    'README.md should document the pinned Node version'
+    agentsRuntimeBlock,
+    /Node `25\+`/,
+    'AGENTS.md runtime block should warn about Node 25+'
   );
   assert.match(
-    readme,
-    /npm rebuild better-sqlite3/,
-    'README.md should point to the native module recovery command'
+    agentsRuntimeBlock,
+    /npm run build/,
+    'AGENTS.md runtime block should require build verification'
+  );
+  assert.match(
+    agentsRuntimeBlock,
+    /npm test/,
+    'AGENTS.md runtime block should require test verification'
   );
 
   assert.match(
-    troubleshooting,
-    /This repo is pinned to Node `24\.11\.1`\./,
-    'TROUBLESHOOTING.md should explain the pinned runtime'
+    readmeRuntimeBlock,
+    /Node `24\.11\.1`/,
+    'README.md Runtime section should document the pinned Node version'
   );
   assert.match(
-    troubleshooting,
+    readmeRuntimeBlock,
+    /nvm use/,
+    'README.md Runtime section should include the nvm use command'
+  );
+  assert.match(
+    readmeRuntimeBlock,
     /npm rebuild better-sqlite3/,
-    'TROUBLESHOOTING.md should document the rebuild command'
+    'README.md Runtime section should point to the native module recovery command'
+  );
+  assert.ok(
+    readme.indexOf('## Runtime') < readme.indexOf('## Getting Started'),
+    'README.md should place the Runtime section before Getting Started'
+  );
+
+  assert.match(
+    troubleshootingTopSection,
+    /Node `24\.11\.1`/,
+    'TROUBLESHOOTING.md top section should explain the pinned runtime'
   );
   assert.match(
-    troubleshooting,
+    troubleshootingTopSection,
     /NODE_MODULE_VERSION/,
-    'TROUBLESHOOTING.md should mention the ABI mismatch symptom'
+    'TROUBLESHOOTING.md top section should mention the ABI mismatch symptom'
+  );
+  assert.match(
+    troubleshootingTopSection,
+    /npm rebuild better-sqlite3/,
+    'TROUBLESHOOTING.md top section should document the rebuild command'
+  );
+  assert.match(
+    troubleshootingTopSection,
+    /npm test/,
+    'TROUBLESHOOTING.md top section should include the verification command'
   );
 
   console.log('node runtime policy tests: ok');
