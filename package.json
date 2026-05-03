@@ -18,6 +18,7 @@
     "test:feed-ordering": "tsx scripts/test-feed-ordering.ts",
     "test:time-format": "tsx scripts/test-time-format.ts",
     "test:activity-importance": "tsx scripts/test-activity-importance.ts",
+    "test:activity-importance-service": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-importance-service.ts",
     "test:events-feed-total": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-events-feed-total.ts",
     "test:feed-request-arbiter": "tsx scripts/test-feed-request-arbiter.ts",
     "test:feed-completeness-visibility": "tsx scripts/test-feed-completeness-visibility.ts",
