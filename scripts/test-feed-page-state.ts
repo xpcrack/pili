@@ -22,10 +22,16 @@ function makeUser(id: string, name: string): User {
   };
 }
 
-function makeActivity(id: string, userId: string, timestamp: number, source: Activity['source'] = 'twitter'): Activity {
+function makeActivity(
+  id: string,
+  userId: string,
+  timestamp: number,
+  source: Activity['source'] = 'twitter',
+  importanceScore = 60
+): Activity {
   const importance = {
     version: 1 as const,
-    score: 60,
+    score: importanceScore,
     sourceKind: source === 'blockchain' ? ('wallet' as const) : ('social' as const),
     sourceCount7d: 1,
     socialCount7d: source === 'blockchain' ? 0 : 1,
@@ -57,9 +63,9 @@ function run() {
   const bob = makeUser('bob', 'Bob');
   const base = 1_700_000_000_000;
   const feed = [
-    { user: alice, activity: makeActivity('old-alice', alice.id, base - 10_000) },
-    { user: bob, activity: makeActivity('new-bob', bob.id, base) },
-    { user: alice, activity: makeActivity('new-alice', alice.id, base - 1000) },
+    { user: alice, activity: makeActivity('old-alice', alice.id, base - 10_000, 'twitter', 95) },
+    { user: bob, activity: makeActivity('new-bob', bob.id, base, 'twitter', 45) },
+    { user: alice, activity: makeActivity('new-alice', alice.id, base - 1000, 'twitter', 55) },
   ];
 
   const globalState = selectFeedPageState({
