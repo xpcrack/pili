@@ -20,6 +20,8 @@
     "test:activity-importance": "tsx scripts/test-activity-importance.ts",
     "test:activity-importance-service": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-importance-service.ts",
     "test:activity-importance-ingest": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-importance-ingest.ts",
+    "importance:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-importance-score.ts",
+    "test:activity-importance-backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-importance-backfill.ts",
     "test:events-feed-total": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-events-feed-total.ts",
     "test:feed-request-arbiter": "tsx scripts/test-feed-request-arbiter.ts",
     "test:feed-completeness-visibility": "tsx scripts/test-feed-completeness-visibility.ts",
