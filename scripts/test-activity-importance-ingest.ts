@@ -123,7 +123,8 @@ async function run() {
       fetchTweetsByIds: async () => ({ provider: 'fixture', tweets: [] }),
     });
     const telegramEvent = readEventsFeed({ limit: 10, userId: user.id, source: 'telegram' });
-    assert.ok(ingestResult.projected.activity.metadata.importance?.score !== undefined);
+    const projectedActivity = ingestResult.projected.activity as Activity;
+    assert.ok(projectedActivity.metadata.importance?.score !== undefined);
     assert.ok(telegramEvent.feed[0]?.activity.metadata.importance?.score !== undefined);
 
     console.log('activity importance ingest tests: ok');
