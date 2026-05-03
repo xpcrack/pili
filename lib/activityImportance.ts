@@ -50,9 +50,9 @@ export function computeActivityImportance(input: ActivityImportanceInput): Activ
   const socialCount7d = safeCount(input.socialCount7d);
   const walletCount7d = safeCount(input.walletCount7d);
   const totalCount7d = safeCount(input.totalCount7d);
-  const sourceCount7d = safeCount(input.sourceCount7d);
-  const hasAsset = typeof input.historicalMaxAssetUsd === 'number' && input.historicalMaxAssetUsd > 0;
-  const historicalMaxAssetUsd = hasAsset ? input.historicalMaxAssetUsd : null;
+  const sourceCount7d = input.sourceKind === 'social' ? socialCount7d : walletCount7d;
+  const hasAsset = Number.isFinite(input.historicalMaxAssetUsd) && (input.historicalMaxAssetUsd as number) > 0;
+  const historicalMaxAssetUsd = hasAsset ? (input.historicalMaxAssetUsd as number) : null;
 
   const sourceRarity = 1 / Math.sqrt(sourceCount7d + 1);
   const assetWeight = hasAsset ? clamp(Math.log10((historicalMaxAssetUsd as number) + 1) / 7, 0, 1) : 0.35;
