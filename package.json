@@ -2,6 +2,9 @@
   "name": "web3-dashboard",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24.11.1 <25"
+  },
   "scripts": {
     "dev": "next dev --port 3005",
     "build": "next build",
@@ -29,6 +32,7 @@
     "test:activity-feed-retry": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-feed-retry.ts",
     "test:global-search-wiring": "tsx scripts/test-global-search-wiring.ts",
     "test:tooling-config": "tsx scripts/test-tooling-config.ts",
+    "test:node-runtime-policy": "tsx scripts/test-node-runtime-policy.ts",
     "test:source-reconciliation": "tsx scripts/test-source-reconciliation.ts",
     "test:sync-failure-notifier": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-sync-failure-notifier.ts",
     "test:manage-users": "tsx scripts/test-manage-users.ts",
@@ -59,7 +63,7 @@
     "test:twitter-sync-service": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-sync-service.ts",
     "test:twitter-relay-coverage": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-relay-coverage.ts",
     "test:twitter-bridge": "tsx scripts/test-twitter-bridge.ts",
-    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:time-format && npm run test:activity-card-view-model && npm run test:activity-importance && npm run test:activity-importance-service && npm run test:activity-importance-ingest && npm run test:activity-importance-backfill && npm run test:trade-usd && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-client-state && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:activity-feed-retry && npm run test:global-search-wiring && npm run test:feed-page-state && npm run test:tooling-config && npm run test:search-filters && npm run test:source-reconciliation && npm run test:sync-failure-notifier && npm run test:manage-users && npm run test:tracked-user-validation && npm run test:tracked-address-ownership && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:telegram-monitor-reconciliation && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-identity-service && npm run test:twitter-stable-identity && npm run test:twitter-sync-service && npm run test:twitter-relay-coverage && npm run test:twitter-bridge",
+    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:time-format && npm run test:activity-card-view-model && npm run test:activity-importance && npm run test:activity-importance-service && npm run test:activity-importance-ingest && npm run test:activity-importance-backfill && npm run test:trade-usd && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-client-state && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:activity-feed-retry && npm run test:global-search-wiring && npm run test:feed-page-state && npm run test:tooling-config && npm run test:node-runtime-policy && npm run test:search-filters && npm run test:source-reconciliation && npm run test:sync-failure-notifier && npm run test:manage-users && npm run test:tracked-user-validation && npm run test:tracked-address-ownership && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:telegram-monitor-reconciliation && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-identity-service && npm run test:twitter-stable-identity && npm run test:twitter-sync-service && npm run test:twitter-relay-coverage && npm run test:twitter-bridge",
     "test:feed-client-state": "tsx scripts/test-feed-client-state.ts",
     "test:activity-card-view-model": "tsx scripts/test-activity-card-view-model.ts",
     "test:feed-page-state": "tsx scripts/test-feed-page-state.ts"
