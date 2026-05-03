@@ -35,6 +35,42 @@ function run() {
   approx(missingAsset.assetWeight, 0.35);
   approx(missingAsset.dataConfidenceFactor, 0.7);
 
+  const nonFiniteAsset = computeActivityImportance({
+    sourceKind: 'wallet',
+    sourceCount7d: 0,
+    socialCount7d: 0,
+    walletCount7d: 0,
+    totalCount7d: 0,
+    historicalMaxAssetUsd: Number.POSITIVE_INFINITY,
+  });
+  assert.equal(nonFiniteAsset.historicalMaxAssetUsd, null);
+  approx(nonFiniteAsset.assetWeight, 0.35);
+  approx(nonFiniteAsset.dataConfidenceFactor, 0.7);
+
+  const socialSourceCountAligned = computeActivityImportance({
+    sourceKind: 'social',
+    sourceCount7d: 999,
+    socialCount7d: 4,
+    walletCount7d: 1,
+    totalCount7d: 5,
+    historicalMaxAssetUsd: 10_000,
+  });
+  const socialSourceCountAlignedControl = computeActivityImportance({
+    sourceKind: 'social',
+    sourceCount7d: 0,
+    socialCount7d: 4,
+    walletCount7d: 1,
+    totalCount7d: 5,
+    historicalMaxAssetUsd: 10_000,
+  });
+  assert.equal(socialSourceCountAligned.sourceCount7d, 4);
+  assert.equal(socialSourceCountAlignedControl.sourceCount7d, 4);
+  assert.equal(socialSourceCountAligned.score, socialSourceCountAlignedControl.score);
+
+  assert.equal(getActivityImportanceLevelLabel(49), '普通');
+  assert.equal(getActivityImportanceLevelLabel(50), '重要');
+  assert.equal(getActivityImportanceLevelLabel(70), '高重要');
+
   const noisyActor = computeActivityImportance({
     sourceKind: 'social',
     sourceCount7d: 3,
