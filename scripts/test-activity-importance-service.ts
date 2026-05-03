@@ -94,6 +94,52 @@ async function run() {
     assert.equal(chronological[1]?.activity.metadata.importance?.sourceCount7d, 1);
     assert.equal(chronological[2]?.activity.metadata.importance?.walletCount7d, 0);
 
+    const descending = scoreFeedRowsChronologically([
+      { user: quiet, activity: makeActivity('desc-3', quiet.id, base + 33_000, 'twitter') },
+      { user: quiet, activity: makeActivity('desc-2', quiet.id, base + 32_000, 'twitter') },
+      { user: quiet, activity: makeActivity('desc-1', quiet.id, base + 31_000, 'twitter') },
+    ]);
+    assert.deepEqual(
+      descending.map((row) => row.activity.id),
+      ['desc-1', 'desc-2', 'desc-3'],
+      'chronological scoring should always process oldest to newest'
+    );
+    assert.equal(descending[0]?.activity.metadata.importance?.sourceCount7d, 0);
+    assert.equal(descending[1]?.activity.metadata.importance?.sourceCount7d, 1);
+    assert.equal(descending[2]?.activity.metadata.importance?.sourceCount7d, 2);
+
+    const equalTimestamp = scoreFeedRowsChronologically([
+      {
+        user: quiet,
+        activity: makeActivity('same-ts-b', quiet.id, base + 40_000, 'twitter'),
+        stableId: 'stable-b',
+      },
+      {
+        user: quiet,
+        activity: makeActivity('same-ts-a', quiet.id, base + 40_000, 'twitter'),
+        stableId: 'stable-a',
+      },
+    ]);
+    assert.deepEqual(
+      equalTimestamp.map((row) => row.activity.id),
+      ['same-ts-a', 'same-ts-b'],
+      'rows with equal timestamps should be stably ordered by stableId'
+    );
+
+    upsertEventsFromFeedRows(
+      [{ user: quiet, activity: makeActivity('overlap-seeded', quiet.id, base + 50_000, 'twitter') }],
+      'seed'
+    );
+    const overlap = scoreFeedRowsAgainstDatabase([
+      { user: quiet, activity: makeActivity('overlap-seeded', quiet.id, base + 50_000, 'twitter') },
+      { user: quiet, activity: makeActivity('overlap-fresh', quiet.id, base + 51_000, 'twitter') },
+    ]);
+    assert.equal(
+      overlap[1]?.activity.metadata.importance?.socialCount7d,
+      2,
+      'persisted overlap rows should not be double-counted by batch history'
+    );
+
     console.log('activity importance service tests: ok');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

@@ -1,10 +1,13 @@
 import 'server-only';
 
+import { createHash } from 'node:crypto';
+
 import {
   computeActivityImportance,
   resolveActivityImportanceSourceKind,
   type ActivityImportance,
 } from '@/lib/activityImportance';
+import { getBlockchainActivityIdentity } from '@/lib/activityIdentity';
 import { getDb } from '@/lib/server/sqlite';
 import type { Activity, User } from '@/types';
 
@@ -18,6 +21,73 @@ export interface FeedImportanceRow {
 
 function normalizeSource(source: Activity['source']) {
   return source === 'blockchain' ? 'wallet' : 'social';
+}
+
+function buildBlockchainEventId(activity: Activity) {
+  const monitorAggregateKey = (activity.metadata.monitorTxAggregateKey || '').trim();
+  if (monitorAggregateKey) {
+    return monitorAggregateKey;
+  }
+
+  const identity = getBlockchainActivityIdentity(activity);
+  if (!identity) {
+    return null;
+  }
+
+  if (!identity.signatureSeed) {
+    return identity.scopedBaseKey;
+  }
+
+  const signature = createHash('sha1')
+    .update(identity.signatureSeed)
+    .digest('hex')
+    .slice(0, 12);
+
+  return `${identity.scopedBaseKey}:${signature}`;
+}
+
+function buildEventId(user: User, activity: Activity) {
+  const tweetId = (activity.metadata.tweetId || '').trim();
+  if (tweetId) {
+    return `twitter:${tweetId}`;
+  }
+
+  const blockchainEventId = buildBlockchainEventId(activity);
+  if (blockchainEventId) {
+    return blockchainEventId;
+  }
+
+  return `${user.id}:${activity.id}`;
+}
+
+function readExistingEventIds(eventIds: string[]) {
+  const uniqueEventIds = [...new Set(eventIds)];
+  if (uniqueEventIds.length === 0) {
+    return new Set<string>();
+  }
+
+  const db = getDb();
+  const existing = new Set<string>();
+  const chunkSize = 400;
+  for (let i = 0; i < uniqueEventIds.length; i += chunkSize) {
+    const chunk = uniqueEventIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const stmt = db.prepare(`SELECT event_id FROM events WHERE event_id IN (${placeholders})`);
+    const rows = stmt.all(...chunk) as Array<{ event_id: string }>;
+    for (const row of rows) {
+      existing.add(row.event_id);
+    }
+  }
+
+  return existing;
+}
+
+function sortRowsChronologically(rows: FeedImportanceRow[]) {
+  return [...rows].sort((left, right) => {
+    const timeDelta = left.activity.timestamp - right.activity.timestamp;
+    if (timeDelta !== 0) return timeDelta;
+    return (left.stableId || left.activity.id).localeCompare(right.stableId || right.activity.id);
+  });
 }
 
 function withImportance(activity: Activity, importance: ActivityImportance): Activity {
@@ -67,12 +137,12 @@ function scoreOne(row: FeedImportanceRow, socialCount7d: number, walletCount7d: 
   };
 }
 
+/**
+ * Score a batch strictly in chronological order (oldest -> newest).
+ * Equal timestamps are deterministically ordered by `stableId` (or `activity.id` fallback).
+ */
 export function scoreFeedRowsChronologically(rows: FeedImportanceRow[]) {
-  const ordered = [...rows].sort((left, right) => {
-    const timeDelta = left.activity.timestamp - right.activity.timestamp;
-    if (timeDelta !== 0) return timeDelta;
-    return (left.stableId || left.activity.id).localeCompare(right.stableId || right.activity.id);
-  });
+  const ordered = sortRowsChronologically(rows);
 
   const scored: FeedImportanceRow[] = [];
   for (const row of ordered) {
@@ -82,6 +152,10 @@ export function scoreFeedRowsChronologically(rows: FeedImportanceRow[]) {
   return scored;
 }
 
+/**
+ * Score rows in chronological order (oldest -> newest) using 7d DB history + in-memory batch history.
+ * Prior in-memory rows are counted only when they are not already persisted in `events`.
+ */
 export function scoreFeedRowsAgainstDatabase(rows: FeedImportanceRow[]) {
   const db = getDb();
   const socialCountStmt = db.prepare(
@@ -101,14 +175,15 @@ export function scoreFeedRowsAgainstDatabase(rows: FeedImportanceRow[]) {
        AND source = 'blockchain'`
   );
 
-  const ordered = [...rows].sort((left, right) => {
-    const timeDelta = left.activity.timestamp - right.activity.timestamp;
-    if (timeDelta !== 0) return timeDelta;
-    return (left.stableId || left.activity.id).localeCompare(right.stableId || right.activity.id);
-  });
+  const ordered = sortRowsChronologically(rows);
+  const orderedWithEventIds = ordered.map((row) => ({
+    row,
+    eventId: buildEventId(row.user, row.activity),
+  }));
+  const existingEventIds = readExistingEventIds(orderedWithEventIds.map(({ eventId }) => eventId));
 
-  const priorScoredBatch: FeedImportanceRow[] = [];
-  return ordered.map((row) => {
+  const priorUnpersistedBatch: FeedImportanceRow[] = [];
+  return orderedWithEventIds.map(({ row, eventId }) => {
     const windowStart = row.activity.timestamp - WINDOW_MS;
     const databaseSocialCount = (
       socialCountStmt.get(row.user.id, windowStart, row.activity.timestamp) as { count: number }
@@ -116,14 +191,16 @@ export function scoreFeedRowsAgainstDatabase(rows: FeedImportanceRow[]) {
     const databaseWalletCount = (
       walletCountStmt.get(row.user.id, windowStart, row.activity.timestamp) as { count: number }
     ).count;
-    const batchCounts = countHistoryRows(priorScoredBatch, row);
+    const batchCounts = countHistoryRows(priorUnpersistedBatch, row);
 
     const scored = scoreOne(
       row,
       databaseSocialCount + batchCounts.socialCount7d,
       databaseWalletCount + batchCounts.walletCount7d
     );
-    priorScoredBatch.push(scored);
+    if (!existingEventIds.has(eventId)) {
+      priorUnpersistedBatch.push(scored);
+    }
     return scored;
   });
 }
