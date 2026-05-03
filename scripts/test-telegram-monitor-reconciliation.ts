@@ -14,6 +14,9 @@ const TRACKED_SOL_ADDRESS = 'testuser_solana_placeholder_1111111111111111';
 const TX_HASH = '2tLRE1WugGAJquDrSph5XMMySFBBDmnxRgEsKPgr1tRCjqiFmLoT345V3DfkQASSdc3BMUx2brt3xEauGLsQNJsQ';
 const TOKEN_ADDRESS = 'CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump';
 const TX_TIME_MS = 1777178981000;
+const SPLIT_FILL_TX_HASH =
+  'placeholder_private_key_111111111111111111111111111111111111111111111111111111111111111111111111111111';
+const SPLIT_FILL_TOKEN_ADDRESS = '2CKp88BFyPzr7gEuQKXMJ9cqa24AFXUNC41FR7udpump';
 
 function createJsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -78,6 +81,41 @@ function buildLegacyOnlyTelegramUpdate(messageId: number, txHash: string, quoteA
         {
           type: 'text_link',
           url: `https://www.xxyy.io/sol/${TOKEN_ADDRESS}?wallet=${TRACKED_SOL_ADDRESS}&ref=`,
+        },
+      ],
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: 'Solscan',
+              url: `https://solscan.io/tx/${txHash}`,
+            },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function buildSplitFillTelegramUpdate(messageId: number, txHash = SPLIT_FILL_TX_HASH) {
+  return {
+    update_id: 920_000 + messageId,
+    message: {
+      message_id: messageId,
+      date: Math.floor(TX_TIME_MS / 1000) + 100,
+      chat: { id: -100123456 },
+      text: [
+        '[xp] [user_a#1]',
+        '🟢 Buy more 2.7075 SOL',
+        'Token: 1742503.54118  [Walter]',
+        'Price: $0.0{3}130',
+        'MCAP: $130K',
+        `CA: ${SPLIT_FILL_TOKEN_ADDRESS}`,
+      ].join('\n'),
+      entities: [
+        {
+          type: 'text_link',
+          url: `https://www.xxyy.io/sol/${SPLIT_FILL_TOKEN_ADDRESS}?wallet=${TRACKED_SOL_ADDRESS}&ref=`,
         },
       ],
       reply_markup: {
@@ -239,6 +277,154 @@ function createFailingFetch() {
       });
     }
     throw new Error(`forced failure for ${url}`);
+  };
+}
+
+function createSplitFillFetch() {
+  return async (input: string | URL | Request) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+    if (url.includes('/transactions-by-address?')) {
+      return createJsonResponse({
+        code: '0',
+        data: [
+          {
+            transactionList: [
+              {
+                chainIndex: '501',
+                txHash: SPLIT_FILL_TX_HASH,
+                itype: '2',
+                txTime: String(TX_TIME_MS + 100_000),
+                from: [{ address: TRACKED_SOL_ADDRESS, amount: '' }],
+                to: [{ address: '6JgFeRD4epm867UBStZCbeFM5bDw9xs31jjzAE5MfQfo', amount: '' }],
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                amount: '2.707593205',
+                symbol: 'SOL',
+                txStatus: 'success',
+              },
+              {
+                chainIndex: '501',
+                txHash: SPLIT_FILL_TX_HASH,
+                itype: '2',
+                txTime: String(TX_TIME_MS + 100_000),
+                from: [{ address: '6JgFeRD4epm867UBStZCbeFM5bDw9xs31jjzAE5MfQfo', amount: '' }],
+                to: [{ address: TRACKED_SOL_ADDRESS, amount: '' }],
+                tokenContractAddress: SPLIT_FILL_TOKEN_ADDRESS,
+                amount: '1742503.54118',
+                symbol: 'Walter',
+                txStatus: 'success',
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    if (url.includes('/transaction-detail-by-txhash?')) {
+      return createJsonResponse({
+        code: '0',
+        data: [
+          {
+            chainIndex: '501',
+            txhash: SPLIT_FILL_TX_HASH,
+            txStatus: 'success',
+            tokenTransferDetails: [
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: TRACKED_SOL_ADDRESS,
+                tokenContractAddress: 'So11111111111111111111111111111111111111111',
+                symbol: '',
+                amount: '3.80203928',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: TRACKED_SOL_ADDRESS,
+                tokenContractAddress: 'So11111111111111111111111111111111111111111',
+                symbol: '',
+                amount: '0.00203928',
+              },
+              {
+                from: '6JgFeRD4epm867UBStZCbeFM5bDw9xs31jjzAE5MfQfo',
+                to: TRACKED_SOL_ADDRESS,
+                tokenContractAddress: SPLIT_FILL_TOKEN_ADDRESS,
+                symbol: 'Walter',
+                amount: '1742503.54118',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: '6JgFeRD4epm867UBStZCbeFM5bDw9xs31jjzAE5MfQfo',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '2.707593205',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: 'AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '0.000675548',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: '5icPeMi4TK2g4aV62kcMfDSCX4ir2w5WHHeywphsAGhX',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '0.0243197',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: 'GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '0.000675547',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: 'EdveCrEyXppx98vssgUSoSruXuJVEH8NYp7xq65aVBW3',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '1.062936',
+              },
+              {
+                from: 'EdveCrEyXppx98vssgUSoSruXuJVEH8NYp7xq65aVBW3',
+                to: TRACKED_SOL_ADDRESS,
+                tokenContractAddress: SPLIT_FILL_TOKEN_ADDRESS,
+                symbol: 'Walter',
+                amount: '683831.629908',
+              },
+              {
+                from: TRACKED_SOL_ADDRESS,
+                to: '3CgvbiM3op4vjrrjH2zcrQUwsqh5veNVRjFCB9N6sRoD',
+                tokenContractAddress: 'So11111111111111111111111111111111111111112',
+                symbol: 'SOL',
+                amount: '0.0038',
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    if (url.includes('/api/v6/dex/market/historical-candles?')) {
+      return createJsonResponse({
+        code: '0',
+        data: [[String(TX_TIME_MS + 100_000), '0', '0', '0', '150', '0', '0', '0']],
+      });
+    }
+
+    if (url.includes('/api/v5/market/ticker?')) {
+      return createJsonResponse({
+        code: '0',
+        data: [
+          {
+            instId: 'SOL-USDT',
+            last: '150',
+          },
+        ],
+      });
+    }
+
+    throw new Error(`Unhandled split-fill fetch: ${url}`);
   };
 }
 
@@ -409,7 +595,7 @@ async function run() {
       txHash: TX_HASH,
     });
     assert.equal(reconciled.status, 'reconciled', 'address reconciliation should succeed');
-    assert.equal(reconciled.source, 'okx-address');
+    assert.equal(reconciled.source, 'okx-detail');
 
     const reconciledFeed = await readTelegramMonitorFeed(20);
     const reconciledPrimaryRow = reconciledFeed.find((item) => item.activity.metadata.txHash === TX_HASH);
@@ -418,17 +604,17 @@ async function run() {
       1,
       'reconciled feed should keep one logical row for the corrected tx'
     );
-    assert.equal(reconciledPrimaryRow?.activity.metadata.quoteAmount, '0.2502');
+    assert.equal(reconciledPrimaryRow?.activity.metadata.quoteAmount, '0.2483');
     assert.equal(reconciledPrimaryRow?.activity.metadata.value, '94464.94413');
     assert.equal(reconciledPrimaryRow?.activity.metadata.monitorReconciliationStatus, 'reconciled');
-    assert.equal(reconciledPrimaryRow?.activity.metadata.monitorReconciledSource, 'okx-address');
+    assert.equal(reconciledPrimaryRow?.activity.metadata.monitorReconciledSource, 'okx-detail');
 
     const reconciledEvents = readEventsFeed({
       limit: 20,
       userId: trackedUser.id,
     });
     assert.equal(reconciledEvents.total, 1, 'reconciliation should overwrite the existing event in place');
-    assert.equal(reconciledEvents.feed[0]?.activity.metadata.quoteAmount, '0.2502');
+    assert.equal(reconciledEvents.feed[0]?.activity.metadata.quoteAmount, '0.2483');
 
     globalThis.fetch = createDetailFallbackFetch() as typeof fetch;
     const detailFallback = await reconcileTelegramMonitorTxState({
@@ -439,6 +625,36 @@ async function run() {
     });
     assert.equal(detailFallback.status, 'reconciled', 'detail fallback should still reconcile');
     assert.equal(detailFallback.source, 'okx-detail');
+
+    globalThis.fetch = createSplitFillFetch() as typeof fetch;
+    const splitFillIngest = await ingestTelegramMonitorUpdate(buildSplitFillTelegramUpdate(700));
+    assert.equal(splitFillIngest.ok, true, 'split fill fixture should ingest provisionally');
+    const splitFillResult = await reconcileTelegramMonitorTxState({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: SPLIT_FILL_TX_HASH,
+      force: true,
+    });
+    assert.equal(splitFillResult.status, 'reconciled', 'split fill fixture should reconcile');
+    assert.equal(splitFillResult.source, 'okx-detail', 'split fill fixture should prefer tx detail');
+
+    const splitFillFeed = await readTelegramMonitorFeed(20);
+    const splitFillRow = splitFillFeed.find((item) => item.activity.metadata.txHash === SPLIT_FILL_TX_HASH);
+    assert.equal(splitFillRow?.activity.metadata.token, 'Walter');
+    assert.equal(splitFillRow?.activity.metadata.value, '2426335.171088');
+    assert.equal(splitFillRow?.activity.metadata.quoteAmount, '3.8');
+    assert.equal(splitFillRow?.activity.metadata.displayTradeAmountText, '3.8 SOL');
+    assert.equal(splitFillRow?.activity.metadata.monitorReconciledSource, 'okx-detail');
+
+    const splitFillEvents = readEventsFeed({
+      limit: 50,
+      userId: trackedUser.id,
+    });
+    const splitFillEvent = splitFillEvents.feed.find((item) => item.activity.metadata.txHash === SPLIT_FILL_TX_HASH);
+    assert.equal(splitFillEvent?.activity.metadata.value, '2426335.171088');
+    assert.equal(splitFillEvent?.activity.metadata.quoteAmount, '3.8');
+    assert.equal(splitFillEvent?.activity.metadata.displayTradeAmountText, '3.8 SOL');
+    assert.equal(splitFillEvent?.activity.metadata.monitorReconciledSource, 'okx-detail');
 
     const failingTxHash = '3u5q6YVho2rAWhRSDv8KaJ2cbzgYXJpS3M6vN8uB8RMpwFKLyxj9pAPf6GoyJ7xaqS8J8VdyaTiT5hgs4P4h7qvT';
     const failingIngest = await ingestTelegramMonitorUpdate(buildTelegramUpdate(502, failingTxHash));

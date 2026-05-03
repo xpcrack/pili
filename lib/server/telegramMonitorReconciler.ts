@@ -128,6 +128,50 @@ async function buildCanonicalActivityFromTransactions(params: {
   return activity;
 }
 
+function persistReconciledMonitorActivity(params: {
+  state: {
+    chain: string;
+    trackedWalletAddress: string;
+    txHash: string;
+    provisionalMarketCapUsd: number | null;
+    provisionalRawText: string | null;
+    provisionalWalletLabel: string | null;
+    provisionalWalletGroupLabel: string | null;
+    provisionalWalletAliasLabel: string | null;
+  };
+  user: User;
+  activity: Activity;
+  source: 'okx-address' | 'okx-detail';
+}) {
+  const activity = decorateCanonicalMonitorActivity({
+    activity: params.activity,
+    trackedWalletAddress: params.state.trackedWalletAddress,
+    txHash: params.state.txHash,
+    status: 'reconciled',
+    source: params.source,
+    marketCapUsd: params.state.provisionalMarketCapUsd,
+    rawText: params.state.provisionalRawText,
+    walletLabel: params.state.provisionalWalletLabel,
+    walletGroupLabel: params.state.provisionalWalletGroupLabel,
+    walletAliasLabel: params.state.provisionalWalletAliasLabel,
+  });
+
+  markTelegramMonitorTxStateReconciled({
+    chain: params.state.chain,
+    trackedWalletAddress: params.state.trackedWalletAddress,
+    txHash: params.state.txHash,
+    activity,
+    source: params.source,
+  });
+  upsertEventsFromFeedRows([{ user: params.user, activity }], 'telegram-monitor-reconcile');
+
+  return {
+    ok: true,
+    status: 'reconciled' as const,
+    source: params.source,
+  };
+}
+
 function decorateCanonicalMonitorActivity(params: {
   activity: Activity;
   trackedWalletAddress: string;
@@ -238,6 +282,33 @@ export async function reconcileTelegramMonitorTxState(params: {
   }
 
   try {
+    const detailResult = await fetchOkxTransactionDetailByTxHash(state.txHash, state.chain);
+    if (detailResult.ok && detailResult.detail) {
+      const syntheticTransactions = createSyntheticTransactionsFromDetail({
+        txHash: state.txHash,
+        txTimeMs: state.eventTimeMs,
+        transfers: detailResult.detail.tokenTransferDetails || [],
+        trackedWalletAddress: state.trackedWalletAddress,
+      });
+
+      if (syntheticTransactions.length > 0) {
+        const canonicalFromDetail = await buildCanonicalActivityFromTransactions({
+          user: trackedUser.user,
+          addressInfo: trackedUser.addressInfo,
+          transactions: syntheticTransactions,
+        });
+
+        if (canonicalFromDetail) {
+          return persistReconciledMonitorActivity({
+            state,
+            user: trackedUser.user,
+            activity: canonicalFromDetail,
+            source: 'okx-detail',
+          });
+        }
+      }
+    }
+
     const beginMs = Math.max(0, state.eventTimeMs - TX_RECONCILE_WINDOW_MS);
     const endMs = state.eventTimeMs + TX_RECONCILE_WINDOW_MS;
     const addressResult = await fetchOkxTransactionsByAddress(state.trackedWalletAddress, state.chain, {
@@ -257,84 +328,19 @@ export async function reconcileTelegramMonitorTxState(params: {
         });
 
         if (canonicalFromAddress) {
-          const activity = decorateCanonicalMonitorActivity({
+          return persistReconciledMonitorActivity({
+            state,
+            user: trackedUser.user,
             activity: canonicalFromAddress,
-            trackedWalletAddress: state.trackedWalletAddress,
-            txHash: state.txHash,
-            status: 'reconciled',
-            source: 'okx-address',
-            marketCapUsd: state.provisionalMarketCapUsd,
-            rawText: state.provisionalRawText,
-            walletLabel: state.provisionalWalletLabel,
-            walletGroupLabel: state.provisionalWalletGroupLabel,
-            walletAliasLabel: state.provisionalWalletAliasLabel,
-          });
-          markTelegramMonitorTxStateReconciled({
-            chain: state.chain,
-            trackedWalletAddress: state.trackedWalletAddress,
-            txHash: state.txHash,
-            activity,
             source: 'okx-address',
           });
-          upsertEventsFromFeedRows([{ user: trackedUser.user, activity }], 'telegram-monitor-reconcile');
-          return {
-            ok: true,
-            status: 'reconciled',
-            source: 'okx-address',
-          };
         }
       }
     }
 
-    const detailResult = await fetchOkxTransactionDetailByTxHash(state.txHash, state.chain);
-    if (detailResult.ok && detailResult.detail) {
-      const syntheticTransactions = createSyntheticTransactionsFromDetail({
-        txHash: state.txHash,
-        txTimeMs: state.eventTimeMs,
-        transfers: detailResult.detail.tokenTransferDetails || [],
-        trackedWalletAddress: state.trackedWalletAddress,
-      });
-
-      if (syntheticTransactions.length > 0) {
-        const canonicalFromDetail = await buildCanonicalActivityFromTransactions({
-          user: trackedUser.user,
-          addressInfo: trackedUser.addressInfo,
-          transactions: syntheticTransactions,
-        });
-
-        if (canonicalFromDetail) {
-          const activity = decorateCanonicalMonitorActivity({
-            activity: canonicalFromDetail,
-            trackedWalletAddress: state.trackedWalletAddress,
-            txHash: state.txHash,
-            status: 'reconciled',
-            source: 'okx-detail',
-            marketCapUsd: state.provisionalMarketCapUsd,
-            rawText: state.provisionalRawText,
-            walletLabel: state.provisionalWalletLabel,
-            walletGroupLabel: state.provisionalWalletGroupLabel,
-            walletAliasLabel: state.provisionalWalletAliasLabel,
-          });
-          markTelegramMonitorTxStateReconciled({
-            chain: state.chain,
-            trackedWalletAddress: state.trackedWalletAddress,
-            txHash: state.txHash,
-            activity,
-            source: 'okx-detail',
-          });
-          upsertEventsFromFeedRows([{ user: trackedUser.user, activity }], 'telegram-monitor-reconcile');
-          return {
-            ok: true,
-            status: 'reconciled',
-            source: 'okx-detail',
-          };
-        }
-      }
-    }
-
-    const addressError = addressResult.ok ? null : addressResult.error;
     const detailError = detailResult.ok ? 'detail-missing' : detailResult.error;
-    const errorText = [addressError, detailError].filter(Boolean).join('; ') || 'unable-to-build-canonical-activity';
+    const addressError = addressResult.ok ? 'address-missing' : addressResult.error;
+    const errorText = [detailError, addressError].filter(Boolean).join('; ') || 'unable-to-build-canonical-activity';
     markTelegramMonitorTxStateFailed({
       chain: state.chain,
       trackedWalletAddress: state.trackedWalletAddress,

@@ -189,13 +189,19 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
     return incoming;
   }
 
+  const prefersCanonicalMonitorDisplay =
+    incoming.metadata.monitorReconciledSource === 'okx-address' ||
+    incoming.metadata.monitorReconciledSource === 'okx-detail' ||
+    existing.metadata.monitorReconciledSource === 'okx-address' ||
+    existing.metadata.monitorReconciledSource === 'okx-detail';
+
   const mergedMetadata: Activity['metadata'] = {
     ...existing.metadata,
     ...incoming.metadata,
   };
 
   const displayMetadata = buildTradeDisplayMetadata({
-    rawText: pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText),
+    rawText: prefersCanonicalMonitorDisplay ? undefined : pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText),
     walletLabel: pickDisplaySeed(
       incoming.metadata.monitorWalletAliasLabel,
       incoming.metadata.monitorWalletLabel,

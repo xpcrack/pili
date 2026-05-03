@@ -16,6 +16,7 @@ const SOLANA_NATIVE_MINTS = new Set([
   'so11111111111111111111111111111111111111111',
   'so11111111111111111111111111111111111111112',
 ]);
+const STABLE_SYMBOLS = new Set(['usdt', 'usdc', 'dai']);
 const NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
   bsc: new Set(['bnb', 'wbnb']),
   solana: new Set(['sol', 'wsol']),
@@ -295,6 +296,54 @@ export function pickDominantFlow(flows: TokenFlow[]) {
   return flows.reduce((best, current) => (current.amount > best.amount ? current : best));
 }
 
+function isStableFlow(flow: TokenFlow) {
+  return STABLE_SYMBOLS.has(normalize(flow.symbol));
+}
+
+function aggregateDominantQuoteFlow(flows: TokenFlow[]) {
+  const stableFlows = flows.filter(isStableFlow);
+  if (stableFlows.length === 0) {
+    return null;
+  }
+
+  const totals = new Map<string, { symbol: string; amount: number }>();
+  for (const flow of stableFlows) {
+    const key = normalize(flow.tokenAddress) || normalize(flow.symbol);
+    const existing = totals.get(key);
+    if (existing) {
+      existing.amount += flow.amount;
+      continue;
+    }
+    totals.set(key, {
+      symbol: flow.symbol,
+      amount: flow.amount,
+    });
+  }
+
+  return Array.from(totals.values()).reduce((best, current) => (current.amount > best.amount ? current : best));
+}
+
+function buildTradeTokenIdentity(flow: TokenFlow) {
+  return normalize(flow.tokenAddress) || normalize(flow.symbol);
+}
+
+function aggregateMatchingTradeTokenFlow(flows: TokenFlow[], selectedFlow: TokenFlow) {
+  const selectedIdentity = buildTradeTokenIdentity(selectedFlow);
+  if (!selectedIdentity) {
+    return selectedFlow;
+  }
+
+  const matchingFlows = flows.filter((flow) => buildTradeTokenIdentity(flow) === selectedIdentity);
+  if (matchingFlows.length <= 1) {
+    return selectedFlow;
+  }
+
+  return {
+    ...selectedFlow,
+    amount: matchingFlows.reduce((sum, flow) => sum + flow.amount, 0),
+  };
+}
+
 export function summarizeFlows(flows: TokenFlow[]): FlowSummary {
   const outgoingNonNative = flows.filter((flow) => flow.direction === 'out' && !flow.native);
   const incomingNonNative = flows.filter((flow) => flow.direction === 'in' && !flow.native);
@@ -521,18 +570,110 @@ export async function parseGroupedTransaction(params: ParseGroupedTransactionPar
     dominantOutgoingNonNative,
     dominantIncomingNonNative,
   } = flowSummary;
+  const dominantOutgoingTradeToken = pickDominantFlow(outgoingNonNative.filter((flow) => !isStableFlow(flow)));
+  const dominantIncomingTradeToken = pickDominantFlow(incomingNonNative.filter((flow) => !isStableFlow(flow)));
+  const aggregatedOutgoingTradeToken = dominantOutgoingTradeToken
+    ? aggregateMatchingTradeTokenFlow(outgoingNonNative, dominantOutgoingTradeToken)
+    : null;
+  const aggregatedIncomingTradeToken = dominantIncomingTradeToken
+    ? aggregateMatchingTradeTokenFlow(incomingNonNative, dominantIncomingTradeToken)
+    : null;
+  const aggregatedOutgoingNonNative = dominantOutgoingNonNative
+    ? aggregateMatchingTradeTokenFlow(outgoingNonNative, dominantOutgoingNonNative)
+    : null;
+  const aggregatedIncomingNonNative = dominantIncomingNonNative
+    ? aggregateMatchingTradeTokenFlow(incomingNonNative, dominantIncomingNonNative)
+    : null;
+  const outgoingStableQuote = aggregateDominantQuoteFlow(outgoingNonNative);
+  const incomingStableQuote = aggregateDominantQuoteFlow(incomingNonNative);
 
   const outgoingTradeHasCounterFlow = incomingNativeTotal > 0 || incomingNonNative.length > 0;
   const incomingTradeHasCounterFlow = outgoingNativeTotal > 0 || outgoingNonNative.length > 0;
 
-  if (dominantOutgoingNonNative && outgoingTradeHasCounterFlow) {
+  if (aggregatedIncomingTradeToken && (outgoingNativeTotal > 0 || outgoingStableQuote)) {
+    txAction = 'buy';
+    primaryAsset = {
+      symbol: aggregatedIncomingTradeToken.symbol,
+      amount: formatAmount(aggregatedIncomingTradeToken.amount),
+      tokenAddress: aggregatedIncomingTradeToken.tokenAddress,
+      fromAddress: aggregatedIncomingTradeToken.fromAddress || primaryAsset.fromAddress,
+      toAddress: aggregatedIncomingTradeToken.toAddress || primaryAsset.toAddress,
+    };
+
+    let quoteToken: string | null = null;
+    let quoteAmount = 0;
+
+    let spentNative = outgoingNativeTotal;
+    if (chain === 'solana' && spentNative <= 0 && incomingNativeTotal > 0 && group.txHash && !PARSER_FAST_MODE) {
+      const netDelta = await fetchSolanaNetSolDelta(group.txHash, trackedAddressLower);
+      if (typeof netDelta === 'number' && netDelta < 0) {
+        spentNative = Math.abs(netDelta) + incomingNativeTotal;
+      }
+    }
+
+    if (spentNative > 0) {
+      quoteToken = chain === 'bsc' ? 'BNB' : 'SOL';
+      quoteAmount = spentNative;
+    } else if (outgoingStableQuote) {
+      quoteToken = outgoingStableQuote.symbol;
+      quoteAmount = outgoingStableQuote.amount;
+    }
+
+    if (quoteToken && quoteAmount > 0) {
+      quoteAsset = {
+        token: quoteToken,
+        amount: formatAmount(quoteAmount),
+      };
+    }
+  } else if (aggregatedOutgoingTradeToken && (incomingNativeTotal > 0 || incomingStableQuote)) {
     txAction = 'sell';
     primaryAsset = {
-      symbol: dominantOutgoingNonNative.symbol,
-      amount: formatAmount(dominantOutgoingNonNative.amount),
-      tokenAddress: dominantOutgoingNonNative.tokenAddress,
-      fromAddress: dominantOutgoingNonNative.fromAddress || primaryAsset.fromAddress,
-      toAddress: dominantOutgoingNonNative.toAddress || primaryAsset.toAddress,
+      symbol: aggregatedOutgoingTradeToken.symbol,
+      amount: formatAmount(aggregatedOutgoingTradeToken.amount),
+      tokenAddress: aggregatedOutgoingTradeToken.tokenAddress,
+      fromAddress: aggregatedOutgoingTradeToken.fromAddress || primaryAsset.fromAddress,
+      toAddress: aggregatedOutgoingTradeToken.toAddress || primaryAsset.toAddress,
+    };
+
+    let quoteToken: string | null = null;
+    let quoteAmount = 0;
+
+    let acquiredNative = incomingNativeTotal;
+    const shouldUseSolanaRpcQuote =
+      chain === 'solana' &&
+      acquiredNative <= 0 &&
+      outgoingNativeTotal > 0 &&
+      Boolean(group.txHash);
+
+    if (shouldUseSolanaRpcQuote && !PARSER_FAST_MODE) {
+      const netDelta = await fetchSolanaNetSolDelta(group.txHash, trackedAddressLower);
+      if (typeof netDelta === 'number' && netDelta > 0) {
+        acquiredNative = netDelta + outgoingNativeTotal;
+      }
+    }
+
+    if (acquiredNative > 0) {
+      quoteToken = chain === 'bsc' ? 'BNB' : 'SOL';
+      quoteAmount = acquiredNative;
+    } else if (incomingStableQuote) {
+      quoteToken = incomingStableQuote.symbol;
+      quoteAmount = incomingStableQuote.amount;
+    }
+
+    if (quoteToken && quoteAmount > 0) {
+      quoteAsset = {
+        token: quoteToken,
+        amount: formatAmount(quoteAmount),
+      };
+    }
+  } else if (aggregatedOutgoingNonNative && outgoingTradeHasCounterFlow) {
+    txAction = 'sell';
+    primaryAsset = {
+      symbol: aggregatedOutgoingNonNative.symbol,
+      amount: formatAmount(aggregatedOutgoingNonNative.amount),
+      tokenAddress: aggregatedOutgoingNonNative.tokenAddress,
+      fromAddress: aggregatedOutgoingNonNative.fromAddress || primaryAsset.fromAddress,
+      toAddress: aggregatedOutgoingNonNative.toAddress || primaryAsset.toAddress,
     };
 
     let acquiredNative = incomingNativeTotal;
@@ -555,14 +696,14 @@ export async function parseGroupedTransaction(params: ParseGroupedTransactionPar
         amount: formatAmount(acquiredNative),
       };
     }
-  } else if (dominantIncomingNonNative && incomingTradeHasCounterFlow) {
+  } else if (aggregatedIncomingNonNative && incomingTradeHasCounterFlow) {
     txAction = 'buy';
     primaryAsset = {
-      symbol: dominantIncomingNonNative.symbol,
-      amount: formatAmount(dominantIncomingNonNative.amount),
-      tokenAddress: dominantIncomingNonNative.tokenAddress,
-      fromAddress: dominantIncomingNonNative.fromAddress || primaryAsset.fromAddress,
-      toAddress: dominantIncomingNonNative.toAddress || primaryAsset.toAddress,
+      symbol: aggregatedIncomingNonNative.symbol,
+      amount: formatAmount(aggregatedIncomingNonNative.amount),
+      tokenAddress: aggregatedIncomingNonNative.tokenAddress,
+      fromAddress: aggregatedIncomingNonNative.fromAddress || primaryAsset.fromAddress,
+      toAddress: aggregatedIncomingNonNative.toAddress || primaryAsset.toAddress,
     };
 
     let spentNative = outgoingNativeTotal;
