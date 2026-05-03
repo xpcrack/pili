@@ -23,6 +23,20 @@ function makeUser(id: string, name: string): User {
 }
 
 function makeActivity(id: string, userId: string, timestamp: number, source: Activity['source'] = 'twitter'): Activity {
+  const importance = {
+    version: 1 as const,
+    score: 60,
+    sourceKind: source === 'blockchain' ? ('wallet' as const) : ('social' as const),
+    sourceCount7d: 1,
+    socialCount7d: source === 'blockchain' ? 0 : 1,
+    walletCount7d: source === 'blockchain' ? 1 : 0,
+    totalCount7d: 1,
+    historicalMaxAssetUsd: 250_000,
+    sourceRarity: 1,
+    assetWeight: 0.7,
+    totalFrequencyFactor: 1,
+    dataConfidenceFactor: 1,
+  };
   return {
     id,
     userId,
@@ -31,7 +45,10 @@ function makeActivity(id: string, userId: string, timestamp: number, source: Act
     content: id,
     title: id,
     timestamp,
-    metadata: source === 'twitter' ? { tweetId: id } : { txHash: id, chain: 'solana', trackedAddress: `${userId}Wallet` },
+    metadata:
+      source === 'twitter'
+        ? { tweetId: id, importance }
+        : { txHash: id, chain: 'solana', trackedAddress: `${userId}Wallet`, importance },
   };
 }
 
