@@ -70,7 +70,15 @@ async function run() {
     upsertFeedSnapshot([{ user, activity: makeChainActivity('snapshot-chain', user.id, timestamp + 1_000) }]);
     const db = getDb();
     const snapshotRow = db.prepare('SELECT activity_json FROM activity_feed WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1').get(user.id) as { activity_json: string };
-    assert.ok(JSON.parse(snapshotRow.activity_json).metadata.importance.score !== undefined);
+    const snapshotFeedActivity = JSON.parse(snapshotRow.activity_json) as Activity;
+    assert.ok(snapshotFeedActivity.metadata.importance?.score !== undefined);
+    const snapshotEventRow = db.prepare('SELECT activity_json FROM events WHERE tx_hash = ? LIMIT 1').get('snapshot-chain-tx') as { activity_json: string };
+    const snapshotEventActivity = JSON.parse(snapshotEventRow.activity_json) as Activity;
+    assert.deepEqual(
+      snapshotFeedActivity.metadata.importance,
+      snapshotEventActivity.metadata.importance,
+      'snapshot rows pre-scored for activity_feed should persist the same importance into events'
+    );
 
     upsertTwitterTweets([
       {
