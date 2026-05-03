@@ -11,6 +11,7 @@ import {
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import {
   claimTelegramMonitorTxStatesForRepair,
   getTelegramMonitorTxState,
@@ -269,14 +270,16 @@ export async function reconcileTelegramMonitorTxState(params: {
             walletGroupLabel: state.provisionalWalletGroupLabel,
             walletAliasLabel: state.provisionalWalletAliasLabel,
           });
+          const [scoredCanonical] = scoreFeedRowsAgainstDatabase([{ user: trackedUser.user, activity }]);
+          const canonicalForWrite = scoredCanonical || { user: trackedUser.user, activity };
           markTelegramMonitorTxStateReconciled({
             chain: state.chain,
             trackedWalletAddress: state.trackedWalletAddress,
             txHash: state.txHash,
-            activity,
+            activity: canonicalForWrite.activity,
             source: 'okx-address',
           });
-          upsertEventsFromFeedRows([{ user: trackedUser.user, activity }], 'telegram-monitor-reconcile');
+          upsertEventsFromFeedRows([canonicalForWrite], 'telegram-monitor-reconcile');
           return {
             ok: true,
             status: 'reconciled',
@@ -315,14 +318,16 @@ export async function reconcileTelegramMonitorTxState(params: {
             walletGroupLabel: state.provisionalWalletGroupLabel,
             walletAliasLabel: state.provisionalWalletAliasLabel,
           });
+          const [scoredCanonical] = scoreFeedRowsAgainstDatabase([{ user: trackedUser.user, activity }]);
+          const canonicalForWrite = scoredCanonical || { user: trackedUser.user, activity };
           markTelegramMonitorTxStateReconciled({
             chain: state.chain,
             trackedWalletAddress: state.trackedWalletAddress,
             txHash: state.txHash,
-            activity,
+            activity: canonicalForWrite.activity,
             source: 'okx-detail',
           });
-          upsertEventsFromFeedRows([{ user: trackedUser.user, activity }], 'telegram-monitor-reconcile');
+          upsertEventsFromFeedRows([canonicalForWrite], 'telegram-monitor-reconcile');
           return {
             ok: true,
             status: 'reconciled',

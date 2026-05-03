@@ -292,6 +292,12 @@ async function run() {
     globalThis.fetch = createSuccessfulFetch() as typeof fetch;
     const provisionalResult = await ingestTelegramMonitorUpdate(buildTelegramUpdate(501));
     assert.equal(provisionalResult.ok, true, 'ingest should accept the telegram update');
+    const txStateAfterIngest = getTelegramMonitorTxState({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: TX_HASH,
+    });
+    assert.ok(txStateAfterIngest?.canonicalActivity?.metadata.importance?.score !== undefined);
 
     const provisionalFeed = await readTelegramMonitorFeed(20);
     assert.equal(provisionalFeed.length, 1, 'provisional monitor feed should have one row');
@@ -369,6 +375,17 @@ async function run() {
       null,
       'legacy-only fixture should not create a tx-state row'
     );
+    const reparsedFallback = await readTelegramMonitorFeed(20);
+    const fallbackActivity = reparsedFallback.find((item) => item.activity.metadata.txHash === legacyOnlyTxHash);
+    assert.ok(fallbackActivity?.activity.metadata.importance?.score !== undefined);
+    const fallbackRows = getDb()
+      .prepare(
+        `SELECT projected_activity_json
+         FROM telegram_monitor_events
+         WHERE tx_hash = ?`
+      )
+      .all(legacyOnlyTxHash) as Array<{ projected_activity_json: string | null }>;
+    assert.ok(fallbackRows[0]?.projected_activity_json, 'fallback monitor row should persist projected activity json');
 
     const feedWithLegacyFallback = await readTelegramMonitorFeed(20);
     const legacyFallbackRows = feedWithLegacyFallback.filter(
@@ -410,6 +427,12 @@ async function run() {
     });
     assert.equal(reconciled.status, 'reconciled', 'address reconciliation should succeed');
     assert.equal(reconciled.source, 'okx-address');
+    const reconciledState = getTelegramMonitorTxState({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: TX_HASH,
+    });
+    assert.ok(reconciledState?.canonicalActivity?.metadata.importance?.score !== undefined);
 
     const reconciledFeed = await readTelegramMonitorFeed(20);
     const reconciledPrimaryRow = reconciledFeed.find((item) => item.activity.metadata.txHash === TX_HASH);

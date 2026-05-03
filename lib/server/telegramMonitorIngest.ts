@@ -2,14 +2,21 @@ import 'server-only';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
 import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
-import { upsertTelegramMonitorEvent } from '@/lib/server/telegramMonitorRepo';
-import { upsertTelegramMonitorTxStateProvisional } from '@/lib/server/telegramMonitorTxStateRepo';
+import {
+  updateTelegramMonitorEventProjectedActivity,
+  upsertTelegramMonitorEvent,
+} from '@/lib/server/telegramMonitorRepo';
+import {
+  setTelegramMonitorTxStateCanonicalActivity,
+  upsertTelegramMonitorTxStateProvisional,
+} from '@/lib/server/telegramMonitorTxStateRepo';
 import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
 import {
   parseTweetIdFromUrl,
@@ -413,12 +420,32 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
         users: [trackedMatch.user],
       });
 
-  if (projected) {
-    upsertEventsFromFeedRows([projected], 'telegram-monitor-ingest');
+  const scoredProjected = projected ? scoreFeedRowsAgainstDatabase([projected])[0] || null : null;
+
+  if (scoredProjected && txState) {
+    setTelegramMonitorTxStateCanonicalActivity({
+      chain: txState.chain,
+      trackedWalletAddress: txState.trackedWalletAddress,
+      txHash: txState.txHash,
+      activity: scoredProjected.activity,
+    });
+  }
+
+  if (scoredProjected && !txState) {
+    updateTelegramMonitorEventProjectedActivity({
+      sourceChatId,
+      sourceMessageId,
+      txHash: parsed.txHash,
+      activity: scoredProjected.activity,
+    });
+  }
+
+  if (scoredProjected) {
+    upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest');
     const tweetUrls = messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)));
     if (tweetUrls.length > 0) {
       await upsertEventTweetRefAndFetchMissing({
-        eventId: projected.activity.id,
+        eventId: scoredProjected.activity.id,
         tweetUrls,
         refSource: 'telegram-monitor',
         fetchTweetsByIds: async (ids) => {
@@ -440,7 +467,7 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
   return {
     ok: true,
     saved,
-    projected: Boolean(projected),
+    projected: Boolean(scoredProjected),
     parsed: {
       chain: parsed.chain,
       tokenAddress: parsed.tokenAddress,
