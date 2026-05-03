@@ -18,13 +18,18 @@ function parseUserFallback(userJson: string, activity: Activity, usersById: Map<
   return usersById.get(activity.userId) || usersById.get(parsedUser.id) || parsedUser;
 }
 
+function paddedStableId(prefix: string, id: number | string) {
+  return `${prefix}-${String(id).padStart(12, '0')}`;
+}
+
 export async function backfillActivityImportance() {
   const db = getDb();
   const usersById = currentUsersById();
 
-  const eventRows = db.prepare('SELECT event_id, user_json, activity_json, timestamp FROM events ORDER BY timestamp ASC, event_id ASC').all() as Array<{
+  const eventRows = db.prepare('SELECT event_id, user_json, metadata_json, activity_json, timestamp FROM events ORDER BY timestamp ASC, event_id ASC').all() as Array<{
     event_id: string;
     user_json: string;
+    metadata_json: string;
     activity_json: string;
     timestamp: number;
   }>;
@@ -38,6 +43,7 @@ export async function backfillActivityImportance() {
       } satisfies FeedImportanceRow;
     })
   );
+  const eventRowByStableId = new Map(eventRows.map((row) => [row.event_id, row] as const));
 
   withTransaction(() => {
     const updateEventStmt = db.prepare(
@@ -48,14 +54,24 @@ export async function backfillActivityImportance() {
        WHERE event_id = ?`
     );
 
-    scoredEvents.forEach((row, index) => {
+    let updatedCount = 0;
+    for (const row of scoredEvents) {
+      const stableId = row.stableId || '';
+      const original = eventRowByStableId.get(stableId);
+      if (!original) continue;
+      const nextMetadataJson = JSON.stringify(row.activity.metadata);
+      const nextActivityJson = JSON.stringify(row.activity);
+      if (original.metadata_json === nextMetadataJson && original.activity_json === nextActivityJson) {
+        continue;
+      }
       updateEventStmt.run(
-        JSON.stringify(row.activity.metadata),
-        JSON.stringify(row.activity),
-        Date.now() + index,
-        eventRows[index]!.event_id
+        nextMetadataJson,
+        nextActivityJson,
+        Date.now() + updatedCount,
+        original.event_id
       );
-    });
+      updatedCount += 1;
+    }
   });
 
   const feedRows = db.prepare('SELECT id, user_json, activity_json, timestamp FROM activity_feed ORDER BY timestamp ASC, id ASC').all() as Array<{
@@ -64,16 +80,20 @@ export async function backfillActivityImportance() {
     activity_json: string;
     timestamp: number;
   }>;
+  const feedStableIdById = new Map<number, string>();
   const scoredFeedRows = scoreFeedRowsChronologically(
     feedRows.map((row) => {
       const activity = parseJson<Activity>(row.activity_json);
+      const stableId = paddedStableId('feed', row.id);
+      feedStableIdById.set(row.id, stableId);
       return {
         user: parseUserFallback(row.user_json, activity, usersById),
         activity,
-        stableId: String(row.id),
+        stableId,
       } satisfies FeedImportanceRow;
     })
   );
+  const scoredFeedByStableId = new Map(scoredFeedRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
     const updateFeedStmt = db.prepare(
@@ -81,9 +101,17 @@ export async function backfillActivityImportance() {
        SET activity_json = ?
        WHERE id = ?`
     );
-    scoredFeedRows.forEach((row, index) => {
-      updateFeedStmt.run(JSON.stringify(row.activity), feedRows[index]!.id);
-    });
+    for (const row of feedRows) {
+      const stableId = feedStableIdById.get(row.id);
+      if (!stableId) continue;
+      const scored = scoredFeedByStableId.get(stableId);
+      if (!scored) continue;
+      const nextActivityJson = JSON.stringify(scored.activity);
+      if (row.activity_json === nextActivityJson) {
+        continue;
+      }
+      updateFeedStmt.run(nextActivityJson, row.id);
+    }
   });
 
   const txStateRows = db.prepare(
@@ -92,6 +120,22 @@ export async function backfillActivityImportance() {
      WHERE canonical_activity_json IS NOT NULL
      ORDER BY COALESCE(event_time_ms, updated_at) ASC, id ASC`
   ).all() as Array<{ id: number; user_id: string; canonical_activity_json: string }>;
+  const txStateStableIdById = new Map<number, string>();
+  const txStateRowsToScore: FeedImportanceRow[] = [];
+  for (const row of txStateRows) {
+    const user = usersById.get(row.user_id);
+    if (!user) continue;
+    const stableId = paddedStableId('txstate', row.id);
+    txStateStableIdById.set(row.id, stableId);
+    txStateRowsToScore.push({
+      user,
+      activity: parseJson<Activity>(row.canonical_activity_json),
+      stableId,
+    });
+  }
+  const scoredTxStateRows =
+    txStateRowsToScore.length > 0 ? scoreFeedRowsAgainstDatabase(txStateRowsToScore) : [];
+  const scoredTxStateByStableId = new Map(scoredTxStateRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
     const updateTxStateStmt = db.prepare(
@@ -101,14 +145,19 @@ export async function backfillActivityImportance() {
        WHERE id = ?`
     );
 
-    txStateRows.forEach((row, index) => {
-      const activity = parseJson<Activity>(row.canonical_activity_json);
-      const user = usersById.get(row.user_id);
-      if (!user) return;
-      const scored = scoreFeedRowsAgainstDatabase([{ user, activity }])[0];
-      if (!scored) return;
-      updateTxStateStmt.run(JSON.stringify(scored.activity), Date.now() + index, row.id);
-    });
+    let updatedCount = 0;
+    for (const row of txStateRows) {
+      const stableId = txStateStableIdById.get(row.id);
+      if (!stableId) continue;
+      const scored = scoredTxStateByStableId.get(stableId);
+      if (!scored) continue;
+      const nextActivityJson = JSON.stringify(scored.activity);
+      if (row.canonical_activity_json === nextActivityJson) {
+        continue;
+      }
+      updateTxStateStmt.run(nextActivityJson, Date.now() + updatedCount, row.id);
+      updatedCount += 1;
+    }
   });
 
   const fallbackRows = db.prepare(
@@ -117,6 +166,23 @@ export async function backfillActivityImportance() {
      WHERE projected_activity_json IS NOT NULL
      ORDER BY COALESCE(event_time_ms, updated_at) ASC, id ASC`
   ).all() as Array<{ id: number; projected_activity_json: string }>;
+  const fallbackStableIdById = new Map<number, string>();
+  const fallbackRowsToScore: FeedImportanceRow[] = [];
+  for (const row of fallbackRows) {
+    const activity = parseJson<Activity>(row.projected_activity_json);
+    const user = usersById.get(activity.userId);
+    if (!user) continue;
+    const stableId = paddedStableId('fallback', row.id);
+    fallbackStableIdById.set(row.id, stableId);
+    fallbackRowsToScore.push({
+      user,
+      activity,
+      stableId,
+    });
+  }
+  const scoredFallbackRows =
+    fallbackRowsToScore.length > 0 ? scoreFeedRowsAgainstDatabase(fallbackRowsToScore) : [];
+  const scoredFallbackByStableId = new Map(scoredFallbackRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
     const updateFallbackStmt = db.prepare(
@@ -126,13 +192,18 @@ export async function backfillActivityImportance() {
        WHERE id = ?`
     );
 
-    fallbackRows.forEach((row, index) => {
-      const activity = parseJson<Activity>(row.projected_activity_json);
-      const user = usersById.get(activity.userId);
-      if (!user) return;
-      const scored = scoreFeedRowsAgainstDatabase([{ user, activity }])[0];
-      if (!scored) return;
-      updateFallbackStmt.run(JSON.stringify(scored.activity), Date.now() + index, row.id);
-    });
+    let updatedCount = 0;
+    for (const row of fallbackRows) {
+      const stableId = fallbackStableIdById.get(row.id);
+      if (!stableId) continue;
+      const scored = scoredFallbackByStableId.get(stableId);
+      if (!scored) continue;
+      const nextActivityJson = JSON.stringify(scored.activity);
+      if (row.projected_activity_json === nextActivityJson) {
+        continue;
+      }
+      updateFallbackStmt.run(nextActivityJson, Date.now() + updatedCount, row.id);
+      updatedCount += 1;
+    }
   });
 }
