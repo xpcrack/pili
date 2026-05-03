@@ -1,5 +1,10 @@
 import type { Activity, User } from '@/types';
 import { formatTokenAmount } from '@/lib/assetFormat';
+import {
+  buildActivityImportanceExplanationRows,
+  getActivityImportanceLevel,
+  getActivityImportanceLevelLabel,
+} from '@/lib/activityImportance';
 import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
 import {
   formatCompactMarketCap,
@@ -256,6 +261,22 @@ export function buildActivityCardViewModel(params: {
   const counterpartyGmgnUrl = counterpartyAddress
     ? buildGmgnAddressUrl(activity.metadata.chain, counterpartyAddress)
     : null;
+  const importance = activity.metadata.importance || null;
+  const importanceScore = importance?.score ?? null;
+  const importanceLevel = importanceScore === null ? null : getActivityImportanceLevel(importanceScore);
+  const importanceLevelLabel = importanceScore === null ? null : getActivityImportanceLevelLabel(importanceScore);
+  const importanceBadgeText = importanceScore === null ? null : `${importanceScore}分`;
+  const importanceTooltip = importance
+    ? buildActivityImportanceExplanationRows(importance)
+        .map((row) => `${row.label}: ${row.valueText}\n${row.description}`)
+        .join('\n\n')
+    : null;
+  const importanceBadgeClassName =
+    importanceLevel === 'high'
+      ? 'bg-rose-500/15 text-rose-200 ring-1 ring-rose-400/35'
+      : importanceLevel === 'important'
+        ? 'bg-amber-500/15 text-amber-200 ring-1 ring-amber-400/35'
+        : 'bg-zinc-800 text-zinc-300 ring-1 ring-zinc-700';
 
   return {
     isBlockchain,
@@ -293,5 +314,9 @@ export function buildActivityCardViewModel(params: {
     tokenGmgnUrl,
     trackedAddressGmgnUrl,
     counterpartyGmgnUrl,
+    importanceBadgeText,
+    importanceLevelLabel,
+    importanceTooltip,
+    importanceBadgeClassName,
   };
 }
