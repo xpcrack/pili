@@ -1,5 +1,17 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Runtime
+
+Use Node `24.11.1` for this repo.
+
+```bash
+nvm use
+npm install
+npm run dev
+```
+
+If you see `better-sqlite3` or `NODE_MODULE_VERSION` errors, switch back to Node `24.11.1` and run `npm rebuild better-sqlite3`.
+
 ## Getting Started
 
 First, run the development server:

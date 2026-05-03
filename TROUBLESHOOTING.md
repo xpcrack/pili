@@ -1,3 +1,18 @@
+## Node runtime and better-sqlite3
+
+This repo is pinned to Node `24.11.1`. Running under Node `25+` can break the native `better-sqlite3` module with a `NODE_MODULE_VERSION` mismatch.
+
+Recovery:
+
+```bash
+nvm use 24.11.1
+npm rebuild better-sqlite3
+npm run build
+npm test
+```
+
+If `npm rebuild better-sqlite3` fails, run `npm install` under Node `24.11.1` and repeat the verification commands.
+
 # Web3动态看板数据不显示问题排查和修复
 
 ## 问题描述
