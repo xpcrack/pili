@@ -3,7 +3,7 @@ import 'server-only';
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import {
   listRecentTelegramMonitorFallbackEventsWithoutTxState,
-  updateTelegramMonitorEventProjectedActivity,
+  updateTelegramMonitorEventProjectedActivityIfMissing,
   type TelegramMonitorFeedEvent,
 } from '@/lib/server/telegramMonitorRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
@@ -362,7 +362,7 @@ export async function projectTelegramMonitorTxState(params: {
     return null;
   }
 
-  if (params.state.canonicalActivity) {
+  if (params.state.reconciliationStatus === 'reconciled' && params.state.canonicalActivity) {
     return {
       user,
       activity: params.state.canonicalActivity,
@@ -447,7 +447,7 @@ export async function readTelegramMonitorFeed(limit = 200): Promise<TelegramMoni
         continue;
       }
       candidate.row.activity = scored.activity;
-      updateTelegramMonitorEventProjectedActivity({
+      updateTelegramMonitorEventProjectedActivityIfMissing({
         sourceChatId: candidate.event.sourceChatId ?? null,
         sourceMessageId: candidate.event.sourceMessageId ?? null,
         txHash: candidate.event.txHash ?? null,

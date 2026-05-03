@@ -342,6 +342,31 @@ export function updateTelegramMonitorEventProjectedActivity(input: {
   );
 }
 
+export function updateTelegramMonitorEventProjectedActivityIfMissing(input: {
+  sourceChatId: string | null;
+  sourceMessageId: number | null;
+  txHash: string | null;
+  activity: Activity;
+}) {
+  const db = getDb();
+  db.prepare(
+    `UPDATE telegram_monitor_events
+     SET projected_activity_json = ?,
+         updated_at = ?
+     WHERE provider = 'xxyy'
+       AND source_chat_id IS ?
+       AND source_message_id IS ?
+       AND tx_hash IS ?
+       AND projected_activity_json IS NULL`
+  ).run(
+    JSON.stringify(input.activity),
+    Date.now(),
+    input.sourceChatId,
+    input.sourceMessageId,
+    input.txHash
+  );
+}
+
 export interface ListTelegramMonitorEventsOptions {
   limit?: number;
   fromMs?: number | null;
