@@ -33,6 +33,21 @@ function readSection(content: string, startHeading: string, endHeading?: string)
   return content.slice(startIndex, endIndex);
 }
 
+function readSectionUntilNextTopLevelHeading(content: string, startHeading: string) {
+  const startIndex = content.indexOf(startHeading);
+
+  assert.notEqual(startIndex, -1, `Missing section heading: ${startHeading}`);
+
+  const rest = content.slice(startIndex + startHeading.length);
+  const nextTopLevelHeadingOffset = rest.search(/\n# /);
+
+  if (nextTopLevelHeadingOffset === -1) {
+    return content.slice(startIndex);
+  }
+
+  return content.slice(startIndex, startIndex + startHeading.length + nextTopLevelHeadingOffset);
+}
+
 function run() {
   const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
     engines?: { node?: string };
@@ -43,10 +58,9 @@ function run() {
   const troubleshooting = readRepoFile('TROUBLESHOOTING.md');
   const agentsRuntimeBlock = readMarkedBlock(agents, '<!-- BEGIN:runtime-rules -->', '<!-- END:runtime-rules -->');
   const readmeRuntimeBlock = readSection(readme, '## Runtime', '## Getting Started');
-  const troubleshootingTopSection = readSection(
+  const troubleshootingTopSection = readSectionUntilNextTopLevelHeading(
     troubleshooting,
-    '## Node runtime and better-sqlite3',
-    '# Web3动态看板数据不显示问题排查和修复'
+    '## Node runtime and better-sqlite3'
   );
 
   assert.equal(readRepoFile('.nvmrc'), '24.11.1', '.nvmrc should pin Node 24.11.1');
