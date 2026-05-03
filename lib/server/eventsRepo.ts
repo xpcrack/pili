@@ -266,18 +266,18 @@ function isExpectedMonitorAggregateCorrection(existing: Activity, incoming: Acti
 
 export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Activity }>, ingestSource: string) {
   if (rows.length === 0) return;
-  const scoredRows = scoreFeedRowsAgainstDatabase(
-    rows.map((row, index) => ({
-      ...row,
-      stableId: `input-${index}`,
-    }))
-  );
+
+  const rowsWithStableIds = rows.map((row, index) => ({
+    ...row,
+    stableId: `input-${String(index).padStart(12, '0')}`,
+  }));
+  const rowsNeedingScore = rowsWithStableIds.filter((row) => !row.activity.metadata.importance);
+  const scoredRows = rowsNeedingScore.length > 0 ? scoreFeedRowsAgainstDatabase(rowsNeedingScore) : [];
   const scoredByStableId = new Map(scoredRows.map((row) => [row.stableId || '', row] as const));
+  const rowsForUpsert = rowsWithStableIds.map((row) => scoredByStableId.get(row.stableId || '') || row);
+
   for (let index = 0; index < rows.length; index += 1) {
-    const scored = scoredByStableId.get(`input-${index}`);
-    if (!scored) {
-      continue;
-    }
+    const scored = rowsForUpsert[index];
     rows[index].user = scored.user;
     rows[index].activity = scored.activity;
   }
@@ -438,7 +438,7 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
          updated_at = excluded.updated_at`
     );
 
-    for (const row of scoredRows) {
+    for (const row of rowsForUpsert) {
       const { user, activity } = row;
       const eventId = buildEventId(user, activity);
       const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
