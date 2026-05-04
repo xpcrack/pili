@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
+import {
+  ADDRESSES_PAGE_FETCH_URL,
+  DELETE_ADDRESS_CONFIRMATION_TEXT,
+} from '@/app/addresses/page';
+import { TOP_NAV_ACTIVE_VALUES, TOP_NAV_ITEMS } from '@/components/TopNav';
 import {
   buildManageServerSyncSignature,
   filterManageUsers,
@@ -32,6 +39,10 @@ function makeAddress(address: string, name = '#2'): User['addresses'][number] {
     totalAssetUsd: null,
     assetUpdatedAt: null,
   };
+}
+
+function readProjectFile(relativePath: string) {
+  return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
 }
 
 function run() {
@@ -85,6 +96,33 @@ function run() {
     sameAddressDifferentAliasSignature,
     '同步签名必须包含地址别名，避免服务端别名不同步'
   );
+
+  const topNavSource = readProjectFile('components/TopNav.tsx');
+  const managePageSource = readProjectFile('app/manage/page.tsx');
+  const addressesPagePath = path.join(process.cwd(), 'app/addresses/page.tsx');
+
+  assert.equal(fs.existsSync(addressesPagePath), true, 'addresses 页面文件必须存在');
+
+  const addressesPageSource = readProjectFile('app/addresses/page.tsx');
+
+  assert.equal(TOP_NAV_ACTIVE_VALUES.includes('addresses'), true, 'TopNav 必须支持 addresses active 态');
+  assert.equal(
+    TOP_NAV_ITEMS.some((item) => item.href === '/addresses' && item.label === '地址'),
+    true,
+    'TopNav 必须提供地址导航入口'
+  );
+  assert.equal(ADDRESSES_PAGE_FETCH_URL, '/api/addresses', 'addresses 页面必须从 /api/addresses 拉数据');
+  assert.equal(
+    DELETE_ADDRESS_CONFIRMATION_TEXT.includes('删除地址，不会删除人物'),
+    true,
+    'addresses 页面删除确认文案必须明确说明不会删除人物'
+  );
+  assert.match(addressesPageSource, /fetch\(/, 'addresses 页面必须主动发起数据拉取');
+  assert.doesNotMatch(managePageSource, /expandedAddressByUserId/, 'manage 页面不应再保留 expandedAddressByUserId');
+  assert.doesNotMatch(managePageSource, /toggleAddressExpand/, 'manage 页面不应再保留 toggleAddressExpand');
+  assert.doesNotMatch(managePageSource, /ChevronDown/, 'manage 页面不应再保留 ChevronDown');
+  assert.doesNotMatch(managePageSource, /ChevronUp/, 'manage 页面不应再保留 ChevronUp');
+  assert.match(managePageSource, /href="\/addresses"/, 'manage 页面必须提供跳转 /addresses 的入口');
 
   console.log('manage users tests: ok');
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
@@ -11,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { TopNav } from '@/components/TopNav';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
-import { formatUsdCompact, formatUsdOrDash } from '@/lib/assetFormat';
+import { formatUsdCompact } from '@/lib/assetFormat';
 import {
   expandTrackedAddresses,
   formatUsersForAddressExport,
@@ -29,14 +30,13 @@ import {
   Copy,
   Trash2,
   Wallet,
-  ChevronDown,
-  ChevronUp,
   X,
   Save,
   AlertCircle,
   Edit2,
   RefreshCw,
   Search,
+  ArrowRight,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -205,7 +205,7 @@ function getAddressBadgeMeta(params: {
 }
 
 export default function ManagePage() {
-  const { users, addUser, addUsers, updateUser, deleteUser, removeAddress } = useUsersDataStore();
+  const { users, addUser, addUsers, updateUser, deleteUser } = useUsersDataStore();
   const isClient = useIsClient();
 
   const [isCreating, setIsCreating] = useState(false);
@@ -221,8 +221,6 @@ export default function ManagePage() {
   const [bulkImportText, setBulkImportText] = useState('');
   const [searchText, setSearchText] = useState('');
 
-  const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
-  const [editingAddressText, setEditingAddressText] = useState('');
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
   const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
 
@@ -346,20 +344,6 @@ export default function ManagePage() {
     setBulkImportText('');
   };
 
-  const handleAddAddressesToUser = (user: User) => {
-    const logicalAddressCount = groupAddressesForDisplay(user.addresses).length;
-    const newAddresses = parseAddressText(editingAddressText, logicalAddressCount + 1);
-
-    if (newAddresses.length > 0) {
-      updateUser(user.id, {
-        addresses: [...user.addresses, ...expandTrackedAddresses(newAddresses)],
-      });
-    }
-
-    setEditingAddressText('');
-    setEditingAddressUserId(null);
-  };
-
   const copyText = async (text: string) => {
     if (!text.trim()) return;
     await navigator.clipboard.writeText(text);
@@ -429,6 +413,13 @@ export default function ManagePage() {
             <Plus className="mr-1 h-4 w-4" />
             手动新建
           </Button>
+          <Link
+            href="/addresses"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+          >
+            地址页
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </section>
 
         <section className="rounded-2xl border border-zinc-800/50 bg-zinc-900/50 p-6">
@@ -657,9 +648,17 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
 
         <section className="space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <h2 className="text-sm font-medium text-zinc-400">
-              已关注人物 ({searchText.trim() ? `${filteredUsers.length} / ${users.length}` : users.length})
-            </h2>
+            <div className="space-y-1">
+              <h2 className="text-sm font-medium text-zinc-400">
+                已关注人物 ({searchText.trim() ? `${filteredUsers.length} / ${users.length}` : users.length})
+              </h2>
+              <p className="text-xs text-zinc-600">
+                地址详情、复制和删除已拆分到{' '}
+                <Link href="/addresses" className="text-blue-400 hover:text-blue-300">
+                  /addresses
+                </Link>
+              </p>
+            </div>
             <div className="relative w-full md:w-80">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
               <Input
@@ -688,10 +687,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                 relayCoverage={
                   user.twitter ? relayCoverageByHandle[normalizeTwitterHandle(user.twitter).toLowerCase()] || null : null
                 }
-                isEditingAddresses={editingAddressUserId === user.id}
-                editingAddressText={editingAddressUserId === user.id ? editingAddressText : ''}
                 onDelete={() => deleteUser(user.id)}
-                onRemoveAddress={(address) => removeAddress(user.id, address)}
                 onUpdate={(updates) => updateUser(user.id, updates)}
                 onRefreshAvatar={() => {
                   if (!user.twitter) return;
@@ -699,16 +695,6 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     avatar: buildUserAvatar(user.handle, user.twitter, `${user.twitter}:${Date.now()}`),
                   });
                 }}
-                onStartEditingAddresses={() => {
-                  setEditingAddressUserId(user.id);
-                  setEditingAddressText('');
-                }}
-                onChangeEditingAddressText={setEditingAddressText}
-                onCancelEditingAddresses={() => {
-                  setEditingAddressUserId(null);
-                  setEditingAddressText('');
-                }}
-                onAddAddresses={() => handleAddAddressesToUser(user)}
               />
             ))}
           </div>
@@ -737,35 +723,20 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
 interface UserCardProps {
   user: User;
   relayCoverage: TwitterRelayCoverageView | null;
-  isEditingAddresses: boolean;
-  editingAddressText: string;
   onDelete: () => void;
-  onRemoveAddress: (address: string) => void;
   onUpdate: (updates: Partial<User>) => void;
   onRefreshAvatar: () => void;
-  onStartEditingAddresses: () => void;
-  onChangeEditingAddressText: (text: string) => void;
-  onCancelEditingAddresses: () => void;
-  onAddAddresses: () => void;
 }
 
 function UserCard({
   user,
   relayCoverage,
-  isEditingAddresses,
-  editingAddressText,
   onDelete,
-  onRemoveAddress,
   onUpdate,
   onRefreshAvatar,
-  onStartEditingAddresses,
-  onChangeEditingAddressText,
-  onCancelEditingAddresses,
-  onAddAddresses,
 }: UserCardProps) {
-  const [expanded, setExpanded] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const displayAddresses = useMemo(() => groupAddressesForDisplay(user.addresses), [user.addresses]);
+  const addressCount = useMemo(() => groupAddressesForDisplay(user.addresses).length, [user.addresses]);
   const [profileForm, setProfileForm] = useState<ProfileFormState>({
     name: user.name,
     handle: user.handle,
@@ -955,99 +926,15 @@ function UserCard({
       )}
 
       <div className="mt-4 border-t border-zinc-800/50 pt-4">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setExpanded((value) => !value)}
-            className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200"
-          >
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800/60 bg-zinc-950/40 px-3 py-3">
+          <div className="flex items-center gap-2 text-sm text-zinc-400">
             <Wallet className="h-4 w-4" />
-            <span>{displayAddresses.length} 个地址</span>
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </button>
-
-          {!isEditingAddresses && (
-            <button
-              onClick={() => {
-                onStartEditingAddresses();
-                setExpanded(true);
-              }}
-              className="text-xs text-blue-400 hover:text-blue-300"
-            >
-              + 添加地址
-            </button>
-          )}
-        </div>
-
-        {expanded && (
-          <div className="mt-3 space-y-2">
-            {displayAddresses.length === 0 && !isEditingAddresses && (
-              <p className="py-4 text-center text-sm text-zinc-600">暂无地址</p>
-            )}
-
-            {displayAddresses.map((address) => (
-              <div
-                key={address.address}
-                className="flex items-center justify-between rounded-lg bg-zinc-950/50 px-3 py-2"
-              >
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
-                  >
-                    {address.networkLabel}
-                  </span>
-                  <span className="shrink-0 text-sm text-zinc-300">{address.name}</span>
-                  <span className="min-w-0 flex-[1_1_260px] break-all font-mono text-xs text-zinc-600">
-                    {getManageAddressDisplayText(address.address)}
-                  </span>
-                  <span className="shrink-0 rounded bg-zinc-800/60 px-2 py-0.5 text-xs text-zinc-300">
-                    {formatUsdOrDash(address.totalAssetUsd)}
-                  </span>
-                </div>
-                <button
-                  onClick={() => onRemoveAddress(address.address)}
-                  className="ml-2 p-1 text-zinc-600 hover:text-red-400"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-
-            {isEditingAddresses && (
-              <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
-                <div className="space-y-2">
-                  <Label className="text-xs text-zinc-400">批量添加地址</Label>
-                  <textarea
-                    value={editingAddressText}
-                    onChange={(e) => onChangeEditingAddressText(e.target.value)}
-                    rows={3}
-                    placeholder={`0x123...abc:主钱包
-9x8y...:Sol钱包`}
-                    className="w-full resize-none rounded bg-zinc-900 p-2 font-mono text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 transition-colors focus:ring-zinc-700"
-                  />
-                  <p className="text-[10px] text-zinc-500">格式: address:name，`0x` 地址会自动补 BSC / ETH / BASE 三链</p>
-                  <div className="flex gap-2 pt-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={onCancelEditingAddresses}
-                      className="border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={onAddAddresses}
-                      disabled={!editingAddressText.trim()}
-                      className="bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      添加
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
+            <span>{addressCount} 个地址</span>
           </div>
-        )}
+          <Link href="/addresses" className="text-sm text-blue-400 hover:text-blue-300">
+            去地址页查看 / 删除
+          </Link>
+        </div>
       </div>
     </div>
   );
