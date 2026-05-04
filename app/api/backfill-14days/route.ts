@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { listTrackedUsers, markAddressesSynced, updateAssetSnapshots } from '@/lib/server/trackedUsersRepo';
+import { listTrackedUsers, markAddressesSynced } from '@/lib/server/trackedUsersRepo';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
+import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,14 @@ export async function POST() {
 
     // 更新资产快照
     console.log('更新资产快照...');
-    updateAssetSnapshots(feedResult.addressAssets, feedResult.userAssets);
+    const assetValidation = await validateAndPersistPeakAssetSnapshots({
+      users,
+      addressAssets: feedResult.addressAssets,
+      userAssets: feedResult.userAssets,
+    });
+    if (assetValidation.blockedUsers.length > 0) {
+      console.warn(`峰值资产校验拦截 ${assetValidation.blockedUsers.length} 个用户的可疑快照`);
+    }
 
     // 标记地址已同步
     const syncedAt = Date.now();

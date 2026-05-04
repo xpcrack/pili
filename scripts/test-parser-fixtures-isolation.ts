@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import './server-only-shim.cjs';
+
+const require = createRequire(import.meta.url);
 
 async function run() {
   const { readSystemConfig } = await import('../lib/server/systemConfigRepo');
@@ -10,7 +13,7 @@ async function run() {
   const before = readSystemConfig();
   const child = spawnSync(
     process.execPath,
-    [path.join(process.cwd(), 'node_modules/tsx/dist/cli.mjs'), 'scripts/test-parser-fixtures.ts'],
+    [require.resolve('tsx/cli'), 'scripts/test-parser-fixtures.ts'],
     {
       cwd: process.cwd(),
       env: {
