@@ -59,11 +59,11 @@ export function buildAddressManagementRows(
     groupAddressesForDisplay(user.addresses).map((addressGroup) => {
       const evmChains = addressGroup.chains.filter(isEvmChain);
       const isEvm = evmChains.length > 0;
-      const chains = isEvm
+      const chains: ChainType[] = isEvm
         ? EVM_DISPLAY_CHAINS.filter((chain) => evmChains.includes(chain))
         : ['solana' satisfies ChainType];
       const activityChains = isEvm ? EVM_DISPLAY_CHAINS : chains;
-      const primaryChain = isEvm ? 'bsc' : 'solana';
+      const primaryChain: ChainType = isEvm ? 'bsc' : 'solana';
       const latestActivityAt = activityChains.reduce<number | null>((latest, chain) => {
         const next = readLatestActivityAt(latestActivityByChainAddress, chain, addressGroup.address);
         if (typeof next !== 'number') {
@@ -85,7 +85,7 @@ export function buildAddressManagementRows(
         assetUpdatedAt: typeof addressGroup.assetUpdatedAt === 'number' ? addressGroup.assetUpdatedAt : null,
         latestActivityAt,
         gmgnUrl: buildGmgnAddressUrl(isEvm ? 'bsc' : 'solana', addressGroup.address),
-      };
+      } satisfies AddressManagementRow;
     })
   );
 

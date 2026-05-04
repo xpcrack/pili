@@ -3,8 +3,21 @@
 import Link from 'next/link';
 import { Zap } from 'lucide-react';
 
+export const TOP_NAV_ACTIVE_VALUES = ['feed', 'manage', 'addresses', 'system'] as const;
+export type TopNavActive = (typeof TOP_NAV_ACTIVE_VALUES)[number];
+export const TOP_NAV_ITEMS = [
+  { href: '/', label: 'Feed', active: 'feed' },
+  { href: '/manage', label: '人物', active: 'manage' },
+  { href: '/addresses', label: '地址', active: 'addresses' },
+  { href: '/system', label: '系统', active: 'system' },
+] as const satisfies ReadonlyArray<{
+  href: string;
+  label: string;
+  active: TopNavActive;
+}>;
+
 interface TopNavProps {
-  active: 'feed' | 'manage' | 'system';
+  active: TopNavActive;
   rightSlot?: React.ReactNode;
 }
 
@@ -35,9 +48,9 @@ export function TopNav({ active, rightSlot }: TopNavProps) {
         </div>
 
         <div className="flex items-center justify-center gap-2">
-          <NavLink href="/" label="Feed" active={active === 'feed'} />
-          <NavLink href="/manage" label="人物" active={active === 'manage'} />
-          <NavLink href="/system" label="系统" active={active === 'system'} />
+          {TOP_NAV_ITEMS.map((item) => (
+            <NavLink key={item.href} href={item.href} label={item.label} active={active === item.active} />
+          ))}
         </div>
 
         <div className="flex min-w-0 items-center justify-end gap-2">
