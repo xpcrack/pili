@@ -8,6 +8,21 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
 }
 
+function buildTelegramMonitorTxLookupKey(
+  chain: string | null | undefined,
+  trackedWalletAddress: string | null | undefined,
+  txHash: string | null | undefined
+) {
+  const normalizedChain = normalize(chain);
+  const normalizedTrackedWalletAddress = normalize(trackedWalletAddress);
+  const normalizedTxHash = normalize(txHash);
+  if (!normalizedChain || !normalizedTrackedWalletAddress || !normalizedTxHash) {
+    return null;
+  }
+
+  return `${normalizedChain}|${normalizedTrackedWalletAddress}|${normalizedTxHash}`;
+}
+
 function normalizeMessageLinks(input: string[] | null | undefined) {
   const seen = new Set<string>();
   const links: string[] = [];
@@ -254,6 +269,34 @@ export function getTelegramMonitorTxState(params: {
   txHash: string;
 }) {
   return mapRow(selectByKey(params.chain, params.trackedWalletAddress, params.txHash));
+}
+
+export function listTelegramMonitorTxStatesByKeys(
+  keys: Array<{
+    chain: string;
+    trackedWalletAddress: string;
+    txHash: string;
+  }>
+) {
+  const states = new Map<string, TelegramMonitorTxState>();
+
+  for (const key of keys) {
+    const lookupKey = buildTelegramMonitorTxLookupKey(
+      key.chain,
+      key.trackedWalletAddress,
+      key.txHash
+    );
+    if (!lookupKey || states.has(lookupKey)) {
+      continue;
+    }
+
+    const state = getTelegramMonitorTxState(key);
+    if (state) {
+      states.set(lookupKey, state);
+    }
+  }
+
+  return states;
 }
 
 export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMonitorTxStateProvisionalInput) {

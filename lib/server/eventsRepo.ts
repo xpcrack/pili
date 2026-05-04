@@ -14,6 +14,8 @@ import {
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
+import { repairCollapsedCanonicalActivitySync } from '@/lib/server/telegramMonitorActivity';
+import { listTelegramMonitorTxStatesByKeys } from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 
@@ -165,6 +167,74 @@ function buildTelegramMonitorLogicalTxKey(activity: Activity) {
   }
 
   return `${chain}|${trackedAddress}|${txHash}`;
+}
+
+function buildTelegramMonitorRepairLookup(activity: Activity) {
+  const lookupKey = buildTelegramMonitorLogicalTxKey(activity);
+  if (!lookupKey) {
+    return null;
+  }
+  const chain = (activity.metadata.chain || '').trim();
+  const trackedWalletAddress = (activity.metadata.trackedAddress || '').trim();
+  const txHash = (activity.metadata.txHash || '').trim();
+
+  return {
+    lookupKey,
+    chain,
+    trackedWalletAddress,
+    txHash,
+  };
+}
+
+function repairTelegramMonitorFeedRows(rows: EventFeedRow[]) {
+  const repairable = rows
+    .map((row) => {
+      const lookup = buildTelegramMonitorRepairLookup(row.activity);
+      return lookup
+        ? {
+            row,
+            lookup,
+          }
+        : null;
+    })
+    .filter(
+      (
+        candidate
+      ): candidate is {
+        row: EventFeedRow;
+        lookup: {
+          lookupKey: string;
+          chain: string;
+          trackedWalletAddress: string;
+          txHash: string;
+        };
+      } => Boolean(candidate)
+    );
+
+  if (repairable.length === 0) {
+    return;
+  }
+
+  const statesByKey = listTelegramMonitorTxStatesByKeys(
+    repairable.map((candidate) => ({
+      chain: candidate.lookup.chain,
+      trackedWalletAddress: candidate.lookup.trackedWalletAddress,
+      txHash: candidate.lookup.txHash,
+    }))
+  );
+
+  for (const candidate of repairable) {
+    const state = statesByKey.get(candidate.lookup.lookupKey);
+    if (!state) {
+      continue;
+    }
+
+    candidate.row.activity = repairCollapsedCanonicalActivitySync({
+      user: candidate.row.user,
+      state,
+      canonicalActivity: candidate.row.activity,
+    });
+  }
 }
 
 function buildFallbackOriginalPayload(activity: Activity, ingestSource: string) {
@@ -755,6 +825,8 @@ export function readEventsFeed(query: EventFeedQuery) {
       continue;
     }
   }
+
+  repairTelegramMonitorFeedRows(feed);
 
   const countParams = [...params];
   if (ftsMatch) {
