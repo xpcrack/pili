@@ -14,6 +14,13 @@ const TRACKED_SOL_ADDRESS = 'testuser_solana_placeholder_1111111111111111';
 const TX_HASH = '2tLRE1WugGAJquDrSph5XMMySFBBDmnxRgEsKPgr1tRCjqiFmLoT345V3DfkQASSdc3BMUx2brt3xEauGLsQNJsQ';
 const TOKEN_ADDRESS = 'CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump';
 const TX_TIME_MS = 1777178981000;
+const TRACKED_BSC_ADDRESS = '0x7592ca1ad468ddac5a97a5625c1c55e36338f786';
+const BSC_TX_HASH = '0x9e4de1b154b0664ab97aeadec2ceee38930360b786c8b36197793475441e0878';
+const BSC_TOKEN_ADDRESS = '0x930809fb99dd10d404504d1603e8756eafd84444';
+const BSC_EVENT_TIME_MS = 1777865833000;
+const BSC_MISSING_QUOTE_TX_HASH = '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+const BSC_MISSING_QUOTE_TOKEN_ADDRESS = '0xe68bd56b99ab9a527375bd87bf03ee6344f68ca1';
+const BSC_MISSING_QUOTE_EVENT_TIME_MS = 1777933730000;
 const SPLIT_FILL_TX_HASH =
   'placeholder_private_key_111111111111111111111111111111111111111111111111111111111111111111111111111111';
 const SPLIT_FILL_TOKEN_ADDRESS = '2CKp88BFyPzr7gEuQKXMJ9cqa24AFXUNC41FR7udpump';
@@ -447,7 +454,10 @@ async function run() {
     const {
       claimTelegramMonitorTxStatesForRepair,
       getTelegramMonitorTxState,
+      listTelegramMonitorTxStatesByKeys,
+      markTelegramMonitorTxStateReconciled,
     } = await import('../lib/server/telegramMonitorTxStateRepo');
+    const { upsertEventsFromFeedRows } = await import('../lib/server/eventsRepo');
     const { upsertTelegramMonitorEvent } = await import('../lib/server/telegramMonitorRepo');
 
     saveSystemConfig({
@@ -465,6 +475,26 @@ async function run() {
           address: TRACKED_SOL_ADDRESS,
           name: '#1',
           chain: 'solana',
+          totalAssetUsd: null,
+          assetUpdatedAt: null,
+        },
+      ],
+      totalAssetUsd: 0,
+      historicalMaxAssetUsd: 0,
+      assetUpdatedAt: null,
+      tags: [],
+    });
+    const bscTrackedUser = createTrackedUser({
+      name: '弘哥',
+      handle: 'hongge',
+      avatar: 'hongge.png',
+      twitter: undefined,
+      telegram: undefined,
+      addresses: [
+        {
+          address: TRACKED_BSC_ADDRESS,
+          name: '#2',
+          chain: 'bsc',
           totalAssetUsd: null,
           assetUpdatedAt: null,
         },
@@ -720,6 +750,199 @@ async function run() {
     assert.equal(retryResult.status, 'reconciled', 'a later retry should be able to recover');
 
     const { upsertTelegramMonitorTxStateProvisional } = await import('../lib/server/telegramMonitorTxStateRepo');
+    const collapsedCanonicalState = upsertTelegramMonitorTxStateProvisional({
+      userId: bscTrackedUser.id,
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: BSC_TX_HASH,
+      tokenAddress: BSC_TOKEN_ADDRESS,
+      tokenSymbol: '阿生',
+      provisionalAction: 'buy',
+      provisionalActionLabel: '建仓',
+      provisionalActionVariant: 'open',
+      provisionalQuoteAmount: 0.2911,
+      provisionalQuoteSymbol: 'BNB',
+      provisionalTokenAmount: 32226211.41,
+      provisionalTokenSymbol: '阿生',
+      provisionalPriceUsd: 0.00000564,
+      provisionalMarketCapUsd: 5600,
+      provisionalRawText: [
+        '[弘哥#2]',
+        '🟢 New buy 0.2911 BNB',
+        'Token: 32226211.41  [阿生]',
+        'Price: $0.0{5}564',
+        'MCAP: $5.6K',
+        `CA: ${BSC_TOKEN_ADDRESS}`,
+      ].join('\n'),
+      provisionalWalletLabel: '弘哥#2',
+      provisionalWalletAliasLabel: '弘哥#2',
+      eventTimeMs: BSC_EVENT_TIME_MS,
+    });
+    assert.ok(collapsedCanonicalState, 'collapsed canonical fixture should create a tx-state');
+    const collapsedCanonicalActivity = {
+      id: `xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_TX_HASH.toLowerCase()}`,
+      userId: bscTrackedUser.id,
+      source: 'blockchain' as const,
+      type: 'transfer' as const,
+      title: '买入资产',
+      content: '买入 0.000000000000000006 BNB',
+      timestamp: BSC_EVENT_TIME_MS - 1000,
+      metadata: {
+        txHash: BSC_TX_HASH,
+        value: '0.000000000000000006',
+        token: 'BNB',
+        tokenAddress: '',
+        chain: 'bsc',
+        fromAddress: '0xAbCdEf0123456789AbCdEf0123456789AbCdEf07',
+        toAddress: TRACKED_BSC_ADDRESS,
+        txStatus: 'success',
+        txAction: 'buy' as const,
+        trackedAddress: TRACKED_BSC_ADDRESS,
+        uncertainFrom: true,
+      },
+    };
+    markTelegramMonitorTxStateReconciled({
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: BSC_TX_HASH,
+      source: 'okx-address',
+      activity: collapsedCanonicalActivity,
+    });
+    upsertEventsFromFeedRows([{ user: bscTrackedUser, activity: collapsedCanonicalActivity }], 'telegram-monitor-reconcile');
+    const healedCollapsedCanonicalFeed = await readTelegramMonitorFeed(50);
+    const healedCollapsedCanonicalRow = healedCollapsedCanonicalFeed.find(
+      (item) => item.activity.metadata.txHash === BSC_TX_HASH
+    );
+    assert.equal(
+      healedCollapsedCanonicalRow?.activity.metadata.token,
+      '阿生',
+      'feed should prefer provisional non-native token when canonical token collapses to the native asset'
+    );
+    assert.equal(healedCollapsedCanonicalRow?.activity.metadata.tokenAddress, BSC_TOKEN_ADDRESS);
+    assert.equal(healedCollapsedCanonicalRow?.activity.metadata.quoteAmount, '0.2911');
+    assert.equal(healedCollapsedCanonicalRow?.activity.metadata.displayTokenSymbol, '阿生');
+    const healedCollapsedCanonicalEvents = readEventsFeed({
+      limit: 50,
+      userId: bscTrackedUser.id,
+    });
+    const healedCollapsedCanonicalEvent = healedCollapsedCanonicalEvents.feed.find(
+      (item) => item.activity.metadata.txHash === BSC_TX_HASH
+    );
+    assert.equal(
+      healedCollapsedCanonicalEvent?.activity.metadata.token,
+      '阿生',
+      'events feed should also self-heal collapsed canonical monitor tokens from provisional tx-state data'
+    );
+    assert.equal(healedCollapsedCanonicalEvent?.activity.metadata.tokenAddress, BSC_TOKEN_ADDRESS);
+    assert.equal(healedCollapsedCanonicalEvent?.activity.metadata.displayTokenSymbol, '阿生');
+
+    const missingQuoteCanonicalState = upsertTelegramMonitorTxStateProvisional({
+      userId: bscTrackedUser.id,
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: BSC_MISSING_QUOTE_TX_HASH,
+      tokenAddress: BSC_MISSING_QUOTE_TOKEN_ADDRESS,
+      tokenSymbol: '中本聪',
+      provisionalAction: 'sell',
+      provisionalActionLabel: '减仓',
+      provisionalActionVariant: 'reduce',
+      provisionalQuoteAmount: 0.0362,
+      provisionalQuoteSymbol: 'BNB',
+      provisionalTokenAmount: 4264.52,
+      provisionalTokenSymbol: '中本聪',
+      provisionalPriceUsd: 0.00000849,
+      provisionalMarketCapUsd: 90900,
+      provisionalRawText: [
+        '[User_D#1]',
+        '🔴 Sell Part 0.0362 BNB',
+        'Token: 4264.52  [中本聪]',
+        'Price: $0.0{5}849',
+        'MCAP: $90.9K',
+        `CA: ${BSC_MISSING_QUOTE_TOKEN_ADDRESS}`,
+      ].join('\n'),
+      provisionalWalletLabel: 'Finn',
+      provisionalWalletAliasLabel: 'User_D#1',
+      eventTimeMs: BSC_MISSING_QUOTE_EVENT_TIME_MS,
+    });
+    assert.ok(missingQuoteCanonicalState, 'missing quote canonical fixture should create a tx-state');
+    const missingQuoteCanonicalActivity = {
+      id: `xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_MISSING_QUOTE_TX_HASH.toLowerCase()}`,
+      userId: bscTrackedUser.id,
+      source: 'blockchain' as const,
+      type: 'transfer' as const,
+      title: '卖出资产',
+      content: '卖出 4264.520655854 中本聪',
+      timestamp: BSC_MISSING_QUOTE_EVENT_TIME_MS - 1000,
+      metadata: {
+        txHash: BSC_MISSING_QUOTE_TX_HASH,
+        value: '4264.520655854',
+        token: '中本聪',
+        tokenAddress: BSC_MISSING_QUOTE_TOKEN_ADDRESS,
+        chain: 'bsc',
+        fromAddress: TRACKED_BSC_ADDRESS,
+        toAddress: '0xrouter000000000000000000000000000000000001',
+        txStatus: 'success',
+        txAction: 'sell' as const,
+        trackedAddress: TRACKED_BSC_ADDRESS,
+        rawText: [
+          '[User_D#1]',
+          '🔴 Sell Part 0.0362 BNB',
+          'Token: 4264.52  [中本聪]',
+          'Price: $0.0{5}849',
+          'MCAP: $90.9K',
+          `CA: ${BSC_MISSING_QUOTE_TOKEN_ADDRESS}`,
+        ].join('\n'),
+        uncertainFrom: false,
+        monitorReconciliationStatus: 'reconciled' as const,
+        monitorReconciledSource: 'okx-address' as const,
+      },
+    };
+    markTelegramMonitorTxStateReconciled({
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: BSC_MISSING_QUOTE_TX_HASH,
+      source: 'okx-address',
+      activity: missingQuoteCanonicalActivity,
+    });
+    upsertEventsFromFeedRows([{ user: bscTrackedUser, activity: missingQuoteCanonicalActivity }], 'telegram-monitor-reconcile');
+    const healedMissingQuoteFeed = await readTelegramMonitorFeed(50);
+    const healedMissingQuoteRow = healedMissingQuoteFeed.find(
+      (item) => item.activity.metadata.txHash === BSC_MISSING_QUOTE_TX_HASH
+    );
+    assert.equal(
+      healedMissingQuoteRow?.activity.title,
+      '卖出资产',
+      'quote repair should preserve canonical titles while filling missing trade quote metadata'
+    );
+    assert.equal(healedMissingQuoteRow?.activity.metadata.quoteAmount, '0.0362');
+    assert.equal(healedMissingQuoteRow?.activity.metadata.quoteToken, 'BNB');
+    assert.equal(healedMissingQuoteRow?.activity.metadata.displayTradeAmountText, '0.036 BNB');
+    assert.equal(healedMissingQuoteRow?.activity.metadata.displayActionVariantLabel, '减仓');
+    const healedMissingQuoteEvents = readEventsFeed({
+      limit: 50,
+      userId: bscTrackedUser.id,
+    });
+    const healedMissingQuoteEvent = healedMissingQuoteEvents.feed.find(
+      (item) => item.activity.metadata.txHash === BSC_MISSING_QUOTE_TX_HASH
+    );
+    assert.equal(healedMissingQuoteEvent?.activity.title, '卖出资产');
+    assert.equal(healedMissingQuoteEvent?.activity.metadata.quoteAmount, '0.0362');
+    assert.equal(healedMissingQuoteEvent?.activity.metadata.quoteToken, 'BNB');
+    assert.equal(healedMissingQuoteEvent?.activity.metadata.displayTradeAmountText, '0.036 BNB');
+    assert.equal(healedMissingQuoteEvent?.activity.metadata.displayActionVariantLabel, '减仓');
+
+    const batchLoadedStates = listTelegramMonitorTxStatesByKeys([
+      { chain: 'bsc', trackedWalletAddress: TRACKED_BSC_ADDRESS, txHash: BSC_TX_HASH },
+      { chain: 'solana', trackedWalletAddress: TRACKED_SOL_ADDRESS, txHash: TX_HASH },
+      { chain: 'bsc', trackedWalletAddress: TRACKED_BSC_ADDRESS, txHash: BSC_TX_HASH },
+    ]);
+    assert.equal(batchLoadedStates.size, 2, 'batch tx-state lookup should de-duplicate repeated monitor keys');
+    assert.equal(batchLoadedStates.get(`bsc|${TRACKED_BSC_ADDRESS.toLowerCase()}|${BSC_TX_HASH.toLowerCase()}`)?.tokenSymbol, '阿生');
+    assert.equal(
+      batchLoadedStates.get(`solana|${TRACKED_SOL_ADDRESS.toLowerCase()}|${TX_HASH.toLowerCase()}`)?.provisionalTokenSymbol,
+      'HENRY'
+    );
+
     for (let index = 0; index < 30; index += 1) {
       const txHash = `crowded-backed-${index.toString().padStart(2, '0')}`;
       const eventTimeMs = TX_TIME_MS + 100_000 + index * 1_000;
