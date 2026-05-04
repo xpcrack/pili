@@ -22,6 +22,24 @@ function createUser(id: string, name: string, addresses: User['addresses']): Use
 
 function run() {
   const users = [
+    createUser('beta-sort', 'Beta', [
+      {
+        address: 'BetaSol1111111111111111111111111111111111',
+        name: '#1',
+        chain: 'solana',
+        totalAssetUsd: 1,
+        assetUpdatedAt: 10,
+      },
+    ]),
+    createUser('alpha-sort', 'Alpha', [
+      {
+        address: 'AlphaSol111111111111111111111111111111111',
+        name: '#1',
+        chain: 'solana',
+        totalAssetUsd: 2,
+        assetUpdatedAt: 20,
+      },
+    ]),
     createUser('testuser', 'testuser', [
       {
         address: '0xAbCdEf0123456789AbCdEf0123456789AbCdEf02',
@@ -54,6 +72,51 @@ function run() {
         assetUpdatedAt: 400,
       },
     ]),
+    createUser('same-evm', 'Same', [
+      {
+        address: '0x0000000000000000000000000000000000000011',
+        name: '#1',
+        chain: 'bsc',
+        totalAssetUsd: 11,
+        assetUpdatedAt: 110,
+      },
+    ]),
+    createUser('same-sol', 'Same', [
+      {
+        address: 'SameSol1111111111111111111111111111111111',
+        name: '#1',
+        chain: 'solana',
+        totalAssetUsd: 12,
+        assetUpdatedAt: 120,
+      },
+    ]),
+    createUser('same-addr-2', 'Same', [
+      {
+        address: '0x0000000000000000000000000000000000000022',
+        name: '#2',
+        chain: 'bsc',
+        totalAssetUsd: 22,
+        assetUpdatedAt: 220,
+      },
+    ]),
+    createUser('same-addr-1', 'Same', [
+      {
+        address: '0x0000000000000000000000000000000000000021',
+        name: '#2',
+        chain: 'bsc',
+        totalAssetUsd: 21,
+        assetUpdatedAt: 210,
+      },
+    ]),
+    createUser('nullish', 'Nullish', [
+      {
+        address: 'NullishSol1111111111111111111111111111111',
+        name: '#3',
+        chain: 'solana',
+        totalAssetUsd: null,
+        assetUpdatedAt: null,
+      },
+    ]),
   ];
 
   const rows = buildAddressManagementRows(
@@ -66,7 +129,7 @@ function run() {
     ])
   );
 
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 9);
 
   const evmRow = rows.find((row) => row.primaryChain === 'bsc');
   assert.ok(evmRow);
@@ -88,6 +151,31 @@ function run() {
   assert.deepEqual(solanaRow.chains, ['solana']);
   assert.equal(solanaRow.primaryChain, 'solana');
   assert.equal(solanaRow.latestActivityAt, 4500);
+
+  const nullishRow = rows.find((row) => row.displayName === 'Nullish#3');
+  assert.ok(nullishRow);
+  assert.equal(nullishRow.totalAssetUsd, null);
+  assert.equal(nullishRow.assetUpdatedAt, null);
+
+  assert.ok(
+    rows.findIndex((row) => row.displayName === 'Alpha#1') <
+      rows.findIndex((row) => row.displayName === 'Beta#1'),
+    'rows should sort by displayName using localeCompare before chain or address tiebreakers'
+  );
+
+  const sameNameDifferentChainRows = rows.filter((row) => row.displayName === 'Same#1');
+  assert.deepEqual(
+    sameNameDifferentChainRows.map((row) => row.primaryChain),
+    ['bsc', 'solana'],
+    'same displayName rows should place EVM rows before solana rows'
+  );
+
+  const sameNameSameChainRows = rows.filter((row) => row.displayName === 'Same#2');
+  assert.deepEqual(
+    sameNameSameChainRows.map((row) => row.address),
+    ['0x0000000000000000000000000000000000000021', '0x0000000000000000000000000000000000000022'],
+    'same displayName rows with the same chain type should sort by address'
+  );
 
   console.log('address management tests: ok');
 }
