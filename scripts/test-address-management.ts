@@ -22,7 +22,7 @@ function createUser(id: string, name: string, addresses: User['addresses']): Use
 
 function run() {
   const users = [
-    createUser('beta-sort', 'Beta', [
+    createUser('zh-beta-sort', '张三', [
       {
         address: 'BetaSol1111111111111111111111111111111111',
         name: '#1',
@@ -31,7 +31,7 @@ function run() {
         assetUpdatedAt: 10,
       },
     ]),
-    createUser('alpha-sort', 'Alpha', [
+    createUser('zh-alpha-sort', '李四', [
       {
         address: 'AlphaSol111111111111111111111111111111111',
         name: '#1',
@@ -117,6 +117,15 @@ function run() {
         assetUpdatedAt: null,
       },
     ]),
+    createUser('single-evm', '单链', [
+      {
+        address: '0x00000000000000000000000000000000000000aa',
+        name: '#9',
+        chain: 'bsc',
+        totalAssetUsd: 9,
+        assetUpdatedAt: 90,
+      },
+    ]),
   ];
 
   const rows = buildAddressManagementRows(
@@ -126,12 +135,14 @@ function run() {
       ['ethereum:0xabcdef0123456789abcdef0123456789abcdef02', 2900],
       ['base:0xabcdef0123456789abcdef0123456789abcdef02', 2100],
       ['solana:aqa8h5hmhe9mfy9sw6widbqeuayv7q2knro25apphwha', 4500],
+      ['ethereum:0x00000000000000000000000000000000000000aa', 9100],
+      ['base:0x00000000000000000000000000000000000000aa', 9200],
     ])
   );
 
-  assert.equal(rows.length, 9);
+  assert.equal(rows.length, 10);
 
-  const evmRow = rows.find((row) => row.primaryChain === 'bsc');
+  const evmRow = rows.find((row) => row.displayName === 'testuser#7');
   assert.ok(evmRow);
   assert.equal(evmRow.displayName, 'testuser#7');
   assert.deepEqual(evmRow.chains, ['bsc', 'ethereum', 'base']);
@@ -145,7 +156,7 @@ function run() {
     buildGmgnAddressUrl('bsc', '0xAbCdEf0123456789AbCdEf0123456789AbCdEf02')
   );
 
-  const solanaRow = rows.find((row) => row.primaryChain === 'solana');
+  const solanaRow = rows.find((row) => row.displayName === '蓝月#2');
   assert.ok(solanaRow);
   assert.equal(solanaRow.displayName, '蓝月#2');
   assert.deepEqual(solanaRow.chains, ['solana']);
@@ -157,9 +168,18 @@ function run() {
   assert.equal(nullishRow.totalAssetUsd, null);
   assert.equal(nullishRow.assetUpdatedAt, null);
 
+  const singleEvmRow = rows.find((row) => row.displayName === '单链#9');
+  assert.ok(singleEvmRow);
+  assert.deepEqual(singleEvmRow.chains, ['bsc']);
+  assert.equal(
+    singleEvmRow.latestActivityAt,
+    9200,
+    'evm latestActivityAt should consider fixed bsc/ethereum/base activity keys even when only bsc is tracked'
+  );
+
   assert.ok(
-    rows.findIndex((row) => row.displayName === 'Alpha#1') <
-      rows.findIndex((row) => row.displayName === 'Beta#1'),
+    rows.findIndex((row) => row.displayName === '李四#1') <
+      rows.findIndex((row) => row.displayName === '张三#1'),
     'rows should sort by displayName using localeCompare before chain or address tiebreakers'
   );
 
