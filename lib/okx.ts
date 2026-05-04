@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import type { ChainType } from '@/types';
+
 const OKX_API_BASE = 'https://web3.okx.com';
 const OKX_MARKET_API_BASE = 'https://www.okx.com';
 const OKX_REQUEST_INTERVAL_MS = 250;
@@ -91,6 +93,34 @@ interface OkxTotalValuePayload {
   }>;
 }
 
+interface OkxAddressAssetPayload {
+  tokenContractAddress?: string;
+  tokenAddress?: string;
+  tokenAddr?: string;
+  contractAddress?: string;
+  contractAddr?: string;
+  tokenContract?: string;
+  tokenContractAddr?: string;
+  symbol?: string;
+  tokenSymbol?: string;
+  tokenName?: string;
+  balance?: string;
+  tokenPrice?: string;
+  price?: string;
+  valueUsd?: string;
+  assetValue?: string;
+  totalValue?: string;
+  holdAmountUsd?: string;
+}
+
+interface OkxAddressAssetDetailsPayload {
+  code?: string;
+  msg?: string;
+  data?: Array<{
+    tokenAssets?: OkxAddressAssetPayload[];
+  }>;
+}
+
 interface OkxTransactionDetailPayload {
   code?: string;
   msg?: string;
@@ -140,6 +170,38 @@ export interface OkxHistoricalPricePoint {
   candleTimestampMs: number;
   bar: OkxCandleBar;
 }
+
+export interface OkxAddressAssetDetail {
+  userId?: string;
+  address: string;
+  chain: ChainType;
+  assetKey: string;
+  tokenAddress: string;
+  symbol: string;
+  name: string | null;
+  balance: number;
+  priceUsd: number;
+  valueUsd: number;
+}
+
+const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<ChainType, Record<string, string>> = {
+  bsc: {
+    BNB: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+    WBNB: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+  },
+  ethereum: {
+    ETH: '0xc02aa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    WETH: '0xc02aa39b223fe8d0a0e5c4f27ead9083c756cc2',
+  },
+  base: {
+    ETH: '0x4200000000000000000000000000000000000006',
+    WETH: '0x4200000000000000000000000000000000000006',
+  },
+  solana: {
+    SOL: 'So11111111111111111111111111111111111111112',
+    WSOL: 'So11111111111111111111111111111111111111112',
+  },
+};
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -735,6 +797,78 @@ function parseTotalAssetUsd(payload: OkxTotalValuePayload): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseOkxNumber(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function normalizeOkxAssetTokenAddress(chain: ChainType, asset: OkxAddressAssetPayload) {
+  const rawAddress =
+    asset.tokenAddress ??
+    asset.tokenContractAddress ??
+    asset.tokenAddr ??
+    asset.contractAddress ??
+    asset.contractAddr ??
+    asset.tokenContract ??
+    asset.tokenContractAddr ??
+    null;
+
+  if (typeof rawAddress === 'string' && rawAddress.trim()) {
+    const trimmed = rawAddress.trim();
+    return chain === 'solana' ? trimmed : trimmed.toLowerCase();
+  }
+
+  const symbol = (asset.symbol || asset.tokenSymbol || '').trim().toUpperCase();
+  const nativeMappedAddress = OKX_NATIVE_TOKEN_ADDRESS_MAP[chain]?.[symbol];
+  if (nativeMappedAddress) {
+    return nativeMappedAddress;
+  }
+
+  return symbol ? `native:${chain}:${symbol.toLowerCase()}` : null;
+}
+
+function buildOkxAddressAssetDetail(
+  address: string,
+  chain: ChainType,
+  asset: OkxAddressAssetPayload
+): OkxAddressAssetDetail | null {
+  const tokenAddress = normalizeOkxAssetTokenAddress(chain, asset);
+  if (!tokenAddress) {
+    return null;
+  }
+
+  const symbol = (asset.symbol || asset.tokenSymbol || '').trim() || 'UNKNOWN';
+  const balance = parseOkxNumber(asset.balance) ?? 0;
+  const priceUsd = parseOkxNumber(asset.tokenPrice ?? asset.price) ?? 0;
+  const valueUsd =
+    parseOkxNumber(asset.valueUsd ?? asset.assetValue ?? asset.totalValue ?? asset.holdAmountUsd) ??
+    balance * priceUsd;
+
+  if (!Number.isFinite(valueUsd) || valueUsd <= 0) {
+    return null;
+  }
+
+  return {
+    address,
+    chain,
+    assetKey: `${chain}:${chain === 'solana' ? tokenAddress : tokenAddress.toLowerCase()}`,
+    tokenAddress,
+    symbol,
+    name: typeof asset.tokenName === 'string' && asset.tokenName.trim() ? asset.tokenName.trim() : null,
+    balance: Number.isFinite(balance) && balance > 0 ? balance : 0,
+    priceUsd: Number.isFinite(priceUsd) && priceUsd > 0 ? priceUsd : 0,
+    valueUsd,
+  };
+}
+
 export async function fetchOkxTotalValueByAddress(address: string, chain: string) {
   const chainIndex = CHAIN_TO_OKX_INDEX[chain];
 
@@ -830,6 +964,107 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
     ok: true,
     configured: true,
     totalAssetUsd,
+    error: null as string | null,
+  };
+}
+
+export async function fetchOkxAddressAssetDetails(address: string, chain: ChainType) {
+  const chainIndex = CHAIN_TO_OKX_INDEX[chain];
+  if (!chainIndex) {
+    return {
+      ok: false,
+      configured: getOkxCredentials().configured,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
+    };
+  }
+
+  const params = new URLSearchParams({
+    address,
+    chains: chainIndex,
+  });
+  const requestPathWithQuery = `/api/v6/dex/balance/all-token-balances-by-address?${params.toString()}`;
+  const headers = createOkxHeaders(requestPathWithQuery);
+
+  if (!headers) {
+    return {
+      ok: false,
+      configured: false,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: '未配置 OKX API 凭证',
+    };
+  }
+
+  let response: Response;
+  try {
+    response = await runWithEndpointRateLimit('all-token-balances-by-address', () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, OKX_REQUEST_TIMEOUT_MS);
+
+      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      }).finally(() => {
+        clearTimeout(timer);
+      });
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      configured: true,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: `OKX 网络错误: ${
+        error instanceof Error && error.name === 'AbortError'
+          ? `请求超时（>${OKX_REQUEST_TIMEOUT_MS}ms）`
+          : error instanceof Error
+            ? error.message
+            : '未知网络异常'
+      }`,
+    };
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    return {
+      ok: false,
+      configured: true,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: `OKX API ${response.status}: ${errorText.slice(0, 120)}`,
+    };
+  }
+
+  const payload = (await response.json()) as OkxAddressAssetDetailsPayload;
+  if (payload.code && payload.code !== '0') {
+    return {
+      ok: false,
+      configured: true,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: `OKX API 业务错误 ${payload.code}: ${payload.msg || '未知错误'}`,
+    };
+  }
+
+  const assets = (payload.data || [])
+    .flatMap((row) => row.tokenAssets || [])
+    .map((asset) => buildOkxAddressAssetDetail(address, chain, asset))
+    .filter((asset): asset is OkxAddressAssetDetail => Boolean(asset))
+    .sort((left, right) => right.valueUsd - left.valueUsd || left.assetKey.localeCompare(right.assetKey));
+
+  const totalAssetUsd = assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
+
+  return {
+    ok: true,
+    configured: true,
+    totalAssetUsd,
+    assets,
     error: null as string | null,
   };
 }

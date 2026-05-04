@@ -4,7 +4,8 @@ import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { fetchOkxTransactionsByAddress } from '@/lib/okx';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
-import { markAddressesSynced, updateAssetSnapshots } from '@/lib/server/trackedUsersRepo';
+import { markAddressesSynced } from '@/lib/server/trackedUsersRepo';
+import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -81,7 +82,14 @@ async function backfill14DaysTransactions() {
 
   // 更新资产快照
   console.log('更新资产快照...');
-  updateAssetSnapshots(feedResult.addressAssets, feedResult.userAssets);
+  const assetValidation = await validateAndPersistPeakAssetSnapshots({
+    users,
+    addressAssets: feedResult.addressAssets,
+    userAssets: feedResult.userAssets,
+  });
+  if (assetValidation.blockedUsers.length > 0) {
+    console.warn(`峰值资产校验拦截 ${assetValidation.blockedUsers.length} 个用户的可疑快照`);
+  }
 
   // 标记地址已同步
   const syncedAt = Date.now();
