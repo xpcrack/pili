@@ -7,6 +7,11 @@ import {
   type FeedItem,
 } from '@/lib/feed/feedItemMerge';
 import {
+  applyServerFeedSnapshot,
+  buildCollectedActivityFeedResult,
+  resolveFeedUsers,
+} from '@/lib/feed/feedClientSnapshot';
+import {
   buildFeedDebugEntries,
   filterPoisonFromFeed,
 } from '@/lib/feed/feedPoisonFilter';
@@ -94,6 +99,96 @@ function run() {
     ['alice'],
     'feed should drop activities for users no longer present locally'
   );
+
+  const localAlice: User = {
+    ...alice,
+    addresses: [{ address: 'alice-local', name: 'local', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
+  };
+  const localBob: User = {
+    ...bob,
+    addresses: [{ address: 'bob-local', name: 'local', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
+  };
+  const serverAlice: User = {
+    ...alice,
+    name: 'Alice Remote',
+    addresses: [{ address: 'alice-remote', name: 'remote', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
+  };
+  const serverCarol: User = {
+    ...carol,
+    addresses: [{ address: 'carol-remote', name: 'remote', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
+  };
+  const resolvedUsers = resolveFeedUsers([localAlice, localBob], [serverAlice, serverCarol]);
+  assert.deepEqual(
+    resolvedUsers.map((user) => user.id),
+    ['alice', 'carol', 'bob'],
+    'server users should stay primary while preserving local-only users'
+  );
+  assert.deepEqual(
+    resolvedUsers[0]?.addresses.map((address) => address.address),
+    ['alice-remote', 'alice-local'],
+    'merged server users should preserve local-only addresses'
+  );
+
+  const explicitSnapshot = applyServerFeedSnapshot({
+    replace: false,
+    resultFeed: [
+      makeItem(carol, makeActivity('drop-carol', carol.id, base, {})),
+      makeItem(alice, makeActivity('keep-alice', alice.id, base - 1, {})),
+    ],
+    effectiveUsers: [alice, bob],
+  });
+  assert.deepEqual(
+    explicitSnapshot.map((item) => item.user.id),
+    ['alice'],
+    'server snapshots should still filter away feed items for users no longer visible locally'
+  );
+
+  const collectedSnapshot = buildCollectedActivityFeedResult({
+    firstPageResult: {
+      ok: true,
+      feed: [makeItem(alice, makeActivity('seeded', alice.id, base - 20, {}))],
+      users: [serverAlice, serverCarol],
+      total: 10,
+      page: 1,
+      pageSize: 2,
+      hasMore: true,
+      nextCursor: 'next-cursor-1',
+      historyComplete: true,
+      localQualifiedCount: 1,
+      activityBreakdown: { twitterCount: 2, tradeCount: 3 },
+      completenessWindow: {
+        scope: 'global',
+        startMs: base - 100_000,
+        endMs: base,
+        label: 'Window',
+        complete: true,
+      },
+      latestActivityAtByUser: { alice: base - 1 },
+      diagnostics: [],
+      summary: {
+        userCount: 2,
+        addressCount: 2,
+        transactionCount: 10,
+        successfulAddressCount: 1,
+        failedAddressCount: 0,
+        emptyAddressCount: 1,
+        completedAt: base,
+      },
+      addressAssets: [],
+      userAssets: [],
+    },
+    collectedFeed: [
+      makeItem(alice, makeActivity('collected-a', alice.id, base, {})),
+      makeItem(carol, makeActivity('collected-c', carol.id, base - 2, {})),
+    ],
+    currentUsers: [localAlice, localBob],
+    fullDatabaseSearch: true,
+    hasMore: true,
+  });
+  assert.equal(collectedSnapshot.nextCursor, 'next-cursor-1');
+  assert.equal(collectedSnapshot.localQualifiedCount, 2);
+  assert.equal(collectedSnapshot.historyComplete, null, 'full-database search should suppress history completeness');
+  assert.equal(collectedSnapshot.users?.[0]?.id, 'alice', 'payload users should be preserved through collection');
 
   const activitiesByUser = buildActivitiesByUser([
     makeItem(alice, makeActivity('a1', alice.id, base, {})),

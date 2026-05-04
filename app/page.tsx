@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
@@ -21,8 +21,10 @@ import {
   type FeedSearchFilters,
   DEFAULT_FEED_SEARCH_FILTERS,
   getRemoteFeedSearchKeyword,
+  getRemoteFeedSource,
 } from '@/lib/smartSearch';
 import { buildAddressAliasMap, selectFeedPageState } from '@/lib/feed/feedPageState';
+import { FEED_PAGE_BATCH_SIZE } from '@/lib/feed/feedQueryMode';
 import {
   normalizeTradeValueDisplayMode,
   type TradeValueDisplayMode,
@@ -32,8 +34,8 @@ import {
   normalizeFeedTimeDisplayMode,
 } from '@/lib/timeFormat';
 
-const MAX_GLOBAL_FEED_ITEMS = 200;
-const MIN_SELECTED_USER_FEED_ITEMS = 50;
+const MAX_GLOBAL_FEED_ITEMS = FEED_PAGE_BATCH_SIZE;
+const MIN_SELECTED_USER_FEED_ITEMS = FEED_PAGE_BATCH_SIZE;
 const FEED_TIME_DISPLAY_MODE_STORAGE_KEY = 'pilipili:feed-time-display-mode';
 const TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY = 'pilipili:trade-value-display-mode';
 
@@ -72,8 +74,14 @@ export default function Home() {
     summary,
     diagnostics,
     prewarmLabel,
-  } = useActivityPolling(selectedUserId, getRemoteFeedSearchKeyword(searchFilters.keyword));
+  } = useActivityPolling(
+    selectedUserId,
+    getRemoteFeedSearchKeyword(searchFilters.keyword),
+    getRemoteFeedSource(searchFilters.typeFilters),
+    searchFilters
+  );
   const { dismissNewForUser } = useUserStore();
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -146,6 +154,7 @@ export default function Home() {
     [feed, selectedUserId, searchFilters, globalVisibleCount, selectedUserVisibleCount]
   );
   const isInitialLoading = loading && feed.length === 0;
+  const hasAnyActiveFilter = Boolean(selectedUserId) || hasActiveLocalFilters;
   const showGlobalCompletenessWindow = shouldShowGlobalCompletenessWindow({
     selectedUserId,
     completenessWindow,
@@ -196,7 +205,7 @@ export default function Home() {
       setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
 
       setIsExpanding(true);
-      setExpandFeedback('正在从本地库读取该人物动态...');
+      setExpandFeedback('正在全库检索该人物动态...');
       const result = await refetch({
         targetCount: MIN_SELECTED_USER_FEED_ITEMS,
         selectedUserId: user.id,
@@ -214,129 +223,111 @@ export default function Home() {
       }
 
       const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
-      const historySuffix =
-        result.historyComplete === true
-          ? '（本地历史已补完）'
-          : result.selectedFeedLength < MIN_SELECTED_USER_FEED_ITEMS
-            ? '（已自动继续补历史）'
-            : '';
       setExpandFeedback(
-        `已从本地库读取该人物 ${result.selectedFeedLength} 条动态${historySuffix}${partialSuffix}`
+        `已加载该人物 ${result.selectedFeedLength} 条动态${partialSuffix}`
       );
       return;
     }
 
     setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
+    setIsExpanding(true);
+    setExpandFeedback('正在恢复全部动态...');
+    const result = await refetch({
+      targetCount: MAX_GLOBAL_FEED_ITEMS,
+      selectedUserId: null,
+      syncStrategy: 'local',
+    });
+    setIsExpanding(false);
+    if (!result.success) {
+      setExpandFeedback(result.error ? `读取失败：${result.error}` : '读取失败');
+      return;
+    }
+    setExpandFeedback(result.hasMore ? `已加载 ${result.feedLength} 条动态` : `已显示全部 ${result.feedLength} 条动态`);
   };
 
   // 返回全部动态
   const handleBackToAll = () => {
-    setSelectedUserId(null);
-    setExpandFeedback(null);
-    setGlobalVisibleCount(MAX_GLOBAL_FEED_ITEMS);
-    setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
-    void refetch({ selectedUserId: null, syncStrategy: 'local' });
+    void handleSelectUser(null);
   };
 
-  const handlePullMoreHistory = async () => {
-    if (isExpanding) {
+  const handleLoadMore = useCallback(async () => {
+    if (isExpanding || loading || !hasMore) {
       return;
     }
 
     const isSelectedMode = Boolean(selectedUserId);
     const nextVisibleCount = isSelectedMode
-      ? selectedUserVisibleCount + 50
-      : globalVisibleCount + 50;
+      ? selectedUserVisibleCount + FEED_PAGE_BATCH_SIZE
+      : globalVisibleCount + FEED_PAGE_BATCH_SIZE;
 
     if (isSelectedMode) {
       setSelectedUserVisibleCount(nextVisibleCount);
       if (matchedFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, matchedFeed.length)}/${matchedFeed.length} 条`);
+        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, matchedFeed.length)} 条动态`);
         return;
       }
     } else {
       setGlobalVisibleCount(nextVisibleCount);
       if (matchedFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已从缓存展开到 ${Math.min(nextVisibleCount, matchedFeed.length)}/${matchedFeed.length} 条`);
-        return;
-      }
-    }
-
-    if (hasMore) {
-      setIsExpanding(true);
-      setExpandFeedback('正在从本地库加载更多动态...');
-      const localResult = await refetch({
-        targetCount: nextVisibleCount,
-        selectedUserId,
-        syncStrategy: 'local',
-      });
-      setIsExpanding(false);
-
-      if (!localResult.success) {
-        setExpandFeedback(localResult.error ? `本地读取失败：${localResult.error}` : '本地读取失败');
-        return;
-      }
-
-      const localCount = isSelectedMode ? localResult.selectedFeedLength : localResult.feedLength;
-      setExpandFeedback(
-        hasActiveLocalFilters
-          ? '已刷新本地库，筛选结果已更新'
-          : `已从本地库展开到 ${localCount} 条`
-      );
-      if (localResult.hasMore || (!hasActiveLocalFilters && localCount >= nextVisibleCount)) {
+        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, matchedFeed.length)} 条动态`);
         return;
       }
     }
 
     setIsExpanding(true);
-    setExpandFeedback(
-      isSelectedMode
-        ? '该人物本地动态不足，正在向前补 7 天历史...'
-        : '本地库不足，正在按所有源向前拉取 7 天历史...'
-    );
+    setExpandFeedback(hasAnyActiveFilter ? '正在检索更多结果...' : '正在加载更多动态...');
     const result = await refetch({
+      targetCount: nextVisibleCount,
       selectedUserId,
-      syncStrategy: 'backfill',
-      backfillScope: isSelectedMode ? 'user' : 'global',
+      syncStrategy: 'local',
     });
     setIsExpanding(false);
 
     if (!result.success) {
-      setExpandFeedback(result.error ? `API 拉取失败：${result.error}` : 'API 拉取失败');
+      setExpandFeedback(result.error ? `读取失败：${result.error}` : '读取失败');
       return;
     }
+    const loadedCount = isSelectedMode ? result.selectedFeedLength : result.feedLength;
     const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
-    const autoBackfillSuffix = '（已前推 7 天）';
+    setExpandFeedback(
+      result.hasMore
+        ? `已加载 ${loadedCount} 条动态${partialSuffix}`
+        : `已显示全部 ${loadedCount} 条动态${partialSuffix}`
+    );
+  }, [
+    globalVisibleCount,
+    hasAnyActiveFilter,
+    hasMore,
+    isExpanding,
+    loading,
+    matchedFeed.length,
+    refetch,
+    selectedUserId,
+    selectedUserVisibleCount,
+  ]);
 
-    if (hasActiveLocalFilters) {
-      setExpandFeedback(`API 拉取完成，筛选结果已更新${autoBackfillSuffix}${partialSuffix}`);
+  useEffect(() => {
+    const node = loadMoreSentinelRef.current;
+    if (!node || !hasMore || isInitialLoading) {
       return;
     }
 
-    if (!isSelectedMode && result.feedLength >= nextVisibleCount) {
-      setExpandFeedback(
-        `API 拉取完成，已展开到 ${nextVisibleCount}/${result.feedLength} 条${autoBackfillSuffix}${partialSuffix}`
-      );
-      return;
-    }
-
-    if (isSelectedMode) {
-      if (result.selectedFeedLength >= nextVisibleCount) {
-        setExpandFeedback(
-          `API 拉取完成，已展开到 ${nextVisibleCount}/${result.selectedFeedLength} 条${autoBackfillSuffix}${partialSuffix}`
-        );
-        return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void handleLoadMore();
+        }
+      },
+      {
+        rootMargin: '320px 0px',
       }
-      setExpandFeedback(
-        `API 拉取完成，该人物本地可用 ${result.selectedFeedLength} 条${
-          result.historyComplete === true ? '（历史已补完）' : autoBackfillSuffix
-        }${partialSuffix}`
-      );
-      return;
-    }
+    );
 
-    setExpandFeedback(`API 拉取完成，筛选后可用 ${result.feedLength} 条${autoBackfillSuffix}${partialSuffix}`);
-  };
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [handleLoadMore, hasMore, isInitialLoading]);
 
   if (!isClient) {
     return (
@@ -618,11 +609,11 @@ export default function Home() {
                 </div>
 
                 <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">本地动态</div>
+                  <div className="text-zinc-500">已加载结果</div>
                   <div className="text-sm font-medium text-zinc-100">
-                    {localQualifiedCount}
+                    {matchedFeed.length}
                     <span className="ml-2 text-xs text-zinc-500">
-                      {historyComplete === true ? '已补完' : '补历史中'}
+                      {hasMore ? '可继续加载' : '已显示全部'}
                     </span>
                   </div>
                 </div>
@@ -634,15 +625,17 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">个人完备起点</div>
-                  <div className="text-sm font-medium text-zinc-100">
-                    {completenessWindow?.label || '尚未建立'}
+                {!hasAnyActiveFilter ? (
+                  <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
+                    <div className="text-zinc-500">个人完备起点</div>
+                    <div className="text-sm font-medium text-zinc-100">
+                      {completenessWindow?.label || '尚未建立'}
+                    </div>
+                    <div className={`mt-1 text-[11px] ${completenessWindow?.complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                      {completenessWindow?.complete ? '窗口已建立' : '等待建立窗口'}
+                    </div>
                   </div>
-                  <div className={`mt-1 text-[11px] ${completenessWindow?.complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                    {completenessWindow?.complete ? '窗口已建立' : '等待建立窗口'}
-                  </div>
-                </div>
+                ) : null}
 
                 <div className="ml-auto flex items-center gap-2">
                   {selectedUser.tags.map((tag) => (
@@ -666,66 +659,47 @@ export default function Home() {
                   请至少选择一种类型
                 </div>
               ) : matchedFeed.length === 0 && hasActiveLocalFilters ? (
-                <div className="space-y-3">
-                  <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
-                    {searchFilters.keyword.trim()
-                      ? '没有匹配的人物、推文内容、CA 或地址'
-                      : '当前筛选条件下没有结果'}
-                  </div>
-                  <div className="flex items-center justify-end rounded-lg border border-zinc-800/70 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400">
-                    {expandFeedback && (
-                      <span className="mr-3 text-zinc-500">{expandFeedback}</span>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handlePullMoreHistory()}
-                        disabled={isExpanding}
-                        className="rounded border border-zinc-700 px-3 py-1 text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        拉取更多（前推 7 天）
-                      </button>
-                    </div>
-                  </div>
+                <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
+                  {searchFilters.keyword.trim()
+                    ? '没有匹配的人物、推文内容、CA 或地址'
+                    : '当前筛选条件下没有结果'}
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
                   <div className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
-                  <div className="divide-y divide-zinc-800/70">
-                  {filteredFeed.map(({ user, activity }) => (
-                    <ActivityCard
-                      key={getActivityRenderKey(
-                        user.id,
-                        activity.id,
-                        buildActivityScopedDedupKey(activity, user.id)
-                      )}
-                      activity={activity}
-                      user={user}
-                      timeDisplayMode={timeDisplayMode}
-                      tradeValueDisplayMode={tradeValueDisplayMode}
-                      activeTokenCa={hoveredTokenCa}
-                      onTokenCaHover={setHoveredTokenCa}
-                      activeAddress={hoveredAddress}
-                      onAddressHover={setHoveredAddress}
-                      addressAliasMap={addressAliasMap}
-                    />
-                  ))}
+                    <div className="divide-y divide-zinc-800/70">
+                      {filteredFeed.map(({ user, activity }) => (
+                        <ActivityCard
+                          key={getActivityRenderKey(
+                            user.id,
+                            activity.id,
+                            buildActivityScopedDedupKey(activity, user.id)
+                          )}
+                          activity={activity}
+                          user={user}
+                          timeDisplayMode={timeDisplayMode}
+                          tradeValueDisplayMode={tradeValueDisplayMode}
+                          activeTokenCa={hoveredTokenCa}
+                          onTokenCaHover={setHoveredTokenCa}
+                          activeAddress={hoveredAddress}
+                          onAddressHover={setHoveredAddress}
+                          addressAliasMap={addressAliasMap}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  </div>
+                  <div ref={loadMoreSentinelRef} className="h-2" />
                   <div className="flex items-center justify-end rounded-lg border border-zinc-800/70 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400">
                     {expandFeedback && (
                       <span className="mr-3 text-zinc-500">{expandFeedback}</span>
                     )}
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handlePullMoreHistory()}
-                        disabled={isExpanding}
-                        className="rounded border border-zinc-700 px-3 py-1 text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        拉取更多（前推 7 天）
-                      </button>
-                    </div>
+                    <span>
+                      {isExpanding
+                        ? '正在加载更多...'
+                        : hasMore
+                          ? '滚动到底部继续加载更多'
+                          : `已显示全部 ${matchedFeed.length} 条`}
+                    </span>
                   </div>
                 </div>
               ) : (
@@ -733,17 +707,7 @@ export default function Home() {
                   {selectedUser ? (
                     <div>
                       <UserIcon className="mx-auto mb-3 h-12 w-12 text-zinc-600" />
-                      <p className="text-zinc-500">
-                        {historyComplete === false && !hasActiveLocalFilters
-                          ? `${selectedUser.name} 本地动态不足，正在继续补历史...`
-                          : `${selectedUser.name} 暂无动态`}
-                      </p>
-                      {selectedUserId && !hasActiveLocalFilters && (
-                        <p className="mt-2 text-xs text-zinc-600">
-                          本地已收录 {localQualifiedCount} 条合格动态
-                          {historyComplete === true ? '，历史已补完' : '，历史仍在补齐中'}
-                        </p>
-                      )}
+                      <p className="text-zinc-500">{`${selectedUser.name} 暂无动态`}</p>
                     </div>
                   ) : (
                     <p className="text-zinc-500">暂无动态</p>

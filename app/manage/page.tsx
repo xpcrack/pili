@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { TopNav } from '@/components/TopNav';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
-import { formatUsdCompact, formatUsdOrDash } from '@/lib/assetFormat';
+import { formatUsdCompact } from '@/lib/assetFormat';
 import {
   expandTrackedAddresses,
   formatUsersForAddressExport,
@@ -34,8 +34,6 @@ import {
   X,
   Save,
   AlertCircle,
-  Edit2,
-  RefreshCw,
   Search,
 } from 'lucide-react';
 
@@ -67,6 +65,20 @@ interface ProfileFormState {
   telegram: string;
   tags: string;
 }
+
+interface UserActivityStats {
+  socialCount7d: number;
+  walletCount7d: number;
+  totalCount7d: number;
+  totalCountAll: number;
+}
+
+type ManageSortKey =
+  | 'historicalMaxAssetUsd'
+  | 'totalAssetUsd'
+  | 'socialCount7d'
+  | 'walletCount7d'
+  | 'totalCount7d';
 
 interface TwitterRelayCoverageView {
   latestTweetId: string;
@@ -204,8 +216,39 @@ function getAddressBadgeMeta(params: {
   };
 }
 
+function buildTwitterProfileUrl(raw: string | undefined) {
+  const handle = normalizeTwitterHandle(raw || '');
+  if (!handle) return null;
+  return `https://x.com/${handle}`;
+}
+
+function buildTelegramProfileUrl(raw: string | undefined) {
+  const value = (raw || '').trim();
+  if (!value) return null;
+  if (value.startsWith('https://') || value.startsWith('http://')) {
+    return value;
+  }
+  const username = value.replace(/^@/, '');
+  if (!username) return null;
+  return `https://t.me/${username}`;
+}
+
+function buildTelegramDisplayText(raw: string | undefined) {
+  const value = (raw || '').trim();
+  if (!value) return '';
+  const withoutProtocol = value.replace(/^https?:\/\//i, '');
+  const withoutDomain = withoutProtocol.replace(/^(www\.)?t\.me\//i, '');
+  const withoutAt = withoutDomain.replace(/^@/, '');
+  const username = withoutAt.split('/')[0]?.split('?')[0]?.trim();
+  return username ? `@${username}` : value;
+}
+
+function getRecentTotalCount(stats: UserActivityStats) {
+  return stats.socialCount7d + stats.walletCount7d;
+}
+
 export default function ManagePage() {
-  const { users, addUser, addUsers, updateUser, deleteUser, removeAddress } = useUsersDataStore();
+  const { users, addUser, addUsers, deleteUser, mergeUsersFromServer } = useUsersDataStore();
   const isClient = useIsClient();
 
   const [isCreating, setIsCreating] = useState(false);
@@ -220,11 +263,16 @@ export default function ManagePage() {
   const [addressText, setAddressText] = useState('');
   const [bulkImportText, setBulkImportText] = useState('');
   const [searchText, setSearchText] = useState('');
+  const [deletingUserIds, setDeletingUserIds] = useState<Record<string, boolean>>({});
 
-  const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
-  const [editingAddressText, setEditingAddressText] = useState('');
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
   const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
+  const [activityStatsByUserId, setActivityStatsByUserId] = useState<Record<string, UserActivityStats>>({});
+  const [expandedAddressByUserId, setExpandedAddressByUserId] = useState<Record<string, boolean>>({});
+  const [sortState, setSortState] = useState<{ key: ManageSortKey; direction: 'asc' | 'desc' }>({
+    key: 'totalCount7d',
+    direction: 'desc',
+  });
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -233,6 +281,53 @@ export default function ManagePage() {
     [bulkImportText, users]
   );
   const filteredUsers = useMemo(() => filterManageUsers(users, searchText), [users, searchText]);
+  const filteredUserRows = useMemo(
+    () =>
+      filteredUsers.map((user) => {
+        const stats = activityStatsByUserId[user.id] || {
+          socialCount7d: 0,
+          walletCount7d: 0,
+          totalCount7d: 0,
+          totalCountAll: 0,
+        };
+        return {
+          user,
+          stats,
+          displayAddresses: groupAddressesForDisplay(user.addresses),
+        };
+      }),
+    [activityStatsByUserId, filteredUsers]
+  );
+  const sortedUserRows = useMemo(() => {
+    const directionFactor = sortState.direction === 'asc' ? 1 : -1;
+    return [...filteredUserRows].sort((left, right) => {
+      const valueLeft =
+        sortState.key === 'historicalMaxAssetUsd'
+          ? left.user.historicalMaxAssetUsd
+          : sortState.key === 'totalAssetUsd'
+            ? left.user.totalAssetUsd
+            : sortState.key === 'socialCount7d'
+              ? left.stats.socialCount7d
+              : sortState.key === 'walletCount7d'
+                ? left.stats.walletCount7d
+                : getRecentTotalCount(left.stats);
+      const valueRight =
+        sortState.key === 'historicalMaxAssetUsd'
+          ? right.user.historicalMaxAssetUsd
+          : sortState.key === 'totalAssetUsd'
+            ? right.user.totalAssetUsd
+            : sortState.key === 'socialCount7d'
+              ? right.stats.socialCount7d
+              : sortState.key === 'walletCount7d'
+                ? right.stats.walletCount7d
+                : getRecentTotalCount(right.stats);
+
+      if (valueLeft === valueRight) {
+        return left.user.name.localeCompare(right.user.name, 'zh-CN') * directionFactor;
+      }
+      return (valueLeft - valueRight) * directionFactor;
+    });
+  }, [filteredUserRows, sortState.direction, sortState.key]);
 
   useEffect(() => {
     if (!isClient || typeof window === 'undefined') {
@@ -294,6 +389,7 @@ export default function ManagePage() {
         if (!payload?.ok || !Array.isArray(payload.users)) {
           return;
         }
+        mergeUsersFromServer(payload.users as User[]);
         const next: Record<string, TwitterRelayCoverageView> = {};
         for (const user of payload.users as User[]) {
           const handle = normalizeTwitterHandle(user.twitter || '').toLowerCase();
@@ -305,7 +401,63 @@ export default function ManagePage() {
         setRelayCoverageByHandle(next);
       })
       .catch(() => undefined);
+  }, [isClient, mergeUsersFromServer, users.length]);
+
+  useEffect(() => {
+    if (!isClient) {
+      return;
+    }
+
+    void fetch('/api/users/activity-stats', { cache: 'no-store' })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload?.ok || typeof payload.statsByUserId !== 'object' || !payload.statsByUserId) {
+          return;
+        }
+        setActivityStatsByUserId(payload.statsByUserId as Record<string, UserActivityStats>);
+      })
+      .catch(() => undefined);
   }, [isClient, users.length]);
+
+  const handleDeleteUser = async (userId: string) => {
+    if (deletingUserIds[userId]) {
+      return;
+    }
+
+    setDeletingUserIds((state) => ({ ...state, [userId]: true }));
+
+    try {
+      const response = await fetch(`/api/users/${userId}`, {
+        method: 'DELETE',
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      deleteUser(userId);
+      setExpandedAddressByUserId((state) => {
+        if (!(userId in state)) {
+          return state;
+        }
+        const next = { ...state };
+        delete next[userId];
+        return next;
+      });
+    } catch (error) {
+      console.warn(
+        '[manage] failed to delete user from server',
+        error instanceof Error ? error.message : error
+      );
+    } finally {
+      setDeletingUserIds((state) => {
+        const next = { ...state };
+        delete next[userId];
+        return next;
+      });
+    }
+  };
 
   const resetForm = () => {
     setFormData({ name: '', handle: '', twitter: '', telegram: '', tags: '' });
@@ -346,20 +498,6 @@ export default function ManagePage() {
     setBulkImportText('');
   };
 
-  const handleAddAddressesToUser = (user: User) => {
-    const logicalAddressCount = groupAddressesForDisplay(user.addresses).length;
-    const newAddresses = parseAddressText(editingAddressText, logicalAddressCount + 1);
-
-    if (newAddresses.length > 0) {
-      updateUser(user.id, {
-        addresses: [...user.addresses, ...expandTrackedAddresses(newAddresses)],
-      });
-    }
-
-    setEditingAddressText('');
-    setEditingAddressUserId(null);
-  };
-
   const copyText = async (text: string) => {
     if (!text.trim()) return;
     await navigator.clipboard.writeText(text);
@@ -391,6 +529,28 @@ export default function ManagePage() {
     if (!payload) return;
     await copyText(payload);
     flashCopied('all-twitter');
+  };
+
+  const toggleAddressExpand = (userId: string) => {
+    setExpandedAddressByUserId((current) => ({
+      ...current,
+      [userId]: !current[userId],
+    }));
+  };
+
+  const toggleSort = (key: ManageSortKey) => {
+    setSortState((current) => {
+      if (current.key === key) {
+        return {
+          key,
+          direction: current.direction === 'asc' ? 'desc' : 'asc',
+        };
+      }
+      return {
+        key,
+        direction: 'desc',
+      };
+    });
   };
 
   if (!isClient) {
@@ -680,37 +840,198 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {filteredUsers.map((user) => (
-              <UserCard
-                key={user.id}
-                user={user}
-                relayCoverage={
-                  user.twitter ? relayCoverageByHandle[normalizeTwitterHandle(user.twitter).toLowerCase()] || null : null
-                }
-                isEditingAddresses={editingAddressUserId === user.id}
-                editingAddressText={editingAddressUserId === user.id ? editingAddressText : ''}
-                onDelete={() => deleteUser(user.id)}
-                onRemoveAddress={(address) => removeAddress(user.id, address)}
-                onUpdate={(updates) => updateUser(user.id, updates)}
-                onRefreshAvatar={() => {
-                  if (!user.twitter) return;
-                  updateUser(user.id, {
-                    avatar: buildUserAvatar(user.handle, user.twitter, `${user.twitter}:${Date.now()}`),
-                  });
-                }}
-                onStartEditingAddresses={() => {
-                  setEditingAddressUserId(user.id);
-                  setEditingAddressText('');
-                }}
-                onChangeEditingAddressText={setEditingAddressText}
-                onCancelEditingAddresses={() => {
-                  setEditingAddressUserId(null);
-                  setEditingAddressText('');
-                }}
-                onAddAddresses={() => handleAddAddressesToUser(user)}
-              />
-            ))}
+          <div className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-900/40">
+            <table className="w-full table-auto text-sm">
+              <thead className="bg-zinc-900/90 text-zinc-300">
+                <tr className="border-b border-zinc-800/80">
+                  <th className="w-12 px-2 py-2.5 text-left font-medium">头像</th>
+                  <th className="w-44 px-2 py-2.5 text-left font-medium">名称</th>
+                  <th className="w-28 px-2 py-2.5 text-left font-medium">推特</th>
+                  <th className="w-24 px-2 py-2.5 text-left font-medium">TG</th>
+                  <th className="w-32 px-2 py-2.5 text-left font-medium">地址（点击展开）</th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('historicalMaxAssetUsd')}
+                    >
+                      历史最高资产
+                      <span className="text-[10px]">
+                        {sortState.key === 'historicalMaxAssetUsd'
+                          ? sortState.direction === 'asc'
+                            ? '▲'
+                            : '▼'
+                          : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('totalAssetUsd')}
+                    >
+                      当前总资产
+                      <span className="text-[10px]">
+                        {sortState.key === 'totalAssetUsd' ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('socialCount7d')}
+                    >
+                      近7天社交动态
+                      <span className="text-[10px]">
+                        {sortState.key === 'socialCount7d' ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('walletCount7d')}
+                    >
+                      近7天链上动态
+                      <span className="text-[10px]">
+                        {sortState.key === 'walletCount7d' ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('totalCount7d')}
+                      title="近7天社交动态 + 近7天链上动态"
+                    >
+                      近7天总动态
+                      <span className="text-[10px]">
+                        {sortState.key === 'totalCount7d' ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedUserRows.map(({ user, stats, displayAddresses }) => {
+                  const twitterUrl = buildTwitterProfileUrl(user.twitter);
+                  const telegramUrl = buildTelegramProfileUrl(user.telegram);
+                  const telegramDisplayText = buildTelegramDisplayText(user.telegram);
+                  const isExpanded = Boolean(expandedAddressByUserId[user.id]);
+                  const twitterHandle = normalizeTwitterHandle(user.twitter || '');
+                  const relayCoverage = twitterHandle
+                    ? relayCoverageByHandle[twitterHandle.toLowerCase()] || null
+                    : null;
+
+                  return (
+                    <Fragment key={user.id}>
+                      <tr className="border-b border-zinc-800/70 align-top text-zinc-200">
+                        <td className="px-2 py-2.5">
+                          <Avatar className="h-8 w-8">
+                            <AvatarImage src={getUserAvatar(user)} alt={user.name} />
+                            <AvatarFallback className="bg-zinc-800 text-xs text-zinc-400">
+                              {user.name.slice(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                        </td>
+                        <td className="px-2 py-2.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-zinc-100">{user.name}</div>
+                              <div className="truncate text-xs text-zinc-500">@{user.handle}</div>
+                              {user.tags.length > 0 ? (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {user.tags.slice(0, 3).map((tag) => (
+                                    <Badge key={tag} className="border-0 bg-zinc-800 text-[10px] text-zinc-300">
+                                      {tag}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                            <button
+                              onClick={() => void handleDeleteUser(user.id)}
+                              disabled={Boolean(deletingUserIds[user.id])}
+                              className="rounded p-1 text-zinc-600 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                              title="删除人物"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2.5">
+                          {twitterUrl ? (
+                            <div className="space-y-1">
+                              <a
+                                href={twitterUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="truncate text-blue-400 hover:text-blue-300 hover:underline"
+                              >
+                                @{twitterHandle}
+                              </a>
+                              {relayCoverage ? (
+                                <div className="text-[11px] text-emerald-300">
+                                  Relay {new Date(relayCoverage.latestLastSeenAtMs).toLocaleDateString('zh-CN')}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="text-zinc-600">-</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2.5">
+                          {telegramUrl ? (
+                            <a
+                              href={telegramUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="truncate text-blue-400 hover:text-blue-300 hover:underline"
+                            >
+                              {telegramDisplayText || '-'}
+                            </a>
+                          ) : (
+                            <span className="text-zinc-600">-</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2.5">
+                          <button
+                            onClick={() => toggleAddressExpand(user.id)}
+                            className="inline-flex items-center gap-1 rounded border border-zinc-700/70 bg-zinc-950/80 px-1.5 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
+                          >
+                            <span>{displayAddresses.length} 个地址</span>
+                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                          </button>
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{formatUsdCompact(user.historicalMaxAssetUsd)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{formatUsdCompact(user.totalAssetUsd)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{stats.socialCount7d}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{stats.walletCount7d}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{getRecentTotalCount(stats)}</td>
+                      </tr>
+                      {isExpanded ? (
+                        <tr key={`${user.id}-expanded`} className="border-b border-zinc-800/70 bg-zinc-950/70">
+                          <td colSpan={10} className="px-4 py-3">
+                            <div className="space-y-2">
+                              {displayAddresses.map((address) => (
+                                <div key={`${user.id}-${address.address}`} className="flex items-center gap-2 text-xs text-zinc-300">
+                                  <span
+                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
+                                  >
+                                    {getAddressBadgeMeta(address).label}
+                                  </span>
+                                  <span className="shrink-0 text-zinc-400">{address.name}</span>
+                                  <span className="break-all font-mono text-zinc-500">{getManageAddressDisplayText(address.address)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           {users.length === 0 && (
@@ -730,325 +1051,6 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
           )}
         </section>
       </main>
-    </div>
-  );
-}
-
-interface UserCardProps {
-  user: User;
-  relayCoverage: TwitterRelayCoverageView | null;
-  isEditingAddresses: boolean;
-  editingAddressText: string;
-  onDelete: () => void;
-  onRemoveAddress: (address: string) => void;
-  onUpdate: (updates: Partial<User>) => void;
-  onRefreshAvatar: () => void;
-  onStartEditingAddresses: () => void;
-  onChangeEditingAddressText: (text: string) => void;
-  onCancelEditingAddresses: () => void;
-  onAddAddresses: () => void;
-}
-
-function UserCard({
-  user,
-  relayCoverage,
-  isEditingAddresses,
-  editingAddressText,
-  onDelete,
-  onRemoveAddress,
-  onUpdate,
-  onRefreshAvatar,
-  onStartEditingAddresses,
-  onChangeEditingAddressText,
-  onCancelEditingAddresses,
-  onAddAddresses,
-}: UserCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const displayAddresses = useMemo(() => groupAddressesForDisplay(user.addresses), [user.addresses]);
-  const [profileForm, setProfileForm] = useState<ProfileFormState>({
-    name: user.name,
-    handle: user.handle,
-    twitter: user.twitter || '',
-    telegram: user.telegram || '',
-    tags: user.tags.join(', '),
-  });
-
-  const handleSaveProfile = () => {
-    if (!profileForm.name.trim() || !profileForm.handle.trim()) return;
-
-    const normalizedTwitter = normalizeTwitterHandle(profileForm.twitter);
-
-    onUpdate({
-      name: profileForm.name.trim(),
-      handle: profileForm.handle.trim(),
-      avatar: buildUserAvatar(profileForm.handle.trim(), normalizedTwitter),
-      twitter: normalizedTwitter || undefined,
-      telegram: profileForm.telegram.trim() || undefined,
-      tags: profileForm.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
-    });
-
-    setIsEditingProfile(false);
-  };
-
-  return (
-    <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/50 p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Avatar className="h-12 w-12">
-            <AvatarImage src={getUserAvatar(user)} alt={user.name} />
-            <AvatarFallback className="bg-zinc-800 font-medium text-zinc-400">
-              {user.name.slice(0, 2).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
-          <div>
-            <h3 className="font-medium text-zinc-100">{user.name}</h3>
-            <p className="text-sm text-zinc-500">@{user.handle}</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {user.twitter ? (
-            <button
-              onClick={onRefreshAvatar}
-              className="rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="重新获取头像"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </button>
-          ) : null}
-          <button
-            onClick={() => {
-              if (!isEditingProfile) {
-                setProfileForm({
-                  name: user.name,
-                  handle: user.handle,
-                  twitter: user.twitter || '',
-                  telegram: user.telegram || '',
-                  tags: user.tags.join(', '),
-                });
-              }
-
-              setIsEditingProfile((value) => !value);
-            }}
-            className="rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-            title="编辑人物"
-          >
-            <Edit2 className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="rounded-lg p-2 text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
-            title="删除人物"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      {isEditingProfile ? (
-        <div className="mt-4 space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label className="text-xs text-zinc-400">名称</Label>
-              <Input
-                value={profileForm.name}
-                onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
-                className="border-zinc-800 bg-zinc-900 text-zinc-100"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-zinc-400">Handle</Label>
-              <Input
-                value={profileForm.handle}
-                onChange={(e) => setProfileForm({ ...profileForm, handle: e.target.value })}
-                className="border-zinc-800 bg-zinc-900 text-zinc-100"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-zinc-400">Twitter</Label>
-              <Input
-                value={profileForm.twitter}
-                onChange={(e) => setProfileForm({ ...profileForm, twitter: e.target.value })}
-                placeholder="例如: your_x_handle"
-                className="border-zinc-800 bg-zinc-900 text-zinc-100"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-zinc-400">Telegram</Label>
-              <Input
-                value={profileForm.telegram}
-                onChange={(e) => setProfileForm({ ...profileForm, telegram: e.target.value })}
-                placeholder="例如: your_tg"
-                className="border-zinc-800 bg-zinc-900 text-zinc-100"
-              />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label className="text-xs text-zinc-400">标签</Label>
-              <Input
-                value={profileForm.tags}
-                onChange={(e) => setProfileForm({ ...profileForm, tags: e.target.value })}
-                placeholder="逗号分隔"
-                className="border-zinc-800 bg-zinc-900 text-zinc-100"
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setProfileForm({
-                  name: user.name,
-                  handle: user.handle,
-                  twitter: user.twitter || '',
-                  telegram: user.telegram || '',
-                  tags: user.tags.join(', '),
-                });
-                setIsEditingProfile(false);
-              }}
-              className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-            >
-              取消
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleSaveProfile}
-              disabled={!profileForm.name.trim() || !profileForm.handle.trim()}
-              className="bg-blue-600 text-white hover:bg-blue-700"
-            >
-              保存资料
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="mt-3 flex flex-wrap gap-4 text-sm text-zinc-400">
-            <span className="text-zinc-600">Twitter</span>
-            <span>{user.twitter ? `@${user.twitter}` : '未填写'}</span>
-            {user.twitter && relayCoverage ? (
-              <Badge className="border-0 bg-emerald-500/15 text-xs text-emerald-300">
-                Relay {new Date(relayCoverage.latestLastSeenAtMs).toLocaleDateString('zh-CN')}
-              </Badge>
-            ) : null}
-            <span className="text-zinc-600">Telegram</span>
-            <span>{user.telegram || '未填写'}</span>
-            <span className="text-zinc-600">总资产</span>
-            <span>{formatUsdCompact(user.totalAssetUsd)}</span>
-            <span className="text-zinc-600">历史最高</span>
-            <span>{formatUsdCompact(user.historicalMaxAssetUsd)}</span>
-          </div>
-
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {user.tags.length > 0 ? (
-              user.tags.map((tag) => (
-                <Badge key={tag} variant="secondary" className="border-0 bg-zinc-800 text-xs text-zinc-400">
-                  {tag}
-                </Badge>
-              ))
-            ) : (
-              <span className="text-sm text-zinc-600">暂无标签</span>
-            )}
-          </div>
-        </>
-      )}
-
-      <div className="mt-4 border-t border-zinc-800/50 pt-4">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setExpanded((value) => !value)}
-            className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200"
-          >
-            <Wallet className="h-4 w-4" />
-            <span>{displayAddresses.length} 个地址</span>
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </button>
-
-          {!isEditingAddresses && (
-            <button
-              onClick={() => {
-                onStartEditingAddresses();
-                setExpanded(true);
-              }}
-              className="text-xs text-blue-400 hover:text-blue-300"
-            >
-              + 添加地址
-            </button>
-          )}
-        </div>
-
-        {expanded && (
-          <div className="mt-3 space-y-2">
-            {displayAddresses.length === 0 && !isEditingAddresses && (
-              <p className="py-4 text-center text-sm text-zinc-600">暂无地址</p>
-            )}
-
-            {displayAddresses.map((address) => (
-              <div
-                key={address.address}
-                className="flex items-center justify-between rounded-lg bg-zinc-950/50 px-3 py-2"
-              >
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
-                  >
-                    {address.networkLabel}
-                  </span>
-                  <span className="shrink-0 text-sm text-zinc-300">{address.name}</span>
-                  <span className="min-w-0 flex-[1_1_260px] break-all font-mono text-xs text-zinc-600">
-                    {getManageAddressDisplayText(address.address)}
-                  </span>
-                  <span className="shrink-0 rounded bg-zinc-800/60 px-2 py-0.5 text-xs text-zinc-300">
-                    {formatUsdOrDash(address.totalAssetUsd)}
-                  </span>
-                </div>
-                <button
-                  onClick={() => onRemoveAddress(address.address)}
-                  className="ml-2 p-1 text-zinc-600 hover:text-red-400"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-
-            {isEditingAddresses && (
-              <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
-                <div className="space-y-2">
-                  <Label className="text-xs text-zinc-400">批量添加地址</Label>
-                  <textarea
-                    value={editingAddressText}
-                    onChange={(e) => onChangeEditingAddressText(e.target.value)}
-                    rows={3}
-                    placeholder={`0x123...abc:主钱包
-9x8y...:Sol钱包`}
-                    className="w-full resize-none rounded bg-zinc-900 p-2 font-mono text-sm text-zinc-100 outline-none ring-1 ring-zinc-800 transition-colors focus:ring-zinc-700"
-                  />
-                  <p className="text-[10px] text-zinc-500">格式: address:name，`0x` 地址会自动补 BSC / ETH / BASE 三链</p>
-                  <div className="flex gap-2 pt-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={onCancelEditingAddresses}
-                      className="border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={onAddAddresses}
-                      disabled={!editingAddressText.trim()}
-                      className="bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      添加
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

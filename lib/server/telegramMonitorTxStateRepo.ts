@@ -8,6 +8,22 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
 }
 
+export function buildTelegramMonitorTxStateLookupKey(
+  chain: string | null | undefined,
+  trackedWalletAddress: string | null | undefined,
+  txHash: string | null | undefined
+) {
+  const normalizedChain = normalize(chain);
+  const normalizedTrackedWalletAddress = normalize(trackedWalletAddress);
+  const normalizedTxHash = normalize(txHash);
+
+  if (!normalizedChain || !normalizedTrackedWalletAddress || !normalizedTxHash) {
+    return null;
+  }
+
+  return `${normalizedChain}|${normalizedTrackedWalletAddress}|${normalizedTxHash}`;
+}
+
 function normalizeMessageLinks(input: string[] | null | undefined) {
   const seen = new Set<string>();
   const links: string[] = [];
@@ -100,6 +116,46 @@ interface TelegramMonitorTxStateRow {
   retry_count: number;
   last_error: string | null;
   updated_at: number;
+}
+
+const TELEGRAM_MONITOR_TX_STATE_SELECT_COLUMN_NAMES = [
+  'user_id',
+  'chain',
+  'tracked_wallet_address',
+  'tx_hash',
+  'token_address',
+  'token_symbol',
+  'provisional_action',
+  'provisional_action_label',
+  'provisional_action_variant',
+  'provisional_quote_amount',
+  'provisional_quote_symbol',
+  'provisional_token_amount',
+  'provisional_token_symbol',
+  'provisional_price_usd',
+  'provisional_market_cap_usd',
+  'provisional_raw_text',
+  'provisional_message_links_json',
+  'provisional_wallet_label',
+  'provisional_wallet_group_label',
+  'provisional_wallet_alias_label',
+  'event_time_ms',
+  'canonical_activity_json',
+  'reconciliation_status',
+  'reconciled_source',
+  'first_seen_at',
+  'last_seen_at',
+  'reconciled_at',
+  'next_retry_at',
+  'repair_claimed_at',
+  'retry_count',
+  'last_error',
+  'updated_at',
+] as const;
+
+function buildTelegramMonitorTxStateSelectColumns(alias?: string) {
+  const prefix = alias ? `${alias}.` : '';
+  return TELEGRAM_MONITOR_TX_STATE_SELECT_COLUMN_NAMES.map((column) => `${prefix}${column} AS ${column}`).join(',\n         ');
 }
 
 export interface UpsertTelegramMonitorTxStateProvisionalInput {
@@ -207,38 +263,7 @@ function selectByKey(chain: string, trackedWalletAddress: string, txHash: string
   return db
     .prepare(
       `SELECT
-         user_id,
-         chain,
-         tracked_wallet_address,
-         tx_hash,
-         token_address,
-         token_symbol,
-         provisional_action,
-         provisional_action_label,
-         provisional_action_variant,
-         provisional_quote_amount,
-         provisional_quote_symbol,
-         provisional_token_amount,
-         provisional_token_symbol,
-         provisional_price_usd,
-         provisional_market_cap_usd,
-         provisional_raw_text,
-         provisional_message_links_json,
-         provisional_wallet_label,
-         provisional_wallet_group_label,
-         provisional_wallet_alias_label,
-         event_time_ms,
-         canonical_activity_json,
-         reconciliation_status,
-         reconciled_source,
-         first_seen_at,
-         last_seen_at,
-         reconciled_at,
-         next_retry_at,
-         repair_claimed_at,
-         retry_count,
-         last_error,
-         updated_at
+         ${buildTelegramMonitorTxStateSelectColumns()}
        FROM telegram_monitor_tx_states
        WHERE chain = ?
          AND tracked_wallet_address_lower = ?
@@ -254,6 +279,72 @@ export function getTelegramMonitorTxState(params: {
   txHash: string;
 }) {
   return mapRow(selectByKey(params.chain, params.trackedWalletAddress, params.txHash));
+}
+
+export function listTelegramMonitorTxStatesByKeys(
+  keys: Array<{ chain: string; trackedWalletAddress: string; txHash: string }>
+) {
+  const normalizedKeys = Array.from(
+    new Map(
+      keys
+        .map((key) => {
+          const lookupKey = buildTelegramMonitorTxStateLookupKey(key.chain, key.trackedWalletAddress, key.txHash);
+          if (!lookupKey) {
+            return null;
+          }
+
+          const [chain, trackedWalletAddressLower, txHashLower] = lookupKey.split('|');
+          return [
+            lookupKey,
+            {
+              chain,
+              trackedWalletAddressLower,
+              txHashLower,
+            },
+          ] as const;
+        })
+        .filter(
+          (
+            entry
+          ): entry is readonly [string, { chain: string; trackedWalletAddressLower: string; txHashLower: string }] =>
+            Boolean(entry)
+        )
+    ).values()
+  );
+
+  if (normalizedKeys.length === 0) {
+    return new Map<string, TelegramMonitorTxState>();
+  }
+
+  const db = getDb();
+  const valuesSql = normalizedKeys.map(() => '(?, ?, ?)').join(', ');
+  const rows = db
+    .prepare(
+      `WITH requested_keys(chain, tracked_wallet_address_lower, tx_hash_lower) AS (
+         VALUES ${valuesSql}
+       )
+       SELECT
+         ${buildTelegramMonitorTxStateSelectColumns('state')}
+       FROM telegram_monitor_tx_states state
+       INNER JOIN requested_keys keys
+         ON state.chain = keys.chain
+        AND state.tracked_wallet_address_lower = keys.tracked_wallet_address_lower
+        AND state.tx_hash_lower = keys.tx_hash_lower`
+    )
+    .all(...normalizedKeys.flatMap((key) => [key.chain, key.trackedWalletAddressLower, key.txHashLower])) as
+    TelegramMonitorTxStateRow[];
+
+  const statesByKey = new Map<string, TelegramMonitorTxState>();
+  for (const row of rows) {
+    const state = mapRow(row);
+    const lookupKey = buildTelegramMonitorTxStateLookupKey(row.chain, row.tracked_wallet_address, row.tx_hash);
+    if (!state || !lookupKey) {
+      continue;
+    }
+    statesByKey.set(lookupKey, state);
+  }
+
+  return statesByKey;
 }
 
 export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMonitorTxStateProvisionalInput) {
@@ -528,38 +619,7 @@ export function listRecentTelegramMonitorTxStates(limit = 200) {
   const rows = db
     .prepare(
       `SELECT
-         user_id,
-         chain,
-         tracked_wallet_address,
-         tx_hash,
-         token_address,
-         token_symbol,
-         provisional_action,
-         provisional_action_label,
-         provisional_action_variant,
-         provisional_quote_amount,
-         provisional_quote_symbol,
-         provisional_token_amount,
-         provisional_token_symbol,
-         provisional_price_usd,
-         provisional_market_cap_usd,
-         provisional_raw_text,
-         provisional_message_links_json,
-         provisional_wallet_label,
-         provisional_wallet_group_label,
-         provisional_wallet_alias_label,
-         event_time_ms,
-         canonical_activity_json,
-         reconciliation_status,
-         reconciled_source,
-         first_seen_at,
-         last_seen_at,
-         reconciled_at,
-         next_retry_at,
-         repair_claimed_at,
-         retry_count,
-         last_error,
-         updated_at
+         ${buildTelegramMonitorTxStateSelectColumns()}
        FROM telegram_monitor_tx_states
        ORDER BY COALESCE(event_time_ms, updated_at) DESC, updated_at DESC
        LIMIT ?`
@@ -579,38 +639,7 @@ export function listTelegramMonitorTxStatesForRepair(params: {
   const rows = db
     .prepare(
       `SELECT
-         user_id,
-         chain,
-         tracked_wallet_address,
-         tx_hash,
-         token_address,
-         token_symbol,
-         provisional_action,
-         provisional_action_label,
-         provisional_action_variant,
-         provisional_quote_amount,
-         provisional_quote_symbol,
-         provisional_token_amount,
-         provisional_token_symbol,
-         provisional_price_usd,
-         provisional_market_cap_usd,
-         provisional_raw_text,
-         provisional_message_links_json,
-         provisional_wallet_label,
-         provisional_wallet_group_label,
-         provisional_wallet_alias_label,
-         event_time_ms,
-         canonical_activity_json,
-         reconciliation_status,
-         reconciled_source,
-         first_seen_at,
-         last_seen_at,
-         reconciled_at,
-         next_retry_at,
-         repair_claimed_at,
-         retry_count,
-         last_error,
-         updated_at
+         ${buildTelegramMonitorTxStateSelectColumns()}
        FROM telegram_monitor_tx_states
        WHERE reconciliation_status != 'reconciled'
          AND COALESCE(next_retry_at, 0) <= ?

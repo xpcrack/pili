@@ -12,8 +12,15 @@ import {
   type ConflictFieldDiff,
 } from '@/lib/server/sourceReconciliation';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
+import { repairCollapsedCanonicalActivitySync } from '@/lib/server/telegramMonitorActivity';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
+import {
+  buildTelegramMonitorTxStateLookupKey,
+  listTelegramMonitorTxStatesByKeys,
+  setTelegramMonitorTxStateCanonicalActivity,
+  type TelegramMonitorTxState,
+} from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 
@@ -157,14 +164,71 @@ function buildTelegramMonitorLogicalTxKey(activity: Activity) {
     return null;
   }
 
-  const chain = normalize(activity.metadata.chain);
-  const trackedAddress = normalize(activity.metadata.trackedAddress);
-  const txHash = normalize(activity.metadata.txHash);
-  if (!chain || !trackedAddress || !txHash) {
-    return null;
+  return buildTelegramMonitorTxStateLookupKey(
+    activity.metadata.chain,
+    activity.metadata.trackedAddress,
+    activity.metadata.txHash
+  );
+}
+
+function repairMonitorEventActivity(
+  user: User,
+  activity: Activity,
+  monitorStatesByLogicalKey: Map<string, TelegramMonitorTxState>
+) {
+  const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
+  if (!monitorLogicalKey) {
+    return activity;
   }
 
-  return `${chain}|${trackedAddress}|${txHash}`;
+  const state = monitorStatesByLogicalKey.get(monitorLogicalKey);
+  if (!state) {
+    return activity;
+  }
+
+  const repaired = repairCollapsedCanonicalActivitySync({
+    user,
+    state,
+    canonicalActivity: activity,
+  });
+  persistHealedTelegramMonitorActivity({
+    user,
+    originalActivity: activity,
+    healedActivity: repaired,
+  });
+  return repaired;
+}
+
+function areActivitiesEquivalent(left: Activity, right: Activity) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function persistHealedTelegramMonitorActivity(params: {
+  user: User;
+  originalActivity: Activity;
+  healedActivity: Activity;
+}) {
+  if (areActivitiesEquivalent(params.originalActivity, params.healedActivity)) {
+    return false;
+  }
+
+  const chain = (params.healedActivity.metadata.chain || '').trim();
+  const trackedWalletAddress = (params.healedActivity.metadata.trackedAddress || '').trim();
+  const txHash = (params.healedActivity.metadata.txHash || '').trim();
+  if (chain && trackedWalletAddress && txHash) {
+    setTelegramMonitorTxStateCanonicalActivity({
+      chain,
+      trackedWalletAddress,
+      txHash,
+      activity: params.healedActivity,
+    });
+  }
+
+  upsertEventsFromFeedRows(
+    [{ user: params.user, activity: params.healedActivity }],
+    'telegram-monitor-storage-heal'
+  );
+  return true;
 }
 
 function buildFallbackOriginalPayload(activity: Activity, ingestSource: string) {
@@ -195,6 +259,13 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
     incoming.metadata.monitorReconciledSource === 'okx-detail' ||
     existing.metadata.monitorReconciledSource === 'okx-address' ||
     existing.metadata.monitorReconciledSource === 'okx-detail';
+  const prefersAggregatedMonitorDisplay =
+    !incoming.metadata.rawText &&
+    incoming.metadata.monitorReconciledSource === 'xxyy' &&
+    isExpectedMonitorAggregateCorrection(existing, incoming);
+  const mergedRawText = prefersAggregatedMonitorDisplay
+    ? pickDisplaySeed(incoming.metadata.rawText)
+    : pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText);
 
   const mergedMetadata: Activity['metadata'] = {
     ...existing.metadata,
@@ -202,7 +273,7 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
   };
 
   const displayMetadata = buildTradeDisplayMetadata({
-    rawText: prefersCanonicalMonitorDisplay ? undefined : pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText),
+    rawText: prefersCanonicalMonitorDisplay || prefersAggregatedMonitorDisplay ? undefined : mergedRawText,
     walletLabel: pickDisplaySeed(
       incoming.metadata.monitorWalletAliasLabel,
       incoming.metadata.monitorWalletLabel,
@@ -237,7 +308,7 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
     ...incoming,
     metadata: {
       ...mergedMetadata,
-      rawText: pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText),
+      rawText: mergedRawText,
       tradeAmountUsdAtTx: incoming.metadata.tradeAmountUsdAtTx ?? existing.metadata.tradeAmountUsdAtTx,
       marketCapAtTxUsd: incoming.metadata.marketCapAtTxUsd ?? existing.metadata.marketCapAtTxUsd,
       marketCapAtTxSource: incoming.metadata.marketCapAtTxSource ?? existing.metadata.marketCapAtTxSource,
@@ -741,19 +812,38 @@ export function readEventsFeed(query: EventFeedQuery) {
   }>;
 
   const sliced = rows.slice(0, safeLimit);
-  const feed: EventFeedRow[] = [];
-  for (const row of sliced) {
+  const parsedRows = sliced.flatMap((row) => {
     try {
       const user = mergeCurrentUserSnapshot(JSON.parse(row.user_json) as User, currentUsersById);
       const activity = JSON.parse(row.activity_json) as Activity;
-      feed.push({
-        user,
-        activity,
-        cursor: encodeCursor(row.timestamp, row.event_id),
-      });
+      return [{ row, user, activity }];
     } catch {
-      continue;
+      return [];
     }
+  });
+  const monitorStatesByLogicalKey = listTelegramMonitorTxStatesByKeys(
+    parsedRows
+      .map(({ activity }) => {
+        const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
+        if (!monitorLogicalKey) {
+          return null;
+        }
+
+        return {
+          chain: activity.metadata.chain || '',
+          trackedWalletAddress: activity.metadata.trackedAddress || '',
+          txHash: activity.metadata.txHash || '',
+        };
+      })
+      .filter((key): key is { chain: string; trackedWalletAddress: string; txHash: string } => Boolean(key))
+  );
+  const feed: EventFeedRow[] = [];
+  for (const { row, user, activity } of parsedRows) {
+    feed.push({
+      user,
+      activity: repairMonitorEventActivity(user, activity, monitorStatesByLogicalKey),
+      cursor: encodeCursor(row.timestamp, row.event_id),
+    });
   }
 
   const countParams = [...params];

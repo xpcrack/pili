@@ -116,7 +116,7 @@ function isFiniteNumber(value: unknown): value is number {
 function canBuildImportanceExplanation(
   importance: Partial<ActivityImportance> | null | undefined
 ): importance is ActivityImportance {
-  if (!importance || importance.version !== 1) {
+  if (!importance || (importance.version !== 1 && importance.version !== 2)) {
     return false;
   }
   if (importance.sourceKind !== 'social' && importance.sourceKind !== 'wallet') {

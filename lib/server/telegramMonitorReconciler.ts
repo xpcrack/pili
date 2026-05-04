@@ -9,6 +9,7 @@ import {
   type OkxTransactionDetailTokenTransfer,
 } from '@/lib/okx';
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
+import { repairCollapsedCanonicalActivity } from '@/lib/server/telegramMonitorActivity';
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
@@ -129,22 +130,35 @@ async function buildCanonicalActivityFromTransactions(params: {
   return activity;
 }
 
-function persistReconciledMonitorActivity(params: {
+async function persistReconciledMonitorActivity(params: {
   state: {
     chain: string;
+    tokenAddress: string | null;
+    tokenSymbol: string | null;
     trackedWalletAddress: string;
     txHash: string;
+    provisionalAction: 'buy' | 'sell' | 'send' | null;
+    provisionalActionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
+    provisionalActionVariant: 'open' | 'add' | 'reduce' | 'close' | 'send' | null;
+    provisionalQuoteAmount: number | null;
+    provisionalQuoteSymbol: string | null;
+    provisionalTokenAmount: number | null;
+    provisionalTokenSymbol: string | null;
+    provisionalPriceUsd: number | null;
     provisionalMarketCapUsd: number | null;
     provisionalRawText: string | null;
     provisionalWalletLabel: string | null;
     provisionalWalletGroupLabel: string | null;
     provisionalWalletAliasLabel: string | null;
+    eventTimeMs: number;
+    reconciliationStatus: 'pending' | 'reconciled' | 'failed';
+    reconciledSource: 'xxyy' | 'okx-address' | 'okx-detail' | null;
   };
   user: User;
   activity: Activity;
   source: 'okx-address' | 'okx-detail';
 }) {
-  const activity = decorateCanonicalMonitorActivity({
+  const decoratedActivity = decorateCanonicalMonitorActivity({
     activity: params.activity,
     trackedWalletAddress: params.state.trackedWalletAddress,
     txHash: params.state.txHash,
@@ -156,8 +170,35 @@ function persistReconciledMonitorActivity(params: {
     walletGroupLabel: params.state.provisionalWalletGroupLabel,
     walletAliasLabel: params.state.provisionalWalletAliasLabel,
   });
-  const [scoredCanonical] = scoreFeedRowsAgainstDatabase([{ user: params.user, activity }]);
-  const canonicalForWrite = scoredCanonical || { user: params.user, activity };
+  const repairedActivity = await repairCollapsedCanonicalActivity({
+    user: params.user,
+    state: {
+      chain: params.state.chain,
+      trackedWalletAddress: params.state.trackedWalletAddress,
+      txHash: params.state.txHash,
+      tokenAddress: params.state.tokenAddress,
+      tokenSymbol: params.state.tokenSymbol,
+      provisionalAction: params.state.provisionalAction,
+      provisionalActionLabel: params.state.provisionalActionLabel,
+      provisionalActionVariant: params.state.provisionalActionVariant,
+      provisionalQuoteAmount: params.state.provisionalQuoteAmount,
+      provisionalQuoteSymbol: params.state.provisionalQuoteSymbol,
+      provisionalTokenAmount: params.state.provisionalTokenAmount,
+      provisionalTokenSymbol: params.state.provisionalTokenSymbol,
+      provisionalPriceUsd: params.state.provisionalPriceUsd,
+      provisionalMarketCapUsd: params.state.provisionalMarketCapUsd,
+      provisionalRawText: params.state.provisionalRawText,
+      provisionalWalletLabel: params.state.provisionalWalletLabel,
+      provisionalWalletGroupLabel: params.state.provisionalWalletGroupLabel,
+      provisionalWalletAliasLabel: params.state.provisionalWalletAliasLabel,
+      eventTimeMs: params.state.eventTimeMs,
+      reconciliationStatus: 'reconciled',
+      reconciledSource: params.source,
+    },
+    canonicalActivity: decoratedActivity,
+  });
+  const [scoredCanonical] = scoreFeedRowsAgainstDatabase([{ user: params.user, activity: repairedActivity }]);
+  const canonicalForWrite = scoredCanonical || { user: params.user, activity: repairedActivity };
 
   markTelegramMonitorTxStateReconciled({
     chain: params.state.chain,
@@ -302,7 +343,7 @@ export async function reconcileTelegramMonitorTxState(params: {
         });
 
         if (canonicalFromDetail) {
-          return persistReconciledMonitorActivity({
+          return await persistReconciledMonitorActivity({
             state,
             user: trackedUser.user,
             activity: canonicalFromDetail,
@@ -331,7 +372,7 @@ export async function reconcileTelegramMonitorTxState(params: {
         });
 
         if (canonicalFromAddress) {
-          return persistReconciledMonitorActivity({
+          return await persistReconciledMonitorActivity({
             state,
             user: trackedUser.user,
             activity: canonicalFromAddress,

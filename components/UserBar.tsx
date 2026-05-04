@@ -128,7 +128,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                     <div className="truncate text-sm font-medium">{user.name}</div>
                     <div className="mt-0.5 flex items-center gap-2 text-xs">
                       <span className="min-w-0 truncate text-zinc-500">
-                        {formatUsdCompact(user.totalAssetUsd)}
+                        {formatUsdCompact(user.historicalMaxAssetUsd)}
                       </span>
                       <span className={`shrink-0 text-[11px] ${isSelected ? 'text-blue-300/90' : 'text-zinc-400'}`}>
                         {latestActivityText}

@@ -8,8 +8,18 @@ function run() {
 
   assert.match(
     source,
-    /useActivityPolling\s*\(\s*selectedUserId\s*,\s*getRemoteFeedSearchKeyword\(searchFilters\.keyword\)\s*\)/,
+    /useActivityPolling\s*\(\s*selectedUserId\s*,\s*getRemoteFeedSearchKeyword\(searchFilters\.keyword\)\s*,/,
     'Home page should only forward safe remote-search keywords into useActivityPolling'
+  );
+  assert.match(
+    source,
+    /useActivityPolling\s*\(\s*selectedUserId\s*,\s*getRemoteFeedSearchKeyword\(searchFilters\.keyword\)\s*,\s*getRemoteFeedSource\(searchFilters\.typeFilters\)\s*(?:,|\))/,
+    'Home page should forward a remote source hint when the local type filters can narrow the remote feed safely'
+  );
+  assert.match(
+    source,
+    /useActivityPolling\s*\(\s*selectedUserId\s*,\s*getRemoteFeedSearchKeyword\(searchFilters\.keyword\)\s*,\s*getRemoteFeedSource\(searchFilters\.typeFilters\)\s*,\s*searchFilters\s*\)/,
+    'Home page should pass the full search filter state so polling can decide when to scan the whole database'
   );
   assert.doesNotMatch(
     source,

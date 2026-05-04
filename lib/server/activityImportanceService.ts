@@ -11,7 +11,9 @@ import { getBlockchainActivityIdentity } from '@/lib/activityIdentity';
 import { getDb } from '@/lib/server/sqlite';
 import type { Activity, User } from '@/types';
 
-const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+const WINDOW_MS = 7 * DAY_MS;
 
 export interface FeedImportanceRow {
   user: User;
@@ -90,6 +92,11 @@ function sortRowsChronologically(rows: FeedImportanceRow[]) {
   });
 }
 
+function getUtc8DayStart(timestamp: number) {
+  const shiftedTimestamp = timestamp + UTC8_OFFSET_MS;
+  return Math.floor(shiftedTimestamp / DAY_MS) * DAY_MS - UTC8_OFFSET_MS;
+}
+
 function withImportance(activity: Activity, importance: ActivityImportance): Activity {
   return {
     ...activity,
@@ -101,14 +108,15 @@ function withImportance(activity: Activity, importance: ActivityImportance): Act
 }
 
 function countHistoryRows(rows: FeedImportanceRow[], row: FeedImportanceRow) {
-  const windowStart = row.activity.timestamp - WINDOW_MS;
+  const dayStart = getUtc8DayStart(row.activity.timestamp);
+  const windowStart = dayStart - WINDOW_MS;
   let socialCount7d = 0;
   let walletCount7d = 0;
 
   for (const candidate of rows) {
     if (candidate.user.id !== row.user.id) continue;
     if (candidate.activity.timestamp < windowStart) continue;
-    if (candidate.activity.timestamp >= row.activity.timestamp) continue;
+    if (candidate.activity.timestamp >= dayStart) continue;
     if (normalizeSource(candidate.activity.source) === 'social') socialCount7d += 1;
     if (normalizeSource(candidate.activity.source) === 'wallet') walletCount7d += 1;
   }
@@ -129,6 +137,13 @@ function scoreOne(row: FeedImportanceRow, socialCount7d: number, walletCount7d: 
       typeof row.user.historicalMaxAssetUsd === 'number' && row.user.historicalMaxAssetUsd > 0
         ? row.user.historicalMaxAssetUsd
         : null,
+    tradeAmountUsdAtTx:
+      typeof row.activity.metadata.tradeAmountUsdAtTx === 'number' &&
+      Number.isFinite(row.activity.metadata.tradeAmountUsdAtTx) &&
+      row.activity.metadata.tradeAmountUsdAtTx > 0
+        ? row.activity.metadata.tradeAmountUsdAtTx
+        : null,
+    contentLength: row.activity.content.trim().length,
   });
 
   return {
@@ -184,12 +199,13 @@ export function scoreFeedRowsAgainstDatabase(rows: FeedImportanceRow[]) {
 
   const priorUnpersistedBatch: FeedImportanceRow[] = [];
   return orderedWithEventIds.map(({ row, eventId }) => {
-    const windowStart = row.activity.timestamp - WINDOW_MS;
+    const dayStart = getUtc8DayStart(row.activity.timestamp);
+    const windowStart = dayStart - WINDOW_MS;
     const databaseSocialCount = (
-      socialCountStmt.get(row.user.id, windowStart, row.activity.timestamp) as { count: number }
+      socialCountStmt.get(row.user.id, windowStart, dayStart) as { count: number }
     ).count;
     const databaseWalletCount = (
-      walletCountStmt.get(row.user.id, windowStart, row.activity.timestamp) as { count: number }
+      walletCountStmt.get(row.user.id, windowStart, dayStart) as { count: number }
     ).count;
     const batchCounts = countHistoryRows(priorUnpersistedBatch, row);
 

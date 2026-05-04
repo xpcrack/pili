@@ -1,20 +1,27 @@
 import 'server-only';
 
-import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import {
   listRecentTelegramMonitorFallbackEventsWithoutTxState,
   updateTelegramMonitorEventProjectedActivityIfMissing,
   type TelegramMonitorFeedEvent,
 } from '@/lib/server/telegramMonitorRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
+import { persistHealedTelegramMonitorActivity } from '@/lib/server/eventsRepo';
 import {
   listRecentTelegramMonitorTxStates,
   type TelegramMonitorTxState,
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import {
+  buildActivityFromSnapshot,
+  repairCollapsedCanonicalActivity,
+} from '@/lib/server/telegramMonitorActivity';
+import {
+  buildTrackedAddressIndex,
+  dedupeTelegramMonitorFeedRows,
+  pickMonitoredUser,
+} from '@/lib/server/telegramMonitorFeedHelpers';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
-import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
-import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import type { Activity, User } from '@/types';
 
 export interface TelegramMonitorFeedRow {
@@ -49,104 +56,11 @@ function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
 }
 
-function normalizeAliasLabel(value: string | null | undefined) {
-  return (value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/#/g, '');
-}
-
-function isEvmChain(chain: string | null | undefined) {
-  return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
-}
-
-function isCompatibleChain(addressChain: string, eventChain: string) {
-  if (addressChain === eventChain) {
-    return true;
-  }
-  return isEvmChain(addressChain) && isEvmChain(eventChain);
-}
-
-function buildTrackedAddressIndex(users: User[]) {
-  const index = new Map<string, { user: User; trackedAddress: string }>();
-
-  for (const user of users) {
-    for (const address of user.addresses) {
-      const key = `${normalize(address.chain)}|${normalize(address.address)}`;
-      if (!key.endsWith('|')) {
-        index.set(key, {
-          user,
-          trackedAddress: address.address,
-        });
-
-        if (isEvmChain(address.chain)) {
-          for (const evmChain of ['bsc', 'ethereum', 'base']) {
-            index.set(`${evmChain}|${normalize(address.address)}`, {
-              user,
-              trackedAddress: address.address,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  return index;
-}
-
-function pickMonitoredUser(params: {
-  eventWalletAliasLabel: string | null;
-  trackedWalletAddress: string | null;
-  chain: string;
-  users: User[];
-  trackedAddressIndex: Map<string, { user: User; trackedAddress: string }>;
-}) {
-  const { eventWalletAliasLabel, trackedWalletAddress, chain, users, trackedAddressIndex } = params;
-  const trackedKey = `${normalize(chain)}|${normalize(trackedWalletAddress)}`;
-  const matchedByAddress = trackedAddressIndex.get(trackedKey);
-  if (matchedByAddress) {
-    return matchedByAddress;
-  }
-
-  const aliasLabel = normalizeAliasLabel(eventWalletAliasLabel);
-  if (!aliasLabel) {
-    return null;
-  }
-
-  for (const user of users) {
-    const userName = normalizeAliasLabel(user.name);
-    if (aliasLabel === userName) {
-      return {
-        user,
-        trackedAddress: user.addresses[0]?.address || null,
-      };
-    }
-
-    for (const address of user.addresses) {
-      if (!isCompatibleChain(normalize(address.chain), normalize(chain))) {
-        continue;
-      }
-      const alias = `${normalizeAliasLabel(user.name)}${normalizeAliasLabel(address.name)}`;
-      const explicitAlias = address.name.startsWith('#')
-        ? `${normalizeAliasLabel(user.name)}${normalizeAliasLabel(address.name)}`
-        : `${normalizeAliasLabel(user.name)}${normalizeAliasLabel(`#${address.name}`)}`;
-      if (aliasLabel === alias || aliasLabel === explicitAlias || aliasLabel === normalizeAliasLabel(address.name)) {
-        return {
-          user,
-          trackedAddress: address.address,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-interface MonitorActivitySnapshot {
+async function buildProjectedTelegramMonitorFeedRow(params: {
   user: User;
   chain: string;
   tokenAddress: string;
-  tokenSymbol: string | null;
+  tokenSymbol: string;
   txHash: string | null;
   marketCapUsd: number | null;
   quoteAmount: number | null;
@@ -154,7 +68,7 @@ interface MonitorActivitySnapshot {
   tokenAmount: number | null;
   explicitPriceUsd: number | null;
   rawText: string | null;
-  action: 'buy' | 'sell' | 'send' | null;
+  action: 'buy' | 'sell' | 'send';
   actionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
   actionVariant: 'open' | 'add' | 'reduce' | 'close' | 'send' | null;
   walletLabel: string | null;
@@ -162,107 +76,123 @@ interface MonitorActivitySnapshot {
   walletAliasLabel: string | null;
   eventTimeMs: number;
   trackedAddress: string | null;
-  monitorReconciliationStatus?: 'pending' | 'reconciled' | 'failed';
-  monitorReconciledSource?: 'xxyy' | 'okx-address' | 'okx-detail' | null;
-}
-
-async function buildActivityFromSnapshot(params: MonitorActivitySnapshot) {
-  const {
-    user,
-    chain,
-    tokenAddress,
-    tokenSymbol,
-    txHash,
-    marketCapUsd,
-    quoteAmount,
-    quoteSymbol,
-    tokenAmount,
-    explicitPriceUsd,
-    rawText,
-    action,
-    actionLabel,
-    actionVariant,
-    walletLabel,
-    walletGroupLabel,
-    walletAliasLabel,
-    eventTimeMs,
-    trackedAddress,
-    monitorReconciliationStatus,
-    monitorReconciledSource,
-  } = params;
-
-  const aggregateKey = buildTelegramMonitorTxAggregateKey(chain, trackedAddress, txHash);
-  const actionText =
-    actionLabel || (action === 'sell' ? '减仓' : action === 'buy' ? '建仓' : action === 'send' ? '发送' : '交易');
-  const quoteText =
-    typeof quoteAmount === 'number' && Number.isFinite(quoteAmount) && quoteSymbol
-      ? `${quoteAmount}${quoteSymbol.toUpperCase()}`
-      : '';
-  const symbolText = (tokenSymbol || 'TOKEN').toUpperCase();
-  const fallbackTokenText =
-    typeof tokenAmount === 'number' && Number.isFinite(tokenAmount) ? `${tokenAmount} ${symbolText}` : symbolText;
-  const displayMetadata = buildTradeDisplayMetadata({
-    rawText,
-    walletLabel,
-    fallbackWalletLabel: user.name,
-    actionVariant,
-    txActionLabel: actionLabel,
-    quoteAmount,
-    quoteToken: quoteSymbol,
-    value: typeof tokenAmount === 'number' && Number.isFinite(tokenAmount) ? String(tokenAmount) : null,
-    tokenSymbol,
-    marketCapUsd,
-    tokenAddress,
-  });
-  const tradeAmountUsdAtTx =
-    action === 'buy' || action === 'sell'
-      ? await resolveTradeAmountUsdAtTx({
-          chain,
-          txTimestampMs: eventTimeMs,
-          token: tokenSymbol,
-          value: typeof tokenAmount === 'number' && Number.isFinite(tokenAmount) ? String(tokenAmount) : null,
-          quoteToken: quoteSymbol,
-          quoteAmount: typeof quoteAmount === 'number' && Number.isFinite(quoteAmount) ? String(quoteAmount) : null,
-          explicitPriceUsd,
-        })
-      : null;
+  monitorReconciliationStatus: Activity['metadata']['monitorReconciliationStatus'] | undefined;
+  monitorReconciledSource: Activity['metadata']['monitorReconciledSource'] | null;
+}): Promise<TelegramMonitorFeedRow> {
+  const { user } = params;
 
   return {
-    id: aggregateKey || `xxyy-monitor:${chain}:${txHash || tokenAddress}:${eventTimeMs}`,
-    userId: user.id,
-    source: 'blockchain',
-    type: 'transfer',
-    title: 'XXYY监控交易',
-    content: `${actionText}${quoteText ? quoteText : ` ${fallbackTokenText}`}`.trim(),
-    timestamp: eventTimeMs,
-    metadata: {
-      txHash: txHash || undefined,
-      token: tokenSymbol || undefined,
-      tokenAddress,
-      quoteAmount:
-        typeof quoteAmount === 'number' && Number.isFinite(quoteAmount) ? String(quoteAmount) : undefined,
-      quoteToken: quoteSymbol || undefined,
-      chain,
-      txAction: action || undefined,
-      txActionLabel: actionLabel || undefined,
-      txActionVariant: actionVariant || undefined,
-      value: typeof tokenAmount === 'number' && Number.isFinite(tokenAmount) ? String(tokenAmount) : undefined,
-      trackedAddress: trackedAddress || undefined,
-      rawText: rawText || undefined,
-      monitorWalletLabel: walletLabel || undefined,
-      monitorWalletGroupLabel: walletGroupLabel || undefined,
-      monitorWalletAliasLabel: walletAliasLabel || undefined,
-      marketCapAtTxUsd:
-        typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) ? marketCapUsd : undefined,
-      tradeAmountUsdAtTx: tradeAmountUsdAtTx ?? undefined,
-      marketCapAtTxSource:
-        typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) ? 'telegram-monitor-exact' : undefined,
-      monitorReconciliationStatus: monitorReconciliationStatus || undefined,
-      monitorReconciledSource: monitorReconciledSource || undefined,
-      monitorTxAggregateKey: aggregateKey || undefined,
-      ...displayMetadata,
-    },
-  } satisfies Activity;
+    user,
+    activity: await buildActivityFromSnapshot({
+      user,
+      chain: params.chain,
+      tokenAddress: params.tokenAddress,
+      tokenSymbol: params.tokenSymbol,
+      txHash: params.txHash,
+      marketCapUsd: params.marketCapUsd,
+      quoteAmount: params.quoteAmount,
+      quoteSymbol: params.quoteSymbol,
+      tokenAmount: params.tokenAmount,
+      explicitPriceUsd: params.explicitPriceUsd,
+      rawText: params.rawText,
+      action: params.action,
+      actionLabel: params.actionLabel,
+      actionVariant: params.actionVariant,
+      walletLabel: params.walletLabel,
+      walletGroupLabel: params.walletGroupLabel,
+      walletAliasLabel: params.walletAliasLabel,
+      eventTimeMs: params.eventTimeMs,
+      trackedAddress: params.trackedAddress,
+      monitorReconciliationStatus: params.monitorReconciliationStatus,
+      monitorReconciledSource: params.monitorReconciledSource,
+    }),
+  };
+}
+
+function collectFallbackPersistCandidates(params: {
+  events: TelegramMonitorFeedEvent[];
+  projectedRows: Array<TelegramMonitorFeedRow | null>;
+}) {
+  const candidates: Array<{
+    event: TelegramMonitorFeedEvent;
+    row: TelegramMonitorFeedRow;
+    stableId: string;
+  }> = [];
+
+  for (let index = 0; index < params.events.length; index += 1) {
+    const event = params.events[index];
+    const row = params.projectedRows[index];
+    if (!row || event?.projectedActivity) {
+      continue;
+    }
+    candidates.push({
+      event,
+      row,
+      stableId: `fallback-${String(index).padStart(12, '0')}`,
+    });
+  }
+
+  return candidates;
+}
+
+function scoreFallbackRowsForPersistence(candidates: Array<{
+  event: TelegramMonitorFeedEvent;
+  row: TelegramMonitorFeedRow;
+  stableId: string;
+}>) {
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const scoredFallbackRows = scoreFeedRowsAgainstDatabase(
+    candidates.map((item) => ({
+      user: item.row.user,
+      activity: item.row.activity,
+      stableId: item.stableId,
+    }))
+  );
+  const scoredByStableId = new Map(scoredFallbackRows.map((row) => [row.stableId || '', row] as const));
+
+  for (const candidate of candidates) {
+    const scored = scoredByStableId.get(candidate.stableId);
+    if (!scored) {
+      continue;
+    }
+    candidate.row.activity = scored.activity;
+    updateTelegramMonitorEventProjectedActivityIfMissing({
+      sourceChatId: candidate.event.sourceChatId ?? null,
+      sourceMessageId: candidate.event.sourceMessageId ?? null,
+      txHash: candidate.event.txHash ?? null,
+      activity: scored.activity,
+    });
+  }
+}
+
+async function projectTelegramMonitorTxStateFeed(params: {
+  users: User[];
+  limit: number;
+}): Promise<TelegramMonitorFeedRow[]> {
+  const txStates = listRecentTelegramMonitorTxStates(params.limit);
+  const projectedStates = await Promise.all(txStates.map((state) => projectTelegramMonitorTxState({ state, users: params.users })));
+  return projectedStates.filter((item): item is TelegramMonitorFeedRow => Boolean(item));
+}
+
+async function projectTelegramMonitorFallbackFeed(params: {
+  users: User[];
+  limit: number;
+}): Promise<TelegramMonitorFeedRow[]> {
+  const fallbackEvents = listRecentTelegramMonitorFallbackEventsWithoutTxState(params.limit);
+  const projectedFallbackEvents = await Promise.all(
+    fallbackEvents.map((event) => projectTelegramMonitorEvent({ event, users: params.users }))
+  );
+  const fallbackPersistCandidates = collectFallbackPersistCandidates({
+    events: fallbackEvents,
+    projectedRows: projectedFallbackEvents,
+  });
+
+  scoreFallbackRowsForPersistence(fallbackPersistCandidates);
+
+  return projectedFallbackEvents.filter((item): item is TelegramMonitorFeedRow => Boolean(item));
 }
 
 export async function projectTelegramMonitorEvent(params: {
@@ -321,35 +251,29 @@ export async function projectTelegramMonitorEvent(params: {
   const user = matched.user;
   const trackedAddress = matched.trackedAddress || event.trackedWalletAddress || null;
 
-  return {
+  return buildProjectedTelegramMonitorFeedRow({
     user,
-    activity: await buildActivityFromSnapshot({
-      user,
-      chain,
-      tokenAddress: event.tokenAddress,
-      tokenSymbol,
-      txHash: event.txHash,
-      marketCapUsd: event.marketCapUsd,
-      quoteAmount,
-      quoteSymbol,
-      tokenAmount,
-      explicitPriceUsd,
-      rawText: event.rawText,
-      action,
-      actionLabel,
-      actionVariant,
-      walletLabel: event.walletLabel,
-      walletGroupLabel: event.walletGroupLabel,
-      walletAliasLabel: event.walletAliasLabel,
-      eventTimeMs: event.eventTimeMs,
-      trackedAddress,
-      monitorReconciliationStatus:
-        event.txHash && trackedAddress
-          ? 'pending'
-          : undefined,
-      monitorReconciledSource: event.txHash && trackedAddress ? 'xxyy' : null,
-    }),
-  };
+    chain,
+    tokenAddress: event.tokenAddress,
+    tokenSymbol,
+    txHash: event.txHash,
+    marketCapUsd: event.marketCapUsd,
+    quoteAmount,
+    quoteSymbol,
+    tokenAmount,
+    explicitPriceUsd,
+    rawText: event.rawText,
+    action,
+    actionLabel,
+    actionVariant,
+    walletLabel: event.walletLabel,
+    walletGroupLabel: event.walletGroupLabel,
+    walletAliasLabel: event.walletAliasLabel,
+    eventTimeMs: event.eventTimeMs,
+    trackedAddress,
+    monitorReconciliationStatus: event.txHash && trackedAddress ? 'pending' : undefined,
+    monitorReconciledSource: event.txHash && trackedAddress ? 'xxyy' : null,
+  });
 }
 
 export async function projectTelegramMonitorTxState(params: {
@@ -363,9 +287,19 @@ export async function projectTelegramMonitorTxState(params: {
   }
 
   if (params.state.reconciliationStatus === 'reconciled' && params.state.canonicalActivity) {
+    const repairedCanonicalActivity = await repairCollapsedCanonicalActivity({
+      user,
+      state: params.state,
+      canonicalActivity: params.state.canonicalActivity,
+    });
+    persistHealedTelegramMonitorActivity({
+      user,
+      originalActivity: params.state.canonicalActivity,
+      healedActivity: repairedCanonicalActivity,
+    });
     return {
       user,
-      activity: params.state.canonicalActivity,
+      activity: repairedCanonicalActivity,
     };
   }
 
@@ -375,108 +309,37 @@ export async function projectTelegramMonitorTxState(params: {
     return null;
   }
 
-  return {
+  return buildProjectedTelegramMonitorFeedRow({
     user,
-    activity: await buildActivityFromSnapshot({
-      user,
-      chain: params.state.chain,
-      tokenAddress: params.state.tokenAddress,
-      tokenSymbol,
-      txHash: params.state.txHash,
-      marketCapUsd: params.state.provisionalMarketCapUsd,
-      quoteAmount: params.state.provisionalQuoteAmount,
-      quoteSymbol: params.state.provisionalQuoteSymbol,
-      tokenAmount: params.state.provisionalTokenAmount,
-      explicitPriceUsd: params.state.provisionalPriceUsd,
-      rawText: params.state.provisionalRawText,
-      action: provisionalAction,
-      actionLabel: params.state.provisionalActionLabel,
-      actionVariant: params.state.provisionalActionVariant,
-      walletLabel: params.state.provisionalWalletLabel,
-      walletGroupLabel: params.state.provisionalWalletGroupLabel,
-      walletAliasLabel: params.state.provisionalWalletAliasLabel,
-      eventTimeMs: params.state.eventTimeMs,
-      trackedAddress: params.state.trackedWalletAddress,
-      monitorReconciliationStatus: params.state.reconciliationStatus,
-      monitorReconciledSource: params.state.reconciledSource || 'xxyy',
-    }),
-  };
+    chain: params.state.chain,
+    tokenAddress: params.state.tokenAddress,
+    tokenSymbol,
+    txHash: params.state.txHash,
+    marketCapUsd: params.state.provisionalMarketCapUsd,
+    quoteAmount: params.state.provisionalQuoteAmount,
+    quoteSymbol: params.state.provisionalQuoteSymbol,
+    tokenAmount: params.state.provisionalTokenAmount,
+    explicitPriceUsd: params.state.provisionalPriceUsd,
+    rawText: params.state.provisionalRawText,
+    action: provisionalAction,
+    actionLabel: params.state.provisionalActionLabel,
+    actionVariant: params.state.provisionalActionVariant,
+    walletLabel: params.state.provisionalWalletLabel,
+    walletGroupLabel: params.state.provisionalWalletGroupLabel,
+    walletAliasLabel: params.state.provisionalWalletAliasLabel,
+    eventTimeMs: params.state.eventTimeMs,
+    trackedAddress: params.state.trackedWalletAddress,
+    monitorReconciliationStatus: params.state.reconciliationStatus,
+    monitorReconciledSource: params.state.reconciledSource || 'xxyy',
+  });
 }
 
 export async function readTelegramMonitorFeed(limit = 200): Promise<TelegramMonitorFeedRow[]> {
   const users = listTrackedUsers();
-  const txStates = listRecentTelegramMonitorTxStates(limit);
-  const projectedStates = await Promise.all(txStates.map((state) => projectTelegramMonitorTxState({ state, users })));
-  const stateFeed = projectedStates.filter((item): item is TelegramMonitorFeedRow => Boolean(item));
+  const stateFeed = await projectTelegramMonitorTxStateFeed({ users, limit });
+  const fallbackFeed = await projectTelegramMonitorFallbackFeed({ users, limit });
 
-  const fallbackEvents = listRecentTelegramMonitorFallbackEventsWithoutTxState(limit);
-  const projectedFallbackEvents = await Promise.all(
-    fallbackEvents.map((event) => projectTelegramMonitorEvent({ event, users }))
-  );
-
-  const fallbackPersistCandidates: Array<{
-    event: TelegramMonitorFeedEvent;
-    row: TelegramMonitorFeedRow;
-    stableId: string;
-  }> = [];
-  for (let index = 0; index < fallbackEvents.length; index += 1) {
-    const event = fallbackEvents[index];
-    const row = projectedFallbackEvents[index];
-    if (!row || event?.projectedActivity) {
-      continue;
-    }
-    fallbackPersistCandidates.push({
-      event,
-      row,
-      stableId: `fallback-${String(index).padStart(12, '0')}`,
-    });
-  }
-
-  if (fallbackPersistCandidates.length > 0) {
-    const scoredFallbackRows = scoreFeedRowsAgainstDatabase(
-      fallbackPersistCandidates.map((item) => ({
-        user: item.row.user,
-        activity: item.row.activity,
-        stableId: item.stableId,
-      }))
-    );
-    const scoredByStableId = new Map(scoredFallbackRows.map((row) => [row.stableId || '', row] as const));
-    for (const candidate of fallbackPersistCandidates) {
-      const scored = scoredByStableId.get(candidate.stableId);
-      if (!scored) {
-        continue;
-      }
-      candidate.row.activity = scored.activity;
-      updateTelegramMonitorEventProjectedActivityIfMissing({
-        sourceChatId: candidate.event.sourceChatId ?? null,
-        sourceMessageId: candidate.event.sourceMessageId ?? null,
-        txHash: candidate.event.txHash ?? null,
-        activity: scored.activity,
-      });
-    }
-  }
-
-  const fallbackFeed = projectedFallbackEvents.filter((item): item is TelegramMonitorFeedRow => Boolean(item));
-
-  const deduped = new Map<string, TelegramMonitorFeedRow>();
-  for (const item of [...stateFeed, ...fallbackFeed]) {
-    const key =
-      item.activity.metadata.monitorTxAggregateKey ||
-      [
-        normalize(item.activity.metadata.chain),
-        normalize(item.activity.metadata.trackedAddress),
-        normalize(item.activity.metadata.txHash),
-      ]
-        .filter(Boolean)
-        .join(':') ||
-      item.activity.id;
-    const existing = deduped.get(key);
-    if (!existing || item.activity.timestamp >= existing.activity.timestamp) {
-      deduped.set(key, item);
-    }
-  }
-
-  return Array.from(deduped.values())
+  return dedupeTelegramMonitorFeedRows([...stateFeed, ...fallbackFeed])
     .sort((a, b) => b.activity.timestamp - a.activity.timestamp)
     .slice(0, Math.max(1, Math.min(2000, Math.floor(limit))));
 }

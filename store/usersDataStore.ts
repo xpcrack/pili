@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { canonicalUsersToLegacy } from '@/lib/canonical';
+import { mergeManageUsersWithServer } from '@/lib/manageUsers';
 import { repairMalformedTrackedAddress } from '@/lib/trackedAddressValidation';
 import { createSafePersistStorage } from '@/lib/safePersistStorage';
 import { type CanonicalAddress, type CanonicalUser, User, DEFAULT_USERS } from '@/types';
@@ -132,6 +133,9 @@ interface UsersDataState {
   
   // 删除地址
   removeAddress: (userId: string, address: string) => void;
+
+  // 服务端回灌
+  mergeUsersFromServer: (users: User[]) => void;
 
   // 更新资产快照
   upsertUserAssetSnapshot: (
@@ -382,6 +386,15 @@ export const useUsersDataStore = create<UsersDataState>()(
                 } 
               : user
           )
+        }));
+      },
+
+      mergeUsersFromServer: (serverUsers) => {
+        set((state) => ({
+          users: mergeManageUsersWithServer(
+            state.users.map(normalizePersistedUser),
+            serverUsers.map(normalizePersistedUser)
+          ),
         }));
       },
 

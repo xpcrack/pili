@@ -31,6 +31,24 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
 
 export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'other';
 
+export function getRemoteFeedSource(
+  typeFilters: FeedSearchFilters['typeFilters']
+): Activity['source'] | null {
+  const enabledSources: Activity['source'][] = [];
+
+  if (typeFilters.trade || typeFilters.transfer) {
+    enabledSources.push('blockchain');
+  }
+  if (typeFilters.twitter) {
+    enabledSources.push('twitter');
+  }
+  if (typeFilters.telegram) {
+    enabledSources.push('telegram');
+  }
+
+  return enabledSources.length === 1 ? enabledSources[0] : null;
+}
+
 function normalizeText(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
 }

@@ -102,6 +102,65 @@ async function run() {
   assert.equal(partial.addressAssets.length, 3, '失败链不应写入无效资产快照');
   assert.equal(partial.userAssets[0]?.totalAssetUsd, 80, '人物总资产应汇总成功链的结果');
 
+  const refreshCalls: Array<{ address: string; chain: string }> = [];
+  const now = 1_000_000;
+  const cadenceUsers = [
+    createUser('cadence', '节奏', [
+      {
+        address: '0x5f9bc316d8473d8c6634bd26f3e0932cd6bf0718',
+        name: '#1',
+        chain: 'bsc',
+        totalAssetUsd: 120,
+        assetUpdatedAt: now - 60 * 60 * 1000,
+      },
+      {
+        address: '0x5f9bc316d8473d8c6634bd26f3e0932cd6bf0718',
+        name: '#1',
+        chain: 'ethereum',
+        totalAssetUsd: 0,
+        assetUpdatedAt: now - 24 * 60 * 60 * 1000,
+      },
+      {
+        address: 'CadenceSolWallet111111111111111111111111111',
+        name: '#2',
+        chain: 'solana',
+        totalAssetUsd: null,
+        assetUpdatedAt: null,
+      },
+      {
+        address: '0x9999999999999999999999999999999999999999',
+        name: '#3',
+        chain: 'base',
+        totalAssetUsd: 50,
+        assetUpdatedAt: now - 3 * 60 * 60 * 1000,
+      },
+      {
+        address: '0x8888888888888888888888888888888888888888',
+        name: '#4',
+        chain: 'ethereum',
+        totalAssetUsd: 0,
+        assetUpdatedAt: now - 4 * 24 * 60 * 60 * 1000,
+      },
+    ]),
+  ];
+
+  const cadence = await collectAddressAssetSnapshots(
+    cadenceUsers,
+    async (address, chain) => {
+      refreshCalls.push({ address, chain });
+      return { ok: true, configured: true, totalAssetUsd: 1, error: null };
+    },
+    { nowMs: now }
+  );
+
+  assert.deepEqual(
+    refreshCalls.map((item) => item.chain),
+    ['solana', 'base', 'ethereum'],
+    '首次检测地址必须抓取；有资产链超过 2h 时抓取；无资产链超过 3d 时抓取'
+  );
+  assert.equal(cadence.addressAssets.length, 3, '仅应为到期刷新地址写入新快照');
+  assert.equal(cadence.userAssets[0]?.totalAssetUsd, 3, '人物本轮快照仅汇总实际刷新的地址');
+
   console.log('address asset tests: ok');
 }
 

@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { hasStoredActivityImportanceFactors, recomputeActivityImportanceFromFactors } from '@/lib/activityImportance';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { scoreFeedRowsAgainstDatabase, scoreFeedRowsChronologically, type FeedImportanceRow } from '@/lib/server/activityImportanceService';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
@@ -22,6 +23,27 @@ function paddedStableId(prefix: string, id: number | string) {
   return `${prefix}-${String(id).padStart(12, '0')}`;
 }
 
+function withRescoredImportance(row: FeedImportanceRow): FeedImportanceRow {
+  const existingImportance = row.activity.metadata.importance;
+  if (!hasStoredActivityImportanceFactors(existingImportance)) {
+    return row;
+  }
+  return {
+    ...row,
+    activity: {
+      ...row.activity,
+      metadata: {
+        ...row.activity.metadata,
+        importance: recomputeActivityImportanceFromFactors(existingImportance.factors),
+      },
+    },
+  };
+}
+
+function canRescoreRowsFromStoredFactors(rows: FeedImportanceRow[]) {
+  return rows.every((row) => hasStoredActivityImportanceFactors(row.activity.metadata.importance));
+}
+
 export async function backfillActivityImportance() {
   const db = getDb();
   const usersById = currentUsersById();
@@ -33,16 +55,17 @@ export async function backfillActivityImportance() {
     activity_json: string;
     timestamp: number;
   }>;
-  const scoredEvents = scoreFeedRowsChronologically(
-    eventRows.map((row) => {
-      const activity = parseJson<Activity>(row.activity_json);
-      return {
-        user: parseUserFallback(row.user_json, activity, usersById),
-        activity,
-        stableId: row.event_id,
-      } satisfies FeedImportanceRow;
-    })
-  );
+  const eventRowsToScore = eventRows.map((row) => {
+    const activity = parseJson<Activity>(row.activity_json);
+    return {
+      user: parseUserFallback(row.user_json, activity, usersById),
+      activity,
+      stableId: row.event_id,
+    } satisfies FeedImportanceRow;
+  });
+  const scoredEvents = canRescoreRowsFromStoredFactors(eventRowsToScore)
+    ? eventRowsToScore.map(withRescoredImportance)
+    : scoreFeedRowsChronologically(eventRowsToScore);
   const eventRowByStableId = new Map(eventRows.map((row) => [row.event_id, row] as const));
 
   withTransaction(() => {
@@ -81,18 +104,19 @@ export async function backfillActivityImportance() {
     timestamp: number;
   }>;
   const feedStableIdById = new Map<number, string>();
-  const scoredFeedRows = scoreFeedRowsChronologically(
-    feedRows.map((row) => {
-      const activity = parseJson<Activity>(row.activity_json);
-      const stableId = paddedStableId('feed', row.id);
-      feedStableIdById.set(row.id, stableId);
-      return {
-        user: parseUserFallback(row.user_json, activity, usersById),
-        activity,
-        stableId,
-      } satisfies FeedImportanceRow;
-    })
-  );
+  const feedRowsToScore = feedRows.map((row) => {
+    const activity = parseJson<Activity>(row.activity_json);
+    const stableId = paddedStableId('feed', row.id);
+    feedStableIdById.set(row.id, stableId);
+    return {
+      user: parseUserFallback(row.user_json, activity, usersById),
+      activity,
+      stableId,
+    } satisfies FeedImportanceRow;
+  });
+  const scoredFeedRows = canRescoreRowsFromStoredFactors(feedRowsToScore)
+    ? feedRowsToScore.map(withRescoredImportance)
+    : scoreFeedRowsChronologically(feedRowsToScore);
   const scoredFeedByStableId = new Map(scoredFeedRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
@@ -134,7 +158,11 @@ export async function backfillActivityImportance() {
     });
   }
   const scoredTxStateRows =
-    txStateRowsToScore.length > 0 ? scoreFeedRowsAgainstDatabase(txStateRowsToScore) : [];
+    txStateRowsToScore.length === 0
+      ? []
+      : canRescoreRowsFromStoredFactors(txStateRowsToScore)
+        ? txStateRowsToScore.map(withRescoredImportance)
+        : scoreFeedRowsAgainstDatabase(txStateRowsToScore);
   const scoredTxStateByStableId = new Map(scoredTxStateRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
@@ -181,7 +209,11 @@ export async function backfillActivityImportance() {
     });
   }
   const scoredFallbackRows =
-    fallbackRowsToScore.length > 0 ? scoreFeedRowsAgainstDatabase(fallbackRowsToScore) : [];
+    fallbackRowsToScore.length === 0
+      ? []
+      : canRescoreRowsFromStoredFactors(fallbackRowsToScore)
+        ? fallbackRowsToScore.map(withRescoredImportance)
+        : scoreFeedRowsAgainstDatabase(fallbackRowsToScore);
   const scoredFallbackByStableId = new Map(scoredFallbackRows.map((row) => [row.stableId || '', row] as const));
 
   withTransaction(() => {
