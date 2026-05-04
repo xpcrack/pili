@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
+import { repairCollapsedCanonicalActivity } from '@/lib/server/telegramMonitorActivity';
 import {
   listRecentTelegramMonitorFallbackEventsWithoutTxState,
   updateTelegramMonitorEventProjectedActivityIfMissing,
@@ -365,7 +366,11 @@ export async function projectTelegramMonitorTxState(params: {
   if (params.state.reconciliationStatus === 'reconciled' && params.state.canonicalActivity) {
     return {
       user,
-      activity: params.state.canonicalActivity,
+      activity: await repairCollapsedCanonicalActivity({
+        user,
+        state: params.state,
+        canonicalActivity: params.state.canonicalActivity,
+      }),
     };
   }
 

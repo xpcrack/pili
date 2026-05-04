@@ -5,6 +5,12 @@ import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
 import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import type { Activity, User } from '@/types';
 
+type TxActionLabel = NonNullable<Activity['metadata']['txActionLabel']>;
+type TxActionVariant = NonNullable<Activity['metadata']['txActionVariant']>;
+
+const TX_ACTION_LABELS: ReadonlySet<string> = new Set(['建仓', '加仓', '减仓', '清仓', '发送']);
+const TX_ACTION_VARIANTS: ReadonlySet<string> = new Set(['open', 'add', 'reduce', 'close', 'send']);
+
 function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
 }
@@ -21,6 +27,35 @@ function pickFirstText(...values: Array<string | null | undefined>) {
     }
   }
   return undefined;
+}
+
+function pickFirstMatchingText<T extends string>(
+  values: Array<string | null | undefined>,
+  predicate: (value: string) => value is T
+) {
+  for (const value of values) {
+    const normalized = normalizeText(value);
+    if (normalized && predicate(normalized)) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function isTxActionLabel(value: string): value is TxActionLabel {
+  return TX_ACTION_LABELS.has(value);
+}
+
+function isTxActionVariant(value: string): value is TxActionVariant {
+  return TX_ACTION_VARIANTS.has(value);
+}
+
+function pickFirstTxActionLabel(...values: Array<string | null | undefined>) {
+  return pickFirstMatchingText(values, isTxActionLabel);
+}
+
+function pickFirstTxActionVariant(...values: Array<string | null | undefined>) {
+  return pickFirstMatchingText(values, isTxActionVariant);
 }
 
 const NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
@@ -307,8 +342,11 @@ function repairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, ca
     formatProvisionalAmount(state.provisionalQuoteAmount)
   );
   const nextQuoteToken = pickFirstText(canonicalActivity.metadata.quoteToken, state.provisionalQuoteSymbol);
-  const nextTxActionLabel = pickFirstText(canonicalActivity.metadata.txActionLabel, state.provisionalActionLabel);
-  const nextTxActionVariant = pickFirstText(
+  const nextTxActionLabel = pickFirstTxActionLabel(
+    canonicalActivity.metadata.txActionLabel,
+    state.provisionalActionLabel
+  );
+  const nextTxActionVariant = pickFirstTxActionVariant(
     canonicalActivity.metadata.txActionVariant,
     state.provisionalActionVariant
   );
