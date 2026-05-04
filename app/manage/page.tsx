@@ -74,6 +74,12 @@ interface TwitterRelayCoverageView {
   tweetCount: number;
 }
 
+interface TrackedUserAddressesMutationPayload {
+  ok?: boolean;
+  user?: User;
+  error?: string;
+}
+
 const CHAIN_VALUES = new Set(CHAIN_OPTIONS.map((option) => option.value));
 
 function buildHandle(base: string, usedHandles: Set<string>) {
@@ -223,6 +229,11 @@ export default function ManagePage() {
 
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
   const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
+  const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
+  const [editingAddressText, setEditingAddressText] = useState('');
+  const [savingAddressUserId, setSavingAddressUserId] = useState<string | null>(null);
+  const [addressActionError, setAddressActionError] = useState<string | null>(null);
+  const [addressActionNotice, setAddressActionNotice] = useState<string | null>(null);
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -342,6 +353,52 @@ export default function ManagePage() {
       }))
     );
     setBulkImportText('');
+  };
+
+  const flashAddressNotice = (message: string) => {
+    setAddressActionNotice(message);
+    window.setTimeout(() => {
+      setAddressActionNotice((current) => (current === message ? null : current));
+    }, 1800);
+  };
+
+  const handleAddAddressesToUser = async (user: User) => {
+    const logicalAddressCount = groupAddressesForDisplay(user.addresses).length;
+    const newAddresses = parseAddressText(editingAddressText, logicalAddressCount + 1);
+
+    if (newAddresses.length === 0) {
+      setAddressActionError('请输入至少一个有效地址');
+      return;
+    }
+
+    setSavingAddressUserId(user.id);
+    setAddressActionError(null);
+
+    try {
+      const response = await fetch(`/api/users/${user.id}/addresses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          addresses: expandTrackedAddresses(newAddresses),
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as TrackedUserAddressesMutationPayload | null;
+
+      if (!response.ok || !payload?.ok || !payload.user) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      updateUser(user.id, payload.user);
+      setEditingAddressUserId(null);
+      setEditingAddressText('');
+      flashAddressNotice(`已为 ${user.name} 追加 ${newAddresses.length} 个地址`);
+    } catch (error) {
+      setAddressActionError(error instanceof Error ? error.message : '追加地址失败');
+    } finally {
+      setSavingAddressUserId(null);
+    }
   };
 
   const copyText = async (text: string) => {
@@ -679,6 +736,18 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
             </div>
           </div>
 
+          {addressActionError ? (
+            <section className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {addressActionError}
+            </section>
+          ) : null}
+
+          {addressActionNotice ? (
+            <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+              {addressActionNotice}
+            </section>
+          ) : null}
+
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {filteredUsers.map((user) => (
               <UserCard
@@ -695,6 +764,21 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     avatar: buildUserAvatar(user.handle, user.twitter, `${user.twitter}:${Date.now()}`),
                   });
                 }}
+                isEditingAddresses={editingAddressUserId === user.id}
+                editingAddressText={editingAddressUserId === user.id ? editingAddressText : ''}
+                isSavingAddresses={savingAddressUserId === user.id}
+                onStartEditingAddresses={() => {
+                  setEditingAddressUserId(user.id);
+                  setEditingAddressText('');
+                  setAddressActionError(null);
+                }}
+                onChangeEditingAddressText={setEditingAddressText}
+                onCancelEditingAddresses={() => {
+                  setEditingAddressUserId(null);
+                  setEditingAddressText('');
+                  setAddressActionError(null);
+                }}
+                onAddAddresses={() => void handleAddAddressesToUser(user)}
               />
             ))}
           </div>
@@ -726,6 +810,13 @@ interface UserCardProps {
   onDelete: () => void;
   onUpdate: (updates: Partial<User>) => void;
   onRefreshAvatar: () => void;
+  isEditingAddresses: boolean;
+  editingAddressText: string;
+  isSavingAddresses: boolean;
+  onStartEditingAddresses: () => void;
+  onChangeEditingAddressText: (value: string) => void;
+  onCancelEditingAddresses: () => void;
+  onAddAddresses: () => void;
 }
 
 function UserCard({
@@ -734,6 +825,13 @@ function UserCard({
   onDelete,
   onUpdate,
   onRefreshAvatar,
+  isEditingAddresses,
+  editingAddressText,
+  isSavingAddresses,
+  onStartEditingAddresses,
+  onChangeEditingAddressText,
+  onCancelEditingAddresses,
+  onAddAddresses,
 }: UserCardProps) {
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const addressCount = useMemo(() => groupAddressesForDisplay(user.addresses).length, [user.addresses]);
@@ -931,10 +1029,56 @@ function UserCard({
             <Wallet className="h-4 w-4" />
             <span>{addressCount} 个地址</span>
           </div>
-          <Link href="/addresses" className="text-sm text-blue-400 hover:text-blue-300">
-            去地址页查看 / 删除
-          </Link>
+          <div className="flex items-center gap-3">
+            {!isEditingAddresses ? (
+              <button onClick={onStartEditingAddresses} className="text-sm text-blue-400 hover:text-blue-300">
+                追加地址
+              </button>
+            ) : null}
+            <Link href="/addresses" className="text-sm text-blue-400 hover:text-blue-300">
+              去地址页查看 / 删除
+            </Link>
+          </div>
         </div>
+
+        {isEditingAddresses ? (
+          <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+            <div className="space-y-2">
+              <Label className="text-xs text-zinc-400">批量追加地址</Label>
+              <textarea
+                value={editingAddressText}
+                onChange={(event) => onChangeEditingAddressText(event.target.value)}
+                rows={4}
+                placeholder={`0x123...abc:主钱包
+9x8y...:Sol钱包`}
+                className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono text-sm text-zinc-100 outline-none transition-colors focus:border-zinc-700"
+              />
+              <p className="text-[11px] text-zinc-500">
+                格式: <code>address:name</code>。`0x` 地址会自动按同一逻辑地址补 BSC / ETH / BASE 三链。
+              </p>
+            </div>
+
+            <div className="mt-3 flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onCancelEditingAddresses}
+                disabled={isSavingAddresses}
+                className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+              >
+                取消
+              </Button>
+              <Button
+                size="sm"
+                onClick={onAddAddresses}
+                disabled={!editingAddressText.trim() || isSavingAddresses}
+                className="bg-blue-600 text-white hover:bg-blue-700"
+              >
+                {isSavingAddresses ? '追加中...' : '提交追加'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
