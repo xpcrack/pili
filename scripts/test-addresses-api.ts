@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { NextRequest } from 'next/server';
 
 import { buildGmgnAddressUrl } from '@/lib/addressBook';
 import './server-only-shim.cjs';
@@ -63,6 +64,7 @@ async function run() {
     const { createTrackedUser } = await import('@/lib/server/trackedUsersRepo');
     const { getDb } = await import('@/lib/server/sqlite');
     const route = await import('../app/api/addresses/route');
+    const addressRoute = await import('../app/api/users/[id]/addresses/route');
 
     createTrackedUser({
       name: 'Alpha',
@@ -85,7 +87,7 @@ async function run() {
       telegram: undefined,
     });
 
-    createTrackedUser({
+    const betaUser = createTrackedUser({
       name: 'Beta',
       handle: 'beta',
       avatar: 'beta.png',
@@ -215,6 +217,77 @@ async function run() {
       betaRow.gmgnUrl,
       buildGmgnAddressUrl('bsc', '0xAbCdEf0000000000000000000000000000000001')
     );
+
+    db.prepare(
+      `INSERT INTO telegram_monitor_events (
+        provider,
+        source_chat_id,
+        source_message_id,
+        chain,
+        token_address,
+        token_address_lower,
+        tracked_wallet_address,
+        tracked_wallet_address_lower,
+        tx_hash,
+        tx_hash_lower,
+        event_time_ms,
+        raw_text,
+        message_links_json,
+        payload_json,
+        projected_activity_json,
+        created_at,
+        updated_at
+      ) VALUES ('xxyy', '-1002001', 2, 'ethereum', '0xTokenBeta', '0xtokenbeta', ?, ?, 'tx-beta-monitor', 'tx-beta-monitor', ?, '', '[]', '{}', '{}', ?, ?)`
+    ).run(betaRow.address, betaRow.address.toLowerCase(), now, now, now);
+
+    const deleteRequest = new NextRequest('http://localhost:3000/api/users/beta/addresses', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ address: betaRow.address }),
+    });
+    const deleteResponse = await addressRoute.DELETE(deleteRequest, {
+      params: Promise.resolve({ id: betaUser.id }),
+    });
+    assert.equal(deleteResponse.status, 200);
+    assert.deepEqual(await deleteResponse.json(), { ok: true });
+
+    const remainingTrackedRows = db
+      .prepare(
+        `SELECT count(1) AS count
+         FROM tracked_addresses
+         WHERE user_id = ? AND address_lower = ?`
+      )
+      .get(betaUser.id, betaRow.address.toLowerCase()) as { count: number };
+    assert.equal(remainingTrackedRows.count, 0, '删除地址后 tracked_addresses 必须同步清空');
+
+    const remainingBscEvents = db
+      .prepare(
+        `SELECT count(1) AS count
+         FROM events
+         WHERE chain = 'bsc' AND LOWER(COALESCE(address, '')) = ?`
+      )
+      .get(betaRow.address.toLowerCase()) as { count: number };
+    assert.equal(remainingBscEvents.count, 0, '删除地址后 bsc events 必须同步清空');
+
+    const remainingEthereumEvents = db
+      .prepare(
+        `SELECT count(1) AS count
+         FROM events
+         WHERE chain = 'ethereum' AND LOWER(COALESCE(address, '')) = ?`
+      )
+      .get(betaRow.address.toLowerCase()) as { count: number };
+    assert.equal(remainingEthereumEvents.count, 0, '删除地址后 ethereum events 也必须同步清空');
+
+    const remainingMonitorEvents = db
+      .prepare(
+        `SELECT count(1) AS count
+         FROM telegram_monitor_events
+         WHERE tracked_wallet_address_lower = ?`
+      )
+      .get(betaRow.address.toLowerCase()) as { count: number };
+    assert.equal(remainingMonitorEvents.count, 0, '删除地址后 telegram monitor 历史也必须同步清空');
 
     console.log('addresses api tests: ok');
   } finally {

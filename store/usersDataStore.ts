@@ -161,6 +161,52 @@ function normalizeAddressName(name: string, index: number) {
   return trimmed;
 }
 
+function normalizeAddressLookupValue(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function sumAddressAssetUsd(addresses: readonly User['addresses'][number][]) {
+  return addresses.reduce((sum, address) => {
+    if (typeof address.totalAssetUsd !== 'number') {
+      return sum;
+    }
+
+    return sum + address.totalAssetUsd;
+  }, 0);
+}
+
+function getLatestAddressAssetUpdatedAt(addresses: readonly User['addresses'][number][]) {
+  const timestamps = addresses
+    .map((address) => address.assetUpdatedAt)
+    .filter((value): value is number => typeof value === 'number');
+
+  if (timestamps.length === 0) {
+    return null;
+  }
+
+  return Math.max(...timestamps);
+}
+
+function applyAddressCollectionUpdate(user: User, addresses: User['addresses']) {
+  const normalizedAddresses = addresses.map((address, index) => normalizeAddress(address, index));
+  const currentTotalAssetUsd = sumAddressAssetUsd(normalizedAddresses);
+  const historicalMaxAssetUsd = Math.max(
+    normalizeAssetTotal(user.historicalMaxAssetUsd),
+    normalizeAssetTotal(user.historicalMaxChainAssetTotal),
+    currentTotalAssetUsd
+  );
+
+  return normalizeUser({
+    ...user,
+    addresses: normalizedAddresses,
+    totalAssetUsd: currentTotalAssetUsd,
+    currentChainAssetTotal: currentTotalAssetUsd,
+    historicalMaxAssetUsd,
+    historicalMaxChainAssetTotal: historicalMaxAssetUsd,
+    assetUpdatedAt: getLatestAddressAssetUpdatedAt(normalizedAddresses),
+  });
+}
+
 function normalizeAddress(address: User['addresses'][number], index: number): User['addresses'][number] {
   const repairedAddress = repairMalformedTrackedAddress(address.address, address.chain) ?? address.address.trim();
 
@@ -353,33 +399,33 @@ export const useUsersDataStore = create<UsersDataState>()(
 
       batchAddAddresses: (userId, newAddresses) => {
         set((state) => ({
-          users: state.users.map(user => 
-            user.id === userId 
-              ? { 
-                  ...user, 
-                  addresses: [
-                    ...user.addresses,
-                    ...newAddresses.map((address, index) => ({
-                      ...address,
-                      name: normalizeAddressName(address.name, user.addresses.length + index),
-                      totalAssetUsd: null,
-                      assetUpdatedAt: null,
-                    })),
-                  ] 
-                } 
+          users: state.users.map((user) =>
+            user.id === userId
+              ? applyAddressCollectionUpdate(user, [
+                  ...user.addresses,
+                  ...newAddresses.map((address, index) => ({
+                    ...address,
+                    name: normalizeAddressName(address.name, user.addresses.length + index),
+                    totalAssetUsd: null,
+                    assetUpdatedAt: null,
+                  })),
+                ])
               : user
           )
         }));
       },
 
       removeAddress: (userId, addressToRemove) => {
+        const addressLookup = normalizeAddressLookupValue(addressToRemove);
         set((state) => ({
-          users: state.users.map(user => 
-            user.id === userId 
-              ? { 
-                  ...user, 
-                  addresses: user.addresses.filter(a => a.address !== addressToRemove) 
-                } 
+          users: state.users.map((user) =>
+            user.id === userId
+              ? applyAddressCollectionUpdate(
+                  user,
+                  user.addresses.filter(
+                    (address) => normalizeAddressLookupValue(address.address) !== addressLookup
+                  )
+                )
               : user
           )
         }));

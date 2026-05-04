@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import type { AddressManagementRow } from '@/lib/addressManagement';
 import { formatUsdCompact } from '@/lib/assetFormat';
 import { formatRelativeTimeCompact } from '@/lib/timeFormat';
+import { useUsersDataStore } from '@/store/usersDataStore';
 
 interface AddressesPayload {
   ok: boolean;
@@ -19,6 +20,7 @@ export const ADDRESSES_PAGE_FETCH_URL = '/api/addresses';
 export const DELETE_ADDRESS_CONFIRMATION_TEXT = '删除地址，不会删除人物。';
 
 export default function AddressesPage() {
+  const removeAddress = useUsersDataStore((state) => state.removeAddress);
   const [rows, setRows] = useState<AddressManagementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,13 @@ export default function AddressesPage() {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
 
-      await loadRows();
+      removeAddress(row.userId, row.address);
+      setRows((currentRows) =>
+        currentRows.filter(
+          (currentRow) => !(currentRow.userId === row.userId && currentRow.address === row.address)
+        )
+      );
+      flashNotice('地址已删除');
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : '删除地址失败');
     } finally {
