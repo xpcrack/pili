@@ -52,6 +52,13 @@ interface FetchTokenLogoOptions {
   txHash?: string;
 }
 
+export interface DexscreenerTokenInfo {
+  logoUrl: string | null;
+  priceUsd: number | null;
+  marketCapUsd: number | null;
+  liquidityUsd: number | null;
+}
+
 export interface TokenLogoResult {
   logoUrl: string | null;
   marketCapUsd: number | null;
@@ -126,6 +133,7 @@ function pickDexscreenerTokenInfo(pairs: DexscreenerPair[], tokenAddress: string
     logoUrl: logoPair?.info?.imageUrl?.trim() || null,
     priceUsd: bestPair ? parseUsdNumber(bestPair.priceUsd) : null,
     marketCapUsd: bestPair ? (parseUsdNumber(bestPair.marketCap) ?? parseUsdNumber(bestPair.fdv)) : null,
+    liquidityUsd: bestPair ? parseUsdNumber(bestPair.liquidity?.usd) : null,
   };
 }
 
@@ -154,7 +162,7 @@ export async function fetchDexscreenerTokenInfo(chain: string, tokenAddress: str
     if (!Array.isArray(payload)) {
       return null;
     }
-    return pickDexscreenerTokenInfo(payload as DexscreenerPair[], normalizedAddress);
+    return pickDexscreenerTokenInfo(payload as DexscreenerPair[], normalizedAddress) as DexscreenerTokenInfo;
   } catch {
     return null;
   } finally {
