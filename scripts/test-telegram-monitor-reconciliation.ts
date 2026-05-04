@@ -18,6 +18,9 @@ const TRACKED_BSC_ADDRESS = '0x7592ca1ad468ddac5a97a5625c1c55e36338f786';
 const BSC_TX_HASH = '0x9e4de1b154b0664ab97aeadec2ceee38930360b786c8b36197793475441e0878';
 const BSC_TOKEN_ADDRESS = '0x930809fb99dd10d404504d1603e8756eafd84444';
 const BSC_EVENT_TIME_MS = 1777865833000;
+const BSC_MULTI_FILL_TX_HASH = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const BSC_MULTI_FILL_TOKEN_ADDRESS = '0x0a43fc31a73013089df59194872ecae4cae14444';
+const BSC_MULTI_FILL_EVENT_TIME_MS = 1777878447000;
 const BSC_MISSING_QUOTE_TX_HASH = '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 const BSC_MISSING_QUOTE_TOKEN_ADDRESS = '0xe68bd56b99ab9a527375bd87bf03ee6344f68ca1';
 const BSC_MISSING_QUOTE_EVENT_TIME_MS = 1777933730000;
@@ -131,6 +134,50 @@ function buildSplitFillTelegramUpdate(messageId: number, txHash = SPLIT_FILL_TX_
             {
               text: 'Solscan',
               url: `https://solscan.io/tx/${txHash}`,
+            },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function buildBscMultiFillTelegramUpdate(params: {
+  messageId: number;
+  txHash?: string;
+  quoteAmount: string;
+  tokenAmount: string;
+  priceUsd: string;
+  platform: string;
+}) {
+  return {
+    update_id: 930_000 + params.messageId,
+    message: {
+      message_id: params.messageId,
+      date: Math.floor(BSC_MULTI_FILL_EVENT_TIME_MS / 1000),
+      chat: { id: -100123456 },
+      text: [
+        '[User_D#1]',
+        `🟢 New buy ${params.quoteAmount} BNB`,
+        `Token: ${params.tokenAmount}  [4]`,
+        `Price: $${params.priceUsd}`,
+        'MCAP: $14.7M',
+        `Platform: ${params.platform}`,
+        `CA: ${BSC_MULTI_FILL_TOKEN_ADDRESS}`,
+        '#e14444',
+      ].join('\n'),
+      entities: [
+        {
+          type: 'text_link',
+          url: `https://www.xxyy.io/bsc/${BSC_MULTI_FILL_TOKEN_ADDRESS}?wallet=${TRACKED_BSC_ADDRESS}&ref=`,
+        },
+      ],
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: 'Bscscan',
+              url: `https://bscscan.com/tx/${params.txHash || BSC_MULTI_FILL_TX_HASH}`,
             },
           ],
         ],
@@ -531,6 +578,85 @@ async function run() {
     );
     assert.equal(replayedPrimaryRow?.activity.metadata.monitorReconciliationStatus, 'pending');
 
+    const firstBscMultiFill = await ingestTelegramMonitorUpdate(
+      buildBscMultiFillTelegramUpdate({
+        messageId: 650,
+        quoteAmount: '0.0292',
+        tokenAmount: '1247.09',
+        priceUsd: '0.0148',
+        platform: 'Pancake V2',
+      })
+    );
+    assert.equal(firstBscMultiFill.ok, true, 'first BSC multi-fill leg should ingest');
+    const secondBscMultiFill = await ingestTelegramMonitorUpdate(
+      buildBscMultiFillTelegramUpdate({
+        messageId: 651,
+        quoteAmount: '0.022',
+        tokenAmount: '940.87',
+        priceUsd: '0.0147',
+        platform: 'Pancake V3',
+      })
+    );
+    assert.equal(secondBscMultiFill.ok, true, 'second BSC multi-fill leg should ingest');
+
+    const aggregatedBscState = getTelegramMonitorTxState({
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: BSC_MULTI_FILL_TX_HASH,
+    });
+    assert.equal(
+      aggregatedBscState?.provisionalQuoteAmount,
+      0.0512,
+      'multi-leg provisional tx state should sum quote amounts across distinct XXYY fills'
+    );
+    assert.equal(
+      aggregatedBscState?.provisionalTokenAmount,
+      2187.96,
+      'multi-leg provisional tx state should sum token amounts across distinct XXYY fills'
+    );
+
+    const aggregatedBscFeed = await readTelegramMonitorFeed(50);
+    const aggregatedBscRow = aggregatedBscFeed.find(
+      (item) => item.activity.metadata.txHash === BSC_MULTI_FILL_TX_HASH
+    );
+    assert.equal(
+      aggregatedBscRow?.activity.metadata.quoteAmount,
+      '0.0512',
+      'multi-leg provisional feed should expose the summed quote amount'
+    );
+    assert.equal(
+      aggregatedBscRow?.activity.metadata.value,
+      '2187.96',
+      'multi-leg provisional feed should expose the summed token amount'
+    );
+    assert.equal(
+      aggregatedBscRow?.activity.metadata.displayTradeAmountText,
+      '0.051 BNB',
+      'multi-leg provisional feed should render the aggregated display amount instead of a single raw leg'
+    );
+    const aggregatedBscEvents = readEventsFeed({
+      limit: 50,
+      userId: bscTrackedUser.id,
+    });
+    const aggregatedBscEvent = aggregatedBscEvents.feed.find(
+      (item) => item.activity.metadata.txHash === BSC_MULTI_FILL_TX_HASH
+    );
+    assert.equal(
+      aggregatedBscEvent?.activity.metadata.quoteAmount,
+      '0.0512',
+      'multi-leg provisional main feed should persist the summed quote amount'
+    );
+    assert.equal(
+      aggregatedBscEvent?.activity.metadata.value,
+      '2187.96',
+      'multi-leg provisional main feed should persist the summed token amount'
+    );
+    assert.equal(
+      aggregatedBscEvent?.activity.metadata.displayTradeAmountText,
+      '0.051 BNB',
+      'multi-leg provisional main feed should not fall back to a stale single-leg rawText display'
+    );
+
     const legacyOnlyTxHash = '5KjD4n9hB2dMRY3oM4pX1oKZEFZ9cL5qUT8R76v9kqebCzK84j7zW8nW2vxx3G7Yd1Ny8KkG5X5hKw4mPoGdYq1V';
     const legacyOnlyUpdate = buildLegacyOnlyTelegramUpdate(599, legacyOnlyTxHash, '0.3333');
     const legacyOnlyMessage = legacyOnlyUpdate.message;
@@ -835,6 +961,52 @@ async function run() {
     );
     assert.equal(healedCollapsedCanonicalEvent?.activity.metadata.tokenAddress, BSC_TOKEN_ADDRESS);
     assert.equal(healedCollapsedCanonicalEvent?.activity.metadata.displayTokenSymbol, '阿生');
+    const persistedCollapsedCanonicalState = db
+      .prepare(
+        `SELECT canonical_activity_json
+         FROM telegram_monitor_tx_states
+         WHERE chain = ?
+           AND tracked_wallet_address_lower = ?
+           AND tx_hash_lower = ?`
+      )
+      .get('bsc', TRACKED_BSC_ADDRESS.toLowerCase(), BSC_TX_HASH.toLowerCase()) as
+      | { canonical_activity_json: string | null }
+      | undefined;
+    const persistedCollapsedCanonicalActivity = persistedCollapsedCanonicalState?.canonical_activity_json
+      ? (JSON.parse(persistedCollapsedCanonicalState.canonical_activity_json) as { metadata?: Record<string, unknown> })
+      : null;
+    assert.equal(
+      persistedCollapsedCanonicalActivity?.metadata?.token,
+      '阿生',
+      'collapsed canonical tx-state rows should be healed in storage so non-healing consumers do not keep seeing the native token'
+    );
+    assert.equal(
+      persistedCollapsedCanonicalActivity?.metadata?.tokenAddress,
+      BSC_TOKEN_ADDRESS,
+      'collapsed canonical tx-state rows should persist the provisional token address after healing'
+    );
+    const persistedCollapsedCanonicalEventRow = db
+      .prepare(
+        `SELECT activity_json
+         FROM events
+         WHERE event_id = ?`
+      )
+      .get(`xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_TX_HASH.toLowerCase()}`) as
+      | { activity_json: string | null }
+      | undefined;
+    const persistedCollapsedCanonicalEventActivity = persistedCollapsedCanonicalEventRow?.activity_json
+      ? (JSON.parse(persistedCollapsedCanonicalEventRow.activity_json) as { metadata?: Record<string, unknown> })
+      : null;
+    assert.equal(
+      persistedCollapsedCanonicalEventActivity?.metadata?.token,
+      '阿生',
+      'collapsed canonical event rows should also be healed in storage for downstream readers outside readEventsFeed'
+    );
+    assert.equal(
+      persistedCollapsedCanonicalEventActivity?.metadata?.tokenAddress,
+      BSC_TOKEN_ADDRESS,
+      'collapsed canonical event rows should persist the provisional token address after healing'
+    );
 
     const missingQuoteCanonicalState = upsertTelegramMonitorTxStateProvisional({
       userId: bscTrackedUser.id,

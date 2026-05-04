@@ -297,7 +297,10 @@ function shouldRepairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairSta
   return hasUsableProvisionalTradeQuote(state);
 }
 
-function repairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {
+function repairMissingCanonicalTradeQuote(
+  state: MonitorCanonicalRepairState,
+  canonicalActivity: Activity
+): Activity {
   if (!shouldRepairMissingCanonicalTradeQuote(state, canonicalActivity)) {
     return canonicalActivity;
   }
@@ -307,11 +310,10 @@ function repairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, ca
     formatProvisionalAmount(state.provisionalQuoteAmount)
   );
   const nextQuoteToken = pickFirstText(canonicalActivity.metadata.quoteToken, state.provisionalQuoteSymbol);
-  const nextTxActionLabel = pickFirstText(canonicalActivity.metadata.txActionLabel, state.provisionalActionLabel);
-  const nextTxActionVariant = pickFirstText(
-    canonicalActivity.metadata.txActionVariant,
-    state.provisionalActionVariant
-  );
+  const nextTxActionLabel: Activity['metadata']['txActionLabel'] =
+    canonicalActivity.metadata.txActionLabel ?? state.provisionalActionLabel ?? undefined;
+  const nextTxActionVariant: Activity['metadata']['txActionVariant'] =
+    canonicalActivity.metadata.txActionVariant ?? state.provisionalActionVariant ?? undefined;
   const nextWalletLabel = pickFirstText(
     canonicalActivity.metadata.monitorWalletAliasLabel,
     canonicalActivity.metadata.monitorWalletLabel,
@@ -347,8 +349,8 @@ function repairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, ca
       ...canonicalActivity.metadata,
       quoteAmount: nextQuoteAmount || canonicalActivity.metadata.quoteAmount,
       quoteToken: nextQuoteToken || canonicalActivity.metadata.quoteToken,
-      txActionLabel: nextTxActionLabel || canonicalActivity.metadata.txActionLabel,
-      txActionVariant: nextTxActionVariant || canonicalActivity.metadata.txActionVariant,
+      txActionLabel: nextTxActionLabel,
+      txActionVariant: nextTxActionVariant,
       displayWalletLabel: canonicalActivity.metadata.displayWalletLabel || displayMetadata.displayWalletLabel,
       displayActionVariantLabel:
         canonicalActivity.metadata.displayActionVariantLabel || displayMetadata.displayActionVariantLabel,

@@ -2,6 +2,9 @@ import { fetchOkxTotalValueByAddress } from '@/lib/okx';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 import type { User } from '@/types';
 
+const ASSET_REFRESH_INTERVAL_WITH_BALANCE_MS = 2 * 60 * 60 * 1000;
+const ASSET_REFRESH_INTERVAL_EMPTY_MS = 3 * 24 * 60 * 60 * 1000;
+
 interface TotalValueResult {
   ok: boolean;
   configured: boolean;
@@ -14,27 +17,58 @@ type TotalValueFetcher = (
   chain: string
 ) => Promise<TotalValueResult>;
 
+interface CollectAddressAssetSnapshotsOptions {
+  nowMs?: number;
+}
+
 function toFiniteAmount(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+function shouldRefreshAddressAsset(address: User['addresses'][number], nowMs: number) {
+  if (typeof address.assetUpdatedAt !== 'number' || !Number.isFinite(address.assetUpdatedAt)) {
+    return true;
+  }
+
+  const ageMs = nowMs - address.assetUpdatedAt;
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    return true;
+  }
+
+  const intervalMs =
+    typeof address.totalAssetUsd === 'number' && address.totalAssetUsd > 0
+      ? ASSET_REFRESH_INTERVAL_WITH_BALANCE_MS
+      : ASSET_REFRESH_INTERVAL_EMPTY_MS;
+
+  return ageMs >= intervalMs;
+}
+
 export async function collectAddressAssetSnapshots(
   users: User[],
-  fetcher: TotalValueFetcher = fetchOkxTotalValueByAddress
+  fetcher: TotalValueFetcher = fetchOkxTotalValueByAddress,
+  options?: CollectAddressAssetSnapshotsOptions
 ) {
+  const nowMs =
+    typeof options?.nowMs === 'number' && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const requests = users.flatMap((user) =>
-    user.addresses.map(async (address) => {
-      const result = await fetcher(address.address, address.chain);
-      return {
-        userId: user.id,
-        address,
-        result,
-      };
+    user.addresses.flatMap((address) => {
+      if (!shouldRefreshAddressAsset(address, nowMs)) {
+        return [];
+      }
+
+      return [async () => {
+        const result = await fetcher(address.address, address.chain);
+        return {
+          userId: user.id,
+          address,
+          result,
+        };
+      }];
     })
   );
 
-  const settled = await Promise.all(requests);
-  const updatedAt = Date.now();
+  const settled = await Promise.all(requests.map((request) => request()));
+  const updatedAt = nowMs;
   const addressAssets: AddressAssetSnapshot[] = [];
   const totalsByUserId = new Map<string, number>();
 

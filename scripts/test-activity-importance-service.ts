@@ -60,13 +60,25 @@ async function run() {
 
     const quiet = makeUser('quiet', 100_000);
     const noisy = makeUser('noisy', 100_000);
-    const base = 1_700_000_000_000;
+    const base = Date.parse('2026-05-04T02:00:00.000Z');
+    const sameDayLater = Date.parse('2026-05-04T12:00:00.000Z');
+    const nextDay = Date.parse('2026-05-05T01:00:00.000Z');
+    const dayAfterNext = Date.parse('2026-05-06T01:00:00.000Z');
 
     upsertEventsFromFeedRows([{ user: quiet, activity: makeActivity('quiet-social-old', quiet.id, base - 6 * 24 * 60 * 60 * 1000, 'twitter') }], 'seed');
     upsertEventsFromFeedRows([{ user: noisy, activity: makeActivity('noisy-social-old', noisy.id, base - 6 * 24 * 60 * 60 * 1000, 'twitter') }], 'seed');
-    upsertEventsFromFeedRows([{ user: noisy, activity: makeActivity('noisy-chain-1', noisy.id, base - 10_000, 'blockchain') }], 'seed');
-    upsertEventsFromFeedRows([{ user: noisy, activity: makeActivity('noisy-chain-2', noisy.id, base - 9_000, 'blockchain') }], 'seed');
-    upsertEventsFromFeedRows([{ user: noisy, activity: makeActivity('noisy-chain-3', noisy.id, base - 8_000, 'blockchain') }], 'seed');
+    upsertEventsFromFeedRows(
+      [{ user: noisy, activity: makeActivity('noisy-chain-1', noisy.id, base - 24 * 60 * 60 * 1000 - 10_000, 'blockchain') }],
+      'seed'
+    );
+    upsertEventsFromFeedRows(
+      [{ user: noisy, activity: makeActivity('noisy-chain-2', noisy.id, base - 24 * 60 * 60 * 1000 - 9_000, 'blockchain') }],
+      'seed'
+    );
+    upsertEventsFromFeedRows(
+      [{ user: noisy, activity: makeActivity('noisy-chain-3', noisy.id, base - 24 * 60 * 60 * 1000 - 8_000, 'blockchain') }],
+      'seed'
+    );
 
     const [quietTweet] = scoreFeedRowsAgainstDatabase([
       { user: quiet, activity: makeActivity('quiet-new-social', quiet.id, base, 'twitter') },
@@ -85,18 +97,39 @@ async function run() {
       'same social frequency but higher wallet activity should reduce the social score'
     );
 
+    const dailyDatabaseBatch = scoreFeedRowsAgainstDatabase([
+      { user: quiet, activity: makeActivity('daily-same-day-1', quiet.id, base + 1_000, 'twitter') },
+      { user: quiet, activity: makeActivity('daily-same-day-2', quiet.id, sameDayLater, 'twitter') },
+      { user: quiet, activity: makeActivity('daily-next-day', quiet.id, nextDay, 'twitter') },
+    ]);
+    assert.equal(
+      dailyDatabaseBatch[0]?.activity.metadata.importance?.socialCount7d,
+      1,
+      'same-day rows should reuse the same social frequency baseline'
+    );
+    assert.equal(
+      dailyDatabaseBatch[1]?.activity.metadata.importance?.socialCount7d,
+      1,
+      'later rows on the same UTC+8 day should not increment frequency'
+    );
+    assert.equal(
+      dailyDatabaseBatch[2]?.activity.metadata.importance?.socialCount7d,
+      3,
+      'the next day should pick up the full previous-day volume in one daily step'
+    );
+
     const chronological = scoreFeedRowsChronologically([
       { user: quiet, activity: makeActivity('batch-1', quiet.id, base + 1_000, 'twitter'), stableId: 'batch-1' },
-      { user: quiet, activity: makeActivity('batch-2', quiet.id, base + 2_000, 'twitter'), stableId: 'batch-2' },
-      { user: quiet, activity: makeActivity('batch-3', quiet.id, base + 3_000, 'blockchain'), stableId: 'batch-3' },
+      { user: quiet, activity: makeActivity('batch-2', quiet.id, sameDayLater, 'twitter'), stableId: 'batch-2' },
+      { user: quiet, activity: makeActivity('batch-3', quiet.id, nextDay, 'twitter'), stableId: 'batch-3' },
     ]);
     assert.equal(chronological[0]?.activity.metadata.importance?.sourceCount7d, 0);
-    assert.equal(chronological[1]?.activity.metadata.importance?.sourceCount7d, 1);
-    assert.equal(chronological[2]?.activity.metadata.importance?.walletCount7d, 0);
+    assert.equal(chronological[1]?.activity.metadata.importance?.sourceCount7d, 0);
+    assert.equal(chronological[2]?.activity.metadata.importance?.sourceCount7d, 2);
 
     const descending = scoreFeedRowsChronologically([
-      { user: quiet, activity: makeActivity('desc-3', quiet.id, base + 33_000, 'twitter') },
-      { user: quiet, activity: makeActivity('desc-2', quiet.id, base + 32_000, 'twitter') },
+      { user: quiet, activity: makeActivity('desc-3', quiet.id, dayAfterNext + 33_000, 'twitter') },
+      { user: quiet, activity: makeActivity('desc-2', quiet.id, nextDay + 32_000, 'twitter') },
       { user: quiet, activity: makeActivity('desc-1', quiet.id, base + 31_000, 'twitter') },
     ]);
     assert.deepEqual(
@@ -136,8 +169,8 @@ async function run() {
     ]);
     assert.equal(
       overlap[1]?.activity.metadata.importance?.socialCount7d,
-      2,
-      'persisted overlap rows should not be double-counted by batch history'
+      1,
+      'persisted same-day rows should not be double-counted or raise the shared daily frequency'
     );
 
     console.log('activity importance service tests: ok');

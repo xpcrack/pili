@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { Activity } from '@/types';
 import { getDb } from '@/lib/server/sqlite';
+import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
@@ -61,10 +62,178 @@ interface TelegramMonitorEventRow {
   event_time_ms: number | null;
 }
 
+interface TelegramMonitorTxAggregateRow {
+  id: number;
+  source_message_id: number | null;
+  chain: string;
+  token_address: string;
+  token_symbol: string | null;
+  tx_hash: string | null;
+  market_cap_usd: number | null;
+  price_usd: number | null;
+  quote_amount: number | null;
+  quote_symbol: string | null;
+  action: string | null;
+  action_label: string | null;
+  action_variant: string | null;
+  wallet_label: string | null;
+  wallet_group_label: string | null;
+  wallet_alias_label: string | null;
+  tracked_wallet_address: string | null;
+  event_time_ms: number | null;
+  raw_text: string | null;
+  message_links_json: string | null;
+  updated_at: number;
+}
+
+interface TelegramMonitorTxAggregateEntry {
+  row: TelegramMonitorTxAggregateRow;
+  parsed: ReturnType<typeof parseXxyyTelegramText>;
+  messageLinks: string[];
+}
+
+export interface TelegramMonitorTxProvisionalSummary {
+  chain: string;
+  tokenAddress: string;
+  tokenSymbol: string | null;
+  txHash: string;
+  marketCapUsd: number | null;
+  priceUsd: number | null;
+  quoteAmount: number | null;
+  quoteSymbol: string | null;
+  action: 'buy' | 'sell' | 'send' | null;
+  actionLabel: '建仓' | '加仓' | '减仓' | '清仓' | '发送' | null;
+  actionVariant: 'open' | 'add' | 'reduce' | 'close' | 'send' | null;
+  walletLabel: string | null;
+  walletGroupLabel: string | null;
+  walletAliasLabel: string | null;
+  trackedWalletAddress: string;
+  tokenAmount: number | null;
+  rawText: string | null;
+  messageLinks: string[];
+  eventTimeMs: number;
+  fillCount: number;
+}
+
 interface TelegramCapAtTxInput {
   chain: string;
   tokenAddress: string;
   txHash?: string | null;
+}
+
+function normalizeText(value: string | null | undefined) {
+  return (value || '').trim();
+}
+
+function parsePlatformLabel(rawText: string | null | undefined) {
+  const match = normalizeText(rawText).match(/\bPlatform\s*:\s*([^\n\r]+)/i);
+  return match?.[1]?.trim().toLowerCase() || '';
+}
+
+function formatNumericKey(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '';
+  }
+  return value.toFixed(12).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
+}
+
+function roundAggregateNumber(value: number) {
+  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+function sumFiniteNumbers(values: Array<number | null | undefined>) {
+  let total = 0;
+  let count = 0;
+
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      continue;
+    }
+    total += value;
+    count += 1;
+  }
+
+  return count > 0 ? roundAggregateNumber(total) : null;
+}
+
+function pickLatestText(...values: Array<string | null | undefined>) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const candidate = normalizeText(values[index]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function pickLatestFiniteNumber(...values: Array<number | null | undefined>) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const candidate = values[index];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function parseAction(value: string | null | undefined) {
+  return value === 'buy' || value === 'sell' || value === 'send' ? value : null;
+}
+
+function parseActionLabel(value: string | null | undefined) {
+  return value === '建仓' || value === '加仓' || value === '减仓' || value === '清仓' || value === '发送'
+    ? value
+    : null;
+}
+
+function parseActionVariant(value: string | null | undefined) {
+  return value === 'open' || value === 'add' || value === 'reduce' || value === 'close' || value === 'send'
+    ? value
+    : null;
+}
+
+function buildTxAggregateFillSignature(entry: TelegramMonitorTxAggregateEntry) {
+  const tokenAmountKey = formatNumericKey(entry.parsed.tokenAmount);
+  const quoteAmountKey = formatNumericKey(entry.row.quote_amount ?? entry.parsed.quoteAmount);
+  const fallbackIdentity = String(entry.row.source_message_id ?? entry.row.id);
+
+  return [
+    normalize(entry.row.token_address || entry.parsed.tokenAddress),
+    normalize(entry.row.action || entry.parsed.action),
+    normalize(entry.row.action_variant || entry.parsed.actionVariant),
+    normalize(entry.row.quote_symbol || entry.parsed.quoteSymbol),
+    parsePlatformLabel(entry.row.raw_text),
+    tokenAmountKey || quoteAmountKey || fallbackIdentity,
+  ].join('|');
+}
+
+function computeWeightedPriceUsd(entries: TelegramMonitorTxAggregateEntry[]) {
+  let totalTokenAmount = 0;
+  let totalUsd = 0;
+
+  for (const entry of entries) {
+    const tokenAmount = entry.parsed.tokenAmount;
+    const priceUsd = entry.row.price_usd ?? entry.parsed.priceUsd;
+    if (
+      typeof tokenAmount !== 'number' ||
+      !Number.isFinite(tokenAmount) ||
+      tokenAmount <= 0 ||
+      typeof priceUsd !== 'number' ||
+      !Number.isFinite(priceUsd) ||
+      priceUsd <= 0
+    ) {
+      continue;
+    }
+
+    totalTokenAmount += tokenAmount;
+    totalUsd += tokenAmount * priceUsd;
+  }
+
+  if (totalTokenAmount <= 0 || totalUsd <= 0) {
+    return null;
+  }
+
+  return roundAggregateNumber(totalUsd / totalTokenAmount);
 }
 
 export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInput) {
@@ -181,6 +350,104 @@ export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInpu
   );
 
   return { ok: true as const };
+}
+
+export function summarizeTelegramMonitorTxProvisional(params: {
+  chain: string;
+  trackedWalletAddress: string;
+  txHash: string;
+}) {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+         id,
+         source_message_id,
+         chain,
+         token_address,
+         token_symbol,
+         tx_hash,
+         market_cap_usd,
+         price_usd,
+         quote_amount,
+         quote_symbol,
+         action,
+         action_label,
+         action_variant,
+         wallet_label,
+         wallet_group_label,
+         wallet_alias_label,
+         tracked_wallet_address,
+         event_time_ms,
+         raw_text,
+         message_links_json,
+         updated_at
+       FROM telegram_monitor_events
+       WHERE provider = 'xxyy'
+         AND chain = ?
+         AND tx_hash_lower = ?
+         AND tracked_wallet_address_lower = ?
+       ORDER BY updated_at ASC, id ASC`
+    )
+    .all(normalize(params.chain), normalize(params.txHash), normalize(params.trackedWalletAddress)) as
+    TelegramMonitorTxAggregateRow[];
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const entriesBySignature = new Map<string, TelegramMonitorTxAggregateEntry>();
+  for (const row of rows) {
+    const messageLinks = normalizeMessageLinks(parseJson<string[]>(row.message_links_json, []));
+    const parsed = parseXxyyTelegramText(row.raw_text || '', row.event_time_ms ?? row.updated_at, messageLinks);
+    const entry = {
+      row,
+      parsed,
+      messageLinks,
+    } satisfies TelegramMonitorTxAggregateEntry;
+    entriesBySignature.set(buildTxAggregateFillSignature(entry), entry);
+  }
+
+  const uniqueEntries = Array.from(entriesBySignature.values()).sort(
+    (left, right) => left.row.updated_at - right.row.updated_at || left.row.id - right.row.id
+  );
+  const latest = uniqueEntries[uniqueEntries.length - 1];
+  if (!latest) {
+    return null;
+  }
+
+  const quoteAmount = sumFiniteNumbers(uniqueEntries.map((entry) => entry.row.quote_amount ?? entry.parsed.quoteAmount));
+  const tokenAmount = sumFiniteNumbers(uniqueEntries.map((entry) => entry.parsed.tokenAmount));
+  const weightedPriceUsd = computeWeightedPriceUsd(uniqueEntries);
+  const eventTimes = uniqueEntries
+    .map((entry) => entry.row.event_time_ms ?? entry.row.updated_at)
+    .filter((value): value is number => Number.isFinite(value));
+
+  return {
+    chain: latest.row.chain,
+    tokenAddress: normalizeText(latest.row.token_address) || latest.parsed.tokenAddress || '',
+    tokenSymbol: pickLatestText(latest.row.token_symbol, latest.parsed.tokenSymbol),
+    txHash: normalizeText(latest.row.tx_hash) || latest.parsed.txHash || normalizeText(params.txHash),
+    marketCapUsd: pickLatestFiniteNumber(...uniqueEntries.map((entry) => entry.row.market_cap_usd ?? entry.parsed.marketCapUsd)),
+    priceUsd: weightedPriceUsd ?? pickLatestFiniteNumber(...uniqueEntries.map((entry) => entry.row.price_usd ?? entry.parsed.priceUsd)),
+    quoteAmount,
+    quoteSymbol: pickLatestText(latest.row.quote_symbol, latest.parsed.quoteSymbol),
+    action: parseAction(latest.row.action || latest.parsed.action),
+    actionLabel: parseActionLabel(latest.row.action_label || latest.parsed.actionLabel),
+    actionVariant: parseActionVariant(latest.row.action_variant || latest.parsed.actionVariant),
+    walletLabel: pickLatestText(latest.row.wallet_label, latest.parsed.walletLabel),
+    walletGroupLabel: pickLatestText(latest.row.wallet_group_label, latest.parsed.walletGroupLabel),
+    walletAliasLabel: pickLatestText(latest.row.wallet_alias_label, latest.parsed.walletAliasLabel),
+    trackedWalletAddress:
+      pickLatestText(latest.row.tracked_wallet_address, latest.parsed.trackedWalletAddress) ||
+      normalizeText(params.trackedWalletAddress),
+    tokenAmount,
+    rawText: uniqueEntries.length === 1 ? normalizeText(latest.row.raw_text) || null : null,
+    messageLinks: normalizeMessageLinks(uniqueEntries.flatMap((entry) => entry.messageLinks)),
+    eventTimeMs:
+      eventTimes.length > 0 ? Math.min(...eventTimes) : latest.row.updated_at,
+    fillCount: uniqueEntries.length,
+  } satisfies TelegramMonitorTxProvisionalSummary;
 }
 
 export function findTelegramMonitorMarketCapAtTx(params: TelegramCapAtTxInput) {

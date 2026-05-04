@@ -4,6 +4,7 @@ import {
   DEFAULT_FEED_SEARCH_FILTERS,
   getFeedItemCategory,
   getRemoteFeedSearchKeyword,
+  getRemoteFeedSource,
   hasAnyEnabledFeedType,
   matchesFeedSearchFilters,
   type FeedSearchFilters,
@@ -182,6 +183,36 @@ function run() {
     getRemoteFeedSearchKeyword('ca:0xabc'),
     '',
     'ca-prefixed searches should stay client-side to preserve token-address matching semantics'
+  );
+  assert.equal(
+    getRemoteFeedSource({
+      trade: false,
+      transfer: false,
+      twitter: false,
+      telegram: true,
+    }),
+    'telegram',
+    'telegram-only filter should request the telegram source remotely'
+  );
+  assert.equal(
+    getRemoteFeedSource({
+      trade: true,
+      transfer: false,
+      twitter: false,
+      telegram: false,
+    }),
+    'blockchain',
+    'chain-only filter should narrow remote reads to blockchain events'
+  );
+  assert.equal(
+    getRemoteFeedSource({
+      trade: false,
+      transfer: false,
+      twitter: true,
+      telegram: true,
+    }),
+    null,
+    'mixed social filters should stay broad when they cannot be expressed as one remote source'
   );
 
   assert.equal(

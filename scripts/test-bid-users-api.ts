@@ -118,6 +118,20 @@ async function run() {
         chain: 'bsc',
         addressName: '#1',
       },
+      {
+        userId: beta.id,
+        userName: 'Beta',
+        address: '0x9999999999999999999999999999999999999999',
+        chain: 'ethereum',
+        addressName: '#1',
+      },
+      {
+        userId: beta.id,
+        userName: 'Beta',
+        address: '0x9999999999999999999999999999999999999999',
+        chain: 'base',
+        addressName: '#1',
+      },
     ]);
 
     const allResponse = await route.GET(

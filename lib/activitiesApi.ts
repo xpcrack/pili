@@ -38,10 +38,12 @@ export interface CompletenessWindow {
 export interface ActivityFeedResponse {
   ok: boolean;
   feed: { user: User; activity: Activity }[];
+  users?: User[];
   total: number;
   page: number;
   pageSize: number;
   hasMore: boolean;
+  nextCursor?: string | null;
   historyComplete: boolean | null;
   localQualifiedCount: number;
   activityBreakdown: ActivityBreakdown | null;
@@ -72,8 +74,10 @@ export interface ActivityFeedResponse {
 interface FetchAllActivitiesOptions {
   page?: number;
   pageSize?: number;
+  cursor?: string | null;
   userId?: string | null;
   search?: string | null;
+  source?: Activity['source'] | null;
   syncStrategy?: 'refresh' | 'local' | 'backfill';
   backfillScope?: 'global' | 'user';
   backfillUserId?: string | null;
@@ -135,19 +139,26 @@ function normalizeCompletenessWindow(value: unknown): CompletenessWindow | null 
   };
 }
 
+function normalizePayloadUsers(payload: Partial<ActivityFeedResponse> | null | undefined) {
+  return Array.isArray(payload?.users) ? payload.users : undefined;
+}
+
 function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | null | undefined, users: User[]) {
   const feed = Array.isArray(payload?.feed) ? payload.feed : [];
   const total = typeof payload?.total === 'number' ? payload.total : feed.length;
   const pageSize = typeof payload?.pageSize === 'number' ? payload.pageSize : feed.length || 0;
   const page = typeof payload?.page === 'number' ? payload.page : 1;
+  const responseUsers = normalizePayloadUsers(payload);
 
   return {
     ok: true,
     feed,
+    users: responseUsers,
     total,
     page,
     pageSize,
     hasMore: payload?.hasMore === true,
+    nextCursor: typeof payload?.nextCursor === 'string' && payload.nextCursor.trim() ? payload.nextCursor : null,
     historyComplete: typeof payload?.historyComplete === 'boolean' ? payload.historyComplete : null,
     localQualifiedCount: typeof payload?.localQualifiedCount === 'number' ? payload.localQualifiedCount : total,
     activityBreakdown: normalizeActivityBreakdown(payload?.activityBreakdown),
@@ -232,11 +243,17 @@ export async function fetchAllActivities(
   if (isTelegramMode) {
     query.set('mode', 'telegram');
   }
+  if (typeof options?.cursor === 'string' && options.cursor.trim()) {
+    query.set('cursor', options.cursor.trim());
+  }
   if (typeof options?.userId === 'string' && options.userId.trim()) {
     query.set('userId', options.userId.trim());
   }
   if (typeof options?.search === 'string' && options.search.trim()) {
     query.set('search', options.search.trim());
+  }
+  if (typeof options?.source === 'string' && options.source.trim()) {
+    query.set('source', options.source.trim());
   }
 
   const method = syncStrategy === 'local' ? 'GET' : 'POST';

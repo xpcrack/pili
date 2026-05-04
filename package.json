@@ -28,8 +28,10 @@
     "test:activity-importance-backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-importance-backfill.ts",
     "test:events-feed-total": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-events-feed-total.ts",
     "test:feed-request-arbiter": "tsx scripts/test-feed-request-arbiter.ts",
+    "test:feed-query-mode": "tsx scripts/test-feed-query-mode.ts",
     "test:feed-completeness-visibility": "tsx scripts/test-feed-completeness-visibility.ts",
     "test:feed-prewarm-service": "tsx scripts/test-feed-prewarm-service.ts",
+    "test:activities-api": "tsx scripts/test-activities-api.ts",
     "test:activity-feed-retry": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-activity-feed-retry.ts",
     "test:global-search-wiring": "tsx scripts/test-global-search-wiring.ts",
     "test:tooling-config": "tsx scripts/test-tooling-config.ts",
@@ -43,6 +45,8 @@
     "test:tracked-address-ownership": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-tracked-address-ownership.ts",
     "test:asset-peak-validation": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-asset-peak-validation.ts",
     "test:asset-peak-audit": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-asset-peak-audit.ts",
+    "test:tracked-user-assets": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-tracked-user-assets.ts",
+    "test:tracked-user-evm-expansion": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-tracked-user-evm-expansion.ts",
     "test:address-book": "tsx scripts/test-address-book.ts",
     "test:address-assets": "tsx scripts/test-address-assets.ts",
     "test:conflict-repo": "tsx scripts/test-conflict-repo.ts",
@@ -66,10 +70,11 @@
     "test:twitter-sync-service": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-sync-service.ts",
     "test:twitter-relay-coverage": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/test-twitter-relay-coverage.ts",
     "test:twitter-bridge": "tsx scripts/test-twitter-bridge.ts",
-    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:time-format && npm run test:activity-card-view-model && npm run test:activity-importance && npm run test:activity-importance-service && npm run test:activity-importance-ingest && npm run test:activity-importance-backfill && npm run test:trade-usd && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-client-state && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:activity-feed-retry && npm run test:global-search-wiring && npm run test:feed-page-state && npm run test:tooling-config && npm run test:node-runtime-policy && npm run test:search-filters && npm run test:source-reconciliation && npm run test:sync-failure-notifier && npm run test:manage-users && npm run test:tracked-user-validation && npm run test:tracked-address-ownership && npm run test:asset-peak-validation && npm run test:asset-peak-audit && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:telegram-monitor-reconciliation && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-identity-service && npm run test:twitter-stable-identity && npm run test:twitter-sync-service && npm run test:twitter-relay-coverage && npm run test:twitter-bridge",
+    "test": "npm run test:admin-auth && npm run test:feed-ordering && npm run test:time-format && npm run test:activity-card-view-model && npm run test:activity-importance && npm run test:activity-importance-service && npm run test:activity-importance-ingest && npm run test:activity-importance-backfill && npm run test:trade-usd && npm run test:events-feed-total && npm run test:feed-request-arbiter && npm run test:feed-query-mode && npm run test:feed-client-state && npm run test:feed-completeness-visibility && npm run test:feed-prewarm-service && npm run test:activities-api && npm run test:activity-feed-retry && npm run test:global-search-wiring && npm run test:feed-page-state && npm run test:user-bar && npm run test:tooling-config && npm run test:node-runtime-policy && npm run test:search-filters && npm run test:source-reconciliation && npm run test:sync-failure-notifier && npm run test:manage-users && npm run test:tracked-user-validation && npm run test:tracked-address-ownership && npm run test:asset-peak-validation && npm run test:asset-peak-audit && npm run test:tracked-user-assets && npm run test:tracked-user-evm-expansion && npm run test:address-book && npm run test:address-assets && npm run test:conflict-repo && npm run test:system-config-conflict-chat && npm run test:conflict-notifier && npm run test:parser-fixtures && npm run test:telegram-monitor-reconciliation && npm run test:twitter-fetcher && npm run test:twitter-provider-router && npm run test:twitter-provider-clients && npm run test:twitter-provider-state && npm run test:twitter-identity-service && npm run test:twitter-stable-identity && npm run test:twitter-sync-service && npm run test:twitter-relay-coverage && npm run test:twitter-bridge",
     "test:feed-client-state": "tsx scripts/test-feed-client-state.ts",
     "test:activity-card-view-model": "tsx scripts/test-activity-card-view-model.ts",
-    "test:feed-page-state": "tsx scripts/test-feed-page-state.ts"
+    "test:feed-page-state": "tsx scripts/test-feed-page-state.ts",
+    "test:user-bar": "tsx scripts/test-user-bar.tsx"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

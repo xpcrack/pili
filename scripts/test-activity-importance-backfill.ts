@@ -51,7 +51,7 @@ async function run() {
     const older = makeActivity('older-social', 1_700_000_000_000, 'twitter');
     const newer = makeActivity('newer-chain', 1_700_000_100_000, 'blockchain');
     const feedSame2 = makeActivity('feed-same-2', 1_700_000_200_000, 'twitter');
-    const feedSame10 = makeActivity('feed-same-10', 1_700_000_200_000, 'twitter');
+    const feedSame10 = makeActivity('feed-same-10', 1_700_000_230_000, 'twitter');
     const txStateEarly = makeActivity('state-early', 1_700_000_300_000, 'blockchain');
     const txStateLate = makeActivity('state-late', 1_700_000_301_000, 'blockchain');
     const fallbackEarly = makeActivity('fallback-early', 1_700_000_400_000, 'twitter');
@@ -271,6 +271,11 @@ async function run() {
       .all() as Array<{ id: number; activity_json: string }>;
     assert.equal((JSON.parse(sameTimestampFeedRows[0]!.activity_json) as Activity).id, 'feed-same-2');
     assert.equal((JSON.parse(sameTimestampFeedRows[1]!.activity_json) as Activity).id, 'feed-same-10');
+    assert.equal(
+      (JSON.parse(sameTimestampFeedRows[0]!.activity_json) as Activity).metadata.importance?.sourceCount7d,
+      (JSON.parse(sameTimestampFeedRows[1]!.activity_json) as Activity).metadata.importance?.sourceCount7d,
+      'same-day feed rows should share one daily source frequency after backfill'
+    );
 
     const txStateScoredRows = db
       .prepare(
@@ -279,9 +284,10 @@ async function run() {
       .all() as Array<{ tx_hash: string; canonical_activity_json: string; updated_at: number }>;
     const txStateEarlyScored = JSON.parse(txStateScoredRows[0]!.canonical_activity_json) as Activity;
     const txStateLateScored = JSON.parse(txStateScoredRows[1]!.canonical_activity_json) as Activity;
-    assert.ok(
-      (txStateLateScored.metadata.importance?.sourceCount7d || 0) > (txStateEarlyScored.metadata.importance?.sourceCount7d || 0),
-      'later tx-state rows should reflect higher chronological source frequency'
+    assert.equal(
+      txStateLateScored.metadata.importance?.sourceCount7d,
+      txStateEarlyScored.metadata.importance?.sourceCount7d,
+      'same-day tx-state rows should share one daily source frequency'
     );
 
     const fallbackScoredRows = db
@@ -291,9 +297,10 @@ async function run() {
       .all() as Array<{ tx_hash: string; projected_activity_json: string; updated_at: number }>;
     const fallbackEarlyScored = JSON.parse(fallbackScoredRows[0]!.projected_activity_json) as Activity;
     const fallbackLateScored = JSON.parse(fallbackScoredRows[1]!.projected_activity_json) as Activity;
-    assert.ok(
-      (fallbackLateScored.metadata.importance?.sourceCount7d || 0) > (fallbackEarlyScored.metadata.importance?.sourceCount7d || 0),
-      'later fallback rows should reflect higher chronological source frequency'
+    assert.equal(
+      fallbackLateScored.metadata.importance?.sourceCount7d,
+      fallbackEarlyScored.metadata.importance?.sourceCount7d,
+      'same-day fallback rows should share one daily source frequency'
     );
 
     const firstUpdatedAt = {

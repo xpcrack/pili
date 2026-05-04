@@ -2,12 +2,14 @@ import 'server-only';
 
 import crypto from 'node:crypto';
 
+import { EVM_CHAINS, expandTrackedAddresses, isEvmAddress } from '@/lib/addressBook';
 import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activityFeed';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
+const TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY = 'tracked_address_evm_expansion_v1';
 
 interface TrackedUserRow {
   id: string;
@@ -138,7 +140,7 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
 function sanitizeAddresses(addresses: User['addresses']) {
   const deduped = new Map<string, AddressInfo>();
 
-  for (const item of addresses) {
+  for (const item of expandTrackedAddresses(addresses)) {
     const chain = item.chain;
     if (!SUPPORTED_CHAINS.has(chain)) {
       continue;
@@ -164,7 +166,7 @@ function sanitizeAddresses(addresses: User['addresses']) {
 function toNormalizedTrackedAddresses(addresses: User['addresses']): NormalizedTrackedAddress[] {
   const normalized = new Map<string, NormalizedTrackedAddress>();
 
-  for (const item of addresses) {
+  for (const item of expandTrackedAddresses(addresses)) {
     const chain = item.chain;
     if (!SUPPORTED_CHAINS.has(chain)) {
       continue;
@@ -183,6 +185,96 @@ function toNormalizedTrackedAddresses(addresses: User['addresses']): NormalizedT
   }
 
   return Array.from(normalized.values());
+}
+
+function getAppStateFlag(key: string) {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT value_json FROM app_state WHERE key = ? LIMIT 1')
+    .get(key) as { value_json: string } | undefined;
+  if (!row) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(row.value_json) as { done?: boolean };
+    return parsed.done === true;
+  } catch {
+    return false;
+  }
+}
+
+function setAppStateFlag(key: string) {
+  const db = getDb();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO app_state (key, value_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+  ).run(key, JSON.stringify({ done: true, at: now }), now);
+}
+
+function ensureExpandedTrackedAddressRows() {
+  if (getAppStateFlag(TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY)) {
+    return;
+  }
+
+  withTransaction(() => {
+    if (getAppStateFlag(TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY)) {
+      return;
+    }
+
+    const db = getDb();
+    const rows = db
+      .prepare(
+        `SELECT
+          user_id,
+          address,
+          address_lower,
+          name,
+          chain
+        FROM tracked_addresses
+        ORDER BY created_at ASC, name ASC`
+      )
+      .all() as Array<{
+      user_id: string;
+      address: string;
+      address_lower: string;
+      name: string;
+      chain: ChainType;
+    }>;
+
+    const upsert = db.prepare(
+      `INSERT INTO tracked_addresses (
+        id,
+        user_id,
+        address,
+        address_lower,
+        name,
+        chain,
+        total_asset_usd,
+        asset_updated_at,
+        last_synced_at,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+      ON CONFLICT(user_id, chain, address_lower) DO NOTHING`
+    );
+
+    const now = Date.now();
+    for (const row of rows) {
+      if (!isEvmAddress(row.address)) {
+        continue;
+      }
+
+      for (const chain of EVM_CHAINS) {
+        const id = `${row.user_id}:${chain}:${row.address_lower}`;
+        upsert.run(id, row.user_id, row.address, row.address_lower, row.name, chain, now, now);
+      }
+    }
+
+    setAppStateFlag(TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY);
+  });
 }
 
 function sanitizeUser(user: User): User {
@@ -501,6 +593,7 @@ function purgeOrphanedAddressData() {
 }
 
 export function listTrackedUsers() {
+  ensureExpandedTrackedAddressRows();
   const db = getDb();
   const userRows = db
     .prepare(
@@ -937,6 +1030,7 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
 
   withTransaction(() => {
     const db = getDb();
+    const affectedUpdatedAtByUserId = new Map<string, number>();
 
     const addressStmt = db.prepare(
       `UPDATE tracked_addresses
@@ -947,31 +1041,46 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
     for (const snapshot of addressAssets) {
       const chain = normalize(snapshot.chain);
       const addressLower = normalize(snapshot.address);
-      if (!chain || !addressLower) {
+      const userId = snapshot.userId;
+      if (!chain || !addressLower || !userId) {
         continue;
       }
 
+      const previousUpdatedAt = affectedUpdatedAtByUserId.get(userId) || 0;
+      affectedUpdatedAtByUserId.set(userId, Math.max(previousUpdatedAt, snapshot.updatedAt));
       addressStmt.run(
         typeof snapshot.totalAssetUsd === 'number' ? snapshot.totalAssetUsd : null,
         snapshot.updatedAt,
         Date.now(),
-        snapshot.userId,
+        userId,
         chain,
         addressLower
       );
     }
 
+    for (const snapshot of userAssets) {
+      const previousUpdatedAt = affectedUpdatedAtByUserId.get(snapshot.userId) || 0;
+      affectedUpdatedAtByUserId.set(snapshot.userId, Math.max(previousUpdatedAt, snapshot.updatedAt));
+    }
+
+    const totalByUserStmt = db.prepare(
+      `SELECT COALESCE(SUM(total_asset_usd), 0) AS total_asset_usd
+       FROM tracked_addresses
+       WHERE user_id = ?`
+    );
     const userStmt = db.prepare(
       `UPDATE tracked_users
        SET total_asset_usd = ?,
-           historical_max_asset_usd = MAX(historical_max_asset_usd, ?),
+           historical_max_asset_usd = MAX(historical_max_asset_usd, total_asset_usd, ?),
            asset_updated_at = ?,
            updated_at = ?
        WHERE id = ?`
     );
 
-    for (const snapshot of userAssets) {
-      userStmt.run(snapshot.totalAssetUsd, snapshot.totalAssetUsd, snapshot.updatedAt, Date.now(), snapshot.userId);
+    for (const [userId, updatedAt] of affectedUpdatedAtByUserId) {
+      const row = totalByUserStmt.get(userId) as { total_asset_usd: number | null } | undefined;
+      const totalAssetUsd = typeof row?.total_asset_usd === 'number' ? row.total_asset_usd : 0;
+      userStmt.run(totalAssetUsd, totalAssetUsd, updatedAt, Date.now(), userId);
     }
   });
 }

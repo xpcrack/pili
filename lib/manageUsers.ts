@@ -59,6 +59,40 @@ export function filterManageUsers(users: readonly User[], query: string) {
   return users.filter((user) => matchesManageUserSearch(user, query));
 }
 
+function buildManageAddressKey(address: User['addresses'][number]) {
+  return `${address.chain}:${normalizeSearchValue(address.address)}`;
+}
+
+export function mergeManageUsersWithServer(localUsers: readonly User[], serverUsers: readonly User[]) {
+  const localById = new Map(localUsers.map((user) => [user.id, user] as const));
+  const mergedServerUsers = serverUsers.map((serverUser) => {
+    const localUser = localById.get(serverUser.id);
+    if (!localUser) {
+      return serverUser;
+    }
+
+    const seenAddressKeys = new Set(serverUser.addresses.map(buildManageAddressKey));
+    const localOnlyAddresses = localUser.addresses.filter((address) => {
+      const key = buildManageAddressKey(address);
+      if (seenAddressKeys.has(key)) {
+        return false;
+      }
+      seenAddressKeys.add(key);
+      return true;
+    });
+
+    return {
+      ...serverUser,
+      addresses: [...serverUser.addresses, ...localOnlyAddresses],
+    };
+  });
+
+  const serverIds = new Set(serverUsers.map((user) => user.id));
+  const localOnlyUsers = localUsers.filter((user) => !serverIds.has(user.id));
+
+  return [...mergedServerUsers, ...localOnlyUsers];
+}
+
 function normalizeTags(tags: readonly string[]) {
   return tags.map((tag) => tag.trim()).filter(Boolean).sort();
 }

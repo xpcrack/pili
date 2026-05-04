@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_ACTIVITY_IMPORTANCE_FORMULA,
   buildActivityImportanceExplanationRows,
   computeActivityImportance,
   getActivityImportanceLevelLabel,
+  recomputeActivityImportanceFromFactors,
 } from '@/lib/activityImportance';
 
 function approx(actual: number, expected: number, epsilon = 1e-6) {
@@ -20,7 +22,12 @@ function run() {
     historicalMaxAssetUsd: 1_000_000,
   });
   assert.equal(freshWhale.score, 96);
+  assert.equal(freshWhale.version, 2);
+  assert.equal(freshWhale.formulaVersion, DEFAULT_ACTIVITY_IMPORTANCE_FORMULA.version);
   approx(freshWhale.sourceRarity, 1);
+  assert.equal(freshWhale.factors?.socialCount7d, 0);
+  assert.equal(freshWhale.factors?.tradeAmountUsdAtTx, null);
+  assert.equal(freshWhale.factors?.contentLength, 0);
   assert.equal(getActivityImportanceLevelLabel(freshWhale.score), '高重要');
 
   const missingAsset = computeActivityImportance({
@@ -46,6 +53,18 @@ function run() {
   assert.equal(nonFiniteAsset.historicalMaxAssetUsd, null);
   approx(nonFiniteAsset.assetWeight, 0.35);
   approx(nonFiniteAsset.dataConfidenceFactor, 0.7);
+
+  const rescored = recomputeActivityImportanceFromFactors(freshWhale.factors!, {
+    ...DEFAULT_ACTIVITY_IMPORTANCE_FORMULA,
+    version: 'test-rescore',
+    baseScoreWeights: {
+      sourceRarity: 0.4,
+      assetWeight: 0.6,
+    },
+  });
+  assert.equal(rescored.formulaVersion, 'test-rescore');
+  assert.deepEqual(rescored.factors, freshWhale.factors);
+  assert.notEqual(rescored.score, freshWhale.score);
 
   const socialSourceCountAligned = computeActivityImportance({
     sourceKind: 'social',
@@ -84,8 +103,9 @@ function run() {
     explanation.map((row) => row.label),
     ['同源稀缺分', '资产权重', '总频率因子', '数据可信度因子']
   );
-  assert.equal(explanation[0]?.description, '这类消息本身最近有多罕见。推文/TG 看社交频率，链上看钱包频率；越少见越高。');
-  assert.equal(explanation[1]?.valueText.includes('50,000'), true);
+  assert.equal(explanation[0]?.valueText, '近7天社交动态（推特/TG）共 3 条，同源稀缺分：0.50');
+  assert.equal(explanation[1]?.valueText.includes('50K USD'), true);
+  assert.equal(explanation[2]?.valueText, '近7天总动态共 11 条，总频率因子：0.89');
   assert.equal(getActivityImportanceLevelLabel(noisyActor.score), '普通');
 
   console.log('activity importance formula tests: ok');

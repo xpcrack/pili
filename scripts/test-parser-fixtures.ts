@@ -115,6 +115,242 @@ function createFixtureFetch(fixture: ParserFixtureCase, metrics: { detailFetches
   };
 }
 
+async function loadTelegramMonitorFeedHelpers() {
+  try {
+    return await import('@/lib/server/telegramMonitorFeedHelpers');
+  } catch {
+    return null;
+  }
+}
+
+function createTelegramMonitorFixtureActivity(
+  id: string,
+  overrides: Partial<Activity> & { metadata?: Partial<Activity['metadata']> } = {}
+): Activity {
+  return {
+    id,
+    userId: overrides.userId || 'fixture-user',
+    source: overrides.source || 'blockchain',
+    type: overrides.type || 'transfer',
+    content: overrides.content || 'fixture activity',
+    title: overrides.title,
+    timestamp: overrides.timestamp ?? 1710000000000,
+    metadata: {
+      txHash: '0xfixturetx',
+      chain: 'bsc',
+      trackedAddress: '0xfixturetracked',
+      ...overrides.metadata,
+    },
+  };
+}
+
+async function runTelegramMonitorHelperFixtures() {
+  const helpers = await loadTelegramMonitorFeedHelpers();
+  assert.ok(helpers, 'telegram helper module should exist');
+
+  const {
+    buildTrackedAddressIndex,
+    pickMonitoredUser,
+    buildTelegramMonitorFeedDedupKey,
+    dedupeTelegramMonitorFeedRows,
+  } = helpers;
+
+  assert.equal(typeof buildTrackedAddressIndex, 'function', 'buildTrackedAddressIndex should be exported');
+  assert.equal(typeof pickMonitoredUser, 'function', 'pickMonitoredUser should be exported');
+  assert.equal(typeof buildTelegramMonitorFeedDedupKey, 'function', 'buildTelegramMonitorFeedDedupKey should be exported');
+  assert.equal(typeof dedupeTelegramMonitorFeedRows, 'function', 'dedupeTelegramMonitorFeedRows should be exported');
+
+  const evmUser: User = {
+    id: 'evm-user',
+    name: 'Finn',
+    handle: 'finn',
+    avatar: 'finn.png',
+    addresses: [
+      {
+        address: '0x7592ca1ad468ddac5a97a5625c1c55e36338f786',
+        name: '#2',
+        chain: 'bsc',
+        totalAssetUsd: null,
+        assetUpdatedAt: null,
+      },
+    ],
+    totalAssetUsd: 0,
+    historicalMaxAssetUsd: 0,
+    assetUpdatedAt: null,
+    tags: [],
+  };
+  const solUser: User = {
+    id: 'sol-user',
+    name: 'Henry',
+    handle: 'henry',
+    avatar: 'henry.png',
+    addresses: [
+      {
+        address: 'testuser_solana_placeholder_1111111111111111',
+        name: '#1',
+        chain: 'solana',
+        totalAssetUsd: null,
+        assetUpdatedAt: null,
+      },
+    ],
+    totalAssetUsd: 0,
+    historicalMaxAssetUsd: 0,
+    assetUpdatedAt: null,
+    tags: [],
+  };
+  const users = [evmUser, solUser];
+
+  const trackedAddressIndex = buildTrackedAddressIndex(users);
+  assert.equal(
+    trackedAddressIndex.get('ethereum|0x7592ca1ad468ddac5a97a5625c1c55e36338f786')?.user.id,
+    evmUser.id,
+    'tracked-address index should fan out EVM addresses across EVM chains'
+  );
+  assert.equal(
+    trackedAddressIndex.get('solana|cj5fhknpf3yd7fk njv5vtbjtndawfirflcutputanpis'.replace(' ', ''))?.user.id,
+    solUser.id,
+    'tracked-address index should keep non-EVM addresses on their native chain only'
+  );
+  console.log('PASS telegram-helper tracked-address-index');
+
+  const matchedByAddress = pickMonitoredUser({
+    eventWalletAliasLabel: 'user_a#1',
+    trackedWalletAddress: evmUser.addresses[0]?.address || null,
+    chain: 'base',
+    users,
+    trackedAddressIndex,
+  });
+  assert.equal(
+    matchedByAddress?.user.id,
+    evmUser.id,
+    'monitored-user picking should prefer tracked address matches over alias matches'
+  );
+
+  const matchedByAlias = pickMonitoredUser({
+    eventWalletAliasLabel: 'user_d#1',
+    trackedWalletAddress: null,
+    chain: 'ethereum',
+    users,
+    trackedAddressIndex,
+  });
+  assert.equal(
+    matchedByAlias?.trackedAddress,
+    evmUser.addresses[0]?.address,
+    'monitored-user picking should match address aliases across compatible EVM chains'
+  );
+  console.log('PASS telegram-helper monitored-user-picking');
+
+  const aggregateDedupRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('aggregate', {
+      metadata: {
+        monitorTxAggregateKey: 'aggregate-key',
+        txHash: '0xaggregate',
+      },
+    }),
+  };
+  assert.equal(
+    buildTelegramMonitorFeedDedupKey(aggregateDedupRow),
+    'aggregate-key',
+    'dedupe key should prefer monitorTxAggregateKey when present'
+  );
+  const txIdentityDedupRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('tx-key', {
+      metadata: {
+        chain: 'BSC',
+        trackedAddress: '0xABC',
+        txHash: '0xDEF',
+      },
+    }),
+  };
+  assert.equal(
+    buildTelegramMonitorFeedDedupKey(txIdentityDedupRow),
+    'bsc:0xabc:0xdef',
+    'dedupe key should fall back to normalized chain/address/tx identity'
+  );
+  const idFallbackDedupRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('row-id', {
+      metadata: {
+        chain: '',
+        trackedAddress: '',
+        txHash: '',
+      },
+    }),
+  };
+  assert.equal(
+    buildTelegramMonitorFeedDedupKey(idFallbackDedupRow),
+    'row-id',
+    'dedupe key should fall back to activity id when tx identity is incomplete'
+  );
+
+  const stateRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('state-row', {
+      timestamp: 100,
+      metadata: {
+        chain: 'bsc',
+        trackedAddress: '0x7592ca1ad468ddac5a97a5625c1c55e36338f786',
+        txHash: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        quoteAmount: '0.0292',
+      },
+    }),
+  };
+  const newerFallbackRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('fallback-row-newer', {
+      timestamp: 120,
+      metadata: {
+        chain: 'bsc',
+        trackedAddress: '0x7592ca1ad468ddac5a97a5625c1c55e36338f786',
+        txHash: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        quoteAmount: '0.0512',
+      },
+    }),
+  };
+  const tiedFallbackRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('fallback-row-tied', {
+      timestamp: 200,
+      metadata: {
+        chain: 'bsc',
+        trackedAddress: '0x7592ca1ad468ddac5a97a5625c1c55e36338f786',
+        txHash: '0xtied',
+        quoteAmount: '0.0220',
+      },
+    }),
+  };
+  const tiedStateRow = {
+    user: evmUser,
+    activity: createTelegramMonitorFixtureActivity('state-row-tied', {
+      timestamp: 200,
+      metadata: {
+        chain: 'bsc',
+        trackedAddress: '0x7592ca1ad468ddac5a97a5625c1c55e36338f786',
+        txHash: '0xtied',
+        quoteAmount: '0.0292',
+      },
+    }),
+  };
+
+  const dedupedLatestWins = dedupeTelegramMonitorFeedRows([stateRow, newerFallbackRow]);
+  assert.equal(dedupedLatestWins.length, 1, 'dedupe should collapse rows with the same tx identity');
+  assert.equal(
+    dedupedLatestWins[0]?.activity.metadata.quoteAmount,
+    '0.0512',
+    'dedupe should keep the latest timestamp when duplicate rows collide'
+  );
+
+  const dedupedTieKeepsLaterRow = dedupeTelegramMonitorFeedRows([tiedStateRow, tiedFallbackRow]);
+  assert.equal(
+    dedupedTieKeepsLaterRow[0]?.activity.id,
+    'fallback-row-tied',
+    'dedupe should keep the later row on timestamp ties to preserve current precedence'
+  );
+  console.log('PASS telegram-helper feed-dedupe');
+}
+
 function assertActivityMatches(fixture: ParserFixtureCase, activity: Activity) {
   const { expected } = fixture;
 
@@ -772,6 +1008,9 @@ async function main() {
 
     console.log('\nRunning poison fixtures...');
     runPoisonFixtures();
+
+    console.log('\nRunning telegram helper fixtures...');
+    await runTelegramMonitorHelperFixtures();
 
     console.log('\nRunning telegram monitor fixtures...');
     await runTelegramMonitorFixtures();

@@ -10,6 +10,7 @@ import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import {
+  summarizeTelegramMonitorTxProvisional,
   updateTelegramMonitorEventProjectedActivity,
   upsertTelegramMonitorEvent,
 } from '@/lib/server/telegramMonitorRepo';
@@ -361,30 +362,39 @@ export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
-  const txState =
+  const provisionalSummary =
     parsed.txHash && parsed.trackedWalletAddress
-      ? upsertTelegramMonitorTxStateProvisional({
-          userId: trackedMatch.user.id,
+      ? summarizeTelegramMonitorTxProvisional({
           chain: parsed.chain,
           trackedWalletAddress: parsed.trackedWalletAddress,
           txHash: parsed.txHash,
-          tokenAddress: parsed.tokenAddress,
-          tokenSymbol: parsed.tokenSymbol,
-          provisionalAction: parsed.action,
-          provisionalActionLabel: parsed.actionLabel,
-          provisionalActionVariant: parsed.actionVariant,
-          provisionalQuoteAmount: parsed.quoteAmount,
-          provisionalQuoteSymbol: parsed.quoteSymbol,
-          provisionalTokenAmount: parsed.tokenAmount,
-          provisionalTokenSymbol: parsed.tokenSymbol,
-          provisionalPriceUsd: parsed.priceUsd,
-          provisionalMarketCapUsd: parsed.marketCapUsd,
-          provisionalRawText: text,
-          provisionalMessageLinks: messageLinks,
-          provisionalWalletLabel: parsed.walletLabel,
-          provisionalWalletGroupLabel: parsed.walletGroupLabel,
-          provisionalWalletAliasLabel: parsed.walletAliasLabel,
-          eventTimeMs,
+        })
+      : null;
+
+  const txState =
+    provisionalSummary
+      ? upsertTelegramMonitorTxStateProvisional({
+          userId: trackedMatch.user.id,
+          chain: provisionalSummary.chain,
+          trackedWalletAddress: provisionalSummary.trackedWalletAddress,
+          txHash: provisionalSummary.txHash,
+          tokenAddress: provisionalSummary.tokenAddress,
+          tokenSymbol: provisionalSummary.tokenSymbol,
+          provisionalAction: provisionalSummary.action,
+          provisionalActionLabel: provisionalSummary.actionLabel,
+          provisionalActionVariant: provisionalSummary.actionVariant,
+          provisionalQuoteAmount: provisionalSummary.quoteAmount,
+          provisionalQuoteSymbol: provisionalSummary.quoteSymbol,
+          provisionalTokenAmount: provisionalSummary.tokenAmount,
+          provisionalTokenSymbol: provisionalSummary.tokenSymbol,
+          provisionalPriceUsd: provisionalSummary.priceUsd,
+          provisionalMarketCapUsd: provisionalSummary.marketCapUsd,
+          provisionalRawText: provisionalSummary.rawText,
+          provisionalMessageLinks: provisionalSummary.messageLinks,
+          provisionalWalletLabel: provisionalSummary.walletLabel,
+          provisionalWalletGroupLabel: provisionalSummary.walletGroupLabel,
+          provisionalWalletAliasLabel: provisionalSummary.walletAliasLabel,
+          eventTimeMs: provisionalSummary.eventTimeMs,
         })
       : null;
 

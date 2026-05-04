@@ -2,23 +2,37 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { User, Activity } from '@/types';
-import { fetchAllActivities, type ActivityBreakdown, type CompletenessWindow } from '@/lib/activitiesApi';
+import {
+  fetchAllActivities,
+  type ActivityBreakdown,
+  type ActivityFeedResponse,
+  type CompletenessWindow,
+} from '@/lib/activitiesApi';
 import { FeedRequestArbiter } from '@/lib/feed/requestArbiter';
 import { resolveFeedSyncStrategy, type FeedSyncStrategy } from '@/lib/feed/fetchPolicy';
+import {
+  DEFAULT_FEED_SEARCH_FILTERS,
+  type FeedSearchFilters,
+  matchesFeedSearchFilters,
+} from '@/lib/smartSearch';
 import {
   type ActivityFeedSummary,
   type AddressDiagnostic,
 } from '@/lib/activityFeed';
 import {
   buildActivitiesByUser,
-  filterFeedByExistingUsers,
-  mergeFeedItems,
 } from '@/lib/feed/feedItemMerge';
+import {
+  applyServerFeedSnapshot,
+  buildCollectedActivityFeedResult,
+  resolveFeedUsers,
+} from '@/lib/feed/feedClientSnapshot';
 import {
   buildFeedDebugEntries,
   filterPoisonFromFeed,
   type FeedDebugEntry,
 } from '@/lib/feed/feedPoisonFilter';
+import { FEED_PAGE_BATCH_SIZE, collectItemsUntilCount, shouldSearchEntireFeed } from '@/lib/feed/feedQueryMode';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 
@@ -66,14 +80,92 @@ interface FetchActivitiesOptions {
   targetCount?: number;
   selectedUserId?: string | null;
   searchQuery?: string;
+  source?: Activity['source'] | null;
   replace?: boolean;
   syncStrategy?: FeedSyncStrategy;
   backfillScope?: 'global' | 'user';
 }
 
+function buildFeedFetchReason(params: {
+  syncStrategy: FeedSyncStrategy;
+  selectedUserId: string | null;
+}) {
+  const { syncStrategy, selectedUserId } = params;
+  if (syncStrategy === 'backfill') {
+    return selectedUserId ? 'expand-user-backfill-7d' : 'expand-global-backfill-7d';
+  }
+  return syncStrategy === 'refresh' ? 'feed-refresh' : 'feed-local-read';
+}
+
+async function collectRequestedActivityFeed(params: {
+  currentUsers: User[];
+  ticketSignal: AbortSignal;
+  requestLimit: number;
+  selectedUserId: string | null;
+  searchQuery: string;
+  source: Activity['source'] | null;
+  syncStrategy: FeedSyncStrategy;
+  backfillScope: 'global' | 'user';
+  fullDatabaseSearch: boolean;
+  effectiveSearchFilters: FeedSearchFilters;
+}) {
+  let pageIndex = 0;
+  let firstPageResult: ActivityFeedResponse | null = null;
+  const {
+    currentUsers,
+    ticketSignal,
+    requestLimit,
+    selectedUserId,
+    searchQuery,
+    source,
+    syncStrategy,
+    backfillScope,
+    fullDatabaseSearch,
+    effectiveSearchFilters,
+  } = params;
+
+  const collected = await collectItemsUntilCount<{ user: User; activity: Activity }>({
+    desiredCount: requestLimit,
+    matcher: fullDatabaseSearch
+      ? (item) => matchesFeedSearchFilters(item, effectiveSearchFilters)
+      : undefined,
+    fetchPage: async (cursor) => {
+      const pageResult = await fetchAllActivities(currentUsers, {
+        page: 1,
+        pageSize: FEED_PAGE_BATCH_SIZE,
+        cursor,
+        userId: selectedUserId,
+        search: searchQuery,
+        source,
+        syncStrategy: pageIndex === 0 ? syncStrategy : 'local',
+        backfillScope: pageIndex === 0 && syncStrategy === 'backfill' ? backfillScope : undefined,
+        backfillUserId: pageIndex === 0 ? selectedUserId : null,
+        signal: ticketSignal,
+        reason: buildFeedFetchReason({ syncStrategy, selectedUserId }),
+      });
+      pageIndex += 1;
+      if (!firstPageResult) {
+        firstPageResult = pageResult;
+      }
+      return {
+        items: pageResult.feed,
+        hasMore: pageResult.hasMore,
+        nextCursor: pageResult.nextCursor ?? null,
+      };
+    },
+  });
+
+  return {
+    collected,
+    firstPageResult,
+  };
+}
+
 export function useActivityPolling(
   activeSelectedUserId?: string | null,
-  activeSearchQuery?: string
+  activeSearchQuery?: string,
+  activeSource?: Activity['source'] | null,
+  activeSearchFilters?: FeedSearchFilters
 ): UseActivityPollingReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +183,7 @@ export function useActivityPolling(
   const [prewarmLabel, setPrewarmLabel] = useState<string | null>(null);
   
   const { checkAndUpdateNewStatus } = useUserStore();
-  const { users, upsertUserAssetSnapshot } = useUsersDataStore();
+  const { users, mergeUsersFromServer, upsertUserAssetSnapshot } = useUsersDataStore();
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const snapshotPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const judgmentStreamRef = useRef<EventSource | null>(null);
@@ -109,11 +201,22 @@ export function useActivityPolling(
   const usersRef = useRef(users);
   const activeSelectedUserIdRef = useRef<string | null>(activeSelectedUserId ?? null);
   const activeSearchQueryRef = useRef((activeSearchQuery || '').trim());
+  const activeSourceRef = useRef<Activity['source'] | null>(activeSource ?? null);
+  const activeSearchFiltersRef = useRef<FeedSearchFilters | undefined>(activeSearchFilters);
   const usersFingerprintRef = useRef('');
-  const searchFingerprintRef = useRef((activeSearchQuery || '').trim());
+  const queryFingerprintRef = useRef('');
   const usersFingerprint = useMemo(
     () => users.map((user) => `${user.id}:${user.addresses.length}`).join('|'),
     [users]
+  );
+  const queryFingerprint = useMemo(
+    () =>
+      JSON.stringify({
+        searchQuery: (activeSearchQuery || '').trim(),
+        source: activeSource ?? null,
+        searchFilters: activeSearchFilters ?? null,
+      }),
+    [activeSearchFilters, activeSearchQuery, activeSource]
   );
 
   useEffect(() => {
@@ -127,6 +230,14 @@ export function useActivityPolling(
   useEffect(() => {
     activeSearchQueryRef.current = (activeSearchQuery || '').trim();
   }, [activeSearchQuery]);
+
+  useEffect(() => {
+    activeSourceRef.current = activeSource ?? null;
+  }, [activeSource]);
+
+  useEffect(() => {
+    activeSearchFiltersRef.current = activeSearchFilters;
+  }, [activeSearchFilters]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -273,6 +384,10 @@ export function useActivityPolling(
       : activeSelectedUserIdRef.current ?? null;
     const searchQuery =
       typeof options?.searchQuery === 'string' ? options.searchQuery.trim() : activeSearchQueryRef.current;
+    const source =
+      options && Object.prototype.hasOwnProperty.call(options, 'source')
+        ? options.source ?? null
+        : activeSourceRef.current;
     const replace = options?.replace === true;
     const syncStrategy = resolveFeedSyncStrategy(options?.syncStrategy);
     const backfillScope = options?.backfillScope ?? (selectedUserId ? 'user' : 'global');
@@ -310,6 +425,22 @@ export function useActivityPolling(
     pendingRefetchRef.current = false;
     const requestId = ++requestIdRef.current;
     const currentUsers = usersRef.current;
+    const ticketSignal = ticket.signal;
+
+    if (!ticketSignal) {
+      return {
+        feedLength: feedRef.current.length,
+        selectedFeedLength: currentSelectedFeedLength,
+        totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+        success: false,
+        error: '请求信号不可用',
+        partialSyncWarning: false,
+        autoBackfillRounds: 0,
+        hasMore,
+        historyComplete,
+        localQualifiedCount,
+      };
+    }
 
     try {
       if (isMountedRef.current) {
@@ -362,37 +493,38 @@ export function useActivityPolling(
         };
       }
 
-      const requestLimit = selectedUserId
-        ? Math.max(targetCount ?? 50, 1)
-        : Math.max(targetCount ?? 200, 200);
-
-      const requestFeed = async (strategy: 'refresh' | 'local' | 'backfill') =>
-        fetchAllActivities(currentUsers, {
-          page: 1,
-          pageSize: requestLimit,
-          userId: selectedUserId,
-          search: searchQuery,
-          syncStrategy: strategy,
-          backfillScope: strategy === 'backfill' ? backfillScope : undefined,
-          backfillUserId: selectedUserId,
-          signal: ticket.signal,
-          reason:
-            strategy === 'backfill'
-              ? selectedUserId
-                ? 'expand-user-backfill-7d'
-                : 'expand-global-backfill-7d'
-              : strategy === 'refresh'
-                ? 'feed-refresh'
-                : 'feed-local-read',
-        });
-
-      const result = await requestFeed(syncStrategy);
+      const requestLimit = Math.max(targetCount ?? FEED_PAGE_BATCH_SIZE, FEED_PAGE_BATCH_SIZE);
+      const effectiveSearchFilters = activeSearchFiltersRef.current || DEFAULT_FEED_SEARCH_FILTERS;
+      const fullDatabaseSearch = shouldSearchEntireFeed({
+        selectedUserId,
+        searchFilters: effectiveSearchFilters,
+      });
+      const { collected, firstPageResult } = await collectRequestedActivityFeed({
+        currentUsers,
+        ticketSignal,
+        requestLimit,
+        selectedUserId,
+        searchQuery,
+        source,
+        syncStrategy,
+        backfillScope,
+        fullDatabaseSearch,
+        effectiveSearchFilters,
+      });
+      const result = buildCollectedActivityFeedResult({
+        firstPageResult,
+        collectedFeed: collected.items,
+        currentUsers,
+        fullDatabaseSearch,
+        hasMore: collected.hasMore,
+      });
       const autoBackfillRounds = 0;
-
-      // 服务端 feed 快照是权威源；默认以服务端结果替换，避免前端残留已删除交易。
-      const serverMergedFeed = replace ? result.feed : mergeFeedItems([], result.feed);
-      // 用户删除后立刻过滤本地不可见人物，避免历史动态残留。
-      const mergedFeed = filterFeedByExistingUsers(serverMergedFeed, currentUsers);
+      const effectiveUsers = resolveFeedUsers(currentUsers, result.users);
+      const mergedFeed = applyServerFeedSnapshot({
+        replace,
+        resultFeed: result.feed,
+        effectiveUsers,
+      });
 
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
         return {
@@ -409,6 +541,8 @@ export function useActivityPolling(
         };
       }
 
+      usersRef.current = effectiveUsers;
+      mergeUsersFromServer(result.users ?? effectiveUsers);
       feedRef.current = mergedFeed;
       setFeed(mergedFeed);
       setSummary(result.summary);
@@ -490,6 +624,7 @@ export function useActivityPolling(
               syncStrategy: 'local',
               selectedUserId,
               searchQuery,
+              source,
             };
           }
         } catch (backfillError) {
@@ -576,6 +711,7 @@ export function useActivityPolling(
     hasMore,
     historyComplete,
     localQualifiedCount,
+    mergeUsersFromServer,
     summary?.transactionCount,
     upsertUserAssetSnapshot,
   ]);
@@ -589,9 +725,11 @@ export function useActivityPolling(
     usersFingerprintRef.current = usersRef.current
       .map((user) => `${user.id}:${user.addresses.length}`)
       .join('|');
+    queryFingerprintRef.current = queryFingerprint;
     void fetchActivities({
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
       syncStrategy: 'local',
     });
 
@@ -616,6 +754,7 @@ export function useActivityPolling(
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
       syncStrategy: 'local',
     });
   }, [usersFingerprint, fetchActivities]);
@@ -625,19 +764,19 @@ export function useActivityPolling(
       return;
     }
 
-    const nextSearchFingerprint = (activeSearchQuery || '').trim();
-    if (searchFingerprintRef.current === nextSearchFingerprint) {
+    if (queryFingerprintRef.current === queryFingerprint) {
       return;
     }
 
-    searchFingerprintRef.current = nextSearchFingerprint;
+    queryFingerprintRef.current = queryFingerprint;
     void fetchActivities({
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
-      searchQuery: nextSearchFingerprint,
+      searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
       syncStrategy: 'local',
     });
-  }, [activeSearchQuery, fetchActivities]);
+  }, [fetchActivities, queryFingerprint]);
 
   // 高频本地快照轮询：不触发后台同步，只读取最新快照。
   useEffect(() => {
@@ -646,6 +785,7 @@ export function useActivityPolling(
         syncStrategy: 'local',
         selectedUserId: activeSelectedUserIdRef.current,
         searchQuery: activeSearchQueryRef.current,
+        source: activeSourceRef.current,
       });
     }, SNAPSHOT_POLL_INTERVAL);
 
@@ -663,6 +803,7 @@ export function useActivityPolling(
         syncStrategy: 'refresh',
         selectedUserId: activeSelectedUserIdRef.current,
         searchQuery: activeSearchQueryRef.current,
+        source: activeSourceRef.current,
       });
     }, REFRESH_TRIGGER_INTERVAL);
 
@@ -722,6 +863,7 @@ export function useActivityPolling(
         void fetchActivities({
           selectedUserId: activeSelectedUserIdRef.current,
           searchQuery: activeSearchQueryRef.current,
+          source: activeSourceRef.current,
           syncStrategy: 'local',
         }).finally(() => {
           sseRefetchingRef.current = false;
