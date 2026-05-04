@@ -62,8 +62,9 @@ export function buildAddressManagementRows(
       const chains = isEvm
         ? EVM_DISPLAY_CHAINS.filter((chain) => evmChains.includes(chain))
         : ['solana' satisfies ChainType];
+      const activityChains = isEvm ? EVM_DISPLAY_CHAINS : chains;
       const primaryChain = isEvm ? 'bsc' : 'solana';
-      const latestActivityAt = chains.reduce<number | null>((latest, chain) => {
+      const latestActivityAt = activityChains.reduce<number | null>((latest, chain) => {
         const next = readLatestActivityAt(latestActivityByChainAddress, chain, addressGroup.address);
         if (typeof next !== 'number') {
           return latest;
