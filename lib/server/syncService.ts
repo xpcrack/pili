@@ -24,11 +24,11 @@ import { getDb } from '@/lib/server/sqlite';
 import {
   listTrackedUsers,
   markAddressesSynced,
-  updateAssetSnapshots,
 } from '@/lib/server/trackedUsersRepo';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 import { notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
+import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -628,7 +628,25 @@ async function runSync(
   }
   upsertRawTransactions(result.rawTransactions);
   upsertFeedSnapshot(result.feed);
-  updateAssetSnapshots(result.addressAssets, result.userAssets);
+  const assetValidation = await validateAndPersistPeakAssetSnapshots({
+    users: targetUsers,
+    addressAssets: result.addressAssets,
+    userAssets: result.userAssets,
+  });
+
+  if (assetValidation.blockedUsers.length > 0) {
+    appendSyncLog({
+      runKind: 'sync',
+      runId,
+      level: 'warn',
+      phase: 'asset-peak-validation',
+      message: 'blocked suspicious peak asset snapshots',
+      payload: {
+        blockedUserIds: assetValidation.blockedUsers.map((item) => item.userId),
+        blockedCount: assetValidation.blockedUsers.length,
+      },
+    });
+  }
 
   const syncedAt = Date.now();
   markAddressesSynced(

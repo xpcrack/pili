@@ -106,6 +106,21 @@ CREATE TABLE IF NOT EXISTS tracked_addresses (
 CREATE INDEX IF NOT EXISTS idx_tracked_addresses_chain_address
 ON tracked_addresses(chain, address_lower);
 
+CREATE TABLE IF NOT EXISTS asset_peak_validation_blocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  candidate_total_asset_usd REAL NOT NULL,
+  previous_historical_max_asset_usd REAL NOT NULL,
+  block_status TEXT NOT NULL,
+  reason_text TEXT NOT NULL DEFAULT '',
+  top_holdings_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_peak_validation_blocks_user_time
+ON asset_peak_validation_blocks(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS raw_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chain TEXT NOT NULL,

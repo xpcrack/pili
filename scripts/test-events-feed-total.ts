@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -15,6 +16,7 @@ import {
 } from '@/lib/server/feedViewMeta';
 
 const TOKEN_ADDRESS_ONLY_CA = 'CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump';
+const require = createRequire(import.meta.url);
 
 function runRebuildPathRegression() {
   const repoRoot = process.cwd();
@@ -22,7 +24,7 @@ function runRebuildPathRegression() {
   const dbPath = join(tempDir, 'rebuild.sqlite');
   const seedScriptPath = join(tempDir, 'seed.ts');
   const rebuildScriptPath = join(tempDir, 'rebuild.ts');
-  const tsxCliPath = join(repoRoot, 'node_modules/tsx/dist/cli.mjs');
+  const tsxCliPath = require.resolve('tsx/cli');
   const sqliteModulePath = join(repoRoot, 'lib/server/sqlite.ts');
   const eventsRepoPath = join(repoRoot, 'lib/server/eventsRepo.ts');
   const shimPath = join(repoRoot, 'scripts/server-only-shim.cjs');
