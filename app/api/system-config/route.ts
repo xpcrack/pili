@@ -26,6 +26,7 @@ export async function PATCH(request: NextRequest) {
           telegramTradeMonitorSourceChatId?: string | null;
           telegramTwitterMonitorSourceChatId?: string | null;
           conflictNotificationTelegramChatId?: string | null;
+          completenessStartMs?: number | string | null;
           twitterRelayCoveredPollingIntervalMinutes?: number | string | null;
           twitterUncoveredPollingIntervalMinutes?: number | string | null;
         }
@@ -59,6 +60,12 @@ export async function PATCH(request: NextRequest) {
           ? null
           : typeof body.conflictNotificationTelegramChatId === 'string'
             ? body.conflictNotificationTelegramChatId
+            : undefined,
+      completenessStartMs:
+        body.completenessStartMs === null
+          ? null
+          : typeof body.completenessStartMs === 'number' || typeof body.completenessStartMs === 'string'
+            ? body.completenessStartMs
             : undefined,
       twitterRelayCoveredPollingIntervalMinutes:
         body.twitterRelayCoveredPollingIntervalMinutes === null
