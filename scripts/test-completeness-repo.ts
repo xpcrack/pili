@@ -348,7 +348,8 @@ async function run() {
       ]
     );
 
-    claimCompletenessPokes([pokeId], 1712345905000);
+    assert.deepEqual(claimCompletenessPokes([pokeId], 1712345905000), [pokeId]);
+    assert.deepEqual(claimCompletenessPokes([pokeId], 1712345905001), []);
     const claimedRow = db
       .prepare('SELECT trigger, source_hint, reason, claimed_at FROM completeness_pokes WHERE id = ?')
       .get(pokeId) as
@@ -367,7 +368,25 @@ async function run() {
     });
     assert.equal(readPendingCompletenessPokes(10).length, 0);
 
-    releaseClaimedCompletenessPokes([pokeId]);
+    releaseClaimedCompletenessPokes([pokeId], 1712345905001);
+    const unchangedRow = db
+      .prepare('SELECT trigger, source_hint, reason, claimed_at FROM completeness_pokes WHERE id = ?')
+      .get(pokeId) as
+      | {
+          trigger: string;
+          source_hint: string | null;
+          reason: string | null;
+          claimed_at: number | null;
+        }
+      | undefined;
+    assert.deepEqual(unchangedRow, {
+      trigger: 'recovery',
+      source_hint: 'telegram-channel',
+      reason: null,
+      claimed_at: 1712345905000,
+    });
+
+    releaseClaimedCompletenessPokes([pokeId], 1712345905000);
     const releasedRow = db
       .prepare('SELECT trigger, source_hint, reason, claimed_at FROM completeness_pokes WHERE id = ?')
       .get(pokeId) as
@@ -387,7 +406,13 @@ async function run() {
     assert.equal(readPendingCompletenessPokes(10).length, 1);
 
     claimCompletenessPokes([pokeId], 1712345906000);
-    deleteClaimedCompletenessPokes([pokeId]);
+    deleteClaimedCompletenessPokes([pokeId], 1712345906001);
+    const stillPresentAfterWrongDelete = db
+      .prepare('SELECT COUNT(*) as count FROM completeness_pokes')
+      .get() as { count: number };
+    assert.equal(stillPresentAfterWrongDelete.count, 1);
+
+    deleteClaimedCompletenessPokes([pokeId], 1712345906000);
     const remainingPokes = db.prepare('SELECT COUNT(*) as count FROM completeness_pokes').get() as { count: number };
     assert.equal(remainingPokes.count, 0);
 

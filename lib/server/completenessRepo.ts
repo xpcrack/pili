@@ -465,7 +465,40 @@ export function readPendingCompletenessPokes(limit: number): CompletenessPokeRow
   return rows.map((row) => mapPokeRow(row));
 }
 
-export function claimCompletenessPokes(ids: number[], claimedAt: number): void {
+export function claimCompletenessPokes(ids: number[], claimedAt: number): number[] {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const normalizedIds = ids
+    .map((id) => normalizePositiveInteger(id))
+    .filter((id): id is number => typeof id === 'number');
+  if (normalizedIds.length === 0) {
+    return [];
+  }
+
+  const normalizedClaimedAt = normalizePositiveInteger(claimedAt);
+  if (!normalizedClaimedAt) {
+    throw new Error('completeness poke claimedAt is required');
+  }
+
+  const db = getDb();
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const claimedRows = db
+    .prepare(
+    `UPDATE completeness_pokes
+     SET claimed_at = ?
+     WHERE claimed_at IS NULL
+       AND id IN (${placeholders})
+     RETURNING id`
+  )
+    .all(normalizedClaimedAt, ...normalizedIds) as Array<{ id: number }>;
+  return claimedRows
+    .map((row) => normalizePositiveInteger(row.id))
+    .filter((id): id is number => typeof id === 'number');
+}
+
+export function releaseClaimedCompletenessPokes(ids: number[], claimedAt: number): void {
   if (ids.length === 0) {
     return;
   }
@@ -479,29 +512,7 @@ export function claimCompletenessPokes(ids: number[], claimedAt: number): void {
 
   const normalizedClaimedAt = normalizePositiveInteger(claimedAt);
   if (!normalizedClaimedAt) {
-    throw new Error('completeness poke claimedAt is required');
-  }
-
-  const db = getDb();
-  const placeholders = normalizedIds.map(() => '?').join(', ');
-  db.prepare(
-    `UPDATE completeness_pokes
-     SET claimed_at = ?
-     WHERE claimed_at IS NULL
-       AND id IN (${placeholders})`
-  ).run(normalizedClaimedAt, ...normalizedIds);
-}
-
-export function releaseClaimedCompletenessPokes(ids: number[]): void {
-  if (ids.length === 0) {
-    return;
-  }
-
-  const normalizedIds = ids
-    .map((id) => normalizePositiveInteger(id))
-    .filter((id): id is number => typeof id === 'number');
-  if (normalizedIds.length === 0) {
-    return;
+    throw new Error('completeness poke claimedAt is required for release');
   }
 
   const db = getDb();
@@ -509,12 +520,12 @@ export function releaseClaimedCompletenessPokes(ids: number[]): void {
   db.prepare(
     `UPDATE completeness_pokes
      SET claimed_at = NULL
-     WHERE claimed_at IS NOT NULL
+     WHERE claimed_at = ?
        AND id IN (${placeholders})`
-  ).run(...normalizedIds);
+  ).run(normalizedClaimedAt, ...normalizedIds);
 }
 
-export function deleteClaimedCompletenessPokes(ids: number[]): void {
+export function deleteClaimedCompletenessPokes(ids: number[], claimedAt: number): void {
   if (ids.length === 0) {
     return;
   }
@@ -526,13 +537,18 @@ export function deleteClaimedCompletenessPokes(ids: number[]): void {
     return;
   }
 
+  const normalizedClaimedAt = normalizePositiveInteger(claimedAt);
+  if (!normalizedClaimedAt) {
+    throw new Error('completeness poke claimedAt is required for delete');
+  }
+
   const db = getDb();
   const placeholders = normalizedIds.map(() => '?').join(', ');
   db.prepare(
     `DELETE FROM completeness_pokes
-     WHERE claimed_at IS NOT NULL
+     WHERE claimed_at = ?
        AND id IN (${placeholders})`
-  ).run(...normalizedIds);
+  ).run(normalizedClaimedAt, ...normalizedIds);
 }
 
 export function readRecentCompletenessRuns(limit = 20) {

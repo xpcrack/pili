@@ -32,21 +32,23 @@ function makeSourceState(status: CompletenessSourceState['status'], failureCount
 }
 
 async function testBusyCycleReleasesClaimedPokes() {
-  const claimed: number[][] = [];
-  const released: number[][] = [];
-  const deleted: number[][] = [];
+  const claimed: Array<{ ids: number[]; claimedAt: number }> = [];
+  const released: Array<{ ids: number[]; claimedAt: number }> = [];
+  const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
+    readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(1), makePoke(2)],
-    claimCompletenessPokes: (ids) => {
-      claimed.push(ids);
+    claimCompletenessPokes: (ids, claimedAt) => {
+      claimed.push({ ids, claimedAt });
+      return ids;
     },
-    releaseClaimedCompletenessPokes: (ids) => {
-      released.push(ids);
+    releaseClaimedCompletenessPokes: (ids, claimedAt) => {
+      released.push({ ids, claimedAt });
     },
-    deleteClaimedCompletenessPokes: (ids) => {
-      deleted.push(ids);
+    deleteClaimedCompletenessPokes: (ids, claimedAt) => {
+      deleted.push({ ids, claimedAt });
     },
     runCompletenessMaintenancePass: async () => ({
       started: false,
@@ -62,27 +64,29 @@ async function testBusyCycleReleasesClaimedPokes() {
 
   assert.equal(cycle.busy, true);
   assert.equal(cycle.claimedPokeCount, 2);
-  assert.deepEqual(claimed, [[1, 2]]);
-  assert.deepEqual(released, [[1, 2]]);
+  assert.deepEqual(claimed, [{ ids: [1, 2], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
+  assert.deepEqual(released, [{ ids: [1, 2], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
   assert.deepEqual(deleted, []);
 }
 
 async function testFailedCycleReleasesClaimedPokes() {
-  const claimed: number[][] = [];
-  const released: number[][] = [];
-  const deleted: number[][] = [];
+  const claimed: Array<{ ids: number[]; claimedAt: number }> = [];
+  const released: Array<{ ids: number[]; claimedAt: number }> = [];
+  const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
+    readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(3)],
-    claimCompletenessPokes: (ids) => {
-      claimed.push(ids);
+    claimCompletenessPokes: (ids, claimedAt) => {
+      claimed.push({ ids, claimedAt });
+      return ids;
     },
-    releaseClaimedCompletenessPokes: (ids) => {
-      released.push(ids);
+    releaseClaimedCompletenessPokes: (ids, claimedAt) => {
+      released.push({ ids, claimedAt });
     },
-    deleteClaimedCompletenessPokes: (ids) => {
-      deleted.push(ids);
+    deleteClaimedCompletenessPokes: (ids, claimedAt) => {
+      deleted.push({ ids, claimedAt });
     },
     runCompletenessMaintenancePass: async () => {
       throw new Error('boom');
@@ -91,27 +95,29 @@ async function testFailedCycleReleasesClaimedPokes() {
   });
 
   await assert.rejects(runCycle(), /boom/);
-  assert.deepEqual(claimed, [[3]]);
-  assert.deepEqual(released, [[3]]);
+  assert.deepEqual(claimed, [{ ids: [3], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
+  assert.deepEqual(released, [{ ids: [3], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
   assert.deepEqual(deleted, []);
 }
 
 async function testSuccessfulCycleAcknowledgesClaimedPokes() {
-  const claimed: number[][] = [];
-  const released: number[][] = [];
-  const deleted: number[][] = [];
+  const claimed: Array<{ ids: number[]; claimedAt: number }> = [];
+  const released: Array<{ ids: number[]; claimedAt: number }> = [];
+  const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
+    readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(4)],
-    claimCompletenessPokes: (ids) => {
-      claimed.push(ids);
+    claimCompletenessPokes: (ids, claimedAt) => {
+      claimed.push({ ids, claimedAt });
+      return ids;
     },
-    releaseClaimedCompletenessPokes: (ids) => {
-      released.push(ids);
+    releaseClaimedCompletenessPokes: (ids, claimedAt) => {
+      released.push({ ids, claimedAt });
     },
-    deleteClaimedCompletenessPokes: (ids) => {
-      deleted.push(ids);
+    deleteClaimedCompletenessPokes: (ids, claimedAt) => {
+      deleted.push({ ids, claimedAt });
     },
     runCompletenessMaintenancePass: async () => ({
       started: true,
@@ -127,16 +133,67 @@ async function testSuccessfulCycleAcknowledgesClaimedPokes() {
 
   assert.equal(cycle.busy, false);
   assert.equal(cycle.claimedPokeCount, 1);
-  assert.deepEqual(claimed, [[4]]);
+  assert.deepEqual(claimed, [{ ids: [4], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
   assert.deepEqual(released, []);
-  assert.deepEqual(deleted, [[4]]);
+  assert.deepEqual(deleted, [{ ids: [4], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
   assert.equal(cycle.sleepMs > 0, true);
+}
+
+async function testContestedPokesDoNotRunOrCleanUpWithoutOwnership() {
+  const claimed: Array<{ ids: number[]; claimedAt: number }> = [];
+  const released: Array<{ ids: number[]; claimedAt: number }> = [];
+  const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
+  let runPassCalls = 0;
+
+  const runCycle = createCompletenessMaintenanceWorkerCycle({
+    ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
+    readCompletenessGlobalState: () => ({
+      configuredStartMs: 1_712_000_000_000,
+      globalProvenStartMs: 1_711_900_000_000,
+      status: 'partial',
+      activeRunId: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+    }),
+    readPendingCompletenessPokes: () => [makePoke(5)],
+    claimCompletenessPokes: (ids, claimedAt) => {
+      claimed.push({ ids, claimedAt });
+      return [];
+    },
+    releaseClaimedCompletenessPokes: (ids, claimedAt) => {
+      released.push({ ids, claimedAt });
+    },
+    deleteClaimedCompletenessPokes: (ids, claimedAt) => {
+      deleted.push({ ids, claimedAt });
+    },
+    runCompletenessMaintenancePass: async () => {
+      runPassCalls += 1;
+      return {
+        started: false,
+        status: 'partial',
+        globalProvenStartMs: null,
+        sourceResults: [],
+        busy: true,
+      };
+    },
+    readCompletenessSourceStates: () => [],
+  });
+
+  const cycle = await runCycle();
+
+  assert.equal(cycle.busy, true);
+  assert.equal(cycle.claimedPokeCount, 0);
+  assert.equal(runPassCalls, 0);
+  assert.deepEqual(claimed, [{ ids: [5], claimedAt: claimed[0]?.claimedAt ?? 0 }]);
+  assert.deepEqual(released, []);
+  assert.deepEqual(deleted, []);
 }
 
 async function run() {
   await testBusyCycleReleasesClaimedPokes();
   await testFailedCycleReleasesClaimedPokes();
   await testSuccessfulCycleAcknowledgesClaimedPokes();
+  await testContestedPokesDoNotRunOrCleanUpWithoutOwnership();
   console.log('completeness worker runtime tests: ok');
 }
 
