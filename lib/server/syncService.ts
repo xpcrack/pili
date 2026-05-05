@@ -23,12 +23,11 @@ import {
 import { getDb } from '@/lib/server/sqlite';
 import {
   listTrackedUsers,
-  markAddressesSynced,
 } from '@/lib/server/trackedUsersRepo';
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 import { notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
-import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
+import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -628,13 +627,15 @@ async function runSync(
   }
   upsertRawTransactions(result.rawTransactions);
   upsertFeedSnapshot(result.feed);
-  const assetValidation = await validateAndPersistPeakAssetSnapshots({
+  const assetSync = await runAssetSyncPipeline({
     users: targetUsers,
     addressAssets: result.addressAssets,
     userAssets: result.userAssets,
+    diagnostics: result.diagnostics,
+    syncedAt: Date.now(),
   });
 
-  if (assetValidation.blockedUsers.length > 0) {
+  if (assetSync.blockedUsers.length > 0) {
     appendSyncLog({
       runKind: 'sync',
       runId,
@@ -642,22 +643,11 @@ async function runSync(
       phase: 'asset-peak-validation',
       message: 'blocked suspicious peak asset snapshots',
       payload: {
-        blockedUserIds: assetValidation.blockedUsers.map((item) => item.userId),
-        blockedCount: assetValidation.blockedUsers.length,
+        blockedUserIds: assetSync.blockedUsers.map((item) => item.userId),
+        blockedCount: assetSync.blockedUsers.length,
       },
     });
   }
-
-  const syncedAt = Date.now();
-  markAddressesSynced(
-    result.diagnostics
-      .filter((item) => item.ok)
-      .map((item) => ({
-        chain: item.chain,
-        address: item.address,
-        syncedAt,
-      }))
-  );
 
   let nextWindowState = currentWindowState;
   if (options.mode === 'refresh') {
