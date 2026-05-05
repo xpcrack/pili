@@ -4,8 +4,7 @@ import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { fetchOkxTransactionsByAddress } from '@/lib/okx';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
-import { markAddressesSynced } from '@/lib/server/trackedUsersRepo';
-import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
+import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -82,26 +81,16 @@ async function backfill14DaysTransactions() {
 
   // 更新资产快照
   console.log('更新资产快照...');
-  const assetValidation = await validateAndPersistPeakAssetSnapshots({
+  const assetSync = await runAssetSyncPipeline({
     users,
     addressAssets: feedResult.addressAssets,
     userAssets: feedResult.userAssets,
+    diagnostics: feedResult.diagnostics,
+    syncedAt: Date.now(),
   });
-  if (assetValidation.blockedUsers.length > 0) {
-    console.warn(`峰值资产校验拦截 ${assetValidation.blockedUsers.length} 个用户的可疑快照`);
+  if (assetSync.blockedUsers.length > 0) {
+    console.warn(`峰值资产校验拦截 ${assetSync.blockedUsers.length} 个用户的可疑快照`);
   }
-
-  // 标记地址已同步
-  const syncedAt = Date.now();
-  markAddressesSynced(
-    feedResult.diagnostics
-      .filter((item) => item.ok)
-      .map((item) => ({
-        chain: item.chain,
-        address: item.address,
-        syncedAt,
-      }))
-  );
 
   console.log('\n=== 补充完成 ===');
   console.log(`总地址数: ${totalAddresses}`);
