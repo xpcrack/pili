@@ -87,10 +87,71 @@ async function run() {
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
 
   try {
+    const notifier = await import('../lib/server/bidSyncNotifier');
+    const waitForBid2MirrorSyncDrain =
+      'waitForBid2MirrorSyncDrain' in notifier && typeof notifier.waitForBid2MirrorSyncDrain === 'function'
+        ? notifier.waitForBid2MirrorSyncDrain
+        : async () => {};
     const usersRoute = await import('../app/api/users/route');
     const importRoute = await import('../app/api/users/import/route');
     const userRoute = await import('../app/api/users/[id]/route');
     const addressRoute = await import('../app/api/users/[id]/addresses/route');
+
+    await withWebhook('success', async (calls) => {
+      let releaseFetch: (() => void) | null = null;
+
+      const previousFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        const headers = new Headers(init?.headers);
+        const body = JSON.parse(String(init?.body || '{}')) as WebhookCall['body'];
+        calls.push({
+          url: String(input),
+          headers,
+          body,
+        });
+
+        return new Promise<Response>((resolve) => {
+          releaseFetch = () => resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        });
+      };
+
+      const responsePromise = usersRoute.POST(
+        makeRequest('http://localhost:3000/api/users', 'POST', {
+          user: {
+            name: 'Non Blocking User',
+            handle: 'non-blocking-user',
+            avatar: 'avatar.png',
+            tags: [],
+            addresses: [
+              {
+                address: 'testuser_solana_placeholder_2222222222222222',
+                name: '#1',
+                chain: 'solana',
+              },
+            ],
+          },
+        })
+      );
+
+      try {
+        const observed = await Promise.race([
+          responsePromise.then(() => 'resolved' as const),
+          new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+        ]);
+
+        assert.equal(observed, 'resolved');
+        const response = await responsePromise;
+        const payload = (await response.json()) as { ok: boolean; user: { id: string } };
+        assert.equal(response.status, 200);
+        assert.equal(payload.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0]?.body.action, 'created');
+      } finally {
+        globalThis.fetch = previousFetch;
+        releaseFetch?.();
+        await waitForBid2MirrorSyncDrain();
+      }
+    });
 
     await withWebhook('success', async (calls) => {
       const response = await usersRoute.POST(
@@ -113,6 +174,7 @@ async function run() {
       const payload = (await response.json()) as { ok: boolean; user: { id: string } };
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.url, 'https://bid2.example/sync');
       assert.equal(calls[0]?.headers.get('x-api-key'), 'bid2-secret');
@@ -145,6 +207,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.importedCount, 1);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.body.entity, 'user');
       assert.equal(calls[0]?.body.action, 'imported');
@@ -181,6 +244,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.user.name, 'Mutate User Renamed');
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.body.entity, 'user');
       assert.equal(calls[0]?.body.action, 'updated');
@@ -204,6 +268,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.user.addresses.some((item) => item.address === '0x3333333333333333333333333333333333333333'), true);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.body.entity, 'address');
       assert.equal(calls[0]?.body.action, 'created');
@@ -220,6 +285,7 @@ async function run() {
       );
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { ok: true });
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.body.entity, 'address');
       assert.equal(calls[0]?.body.action, 'deleted');
@@ -234,6 +300,7 @@ async function run() {
       );
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { ok: true });
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.body.entity, 'user');
       assert.equal(calls[0]?.body.action, 'deleted');
@@ -261,6 +328,7 @@ async function run() {
       const payload = (await response.json()) as { ok: boolean; user: { id: string } };
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
       return payload.user.id;
     });
@@ -289,6 +357,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.importedCount, 1);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
     });
 
@@ -323,6 +392,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.user.name, 'Failure Mutate Patched');
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
     });
 
@@ -343,6 +413,7 @@ async function run() {
       assert.equal(response.status, 200);
       assert.equal(payload.ok, true);
       assert.equal(payload.user.addresses.some((item) => item.address === '0x6666666666666666666666666666666666666666'), true);
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
     });
 
@@ -356,6 +427,7 @@ async function run() {
       );
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { ok: true });
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
     });
 
@@ -366,6 +438,7 @@ async function run() {
       );
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { ok: true });
+      await waitForBid2MirrorSyncDrain();
       assert.equal(calls.length, 3);
     });
 

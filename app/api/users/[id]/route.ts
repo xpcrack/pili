@@ -17,7 +17,7 @@ import {
   mergeTwitterIdentityIntoUser,
   resolveTwitterIdentityForHandle,
 } from '@/lib/server/twitterIdentityService';
-import { notifyBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
+import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { type User } from '@/types';
 
@@ -184,7 +184,7 @@ export async function PATCH(request: NextRequest, context: UserRouteContext) {
     if (!updated) {
       return NextResponse.json({ ok: false, error: '用户不存在' }, { status: 404 });
     }
-    await notifyBid2MirrorSync({
+    triggerBid2MirrorSync({
       entity: 'user',
       action: 'updated',
       userId: updated.id,
@@ -210,7 +210,7 @@ export async function DELETE(_request: NextRequest, context: UserRouteContext) {
     if (!deleted) {
       return NextResponse.json({ ok: false, error: '用户不存在' }, { status: 404 });
     }
-    await notifyBid2MirrorSync({
+    triggerBid2MirrorSync({
       entity: 'user',
       action: 'deleted',
       userId: id,

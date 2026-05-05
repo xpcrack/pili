@@ -178,6 +178,59 @@ async function run() {
       BID2_SYNC_WEBHOOK_API_KEY: 'bid2-secret',
     },
     async () => {
+      const logLines: string[] = [];
+      let releaseFetch: (() => void) | null = null;
+
+      const resultPromise = notifyBid2MirrorSync(
+        {
+          entity: 'user',
+          action: 'updated',
+          userId: 'user-timeout',
+        },
+        {
+          fetchImpl: async (_input, init) =>
+            new Promise<Response>((_resolve, reject) => {
+              const onAbort = () => {
+                reject(init?.signal?.reason || new Error('aborted'));
+              };
+              init?.signal?.addEventListener('abort', onAbort, { once: true });
+              releaseFetch = () => {
+                init?.signal?.removeEventListener('abort', onAbort);
+                reject(new Error('released manually'));
+              };
+            }),
+          sleep: async () => {},
+          log: (message, meta) => {
+            logLines.push(`${message}:${JSON.stringify(meta)}`);
+          },
+          maxAttempts: 1,
+          attemptTimeoutMs: 10,
+        }
+      );
+
+      try {
+        const observed = await Promise.race([
+          resultPromise.then((result) => result.status),
+          new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 50)),
+        ]);
+
+        assert.notEqual(observed, 'timed-out');
+        assert.equal(observed, 'failed');
+      } finally {
+        releaseFetch?.();
+        await resultPromise.catch(() => null);
+      }
+
+      assert.equal(logLines.length >= 1, true);
+    }
+  );
+
+  await withEnv(
+    {
+      BID2_SYNC_WEBHOOK_URL: 'https://bid2.example/sync',
+      BID2_SYNC_WEBHOOK_API_KEY: 'bid2-secret',
+    },
+    async () => {
       const sleeps: number[] = [];
       const logLines: string[] = [];
 

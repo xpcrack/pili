@@ -2,6 +2,7 @@ import 'server-only';
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 1_500;
 
 export type BidSyncEntity = 'user' | 'address';
 export type BidSyncAction = 'created' | 'imported' | 'updated' | 'deleted';
@@ -22,6 +23,7 @@ interface BidSyncNotifierDeps {
   log?: BidSyncNotifierLog;
   maxAttempts?: number;
   retryBaseDelayMs?: number;
+  attemptTimeoutMs?: number;
 }
 
 export type BidSyncNotificationResult =
@@ -90,6 +92,41 @@ function computeRetryDelayMs(attempt: number, retryBaseDelayMs: number) {
   return retryBaseDelayMs * 2 ** Math.max(0, attempt - 1);
 }
 
+function normalizePositiveInteger(value: number | undefined, fallback: number) {
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value!)) : fallback;
+}
+
+function createAttemptTimeoutError(timeoutMs: number) {
+  return new Error(`webhook request timed out after ${timeoutMs}ms`);
+}
+
+const inFlightBid2MirrorSyncTasks = new Set<Promise<BidSyncNotificationResult>>();
+
+function trackBid2MirrorSyncTask(task: Promise<BidSyncNotificationResult>) {
+  inFlightBid2MirrorSyncTasks.add(task);
+  void task.then(
+    () => {
+      inFlightBid2MirrorSyncTasks.delete(task);
+    },
+    () => {
+      inFlightBid2MirrorSyncTasks.delete(task);
+    }
+  );
+}
+
+export function triggerBid2MirrorSync(
+  input: BidSyncNotificationInput,
+  deps: BidSyncNotifierDeps = {}
+) {
+  trackBid2MirrorSyncTask(notifyBid2MirrorSync(input, deps));
+}
+
+export async function waitForBid2MirrorSyncDrain() {
+  while (inFlightBid2MirrorSyncTasks.size > 0) {
+    await Promise.allSettled(Array.from(inFlightBid2MirrorSyncTasks));
+  }
+}
+
 export async function notifyBid2MirrorSync(
   input: BidSyncNotificationInput,
   deps: BidSyncNotifierDeps = {}
@@ -107,15 +144,21 @@ export async function notifyBid2MirrorSync(
   const fetchImpl = deps.fetchImpl || fetch;
   const sleep = deps.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const log = deps.log || createDefaultLogger();
-  const maxAttempts = Number.isFinite(deps.maxAttempts) ? Math.max(1, Math.floor(deps.maxAttempts!)) : DEFAULT_MAX_ATTEMPTS;
+  const maxAttempts = normalizePositiveInteger(deps.maxAttempts, DEFAULT_MAX_ATTEMPTS);
   const retryBaseDelayMs = Number.isFinite(deps.retryBaseDelayMs)
     ? Math.max(0, Math.floor(deps.retryBaseDelayMs!))
     : DEFAULT_RETRY_BASE_DELAY_MS;
+  const attemptTimeoutMs = normalizePositiveInteger(deps.attemptTimeoutMs, DEFAULT_ATTEMPT_TIMEOUT_MS);
   const body = JSON.stringify(buildPayload(input));
 
   let lastError = 'unknown error';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(createAttemptTimeoutError(attemptTimeoutMs));
+    }, attemptTimeoutMs);
+
     try {
       const response = await fetchImpl(config.url, {
         method: 'POST',
@@ -124,6 +167,7 @@ export async function notifyBid2MirrorSync(
           'X-API-Key': config.apiKey,
         },
         body,
+        signal: controller.signal,
       });
 
       if (response.ok) {
@@ -156,6 +200,8 @@ export async function notifyBid2MirrorSync(
         address: input.address || null,
         error: lastError,
       });
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     if (attempt < maxAttempts) {
