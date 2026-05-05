@@ -512,3 +512,73 @@ export function deleteClaimedCompletenessPokes(ids: number[]): void {
        AND id IN (${placeholders})`
   ).run(...normalizedIds);
 }
+
+export function readRecentCompletenessRuns(limit = 20) {
+  const db = getDb();
+  const safeLimit = Math.max(1, Math.floor(limit));
+  return db
+    .prepare(
+      `SELECT id,
+              reason,
+              trigger,
+              configured_start_ms,
+              status,
+              started_at,
+              finished_at,
+              global_proven_start_ms,
+              summary_json
+       FROM completeness_runs
+       ORDER BY started_at DESC, id DESC
+       LIMIT ?`
+    )
+    .all(safeLimit) as Array<{
+    id: number;
+    reason: string | null;
+    trigger: string;
+    configured_start_ms: number | null;
+    status: string;
+    started_at: number;
+    finished_at: number | null;
+    global_proven_start_ms: number | null;
+    summary_json: string | null;
+  }>;
+}
+
+export function readCompletenessRunSources(runId: number) {
+  const normalizedRunId = normalizePositiveInteger(runId);
+  if (!normalizedRunId) {
+    return [];
+  }
+
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT run_id,
+              source,
+              requested_start_ms,
+              proven_start_ms,
+              proven_end_ms,
+              status,
+              fetched_count,
+              stored_count,
+              projected_count,
+              blocked_reason,
+              checkpoint_json
+       FROM completeness_run_sources
+       WHERE run_id = ?
+       ORDER BY source ASC`
+    )
+    .all(normalizedRunId) as Array<{
+    run_id: number;
+    source: string;
+    requested_start_ms: number | null;
+    proven_start_ms: number | null;
+    proven_end_ms: number | null;
+    status: string;
+    fetched_count: number;
+    stored_count: number;
+    projected_count: number;
+    blocked_reason: string | null;
+    checkpoint_json: string | null;
+  }>;
+}

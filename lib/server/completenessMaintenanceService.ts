@@ -1,12 +1,19 @@
 import 'server-only';
 
 import { computeCompletenessGlobalStatus, computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
+import type {
+  CompletenessRunSourceInput,
+  CompletenessRunSourceResult,
+  CompletenessSourceAdapter,
+} from '@/lib/server/completenessSourceAdapters/types';
 import { COMPLETENESS_SOURCES, type CompletenessGlobalState, type CompletenessSource, type CompletenessSourceState, type CompletenessStatus, type CompletenessTrigger } from '@/lib/server/completenessTypes';
 import type { SyncLogInput } from '@/lib/server/syncLogRepo';
 
 type Awaitable<T> = T | Promise<T>;
 
 export const MAX_FAILURES_WITHOUT_PROGRESS = 10;
+const INITIAL_RETRY_DELAY_MS = 60_000;
+const MAX_RETRY_DELAY_MS = 15 * 60_000;
 
 export interface CompletenessMaintenanceRunInput {
   trigger: CompletenessTrigger;
@@ -14,16 +21,18 @@ export interface CompletenessMaintenanceRunInput {
   source?: CompletenessSource | null;
 }
 
-export interface CompletenessRunSourceResult {
-  status: CompletenessStatus;
+export interface CompletenessMaintenanceSourceRunSummary {
+  source: CompletenessSource;
+  requestedStartMs: number | null;
   provenStartMs: number | null;
   provenEndMs: number | null;
-  fetchedCount?: number;
-  storedCount?: number;
-  projectedCount?: number;
-  blockedReason?: string | null;
-  checkpointJson?: string | null;
-  madeProgress?: boolean;
+  status: CompletenessStatus;
+  fetchedCount: number;
+  storedCount: number;
+  projectedCount: number;
+  blockedReason: string | null;
+  checkpointJson: string | null;
+  madeProgress: boolean;
 }
 
 export interface CompletenessMaintenanceServiceDeps {
@@ -33,13 +42,8 @@ export interface CompletenessMaintenanceServiceDeps {
   readSourceStates: () => Awaitable<CompletenessSourceState[]>;
   saveGlobalState: (state: CompletenessGlobalState) => Awaitable<void>;
   saveSourceState: (state: CompletenessSourceState) => Awaitable<void>;
-  runSource: (input: {
-    source: CompletenessSource;
-    state: CompletenessSourceState;
-    configuredStartMs: number;
-    trigger: CompletenessTrigger;
-    reason: string | null;
-  }) => Awaitable<CompletenessRunSourceResult>;
+  runSource?: (input: CompletenessRunSourceInput) => Awaitable<CompletenessRunSourceResult>;
+  sourceAdapters?: Partial<Record<CompletenessSource, CompletenessSourceAdapter>>;
   appendSyncLog: (input: SyncLogInput) => Awaitable<void>;
   now?: () => number;
 }
@@ -118,6 +122,33 @@ function didSourceMakeProgress(previousProvenStartMs: number | null, nextProvenS
   return nextProvenStartMs < previousProvenStartMs;
 }
 
+export function computeCompletenessRetryDelayMs(failureCount: number) {
+  if (!Number.isFinite(failureCount) || failureCount <= 0) {
+    return 0;
+  }
+
+  const multiplier = 2 ** Math.max(0, Math.floor(failureCount) - 1);
+  return Math.min(MAX_RETRY_DELAY_MS, INITIAL_RETRY_DELAY_MS * multiplier);
+}
+
+function shouldDeferSourceRetry(input: {
+  state: Pick<CompletenessSourceState, 'status' | 'failureCount' | 'lastFailureAt'>;
+  trigger: CompletenessTrigger;
+  nowMs: number;
+}) {
+  if (input.trigger !== 'interval') {
+    return false;
+  }
+  if (input.state.status !== 'retrying' || input.state.failureCount <= 0) {
+    return false;
+  }
+  if (typeof input.state.lastFailureAt !== 'number' || !Number.isFinite(input.state.lastFailureAt)) {
+    return false;
+  }
+
+  return input.nowMs - input.state.lastFailureAt < computeCompletenessRetryDelayMs(input.state.failureCount);
+}
+
 function buildNextSourceState(input: {
   currentState: CompletenessSourceState;
   result: CompletenessRunSourceResult;
@@ -186,6 +217,27 @@ async function appendMaintenanceLog(
   });
 }
 
+async function runSourceStep(
+  deps: CompletenessMaintenanceServiceDeps,
+  input: CompletenessRunSourceInput
+): Promise<CompletenessRunSourceResult> {
+  if (deps.runSource) {
+    return deps.runSource(input);
+  }
+
+  const adapter = deps.sourceAdapters?.[input.source];
+  if (!adapter) {
+    throw new Error(`missing completeness adapter for source: ${input.source}`);
+  }
+
+  return adapter.runStep({
+    state: input.state,
+    configuredStartMs: input.configuredStartMs,
+    trigger: input.trigger,
+    reason: input.reason,
+  });
+}
+
 export function createCompletenessMaintenanceService(deps: CompletenessMaintenanceServiceDeps) {
   return {
     async runOnce(input: CompletenessMaintenanceRunInput) {
@@ -219,6 +271,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
           started: false,
           status,
           globalProvenStartMs,
+          sourceResults: [] as CompletenessMaintenanceSourceRunSummary[],
         };
       }
 
@@ -226,6 +279,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
         const globalState = (await deps.readGlobalState()) ?? createDefaultGlobalState();
         const currentSourceStates = mergeSourceStates(await deps.readSourceStates());
         const configuredStartMs = normalizeTimestamp(globalState.configuredStartMs);
+        const nowMs = deps.now ? deps.now() : Date.now();
         const selectedSourceStates =
           typeof configuredStartMs === 'number'
             ? currentSourceStates.filter((state) => {
@@ -236,15 +290,25 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
                 if (state.status === 'blocked') {
                   return false;
                 }
+                if (
+                  shouldDeferSourceRetry({
+                    state,
+                    trigger: input.trigger,
+                    nowMs,
+                  })
+                ) {
+                  return false;
+                }
 
                 return !isSourceProvenToConfiguredStartMs(state, configuredStartMs);
               })
             : [];
 
         let nextSourceStates = currentSourceStates.slice();
+        const sourceResults: CompletenessMaintenanceSourceRunSummary[] = [];
 
         for (const state of selectedSourceStates) {
-          const result = await deps.runSource({
+          const result = await runSourceStep(deps, {
             source: state.source,
             state,
             configuredStartMs: configuredStartMs as number,
@@ -260,6 +324,19 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
 
           nextSourceStates = nextSourceStates.map((candidate) => (candidate.source === nextState.source ? nextState : candidate));
           await deps.saveSourceState(nextState);
+          sourceResults.push({
+            source: nextState.source,
+            requestedStartMs: configuredStartMs,
+            provenStartMs: nextState.provenStartMs,
+            provenEndMs: nextState.provenEndMs,
+            status: nextState.status,
+            fetchedCount: Math.max(0, Math.floor(result.fetchedCount ?? 0)),
+            storedCount: Math.max(0, Math.floor(result.storedCount ?? 0)),
+            projectedCount: Math.max(0, Math.floor(result.projectedCount ?? 0)),
+            blockedReason: nextState.blockedReason,
+            checkpointJson: nextState.checkpointJson,
+            madeProgress: result.madeProgress ?? false,
+          });
         }
 
         const globalProvenStartMs = computeGlobalProvenStartMs(nextSourceStates);
@@ -268,7 +345,6 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
           sources: nextSourceStates,
         });
         const started = selectedSourceStates.length > 0;
-        const nowMs = deps.now ? deps.now() : Date.now();
 
         const nextGlobalState: CompletenessGlobalState = {
           ...globalState,
@@ -303,6 +379,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
           started,
           status,
           globalProvenStartMs,
+          sourceResults,
         };
       } finally {
         await deps.releaseLease();

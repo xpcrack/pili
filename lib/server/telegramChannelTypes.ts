@@ -85,6 +85,22 @@ export interface TelegramAgentReadItem {
   } | null;
 }
 
+export interface TelegramChannelHistoryPage {
+  messages: TelegramChannelRemoteMessage[];
+  oldestScannedMessageId: number | null;
+  oldestScannedMessageTimeMs: number | null;
+  reachedHistoryBoundary: boolean;
+  nextBeforeMessageId: number | null;
+}
+
+export interface TelegramBridgeHistoryPage {
+  messages: import('../../scripts/telegram-bridge-core').TelegramMessageLike[];
+  oldestScannedMessageId: number | null;
+  oldestScannedMessageTimeMs: number | null;
+  reachedHistoryBoundary: boolean;
+  nextBeforeMessageId: number | null;
+}
+
 export interface TelegramChannelSyncClient {
   resolveChannel(input: TelegramChannelResolveInput): Promise<TelegramChannelResolved>;
   listChannelMessages(params: {
@@ -93,7 +109,22 @@ export interface TelegramChannelSyncClient {
     minMessageId: number | null;
     limit?: number;
   }): Promise<TelegramChannelRemoteMessage[]>;
+  listChannelHistoryPage?(params: {
+    source: TelegramChannelSource;
+    resolved: TelegramChannelResolved;
+    beforeMessageId?: number | null;
+    startMs?: number | null;
+    endMs?: number | null;
+    limit?: number;
+  }): Promise<TelegramChannelHistoryPage>;
   listBridgeChatMessages?(params: { chatId: string; limit: number }): Promise<import('../../scripts/telegram-bridge-core').TelegramMessageLike[]>;
+  listBridgeChatHistoryPage?(params: {
+    chatId: string;
+    beforeMessageId?: number | null;
+    startMs?: number | null;
+    endMs?: number | null;
+    limit: number;
+  }): Promise<TelegramBridgeHistoryPage>;
   listAgentChatMessages?(params: { chatId: string; limit: number }): Promise<TelegramAgentReadItem[]>;
   searchAgentChatMessages?(params: { chatId: string; query: string; limit: number }): Promise<{
     searchMode: 'telegram' | 'recent-scan';

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/server/apiGuard';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { readSystemConfig, saveSystemConfig } from '@/lib/server/systemConfigRepo';
 
 export const runtime = 'nodejs';
@@ -20,6 +21,7 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
+    const previousConfig = readSystemConfig();
     const body = (await request.json().catch(() => null)) as
       | {
           telegramUnknownPersonAlertChatId?: string | null;
@@ -82,6 +84,14 @@ export async function PATCH(request: NextRequest) {
             ? body.twitterUncoveredPollingIntervalMinutes
             : undefined,
     });
+
+    if (previousConfig.completenessStartMs !== config.completenessStartMs) {
+      queueCompletenessPoke({
+        trigger: 'config-change',
+        sourceHint: null,
+        reason: 'completenessStartMs updated',
+      });
+    }
 
     return NextResponse.json({ ok: true, config });
   } catch (error) {
