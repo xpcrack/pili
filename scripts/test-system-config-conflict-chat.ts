@@ -12,6 +12,14 @@ function run() {
     const next = readSystemConfig();
     assert.equal(next.conflictNotificationTelegramChatId, '-100999888777');
 
+    saveSystemConfig({ completenessStartMs: '1712345678901' });
+    const completenessStart = readSystemConfig();
+    assert.equal(completenessStart.completenessStartMs, 1712345678901);
+
+    saveSystemConfig({ completenessStartMs: 0 });
+    const normalizedCompletenessStart = readSystemConfig();
+    assert.equal(normalizedCompletenessStart.completenessStartMs, null);
+
     saveSystemConfig({
       twitterRelayCoveredPollingIntervalMinutes: 720,
       twitterUncoveredPollingIntervalMinutes: 15,
