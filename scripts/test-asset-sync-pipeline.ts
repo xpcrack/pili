@@ -164,6 +164,54 @@ async function run() {
     'markAddressesSynced 只应接收 ok diagnostics'
   );
 
+  const originalDateNow = Date.now;
+  const defaultSyncedAt = 1_700_000_654_321;
+  const defaultMarkCalls: Array<Array<{ chain: string; address: string; syncedAt: number }>> = [];
+  Date.now = () => defaultSyncedAt;
+  try {
+    const defaultSyncedResult = await runAssetSyncPipeline({
+      users,
+      addressAssets,
+      userAssets,
+      diagnostics,
+      validateAndPersistPeakAssetSnapshots: async () => ({
+        addressAssets: [addressAssets[0]!],
+        userAssets: [userAssets[0]!],
+        blockedUsers,
+      }),
+      markAddressesSynced: (cursors) => {
+        defaultMarkCalls.push(cursors);
+      },
+    });
+
+    assert.deepEqual(
+      defaultSyncedResult.syncedCursors,
+      [
+        {
+          chain: 'bsc',
+          address: '0xok',
+          syncedAt: defaultSyncedAt,
+        },
+      ],
+      '未传 syncedAt 时应回落到 Date.now()'
+    );
+    assert.deepEqual(
+      defaultMarkCalls,
+      [
+        [
+          {
+            chain: 'bsc',
+            address: '0xok',
+            syncedAt: defaultSyncedAt,
+          },
+        ],
+      ],
+      '默认 syncedAt 也应传给 markAddressesSynced'
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+
   console.log('test-asset-sync-pipeline passed');
 }
 
