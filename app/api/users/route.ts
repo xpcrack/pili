@@ -12,6 +12,7 @@ import {
   resolveTwitterIdentityForHandle,
 } from '@/lib/server/twitterIdentityService';
 import { listTwitterRelayCoverageByHandles } from '@/lib/server/twitterRepo';
+import { notifyBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { type User } from '@/types';
 
@@ -78,6 +79,11 @@ export async function POST(request: NextRequest) {
       historicalMaxAssetUsd: source.historicalMaxAssetUsd,
       assetUpdatedAt: source.assetUpdatedAt,
       tags: source.tags,
+    });
+    await notifyBid2MirrorSync({
+      entity: 'user',
+      action: 'created',
+      userId: created.id,
     });
 
     return NextResponse.json({
