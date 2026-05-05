@@ -1,4 +1,5 @@
 import type { Activity, User } from '@/types';
+import { isTradeDisplayAction } from '@/lib/tradeDisplay';
 
 export interface FeedItem {
   user: User;
@@ -173,10 +174,11 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
     return 'telegram';
   }
 
-  const action = item.activity.metadata.txAction;
-  if (action === 'buy' || action === 'sell') {
+  if (isTradeDisplayAction(item.activity.metadata)) {
     return 'trade';
   }
+
+  const action = item.activity.metadata.txAction;
   if (action === 'send' || action === 'receive') {
     return 'transfer';
   }

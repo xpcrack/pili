@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import type { Activity } from '@/types';
+
 import { extractTweetTokenMentions } from '../lib/twitter/extractTweetTokenMentions';
 
 import './server-only-shim.cjs';
@@ -143,6 +145,62 @@ async function testEnrichmentProjectionMetadata() {
   assert.equal(tweetItem?.activity.metadata.tokenSentiments?.[0]?.sentiment, 'positive');
 }
 
+async function testQuoteRelayProjectionMetadata() {
+  const { getDb } = await import('../lib/server/sqlite');
+  const { upsertTwitterTweets } = await import('../lib/server/twitterRepo');
+  const { projectTwitterTweetsToFeed } = await import('../lib/server/twitterFeedMapper');
+  const { readEventsFeed } = await import('../lib/server/eventsRepo');
+
+  const db = getDb();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO tracked_users (
+      id,
+      name,
+      handle,
+      avatar,
+      twitter,
+      telegram,
+      tags_json,
+      total_asset_usd,
+      historical_max_asset_usd,
+      asset_updated_at,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, '', ?, null, '[]', 0, 0, null, ?, ?)`
+  ).run('user-quote-1', 'Quote Relay User', 'quote-relay-user', 'cookerflips', now, now);
+
+  upsertTwitterTweets([
+    {
+      tweetId: '2051340798957113505',
+      authorHandle: 'cookerflips',
+      fullText: 'https://t.co/MU3UISkJ0r',
+      createdAtMs: 1_700_000_000_200,
+      lane: 'timeline',
+      source: {
+        provider: 'bot2bot',
+        action: 'quote',
+        quotedAuthorHandle: 'tradexyz',
+        quotedContent: 'DRAM is now live. 20x leverage, 24/7, 365. https://t.co/4671GVIP0h',
+      },
+    },
+  ]);
+
+  projectTwitterTweetsToFeed({ sinceMs: 0, tweetIds: ['2051340798957113505'] });
+  const feed = readEventsFeed({ limit: 10 }).feed;
+  const tweetItem = feed.find((item) => item.activity.metadata.tweetId === '2051340798957113505');
+
+  assert.equal(tweetItem?.activity.content, '');
+  assert.equal(
+    (tweetItem?.activity.metadata as Activity['metadata'] & { quotedTweetAuthorHandle?: string })?.quotedTweetAuthorHandle,
+    'tradexyz'
+  );
+  assert.equal(
+    (tweetItem?.activity.metadata as Activity['metadata'] & { quotedTweetContent?: string })?.quotedTweetContent,
+    'DRAM is now live. 20x leverage, 24/7, 365.'
+  );
+}
+
 async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-twitter-enrichment-'));
   process.env.PILIPILI_DATA_DIR = tempDir;
@@ -152,6 +210,7 @@ async function run() {
     await runSchemaTest();
     testExtractTweetTokenMentions();
     await testEnrichmentProjectionMetadata();
+    await testQuoteRelayProjectionMetadata();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

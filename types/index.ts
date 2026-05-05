@@ -116,6 +116,10 @@ export interface Activity {
     tweetId?: string;
     tweetUrl?: string;
     tweetKind?: 'tweet' | 'reply' | 'quote';
+    quotedTweetId?: string;
+    quotedTweetUrl?: string;
+    quotedTweetAuthorHandle?: string;
+    quotedTweetContent?: string;
     translationZh?: string;
     translationStatus?: 'pending' | 'processing' | 'succeeded' | 'failed';
     mentionedTickers?: string[];

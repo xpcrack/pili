@@ -9,6 +9,7 @@ import { getUserAvatar } from '@/lib/userProfile';
 import { getActivityCardContentColumnClass } from '@/lib/activityCardLayout';
 import { buildActivityCardViewModel } from '@/lib/activityCardViewModel';
 import {
+  cleanTwitterDisplayText,
   collapseActivityCardText,
   getActivityCardTypeLabel,
   getTelegramCardPrimaryText,
@@ -119,7 +120,6 @@ export function ActivityCard({
     trackedAddressGmgnUrl,
     counterpartyGmgnUrl,
     importanceBadgeText,
-    importanceLevelLabel,
     importanceTooltip,
     importanceBadgeClassName,
   } = buildActivityCardViewModel({
@@ -152,11 +152,13 @@ export function ActivityCard({
     activityType: activity.type,
     twitterKindLabel,
   });
-  const twitterContent = isTwitter ? collapseActivityCardText(activity.content) : activity.content;
+  const twitterContent = isTwitter ? cleanTwitterDisplayText(activity.content) : activity.content;
   const twitterPrimaryText =
     isTwitter ? collapseActivityCardText(activity.metadata.translationZh || twitterContent) : primaryText;
   const twitterSecondaryText =
     isTwitter && activity.metadata.translationZh ? collapseActivityCardText(twitterContent) : secondaryText;
+  const twitterQuotedContent = isTwitter ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '') : '';
+  const twitterQuotedAuthorHandle = isTwitter ? (activity.metadata.quotedTweetAuthorHandle || '').trim() : '';
   const telegramPrimaryText = isTelegram ? getTelegramCardPrimaryText(activity.content) : null;
   const tweetSentimentChips = isTwitter
     ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
@@ -329,9 +331,6 @@ export function ActivityCard({
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-semibold text-zinc-300">{user.name}</span>
-                  {importanceLevelLabel ? (
-                    <span className="truncate text-[11px] text-zinc-500">{importanceLevelLabel}</span>
-                  ) : null}
                   {(isTwitter || isTelegram) && socialPostUrl ? (
                     <button
                       type="button"
@@ -573,9 +572,6 @@ export function ActivityCard({
                         </Avatar>
                         <div className="flex min-w-0 items-center gap-1.5">
                           <span className="min-w-0 flex-1 truncate font-semibold leading-none text-zinc-300">{user.name}</span>
-                          {importanceLevelLabel ? (
-                            <span className="truncate text-[11px] leading-none text-zinc-500">{importanceLevelLabel}</span>
-                          ) : null}
                           {isMergedTradeCard && (
                             <span className="ml-auto shrink-0 rounded-full border border-sky-400/40 bg-sky-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-200">
                               合并 {mergedTradeCount} 笔
@@ -620,11 +616,23 @@ export function ActivityCard({
                 )}
                 {!isTransfer && isTwitter && (
                   <div className="w-full space-y-1">
-                    <p className="whitespace-pre-wrap break-words text-zinc-100">{twitterPrimaryText}</p>
+                    {twitterPrimaryText ? (
+                      <p className="whitespace-pre-wrap break-words text-zinc-100">{twitterPrimaryText}</p>
+                    ) : null}
                     {twitterSecondaryText ? (
                       <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
                         Original: {twitterSecondaryText}
                       </p>
+                    ) : null}
+                    {twitterQuotedContent ? (
+                      <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                        <p className="text-[11px] text-zinc-500">
+                          {twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用内容'}
+                        </p>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-300">
+                          {twitterQuotedContent}
+                        </p>
+                      </div>
                     ) : null}
                     {tweetSentimentChips.length > 0 ? (
                       <div className="flex flex-wrap gap-1.5 pt-1">

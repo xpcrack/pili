@@ -203,6 +203,34 @@ async function testParserXxyyQuoteFormat() {
   console.log('PASS twitter-bridge parser xxyy-quote');
 }
 
+async function testParserXxyyQuoteUrlOnlyFormat() {
+  const update = makeXxyyUpdate(
+    [
+      '[Cooker.hl | Kms.eth | 版本之子 | Cooker] 引用推文',
+      '📝 推文:',
+      'https://t.co/MU3UISkJ0r',
+      '👤 原推作者: @tradexyz',
+      '📝 原推:',
+      'DRAM is now live. 20x leverage, 24/7, 365. https://t.co/4671GVIP0h',
+      '🔗 https://twitter.com/CookerFlips/status/2051340798957113505',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+  const parsed = payload as (typeof payload & {
+    quotedAuthorHandle?: string;
+    quotedContent?: string;
+  }) | null;
+
+  assert.ok(payload, 'xxyy quote url-only: payload should parse');
+  assert.equal(payload?.authorHandle, 'cookerflips');
+  assert.equal(payload?.tweetId, '2051340798957113505');
+  assert.equal(payload?.content, 'https://t.co/MU3UISkJ0r');
+  assert.equal(payload?.action, 'quote');
+  assert.equal(parsed?.quotedAuthorHandle, 'tradexyz');
+  assert.equal(parsed?.quotedContent, 'DRAM is now live. 20x leverage, 24/7, 365. https://t.co/4671GVIP0h');
+  console.log('PASS twitter-bridge parser xxyy-quote-url-only');
+}
+
 async function testParserMissingTweetUrl() {
   const text = [
     '✨监控到新推文',
@@ -306,6 +334,7 @@ async function main() {
   await testParserXxyyReplyFormat();
   await testParserXxyyQuotePrefersStructuredStatusUrl();
   await testParserXxyyQuoteFormat();
+  await testParserXxyyQuoteUrlOnlyFormat();
   await testParserMissingTweetUrl();
   await testRoutingBehavior();
 

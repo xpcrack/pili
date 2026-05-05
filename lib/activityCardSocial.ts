@@ -16,6 +16,20 @@ export function collapseActivityCardText(text: string) {
     .trim();
 }
 
+const URL_PATTERN = /https?:\/\/\S+/gi;
+
+export function cleanTwitterDisplayText(text: string) {
+  if (!text) return '';
+
+  const withoutUrls = text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(URL_PATTERN, '').replace(/[ \t]{2,}/g, ' ').trimEnd())
+    .join('\n');
+
+  return collapseActivityCardText(withoutUrls);
+}
+
 export function usesSocialBodyLayout(source: Activity['source']) {
   return source === 'twitter' || source === 'telegram';
 }

@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { type Activity, type User } from '@/types';
+import { cleanTwitterDisplayText } from '@/lib/activityCardSocial';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
@@ -49,12 +50,39 @@ function readRelayAction(sourceJson: string): 'tweet' | 'quote' | 'reply' | null
   }
 }
 
+function readRelayQuoteMetadata(sourceJson: string) {
+  try {
+    const source = JSON.parse(sourceJson || '{}') as {
+      provider?: unknown;
+      quotedAuthorHandle?: unknown;
+      quotedContent?: unknown;
+    };
+    if (source.provider !== 'bot2bot') {
+      return {
+        quotedAuthorHandle: '',
+        quotedContent: '',
+      };
+    }
+
+    return {
+      quotedAuthorHandle: typeof source.quotedAuthorHandle === 'string' ? source.quotedAuthorHandle.trim() : '',
+      quotedContent: typeof source.quotedContent === 'string' ? source.quotedContent.trim() : '',
+    };
+  } catch {
+    return {
+      quotedAuthorHandle: '',
+      quotedContent: '',
+    };
+  }
+}
+
 function toActivity(
   tweet: StoredTwitterTweet,
   user: User,
   options: {
     enrichment?: StoredTwitterTweetEnrichment | null;
     mentions?: StoredTwitterTweetTokenMention[];
+    quotedTweet?: StoredTwitterTweet | null;
   }
 ): Activity {
   const relayAction = readRelayAction(tweet.sourceJson);
@@ -67,6 +95,11 @@ function toActivity(
   const mentionedTickers = uniqStrings(mentions.map((item) => item.tokenSymbol));
   const mentionedTokenAddresses = uniqStrings(mentions.map((item) => item.tokenAddress));
   const translationZh = enrichment?.translationZh?.trim() || '';
+  const relayQuote = readRelayQuoteMetadata(tweet.sourceJson);
+  const quotedTweet = options.quotedTweet || null;
+  const quotedTweetAuthorHandle = normalize(quotedTweet?.authorHandle || relayQuote.quotedAuthorHandle);
+  const quotedTweetContent = cleanTwitterDisplayText(quotedTweet?.fullText || relayQuote.quotedContent || '');
+  const content = cleanTwitterDisplayText(tweet.fullText);
 
   return {
     id: `twitter:${tweet.tweetId}`,
@@ -74,12 +107,19 @@ function toActivity(
     source: 'twitter',
     type: 'post',
     title,
-    content: tweet.fullText,
+    content,
     timestamp: tweet.createdAtMs,
     metadata: {
       tweetId: tweet.tweetId,
       tweetUrl: `https://x.com/${tweet.authorHandle}/status/${tweet.tweetId}`,
       tweetKind,
+      quotedTweetId: quotedTweet?.tweetId || tweet.quoteTweetId || undefined,
+      quotedTweetUrl:
+        quotedTweetAuthorHandle && (quotedTweet?.tweetId || tweet.quoteTweetId)
+          ? `https://x.com/${quotedTweetAuthorHandle}/status/${quotedTweet?.tweetId || tweet.quoteTweetId}`
+          : undefined,
+      quotedTweetAuthorHandle: quotedTweetAuthorHandle || undefined,
+      quotedTweetContent: quotedTweetContent || undefined,
       likes: Math.max(0, Math.floor(tweet.likeCount)),
       replies: Math.max(0, Math.floor(tweet.replyCount)),
       translationZh: translationZh || undefined,
@@ -192,9 +232,12 @@ export function projectTwitterTweetsToFeed(options: {
           });
         });
   const tweetIds = tweetCandidates.map((tweet) => tweet.tweetId);
+  const quotedTweetIds = uniqStrings(tweetCandidates.map((tweet) => tweet.quoteTweetId));
   const enrichmentRows = listTwitterTweetEnrichmentsByTweetIds(tweetIds);
   const mentionRows = listTwitterTweetTokenMentionsByTweetIds(tweetIds);
+  const quotedTweets = listTwitterTweetsByIds(quotedTweetIds);
   const enrichmentByTweetId = new Map(enrichmentRows.map((row) => [row.tweetId, row] as const));
+  const quotedTweetById = new Map(quotedTweets.map((row) => [row.tweetId, row] as const));
   const mentionsByTweetId = new Map<string, StoredTwitterTweetTokenMention[]>();
   for (const row of mentionRows) {
     const list = mentionsByTweetId.get(row.tweetId) || [];
@@ -222,6 +265,7 @@ export function projectTwitterTweetsToFeed(options: {
       activity: toActivity(tweet, matchedUser, {
         enrichment: enrichmentByTweetId.get(tweet.tweetId) || null,
         mentions: mentionsByTweetId.get(tweet.tweetId) || [],
+        quotedTweet: tweet.quoteTweetId ? quotedTweetById.get(tweet.quoteTweetId) || null : null,
       }),
     });
   }

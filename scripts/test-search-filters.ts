@@ -65,6 +65,12 @@ function run() {
     fromAddress: '0xFROM',
     toAddress: '0xTO',
   });
+  const closeTradeRoutedAsSendItem = makeItem(alice, {}, {
+    txAction: 'send',
+    txActionVariant: 'close',
+    tradeAmountUsdAtTx: 12_000,
+    marketCapAtTxUsd: 8_500,
+  });
   const twitterItem = makeItem(
     alice,
     {
@@ -112,6 +118,11 @@ function run() {
 
   assert.equal(getFeedItemCategory(tradeItem), 'trade');
   assert.equal(getFeedItemCategory(transferItem), 'transfer');
+  assert.equal(
+    getFeedItemCategory(closeTradeRoutedAsSendItem),
+    'trade',
+    'trade-like variants should be categorized as trades even when txAction is send'
+  );
   assert.equal(getFeedItemCategory(twitterItem), 'twitter');
   assert.equal(getFeedItemCategory(telegramItem), 'telegram');
 
@@ -244,6 +255,14 @@ function run() {
     }),
     true,
     'non-trade categories should ignore trade thresholds'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(closeTradeRoutedAsSendItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      minTradeMarketCapUsd: '100000',
+    }),
+    false,
+    'trade-like variants should still respect trade market-cap thresholds'
   );
   assert.equal(
     matchesFeedSearchFilters(tradeItem, {
