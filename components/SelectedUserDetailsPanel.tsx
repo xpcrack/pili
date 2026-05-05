@@ -132,13 +132,23 @@ export function SelectedUserDetailsPanel({
           </div>
         ) : null}
 
-        {detailsError && !details ? (
-          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">
-            <div>{detailsError}</div>
+        {detailsError ? (
+          <div
+            className={
+              details
+                ? 'mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200'
+                : 'mt-4 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300'
+            }
+          >
+            <div>{details ? `${detailsError}，当前显示最近一次成功结果` : detailsError}</div>
             <button
               type="button"
               onClick={onRetryDetails}
-              className="mt-3 rounded border border-red-400/40 px-3 py-1.5 text-xs text-red-200 transition-colors hover:border-red-300 hover:text-white"
+              className={
+                details
+                  ? 'mt-3 rounded border border-amber-400/40 px-3 py-1.5 text-xs text-amber-100 transition-colors hover:border-amber-300 hover:text-white'
+                  : 'mt-3 rounded border border-red-400/40 px-3 py-1.5 text-xs text-red-200 transition-colors hover:border-red-300 hover:text-white'
+              }
             >
               重试
             </button>

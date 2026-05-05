@@ -117,6 +117,21 @@ function run() {
   assert.match(partialSuccessMarkup, />USDT</, 'panel should render holdings rows');
   assert.match(partialSuccessMarkup, /Tether USD/, 'panel should render the token name secondary text');
 
+  const staleErrorMarkup = renderPanel({
+    detailsError: '刷新失败',
+    details: makeDetails(),
+  });
+  assert.match(
+    staleErrorMarkup,
+    /刷新失败/,
+    'panel should surface background refresh failures even when cached details remain visible'
+  );
+  assert.match(
+    staleErrorMarkup,
+    />重试</,
+    'panel should keep a retry button available when cached details are stale after a refresh error'
+  );
+
   console.log('selected user details panel tests: ok');
 }
 
