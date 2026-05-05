@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { ingestTelegramMonitorUpdate } from '@/lib/server/telegramMonitorIngest';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { acquireIngestionLease, heartbeatIngestionLease, releaseIngestionLease } from '@/lib/server/twitterRepo';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
@@ -196,6 +197,11 @@ async function waitForWorkerLease() {
     if (acquireIngestionLease(WORKER_KEY, getWorkerOwner(), now, WORKER_LEASE_TTL_MS)) {
       leaseLost = false;
       upsertBridgeStatus('running');
+      queueCompletenessPoke({
+        trigger: 'recovery',
+        sourceHint: 'telegram-bridge',
+        reason: 'telegram bridge lease recovered',
+      });
       startHeartbeat();
       console.log('[bridge] worker lease acquired');
       return;
@@ -355,6 +361,11 @@ async function main() {
               `[bridge] monitor ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
             );
           } else {
+            queueCompletenessPoke({
+              trigger: 'ingest',
+              sourceHint: 'telegram-bridge',
+              reason: 'telegram monitor ingest',
+            });
             console.log(
               `[bridge] monitor ingested chat=${result.chatId} source=${result.source} projected=${String(result.result.projected)} preview=${result.preview}`
             );
@@ -365,6 +376,11 @@ async function main() {
               `[bridge] twitter-relay ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
             );
           } else {
+            queueCompletenessPoke({
+              trigger: 'ingest',
+              sourceHint: 'telegram-bridge',
+              reason: 'telegram twitter relay ingest',
+            });
             console.log(
               `[bridge] twitter-relay ingested chat=${result.chatId} source=${result.source} tweet=${result.payload.tweetId || '-'} projected=${result.result.projectedCount} preview=${result.preview}`
             );

@@ -6,6 +6,7 @@ import { createTelegramGramjsClient } from '@/lib/server/telegramGramjsClient';
 import { syncAllTelegramChannelSources } from '@/lib/server/telegramChannelSync';
 import { classifyTelegramMtprotoError, readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import type { TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 
 const WORKER_KEY = 'telegram-channel-sync';
@@ -83,6 +84,13 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
 
     const status = result.errorCount > 0 ? 'partial' : 'idle';
     const lastError = result.errorCount > 0 ? `${result.errorCount} source error(s)` : null;
+    if (result.storedCount > 0 || result.projectedCount > 0) {
+      queueCompletenessPoke({
+        trigger: 'ingest',
+        sourceHint: 'telegram-channel',
+        reason: 'telegram channel realtime ingest',
+      });
+    }
     upsertChannelWorkerStatus(status, lastError);
     console.log(
       `[telegram-channel-worker] cycle complete sources=${result.sourceCount} synced=${result.syncedCount} errors=${result.errorCount} stored=${result.storedCount} projected=${result.projectedCount}`

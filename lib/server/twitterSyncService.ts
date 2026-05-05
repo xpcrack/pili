@@ -120,6 +120,18 @@ export function shouldAdvanceTwitterCoverageCursor(input: {
   return true;
 }
 
+export function computeTwitterSyncWindowDaysFromStartMs(startMs: number | null | undefined, nowMs = Date.now()) {
+  if (typeof startMs !== 'number' || !Number.isFinite(startMs) || startMs <= 0) {
+    return 1;
+  }
+  if (!Number.isFinite(nowMs) || nowMs <= startMs) {
+    return 1;
+  }
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.max(1, Math.min(30, Math.ceil((nowMs - startMs) / dayMs)));
+}
+
 function computeSinceMs(userId: string, lane: TwitterLane, nowMs: number) {
   const cursor = readTwitterCursor(userId, lane);
   if (typeof cursor?.coveredSinceMs === 'number' && !cursor?.watermarkCreatedAtMs) {

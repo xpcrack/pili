@@ -71,6 +71,63 @@ interface TwitterStatusPayload {
   } | null;
 }
 
+interface CompletenessGlobalStatePayload {
+  configuredStartMs: number | null;
+  globalProvenStartMs: number | null;
+  status: 'idle' | 'running' | 'complete' | 'partial' | 'retrying' | 'blocked';
+  activeRunId: number | null;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+}
+
+interface CompletenessSourceStatePayload {
+  source: 'blockchain' | 'twitter' | 'telegram-bridge' | 'telegram-channel';
+  requestedStartMs: number | null;
+  provenStartMs: number | null;
+  provenEndMs: number | null;
+  status: 'idle' | 'running' | 'complete' | 'partial' | 'retrying' | 'blocked';
+  failureCount: number;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  blockedReason: string | null;
+  checkpointJson: string | null;
+}
+
+interface CompletenessRunItem {
+  id: number;
+  reason: string | null;
+  trigger: string;
+  configured_start_ms: number | null;
+  status: string;
+  started_at: number;
+  finished_at: number | null;
+  global_proven_start_ms: number | null;
+  summary_json: string | null;
+}
+
+interface CompletenessRunSourcePayload {
+  run_id: number;
+  source: string;
+  requested_start_ms: number | null;
+  proven_start_ms: number | null;
+  proven_end_ms: number | null;
+  status: string;
+  fetched_count: number;
+  stored_count: number;
+  projected_count: number;
+  blocked_reason: string | null;
+  checkpoint_json: string | null;
+}
+
+interface CompletenessPayload {
+  configuredStartMs: number | null;
+  globalState: CompletenessGlobalStatePayload;
+  sourceStates: CompletenessSourceStatePayload[];
+  latestRun: CompletenessRunItem | null;
+  latestRunSources: CompletenessRunSourcePayload[];
+  runs: CompletenessRunItem[];
+}
+
 function formatDateTime(value?: number | null) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return '暂无数据';
@@ -89,6 +146,7 @@ export default function SystemPage() {
   const [tradeMonitorChatId, setTradeMonitorChatId] = useState('');
   const [twitterMonitorChatId, setTwitterMonitorChatId] = useState('');
   const [conflictAlertChatId, setConflictAlertChatId] = useState('');
+  const [completenessStartMs, setCompletenessStartMs] = useState('');
   const [relayCoveredPollingIntervalMinutes, setRelayCoveredPollingIntervalMinutes] = useState('360');
   const [uncoveredPollingIntervalMinutes, setUncoveredPollingIntervalMinutes] = useState('30');
   const [status, setStatus] = useState<StatusType>('idle');
@@ -105,6 +163,9 @@ export default function SystemPage() {
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const [windowDays, setWindowDays] = useState(7);
   const [targetUserId, setTargetUserId] = useState('');
+  const [completeness, setCompleteness] = useState<CompletenessPayload | null>(null);
+  const [completenessAction, setCompletenessAction] = useState<string | null>(null);
+  const [completenessError, setCompletenessError] = useState<string | null>(null);
 
   const buildAdminHeaders = (extra?: Record<string, string>) => {
     const headers: Record<string, string> = {
@@ -144,6 +205,11 @@ export default function SystemPage() {
         setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
         setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
         setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
+        setCompletenessStartMs(
+          typeof payload.config?.completenessStartMs === 'number' && Number.isFinite(payload.config.completenessStartMs)
+            ? String(payload.config.completenessStartMs)
+            : ''
+        );
         setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
         setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
       })
@@ -166,6 +232,31 @@ export default function SystemPage() {
       window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
     }
   }, [adminToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const poll = async () => {
+      const response = await fetch('/api/completeness', { cache: 'no-store' }).catch(() => null);
+      if (!response || cancelled) {
+        return;
+      }
+      const payload = await response.json().catch(() => null);
+      if (!cancelled && payload?.ok) {
+        setCompleteness((payload.completeness as CompletenessPayload) || null);
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +338,7 @@ export default function SystemPage() {
         telegramTradeMonitorSourceChatId: tradeMonitorChatId.trim() || null,
         telegramTwitterMonitorSourceChatId: twitterMonitorChatId.trim() || null,
         conflictNotificationTelegramChatId: conflictAlertChatId.trim() || null,
+        completenessStartMs: completenessStartMs.trim() ? completenessStartMs.trim() : null,
         twitterRelayCoveredPollingIntervalMinutes: relayCoveredPollingIntervalMinutes.trim(),
         twitterUncoveredPollingIntervalMinutes: uncoveredPollingIntervalMinutes.trim(),
       }),
@@ -269,6 +361,11 @@ export default function SystemPage() {
     setTradeMonitorChatId(payload.config?.telegramTradeMonitorSourceChatId || '');
     setTwitterMonitorChatId(payload.config?.telegramTwitterMonitorSourceChatId || '');
     setConflictAlertChatId(payload.config?.conflictNotificationTelegramChatId || '');
+    setCompletenessStartMs(
+      typeof payload.config?.completenessStartMs === 'number' && Number.isFinite(payload.config.completenessStartMs)
+        ? String(payload.config.completenessStartMs)
+        : ''
+    );
     setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
     setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
     setStatus('saved');
@@ -323,6 +420,35 @@ export default function SystemPage() {
     setSyncingUserTwitter(false);
   };
 
+  const runCompletenessAction = async (action: 'run-now' | 'retry-source' | 'clear-source-checkpoint', source?: string) => {
+    setCompletenessAction(source ? `${action}:${source}` : action);
+    setCompletenessError(null);
+
+    const response = await fetch('/api/completeness', {
+      method: 'POST',
+      headers: buildAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        action,
+        source: source || null,
+      }),
+    }).catch(() => null);
+
+    setCompletenessAction(null);
+
+    if (!response) {
+      setCompletenessError('网络异常，completeness 操作失败');
+      return;
+    }
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      setCompletenessError(mapAdminError(payload, 'completeness 操作失败'));
+      return;
+    }
+
+    setCompleteness((payload.completeness as CompletenessPayload) || null);
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <TopNav active="system" />
@@ -375,6 +501,115 @@ export default function SystemPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5">
+          <h2 className="mb-3 text-sm font-medium">全局 Completeness Window</h2>
+          <div className="mb-4 grid gap-3 md:grid-cols-[220px_repeat(4,minmax(0,1fr))]">
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">配置起点</div>
+              <div className="mt-1 text-sm text-zinc-100">{completenessStartMs || '未设置'}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">全局状态</div>
+              <div className="mt-1 text-sm text-zinc-100">{completeness?.globalState.status || 'idle'}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">全局 Proven Start</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(completeness?.globalState.globalProvenStartMs ?? null)}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">上次成功</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(completeness?.globalState.lastSuccessAt ?? null)}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+              <div className="text-zinc-500">上次失败</div>
+              <div className="mt-1 text-sm text-zinc-100">{formatDateTime(completeness?.globalState.lastFailureAt ?? null)}</div>
+            </div>
+          </div>
+          <div className="mb-4 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <div>
+              <Label className="text-zinc-400">completenessStartMs</Label>
+              <Input
+                value={completenessStartMs}
+                onChange={(e) => setCompletenessStartMs(e.target.value)}
+                placeholder="Unix ms，例如 1711929600000"
+                className="border-zinc-800 bg-zinc-950"
+              />
+            </div>
+            <Button
+              onClick={() => runCompletenessAction('run-now')}
+              disabled={completenessAction === 'run-now'}
+              className="bg-emerald-600 hover:bg-emerald-700"
+            >
+              {completenessAction === 'run-now' ? '运行中...' : '立即跑一次'}
+            </Button>
+          </div>
+          {completenessError && <div className="mb-3 text-xs text-red-400">{completenessError}</div>}
+          <div className="overflow-auto rounded-lg border border-zinc-800 bg-zinc-950/60">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-zinc-900 text-zinc-400">
+                <tr>
+                  <th className="px-3 py-2">Source</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Proven Start</th>
+                  <th className="px-3 py-2">Proven End</th>
+                  <th className="px-3 py-2">Failure Count</th>
+                  <th className="px-3 py-2">Blocked Reason</th>
+                  <th className="px-3 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(completeness?.sourceStates || []).map((item) => (
+                  <tr key={item.source} className="border-t border-zinc-800">
+                    <td className="px-3 py-2 text-zinc-100">{item.source}</td>
+                    <td className="px-3 py-2">{item.status}</td>
+                    <td className="px-3 py-2">{formatDateTime(item.provenStartMs)}</td>
+                    <td className="px-3 py-2">{formatDateTime(item.provenEndMs)}</td>
+                    <td className="px-3 py-2">{item.failureCount}</td>
+                    <td className="max-w-xs px-3 py-2 text-zinc-500">{item.blockedReason || '-'}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="border-zinc-700 px-2 py-1 text-xs"
+                          onClick={() => runCompletenessAction('retry-source', item.source)}
+                          disabled={completenessAction === `retry-source:${item.source}`}
+                        >
+                          重试
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="border-zinc-700 px-2 py-1 text-xs"
+                          onClick={() => runCompletenessAction('clear-source-checkpoint', item.source)}
+                          disabled={completenessAction === `clear-source-checkpoint:${item.source}`}
+                        >
+                          清 checkpoint
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs text-zinc-300">
+            <div className="text-zinc-500">最近一次 run</div>
+            <div className="mt-1">
+              #{completeness?.latestRun?.id ?? '-'} / {completeness?.latestRun?.status || '暂无'} /{' '}
+              {formatDateTime(completeness?.latestRun?.started_at ?? null)}
+            </div>
+            <div className="mt-2 space-y-1">
+              {(completeness?.latestRunSources || []).map((item) => (
+                <div key={item.source}>
+                  {item.source}: {item.status} / fetched {item.fetched_count} / stored {item.stored_count} / projected{' '}
+                  {item.projected_count}
+                </div>
+              ))}
             </div>
           </div>
         </section>

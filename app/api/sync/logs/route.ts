@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 function parseRunKind(value: string | null): SyncRunKind | null {
-  if (value === 'sync' || value === 'twitter') {
+  if (value === 'sync' || value === 'twitter' || value === 'completeness') {
     return value;
   }
   return null;
