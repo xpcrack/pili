@@ -26,15 +26,22 @@ interface ReadUserHoldingsDetailsResult {
   summary: UserHoldingsSummary;
 }
 
+function getHoldingMergeKey(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenAddress'>) {
+  const tokenAddress = asset.chain === 'solana' ? asset.tokenAddress.trim() : asset.tokenAddress.trim().toLowerCase();
+  return `${asset.chain}:${tokenAddress}`;
+}
+
 function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
   const merged = new Map<string, UserHoldingRow>();
 
   for (const asset of assets) {
-    const existing = merged.get(asset.assetKey);
+    const tokenAddress = asset.chain === 'solana' ? asset.tokenAddress.trim() : asset.tokenAddress.trim().toLowerCase();
+    const mergeKey = getHoldingMergeKey(asset);
+    const existing = merged.get(mergeKey);
     if (!existing) {
-      merged.set(asset.assetKey, {
+      merged.set(mergeKey, {
         chain: asset.chain,
-        tokenAddress: asset.tokenAddress,
+        tokenAddress,
         symbol: asset.symbol,
         name: asset.name,
         balance: asset.balance,

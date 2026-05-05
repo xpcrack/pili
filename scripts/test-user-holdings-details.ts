@@ -61,7 +61,7 @@ async function run() {
             {
               address,
               chain,
-              assetKey: 'bsc:0xusdt',
+              assetKey: 'bsc:0xusdt:wallet-two',
               tokenAddress: '0xusdt',
               symbol: 'USDT',
               name: 'Tether USD',
