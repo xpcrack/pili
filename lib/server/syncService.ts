@@ -18,7 +18,6 @@ import {
   saveLastSuccessfulSnapshotState,
   upsertFeedSnapshot,
   upsertRawTransactions,
-  type FeedBackfillWindowState,
 } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
 import {
@@ -27,20 +26,20 @@ import {
 import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 import { notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
+import {
+  applyGlobalBackfillWindowState,
+  applyRefreshWindowState,
+  applyUserBackfillWindowState,
+  createDefaultWindowState,
+  mergeRefreshWindowState,
+  normalizeSyncOptions,
+  type TriggerSyncOptions,
+} from '@/lib/server/syncWindowState';
 import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BACKFILL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-type SyncMode = 'refresh' | 'backfill';
-type BackfillScope = 'global' | 'user';
-
-interface TriggerSyncOptions {
-  mode?: SyncMode;
-  scope?: BackfillScope;
-  userId?: string | null;
-}
 
 interface SyncRunRow {
   id: number;
@@ -116,73 +115,6 @@ function parseJSON<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-function normalizeSyncOptions(options: TriggerSyncOptions | undefined) {
-  const mode: SyncMode = options?.mode === 'backfill' ? 'backfill' : 'refresh';
-  const scope: BackfillScope = options?.scope === 'user' ? 'user' : 'global';
-  const userId = typeof options?.userId === 'string' && options.userId.trim() ? options.userId.trim() : null;
-
-  if (mode !== 'backfill') {
-    return {
-      mode,
-      scope: 'global' as const,
-      userId: null,
-    };
-  }
-
-  if (scope === 'user' && userId) {
-    return {
-      mode,
-      scope,
-      userId,
-    };
-  }
-
-  return {
-    mode,
-    scope: 'global' as const,
-    userId: null,
-  };
-}
-
-function createDefaultWindowState(): FeedBackfillWindowState {
-  return {
-    globalEarliestMs: null,
-    perUserEarliestMs: {},
-    perUserHistoryComplete: {},
-    perUserLastBackfillAt: {},
-    perUserLocalQualifiedCount: {},
-    globalAlignment: 'aligned',
-    updatedAt: Date.now(),
-  };
-}
-
-function getSuccessfulUserIds(diagnostics: AddressDiagnostic[]) {
-  return new Set(
-    diagnostics
-      .filter((item) => item.ok)
-      .map((item) => item.userId)
-  );
-}
-
-function getFullySuccessfulUserIds(diagnostics: AddressDiagnostic[]) {
-  const stats = new Map<string, { hasSuccess: boolean; hasFailure: boolean }>();
-  for (const item of diagnostics) {
-    const existing = stats.get(item.userId) ?? { hasSuccess: false, hasFailure: false };
-    if (item.ok) {
-      existing.hasSuccess = true;
-    } else {
-      existing.hasFailure = true;
-    }
-    stats.set(item.userId, existing);
-  }
-
-  return new Set(
-    Array.from(stats.entries())
-      .filter(([, value]) => value.hasSuccess && !value.hasFailure)
-      .map(([userId]) => userId)
-  );
 }
 
 function createRun(reason: string) {
@@ -272,157 +204,6 @@ function completeRunFailure(runId: number, payload: {
     finishedAt,
     runId
   );
-}
-
-function applyRefreshWindowState(users: ReturnType<typeof listTrackedUsers>, beginMs: number) {
-  const perUserEarliestMs: Record<string, number> = {};
-  const perUserHistoryComplete: Record<string, boolean> = {};
-  const perUserLastBackfillAt: Record<string, number> = {};
-  const perUserLocalQualifiedCount: Record<string, number> = {};
-  for (const user of users) {
-    perUserEarliestMs[user.id] = beginMs;
-    perUserHistoryComplete[user.id] = false;
-    perUserLastBackfillAt[user.id] = 0;
-    perUserLocalQualifiedCount[user.id] = 0;
-  }
-
-  return {
-    globalEarliestMs: beginMs,
-    perUserEarliestMs,
-    perUserHistoryComplete,
-    perUserLastBackfillAt,
-    perUserLocalQualifiedCount,
-    globalAlignment: 'aligned' as const,
-    updatedAt: Date.now(),
-  } satisfies FeedBackfillWindowState;
-}
-
-function mergeRefreshWindowState(
-  current: FeedBackfillWindowState,
-  users: ReturnType<typeof listTrackedUsers>,
-  beginMs: number,
-  diagnostics: AddressDiagnostic[]
-) {
-  const nextPerUserEarliest = {
-    ...current.perUserEarliestMs,
-  };
-  const nextPerUserHistoryComplete = {
-    ...current.perUserHistoryComplete,
-  };
-  const nextPerUserLastBackfillAt = {
-    ...current.perUserLastBackfillAt,
-  };
-  const nextPerUserLocalQualifiedCount = {
-    ...current.perUserLocalQualifiedCount,
-  };
-
-  for (const user of users) {
-    if (typeof nextPerUserEarliest[user.id] === 'number') {
-      nextPerUserHistoryComplete[user.id] = nextPerUserHistoryComplete[user.id] === true;
-      nextPerUserLastBackfillAt[user.id] = nextPerUserLastBackfillAt[user.id] ?? 0;
-      nextPerUserLocalQualifiedCount[user.id] = nextPerUserLocalQualifiedCount[user.id] ?? 0;
-      continue;
-    }
-    nextPerUserEarliest[user.id] = beginMs;
-    nextPerUserHistoryComplete[user.id] = false;
-    nextPerUserLastBackfillAt[user.id] = 0;
-    nextPerUserLocalQualifiedCount[user.id] = 0;
-  }
-
-  return {
-    globalEarliestMs: current.globalEarliestMs ?? beginMs,
-    perUserEarliestMs: nextPerUserEarliest,
-    perUserHistoryComplete: nextPerUserHistoryComplete,
-    perUserLastBackfillAt: nextPerUserLastBackfillAt,
-    perUserLocalQualifiedCount: nextPerUserLocalQualifiedCount,
-    globalAlignment: diagnostics.some((item) => !item.ok) ? 'partial' : 'aligned',
-    updatedAt: Date.now(),
-  } satisfies FeedBackfillWindowState;
-}
-
-function applyGlobalBackfillWindowState(
-  current: FeedBackfillWindowState,
-  users: ReturnType<typeof listTrackedUsers>,
-  beginMs: number,
-  diagnostics: AddressDiagnostic[]
-) {
-  const successfulUserIds = getSuccessfulUserIds(diagnostics);
-  const fullySuccessfulUserIds = getFullySuccessfulUserIds(diagnostics);
-
-  const next = {
-    ...current,
-    perUserEarliestMs: {
-      ...current.perUserEarliestMs,
-    },
-    perUserHistoryComplete: {
-      ...current.perUserHistoryComplete,
-    },
-    perUserLastBackfillAt: {
-      ...current.perUserLastBackfillAt,
-    },
-    perUserLocalQualifiedCount: {
-      ...current.perUserLocalQualifiedCount,
-    },
-    updatedAt: Date.now(),
-  };
-
-  if (successfulUserIds.size > 0) {
-    next.globalEarliestMs = beginMs;
-  }
-
-  for (const user of users) {
-    if (!successfulUserIds.has(user.id)) {
-      continue;
-    }
-    next.perUserEarliestMs[user.id] = beginMs;
-    next.perUserLastBackfillAt[user.id] = Date.now();
-    if (beginMs === 0 && fullySuccessfulUserIds.has(user.id)) {
-      next.perUserHistoryComplete[user.id] = true;
-    }
-  }
-
-  next.globalAlignment = diagnostics.some((item) => !item.ok) ? 'partial' : 'aligned';
-  return next;
-}
-
-function applyUserBackfillWindowState(
-  current: FeedBackfillWindowState,
-  userId: string,
-  beginMs: number,
-  diagnostics: AddressDiagnostic[]
-) {
-  const successfulUserIds = getSuccessfulUserIds(diagnostics);
-  const fullySuccessfulUserIds = getFullySuccessfulUserIds(diagnostics);
-  const hasSuccess = successfulUserIds.has(userId);
-  if (!hasSuccess) {
-    return {
-      ...current,
-      updatedAt: Date.now(),
-    } satisfies FeedBackfillWindowState;
-  }
-
-  return {
-    ...current,
-    perUserEarliestMs: {
-      ...current.perUserEarliestMs,
-      [userId]: beginMs,
-    },
-    perUserHistoryComplete: {
-      ...current.perUserHistoryComplete,
-      [userId]:
-        beginMs === 0 && fullySuccessfulUserIds.has(userId)
-          ? true
-          : current.perUserHistoryComplete[userId] === true,
-    },
-    perUserLastBackfillAt: {
-      ...current.perUserLastBackfillAt,
-      [userId]: Date.now(),
-    },
-    perUserLocalQualifiedCount: {
-      ...current.perUserLocalQualifiedCount,
-    },
-    updatedAt: Date.now(),
-  } satisfies FeedBackfillWindowState;
 }
 
 async function runSync(
