@@ -2,7 +2,7 @@ import 'server-only';
 
 import crypto from 'node:crypto';
 
-import { EVM_CHAINS, expandTrackedAddresses, isEvmAddress } from '@/lib/addressBook';
+import { EVM_CHAINS, expandTrackedAddresses, isEvmAddress, isEvmChain } from '@/lib/addressBook';
 import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activityFeed';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
@@ -538,26 +538,30 @@ function upsertAddressRows(userId: string, addresses: AddressInfo[], now: number
 
 function purgeAddressRelatedData(userId: string, chain: string, addressLower: string) {
   const db = getDb();
-  db.prepare(
-    `DELETE FROM activity_feed
-     WHERE user_id = ? AND chain = ? AND tracked_address_lower = ?`
-  ).run(userId, chain, addressLower);
-  db.prepare(
-    `DELETE FROM raw_transactions
-     WHERE chain = ? AND tracked_address_lower = ?`
-  ).run(chain, addressLower);
-  db.prepare(
-    `DELETE FROM activity_judgments
-     WHERE chain = ? AND tracked_address_lower = ?`
-  ).run(chain, addressLower);
-}
+  const chains = isEvmChain(chain) || isEvmAddress(addressLower) ? EVM_CHAINS : [chain];
 
-function purgeTelegramMonitorEventsByTrackedAddress(chain: string, addressLower: string) {
-  const db = getDb();
-  db.prepare(
-    `DELETE FROM telegram_monitor_events
-     WHERE chain = ? AND tracked_wallet_address_lower = ?`
-  ).run(chain, addressLower);
+  for (const nextChain of chains) {
+    db.prepare(
+      `DELETE FROM activity_feed
+       WHERE user_id = ? AND chain = ? AND tracked_address_lower = ?`
+    ).run(userId, nextChain, addressLower);
+    db.prepare(
+      `DELETE FROM raw_transactions
+       WHERE chain = ? AND tracked_address_lower = ?`
+    ).run(nextChain, addressLower);
+    db.prepare(
+      `DELETE FROM activity_judgments
+       WHERE chain = ? AND tracked_address_lower = ?`
+    ).run(nextChain, addressLower);
+    db.prepare(
+      `DELETE FROM events
+       WHERE chain = ? AND LOWER(COALESCE(address, '')) = ?`
+    ).run(nextChain, addressLower);
+    db.prepare(
+      `DELETE FROM telegram_monitor_events
+       WHERE chain = ? AND tracked_wallet_address_lower = ?`
+    ).run(nextChain, addressLower);
+  }
 }
 
 function purgeOrphanedAddressData() {
@@ -750,7 +754,6 @@ export function deleteTrackedUser(id: string) {
 
     for (const row of addresses) {
       purgeAddressRelatedData(id, row.chain, row.address_lower);
-      purgeTelegramMonitorEventsByTrackedAddress(row.chain, row.address_lower);
     }
 
     db.prepare('DELETE FROM tracked_addresses WHERE user_id = ?').run(id);

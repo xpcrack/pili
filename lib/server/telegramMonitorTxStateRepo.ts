@@ -16,7 +16,6 @@ export function buildTelegramMonitorTxStateLookupKey(
   const normalizedChain = normalize(chain);
   const normalizedTrackedWalletAddress = normalize(trackedWalletAddress);
   const normalizedTxHash = normalize(txHash);
-
   if (!normalizedChain || !normalizedTrackedWalletAddress || !normalizedTxHash) {
     return null;
   }

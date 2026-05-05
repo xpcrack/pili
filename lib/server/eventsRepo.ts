@@ -231,6 +231,74 @@ export function persistHealedTelegramMonitorActivity(params: {
   return true;
 }
 
+function buildTelegramMonitorRepairLookup(activity: Activity) {
+  const lookupKey = buildTelegramMonitorLogicalTxKey(activity);
+  if (!lookupKey) {
+    return null;
+  }
+  const chain = (activity.metadata.chain || '').trim();
+  const trackedWalletAddress = (activity.metadata.trackedAddress || '').trim();
+  const txHash = (activity.metadata.txHash || '').trim();
+
+  return {
+    lookupKey,
+    chain,
+    trackedWalletAddress,
+    txHash,
+  };
+}
+
+function repairTelegramMonitorFeedRows(rows: EventFeedRow[]) {
+  const repairable = rows
+    .map((row) => {
+      const lookup = buildTelegramMonitorRepairLookup(row.activity);
+      return lookup
+        ? {
+            row,
+            lookup,
+          }
+        : null;
+    })
+    .filter(
+      (
+        candidate
+      ): candidate is {
+        row: EventFeedRow;
+        lookup: {
+          lookupKey: string;
+          chain: string;
+          trackedWalletAddress: string;
+          txHash: string;
+        };
+      } => Boolean(candidate)
+    );
+
+  if (repairable.length === 0) {
+    return;
+  }
+
+  const statesByKey = listTelegramMonitorTxStatesByKeys(
+    repairable.map((candidate) => ({
+      chain: candidate.lookup.chain,
+      trackedWalletAddress: candidate.lookup.trackedWalletAddress,
+      txHash: candidate.lookup.txHash,
+    }))
+  );
+
+  for (const candidate of repairable) {
+    const state = statesByKey.get(candidate.lookup.lookupKey);
+    if (!state) {
+      continue;
+    }
+
+    candidate.row.activity = repairCollapsedCanonicalActivitySync({
+      user: candidate.row.user,
+      state,
+      canonicalActivity: candidate.row.activity,
+    });
+  }
+}
+
 function buildFallbackOriginalPayload(activity: Activity, ingestSource: string) {
   return {
     schemaVersion: 1,
@@ -845,6 +913,8 @@ export function readEventsFeed(query: EventFeedQuery) {
       cursor: encodeCursor(row.timestamp, row.event_id),
     });
   }
+
+  repairTelegramMonitorFeedRows(feed);
 
   const countParams = [...params];
   if (ftsMatch) {

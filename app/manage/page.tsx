@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
@@ -29,12 +30,11 @@ import {
   Copy,
   Trash2,
   Wallet,
-  ChevronDown,
-  ChevronUp,
   X,
   Save,
   AlertCircle,
   Search,
+  ArrowRight,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -84,6 +84,12 @@ interface TwitterRelayCoverageView {
   latestTweetId: string;
   latestLastSeenAtMs: number;
   tweetCount: number;
+}
+
+interface TrackedUserAddressesMutationPayload {
+  ok?: boolean;
+  user?: User;
+  error?: string;
 }
 
 const CHAIN_VALUES = new Set(CHAIN_OPTIONS.map((option) => option.value));
@@ -248,7 +254,7 @@ function getRecentTotalCount(stats: UserActivityStats) {
 }
 
 export default function ManagePage() {
-  const { users, addUser, addUsers, deleteUser, mergeUsersFromServer } = useUsersDataStore();
+  const { users, addUser, addUsers, updateUser, deleteUser, mergeUsersFromServer } = useUsersDataStore();
   const isClient = useIsClient();
 
   const [isCreating, setIsCreating] = useState(false);
@@ -268,11 +274,15 @@ export default function ManagePage() {
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
   const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
   const [activityStatsByUserId, setActivityStatsByUserId] = useState<Record<string, UserActivityStats>>({});
-  const [expandedAddressByUserId, setExpandedAddressByUserId] = useState<Record<string, boolean>>({});
   const [sortState, setSortState] = useState<{ key: ManageSortKey; direction: 'asc' | 'desc' }>({
     key: 'totalCount7d',
     direction: 'desc',
   });
+  const [editingAddressUserId, setEditingAddressUserId] = useState<string | null>(null);
+  const [editingAddressText, setEditingAddressText] = useState('');
+  const [savingAddressUserId, setSavingAddressUserId] = useState<string | null>(null);
+  const [addressActionError, setAddressActionError] = useState<string | null>(null);
+  const [addressActionNotice, setAddressActionNotice] = useState<string | null>(null);
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -437,14 +447,6 @@ export default function ManagePage() {
       }
 
       deleteUser(userId);
-      setExpandedAddressByUserId((state) => {
-        if (!(userId in state)) {
-          return state;
-        }
-        const next = { ...state };
-        delete next[userId];
-        return next;
-      });
     } catch (error) {
       console.warn(
         '[manage] failed to delete user from server',
@@ -498,6 +500,51 @@ export default function ManagePage() {
     setBulkImportText('');
   };
 
+  const flashAddressNotice = (message: string) => {
+    setAddressActionNotice(message);
+    window.setTimeout(() => {
+      setAddressActionNotice((current) => (current === message ? null : current));
+    }, 1800);
+  };
+
+  const handleAddAddressesToUser = async (user: User) => {
+    const logicalAddressCount = groupAddressesForDisplay(user.addresses).length;
+    const newAddresses = parseAddressText(editingAddressText, logicalAddressCount + 1);
+
+    if (newAddresses.length === 0) {
+      setAddressActionError('请输入至少一个有效地址');
+      return;
+    }
+
+    setSavingAddressUserId(user.id);
+    setAddressActionError(null);
+
+    try {
+      const response = await fetch(`/api/users/${user.id}/addresses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          addresses: expandTrackedAddresses(newAddresses),
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as TrackedUserAddressesMutationPayload | null;
+
+      if (!response.ok || !payload?.ok || !payload.user) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      updateUser(user.id, payload.user);
+      setEditingAddressUserId(null);
+      setEditingAddressText('');
+      flashAddressNotice(`已为 ${user.name} 追加 ${newAddresses.length} 个地址`);
+    } catch (error) {
+      setAddressActionError(error instanceof Error ? error.message : '追加地址失败');
+    } finally {
+      setSavingAddressUserId(null);
+    }
+  };
   const copyText = async (text: string) => {
     if (!text.trim()) return;
     await navigator.clipboard.writeText(text);
@@ -529,13 +576,6 @@ export default function ManagePage() {
     if (!payload) return;
     await copyText(payload);
     flashCopied('all-twitter');
-  };
-
-  const toggleAddressExpand = (userId: string) => {
-    setExpandedAddressByUserId((current) => ({
-      ...current,
-      [userId]: !current[userId],
-    }));
   };
 
   const toggleSort = (key: ManageSortKey) => {
@@ -589,6 +629,13 @@ export default function ManagePage() {
             <Plus className="mr-1 h-4 w-4" />
             手动新建
           </Button>
+          <Link
+            href="/addresses"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+          >
+            地址页
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </section>
 
         <section className="rounded-2xl border border-zinc-800/50 bg-zinc-900/50 p-6">
@@ -817,9 +864,17 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
 
         <section className="space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <h2 className="text-sm font-medium text-zinc-400">
-              已关注人物 ({searchText.trim() ? `${filteredUsers.length} / ${users.length}` : users.length})
-            </h2>
+            <div className="space-y-1">
+              <h2 className="text-sm font-medium text-zinc-400">
+                已关注人物 ({searchText.trim() ? `${filteredUsers.length} / ${users.length}` : users.length})
+              </h2>
+              <p className="text-xs text-zinc-600">
+                地址详情、复制和删除已拆分到{' '}
+                <Link href="/addresses" className="text-blue-400 hover:text-blue-300">
+                  /addresses
+                </Link>
+              </p>
+            </div>
             <div className="relative w-full md:w-80">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
               <Input
@@ -840,6 +895,18 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
             </div>
           </div>
 
+          {addressActionError ? (
+            <section className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {addressActionError}
+            </section>
+          ) : null}
+
+          {addressActionNotice ? (
+            <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+              {addressActionNotice}
+            </section>
+          ) : null}
+
           <div className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-900/40">
             <table className="w-full table-auto text-sm">
               <thead className="bg-zinc-900/90 text-zinc-300">
@@ -848,7 +915,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   <th className="w-44 px-2 py-2.5 text-left font-medium">名称</th>
                   <th className="w-28 px-2 py-2.5 text-left font-medium">推特</th>
                   <th className="w-24 px-2 py-2.5 text-left font-medium">TG</th>
-                  <th className="w-32 px-2 py-2.5 text-left font-medium">地址（点击展开）</th>
+                  <th className="w-44 px-2 py-2.5 text-left font-medium">地址</th>
                   <th className="px-2 py-2.5 text-right font-medium">
                     <button
                       className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
@@ -916,11 +983,11 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   const twitterUrl = buildTwitterProfileUrl(user.twitter);
                   const telegramUrl = buildTelegramProfileUrl(user.telegram);
                   const telegramDisplayText = buildTelegramDisplayText(user.telegram);
-                  const isExpanded = Boolean(expandedAddressByUserId[user.id]);
                   const twitterHandle = normalizeTwitterHandle(user.twitter || '');
                   const relayCoverage = twitterHandle
                     ? relayCoverageByHandle[twitterHandle.toLowerCase()] || null
                     : null;
+                  const isEditingAddresses = editingAddressUserId === user.id;
 
                   return (
                     <Fragment key={user.id}>
@@ -994,35 +1061,85 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                           )}
                         </td>
                         <td className="px-2 py-2.5">
-                          <button
-                            onClick={() => toggleAddressExpand(user.id)}
-                            className="inline-flex items-center gap-1 rounded border border-zinc-700/70 bg-zinc-950/80 px-1.5 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
-                          >
-                            <span>{displayAddresses.length} 个地址</span>
-                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded border border-zinc-700/70 bg-zinc-950/80 px-1.5 py-0.5 text-[11px] text-zinc-300">
+                              {displayAddresses.length} 个地址
+                            </span>
+                            <button
+                              onClick={() => {
+                                if (isEditingAddresses) {
+                                  setEditingAddressUserId(null);
+                                  setEditingAddressText('');
+                                  setAddressActionError(null);
+                                  return;
+                                }
+                                setEditingAddressUserId(user.id);
+                                setEditingAddressText('');
+                                setAddressActionError(null);
+                              }}
+                              className="text-[11px] text-blue-400 hover:text-blue-300"
+                            >
+                              追加地址
+                            </button>
+                            <Link href="/addresses" className="text-[11px] text-blue-400 hover:text-blue-300">
+                              地址页
+                            </Link>
+                          </div>
                         </td>
-                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{formatUsdCompact(user.historicalMaxAssetUsd)}</td>
-                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{formatUsdCompact(user.totalAssetUsd)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">
+                          {formatUsdCompact(user.historicalMaxAssetUsd)}
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">
+                          {formatUsdCompact(user.totalAssetUsd)}
+                        </td>
                         <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{stats.socialCount7d}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{stats.walletCount7d}</td>
-                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">{getRecentTotalCount(stats)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">
+                          {getRecentTotalCount(stats)}
+                        </td>
                       </tr>
-                      {isExpanded ? (
-                        <tr key={`${user.id}-expanded`} className="border-b border-zinc-800/70 bg-zinc-950/70">
+                      {isEditingAddresses ? (
+                        <tr className="border-b border-zinc-800/70 bg-zinc-950/70">
                           <td colSpan={10} className="px-4 py-3">
-                            <div className="space-y-2">
-                              {displayAddresses.map((address) => (
-                                <div key={`${user.id}-${address.address}`} className="flex items-center gap-2 text-xs text-zinc-300">
-                                  <span
-                                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getAddressBadgeMeta(address).className}`}
-                                  >
-                                    {getAddressBadgeMeta(address).label}
-                                  </span>
-                                  <span className="shrink-0 text-zinc-400">{address.name}</span>
-                                  <span className="break-all font-mono text-zinc-500">{getManageAddressDisplayText(address.address)}</span>
-                                </div>
-                              ))}
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                              <div className="space-y-2">
+                                <Label className="text-xs text-zinc-400">批量追加地址</Label>
+                                <textarea
+                                  value={editingAddressText}
+                                  onChange={(event) => setEditingAddressText(event.target.value)}
+                                  rows={4}
+                                  placeholder={`0x123...abc:主钱包
+9x8y...:Sol钱包`}
+                                  className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono text-sm text-zinc-100 outline-none transition-colors focus:border-zinc-700"
+                                />
+                                <p className="text-[11px] text-zinc-500">
+                                  格式: <code>address:name</code>。`0x` 地址会自动按同一逻辑地址补 BSC / ETH /
+                                  BASE 三链。
+                                </p>
+                              </div>
+                              <div className="mt-3 flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setEditingAddressUserId(null);
+                                    setEditingAddressText('');
+                                    setAddressActionError(null);
+                                  }}
+                                  disabled={savingAddressUserId === user.id}
+                                  className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                                >
+                                  取消
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => void handleAddAddressesToUser(user)}
+                                  disabled={!editingAddressText.trim() || savingAddressUserId === user.id}
+                                  className="bg-blue-600 text-white hover:bg-blue-700"
+                                >
+                                  {savingAddressUserId === user.id ? '追加中...' : '提交追加'}
+                                </Button>
+                              </div>
                             </div>
                           </td>
                         </tr>
