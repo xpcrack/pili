@@ -208,6 +208,32 @@ async function run() {
       ],
       '默认 syncedAt 也应传给 markAddressesSynced'
     );
+
+    const invalidSyncedResult = await runAssetSyncPipeline({
+      users,
+      addressAssets,
+      userAssets,
+      diagnostics,
+      syncedAt: Number.NaN,
+      validateAndPersistPeakAssetSnapshots: async () => ({
+        addressAssets: [addressAssets[0]!],
+        userAssets: [userAssets[0]!],
+        blockedUsers,
+      }),
+      markAddressesSynced: () => {},
+    });
+
+    assert.deepEqual(
+      invalidSyncedResult.syncedCursors,
+      [
+        {
+          chain: 'bsc',
+          address: '0xok',
+          syncedAt: defaultSyncedAt,
+        },
+      ],
+      '非法 syncedAt 也应回落到 Date.now()'
+    );
   } finally {
     Date.now = originalDateNow;
   }

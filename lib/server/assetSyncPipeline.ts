@@ -39,7 +39,10 @@ export async function runAssetSyncPipeline(
   const validateAndPersist =
     params.validateAndPersistPeakAssetSnapshots ?? defaultValidateAndPersistPeakAssetSnapshots;
   const markSynced = params.markAddressesSynced ?? defaultMarkAddressesSynced;
-  const syncedAt = params.syncedAt ?? Date.now();
+  const syncedAt =
+    typeof params.syncedAt === 'number' && Number.isFinite(params.syncedAt)
+      ? params.syncedAt
+      : Date.now();
 
   const validation = await validateAndPersist({
     users: params.users,
