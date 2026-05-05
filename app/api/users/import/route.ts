@@ -7,6 +7,7 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import { notifyBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import {
   mergeTwitterIdentityIntoUser,
   resolveTwitterIdentityForHandle,
@@ -30,6 +31,11 @@ export async function POST(request: NextRequest) {
       )
     );
     const result = importTrackedUsers(hydratedUsers, { replaceExisting });
+    await notifyBid2MirrorSync({
+      entity: 'user',
+      action: 'imported',
+      userId: result.importedIds[0] || null,
+    });
 
     return NextResponse.json({
       ok: true,
