@@ -1,7 +1,43 @@
 import type { UserDetailsErrorPayload, UserDetailsSuccessPayload } from '@/lib/userDetails';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
+}
+
+function isNumberOrNull(value: unknown): value is number | null {
+  return typeof value === 'number' || value === null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isUserAddress(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.address === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.chain === 'string' &&
+    isNumberOrNull(value.totalAssetUsd) &&
+    isNumberOrNull(value.assetUpdatedAt)
+  );
+}
+
+function isHoldingRow(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.chain === 'string' &&
+    typeof value.tokenAddress === 'string' &&
+    typeof value.symbol === 'string' &&
+    (typeof value.name === 'string' || value.name === null) &&
+    typeof value.balance === 'number' &&
+    typeof value.priceUsd === 'number' &&
+    typeof value.valueUsd === 'number'
+  );
+}
+
 function isUserDetailsSuccessPayload(payload: unknown): payload is UserDetailsSuccessPayload {
-  if (!payload || typeof payload !== 'object') {
+  if (!isRecord(payload)) {
     return false;
   }
 
@@ -14,12 +50,18 @@ function isUserDetailsSuccessPayload(payload: unknown): payload is UserDetailsSu
     !!user &&
     typeof user === 'object' &&
     typeof user.id === 'string' &&
+    typeof user.name === 'string' &&
+    typeof user.handle === 'string' &&
+    typeof user.avatar === 'string' &&
     Array.isArray(user.addresses) &&
+    user.addresses.every(isUserAddress) &&
     typeof user.totalAssetUsd === 'number' &&
     typeof user.historicalMaxAssetUsd === 'number' &&
     (typeof user.assetUpdatedAt === 'number' || user.assetUpdatedAt === null) &&
     Array.isArray(user.tags) &&
+    isStringArray(user.tags) &&
     Array.isArray(candidate.holdings) &&
+    candidate.holdings.every(isHoldingRow) &&
     (typeof candidate.holdingsUpdatedAt === 'number' || candidate.holdingsUpdatedAt === null) &&
     typeof candidate.holdingsThresholdUsd === 'number' &&
     !!summary &&
@@ -29,6 +71,14 @@ function isUserDetailsSuccessPayload(payload: unknown): payload is UserDetailsSu
     typeof summary.successfulAddressCount === 'number' &&
     typeof summary.failedAddressCount === 'number'
   );
+}
+
+async function readJsonSafely(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
 }
 
 function readErrorMessage(payload: unknown, status: number) {
@@ -43,7 +93,7 @@ export async function fetchUserDetails(userId: string): Promise<UserDetailsSucce
   const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
     cache: 'no-store',
   });
-  const payload = await response.json();
+  const payload = await readJsonSafely(response);
 
   if (!response.ok) {
     throw new Error(readErrorMessage(payload, response.status));

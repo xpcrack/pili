@@ -11,13 +11,31 @@ function createSuccessPayload(): UserDetailsSuccessPayload {
       name: '详情用户',
       handle: 'detail-user',
       avatar: '',
-      addresses: [],
+      addresses: [
+        {
+          address: '0xabc',
+          name: '主钱包',
+          chain: 'bsc',
+          totalAssetUsd: 12,
+          assetUpdatedAt: 123,
+        },
+      ],
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
       assetUpdatedAt: null,
-      tags: [],
+      tags: ['alpha'],
     },
-    holdings: [],
+    holdings: [
+      {
+        chain: 'bsc',
+        tokenAddress: '0xusdt',
+        symbol: 'USDT',
+        name: 'Tether USD',
+        balance: 1,
+        priceUsd: 1,
+        valueUsd: 1,
+      },
+    ],
     holdingsUpdatedAt: null,
     holdingsThresholdUsd: 5,
     holdingsSummary: {
@@ -78,6 +96,16 @@ async function run() {
     await expectRejects(() => fetchUserDetails('missing-user'), '用户不存在');
 
     globalThis.fetch = (async () =>
+      new Response('not-json', {
+        status: 502,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })) as typeof fetch;
+
+    await expectRejects(() => fetchUserDetails('bad-gateway-user'), 'HTTP 502');
+
+    globalThis.fetch = (async () =>
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: {
@@ -86,6 +114,51 @@ async function run() {
       })) as typeof fetch;
 
     await expectRejects(() => fetchUserDetails('broken-user'), 'Malformed user details payload');
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          ...successPayload,
+          user: {
+            ...successPayload.user,
+            addresses: [{ bad: true }],
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      )) as typeof fetch;
+
+    await expectRejects(() => fetchUserDetails('broken-addresses-user'), 'Malformed user details payload');
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          ...successPayload,
+          holdings: [
+            {
+              chain: 'bsc',
+              tokenAddress: '0xusdt',
+              symbol: 'USDT',
+              name: 'Tether USD',
+              balance: '1',
+              priceUsd: 1,
+              valueUsd: 1,
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      )) as typeof fetch;
+
+    await expectRejects(() => fetchUserDetails('broken-holdings-user'), 'Malformed user details payload');
   } finally {
     globalThis.fetch = originalFetch;
   }

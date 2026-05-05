@@ -13,6 +13,56 @@ interface UseSelectedUserDetailsResult {
   retry: () => void;
 }
 
+interface SelectedUserDetailsState {
+  details: UserDetailsSuccessPayload | null;
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+}
+
+export function createSelectedUserDetailsClearedState(): SelectedUserDetailsState {
+  return {
+    details: null,
+    loading: false,
+    refreshing: false,
+    error: null,
+  };
+}
+
+export function createSelectedUserDetailsPendingState(
+  cached: UserDetailsSuccessPayload | null
+): SelectedUserDetailsState {
+  return {
+    details: cached,
+    loading: !cached,
+    refreshing: Boolean(cached),
+    error: null,
+  };
+}
+
+export function createSelectedUserDetailsSuccessState(
+  payload: UserDetailsSuccessPayload
+): SelectedUserDetailsState {
+  return {
+    details: payload,
+    loading: false,
+    refreshing: false,
+    error: null,
+  };
+}
+
+export function createSelectedUserDetailsErrorState(
+  cached: UserDetailsSuccessPayload | null,
+  error: string
+): SelectedUserDetailsState {
+  return {
+    details: cached,
+    loading: false,
+    refreshing: false,
+    error,
+  };
+}
+
 export function useSelectedUserDetails(selectedUserId: string | null): UseSelectedUserDetailsResult {
   const cacheRef = useRef(new Map<string, UserDetailsSuccessPayload>());
   const [details, setDetails] = useState<UserDetailsSuccessPayload | null>(null);
@@ -23,10 +73,11 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
 
   useEffect(() => {
     if (selectedUserId === null) {
-      setDetails(null);
-      setLoading(false);
-      setRefreshing(false);
-      setError(null);
+      const clearedState = createSelectedUserDetailsClearedState();
+      setDetails(clearedState.details);
+      setLoading(clearedState.loading);
+      setRefreshing(clearedState.refreshing);
+      setError(clearedState.error);
       return;
     }
 
@@ -34,10 +85,11 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
     const cached = cacheRef.current.get(userId);
     let cancelled = false;
 
-    setDetails(cached ?? null);
-    setLoading(!cached);
+    const pendingState = createSelectedUserDetailsPendingState(cached ?? null);
+    setDetails(pendingState.details);
+    setLoading(pendingState.loading);
     setRefreshing(Boolean(cached));
-    setError(null);
+    setError(pendingState.error);
 
     void (async () => {
       try {
@@ -48,19 +100,24 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
         }
 
         cacheRef.current.set(userId, payload);
-        setDetails(payload);
-        setLoading(false);
-        setRefreshing(false);
-        setError(null);
+        const successState = createSelectedUserDetailsSuccessState(payload);
+        setDetails(successState.details);
+        setLoading(successState.loading);
+        setRefreshing(successState.refreshing);
+        setError(successState.error);
       } catch (caughtError) {
         if (cancelled) {
           return;
         }
 
-        setDetails(cached ?? null);
-        setLoading(false);
-        setRefreshing(false);
-        setError(caughtError instanceof Error ? caughtError.message : '读取用户详情失败');
+        const errorState = createSelectedUserDetailsErrorState(
+          cached ?? null,
+          caughtError instanceof Error ? caughtError.message : '读取用户详情失败'
+        );
+        setDetails(errorState.details);
+        setLoading(errorState.loading);
+        setRefreshing(errorState.refreshing);
+        setError(errorState.error);
       }
     })();
 
