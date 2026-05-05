@@ -21,7 +21,7 @@ export interface RunAssetSyncPipelineParams {
   addressAssets: AddressAssetSnapshot[];
   userAssets: UserAssetSnapshot[];
   diagnostics: AddressDiagnostic[];
-  syncedAt: number;
+  syncedAt?: number;
   validateAndPersistPeakAssetSnapshots?: ValidateAndPersistPeakAssetSnapshots;
   markAddressesSynced?: MarkAddressesSynced;
 }
@@ -39,6 +39,7 @@ export async function runAssetSyncPipeline(
   const validateAndPersist =
     params.validateAndPersistPeakAssetSnapshots ?? defaultValidateAndPersistPeakAssetSnapshots;
   const markSynced = params.markAddressesSynced ?? defaultMarkAddressesSynced;
+  const syncedAt = params.syncedAt ?? Date.now();
 
   const validation = await validateAndPersist({
     users: params.users,
@@ -52,7 +53,7 @@ export async function runAssetSyncPipeline(
       (item): SyncedCursor => ({
         chain: item.chain,
         address: item.address,
-        syncedAt: params.syncedAt,
+        syncedAt,
       })
     );
 
