@@ -49,12 +49,22 @@ export async function repairSuspiciousHistoricalPeaks(params?: {
   users?: User[];
   collectAssetSnapshots?: (users: User[]) => Promise<AssetSnapshotCollection>;
   nowMs?: number;
+  suspiciousPeakRatio?: number;
+  suspiciousPeakDeltaUsd?: number;
 }) {
   const users = params?.users || listTrackedUsers();
   const nowMs =
     typeof params?.nowMs === 'number' && Number.isFinite(params.nowMs) ? params.nowMs : Date.now();
   const collectAssetSnapshots =
     params?.collectAssetSnapshots || ((targetUsers: User[]) => collectAddressAssetSnapshots(targetUsers, undefined, { nowMs }));
+  const suspiciousPeakRatio =
+    typeof params?.suspiciousPeakRatio === 'number' && Number.isFinite(params.suspiciousPeakRatio)
+      ? params.suspiciousPeakRatio
+      : undefined;
+  const suspiciousPeakDeltaUsd =
+    typeof params?.suspiciousPeakDeltaUsd === 'number' && Number.isFinite(params.suspiciousPeakDeltaUsd)
+      ? params.suspiciousPeakDeltaUsd
+      : undefined;
 
   const refreshedUsers = forceRefreshUsers(users);
   const snapshots = await collectAssetSnapshots(refreshedUsers);
@@ -102,7 +112,14 @@ export async function repairSuspiciousHistoricalPeaks(params?: {
         continue;
       }
 
-      if (!isSuspiciousHistoricalPeak(user.historicalMaxAssetUsd, currentTotalAssetUsd)) {
+      if (
+        !isSuspiciousHistoricalPeak(
+          user.historicalMaxAssetUsd,
+          currentTotalAssetUsd,
+          suspiciousPeakRatio,
+          suspiciousPeakDeltaUsd
+        )
+      ) {
         skippedUsers.push({
           userId: user.id,
           userName: user.name,
