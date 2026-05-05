@@ -10,6 +10,7 @@ import {
   isCompleteAssetSnapshotForUser,
   isDetailTotalMismatch,
   isSuspiciousHistoricalPeak,
+  LIQUIDITY_RATIO_LIMIT,
   SUSPICIOUS_PEAK_DELTA_USD,
   SUSPICIOUS_PEAK_RATIO_LIMIT,
 } from '@/lib/server/assetAnomalyRules';
@@ -52,6 +53,7 @@ const snapshotCounts = countSnapshotsByUserId([
   createAddressAssetSnapshot('user-2', 'HUNUywaDxTV3a8KLwC5cooSeg1hXKcyPnYjvicN6v6ey'),
 ]);
 
+assert.equal(LIQUIDITY_RATIO_LIMIT, 0.5);
 assert.equal(DETAIL_TOTAL_MISMATCH_RATIO_LIMIT, 2);
 assert.equal(DETAIL_TOTAL_MISMATCH_MIN_DELTA_USD, 50_000);
 assert.equal(SUSPICIOUS_PEAK_RATIO_LIMIT, 2);
@@ -60,6 +62,7 @@ assert.equal(isDetailTotalMismatch(5_250_000, 108_222.77), true);
 assert.equal(isDetailTotalMismatch(200_000, 180_000), false);
 assert.equal(isSuspiciousHistoricalPeak(5_350_000, 195_000), true);
 assert.equal(isSuspiciousHistoricalPeak(180_000, 120_000), false);
+assert.equal(isSuspiciousHistoricalPeak(180_000, 120_000, 1.4, 50_000), true);
 assert.deepEqual(
   Array.from(snapshotCounts.entries()).sort(([left], [right]) => left.localeCompare(right)),
   [

@@ -25,7 +25,9 @@ export function isDetailTotalMismatch(
 
 export function isSuspiciousHistoricalPeak(
   historicalMaxAssetUsd: number,
-  currentTotalAssetUsd: number
+  currentTotalAssetUsd: number,
+  suspiciousPeakRatio = SUSPICIOUS_PEAK_RATIO_LIMIT,
+  suspiciousPeakDeltaUsd = SUSPICIOUS_PEAK_DELTA_USD
 ) {
   if (!(historicalMaxAssetUsd > currentTotalAssetUsd) || !(currentTotalAssetUsd > 0)) {
     return false;
@@ -33,7 +35,7 @@ export function isSuspiciousHistoricalPeak(
 
   const ratio = historicalMaxAssetUsd / currentTotalAssetUsd;
   const deltaUsd = historicalMaxAssetUsd - currentTotalAssetUsd;
-  return ratio >= SUSPICIOUS_PEAK_RATIO_LIMIT && deltaUsd >= SUSPICIOUS_PEAK_DELTA_USD;
+  return ratio >= suspiciousPeakRatio && deltaUsd >= suspiciousPeakDeltaUsd;
 }
 
 export function countSnapshotsByUserId(addressAssets: readonly AddressAssetSnapshot[]) {
