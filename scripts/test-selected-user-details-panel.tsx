@@ -62,8 +62,6 @@ function renderPanel(props: Partial<React.ComponentProps<typeof SelectedUserDeta
       matchedFeedCount={7}
       hasMore={true}
       activityBreakdown={{ twitterCount: 3, tradeCount: 4 }}
-      hasAnyActiveFilter={false}
-      completenessWindow={{ label: '2026-05-05 12:00', complete: true }}
       details={null}
       detailsLoading={false}
       detailsRefreshing={false}
