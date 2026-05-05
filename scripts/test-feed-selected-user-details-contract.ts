@@ -1,34 +1,91 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {
+  buildSelectedUserDetailsPanelProps,
+} from '@/app/page';
+import type { UserDetailsSuccessPayload } from '@/lib/userDetails';
+import type { User } from '@/types';
+
+function makeUser(): User {
+  return {
+    id: 'selected-user',
+    name: 'testuser',
+    handle: 'testuser',
+    avatar: '',
+    addresses: [],
+    totalAssetUsd: 123_400,
+    historicalMaxAssetUsd: 456_700,
+    assetUpdatedAt: null,
+    tags: ['Alpha'],
+  };
+}
+
+function makeDetails(user: User): UserDetailsSuccessPayload {
+  return {
+    ok: true,
+    user,
+    holdings: [],
+    holdingsUpdatedAt: null,
+    holdingsThresholdUsd: 5,
+    holdingsSummary: {
+      visibleCount: 0,
+      partial: false,
+      successfulAddressCount: 0,
+      failedAddressCount: 0,
+    },
+  };
+}
 
 async function run() {
-  const source = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8');
+  const retrySelectedUserDetails = () => {};
 
-  assert.match(
-    source,
-    /import\s+\{\s*SelectedUserDetailsPanel\s*\}\s+from\s+'@\/components\/SelectedUserDetailsPanel'/,
-    'page should import the extracted selected user details panel'
+  assert.equal(
+    buildSelectedUserDetailsPanelProps({
+      selectedUser: null,
+      onBack: () => {},
+      matchedFeedCount: 0,
+      hasMore: false,
+      activityBreakdown: null,
+      selectedUserDetails: null,
+      selectedUserDetailsLoading: false,
+      selectedUserDetailsRefreshing: false,
+      selectedUserDetailsError: null,
+      retrySelectedUserDetails,
+    }),
+    null,
+    'helper should return null when there is no selected user'
   );
-  assert.match(
-    source,
-    /import\s+\{\s*useSelectedUserDetails\s*\}\s+from\s+'@\/hooks\/useSelectedUserDetails'/,
-    'page should import the selected user details hook'
-  );
-  assert.match(
-    source,
-    /const\s*\{\s*details:\s*selectedUserDetails,\s*loading:\s*selectedUserDetailsLoading,\s*refreshing:\s*selectedUserDetailsRefreshing,\s*error:\s*selectedUserDetailsError,\s*retry:\s*retrySelectedUserDetails,\s*\}\s*=\s*useSelectedUserDetails\(selectedUserId\)/s,
-    'page should wire the selected user details hook result to named variables'
-  );
-  assert.match(
-    source,
-    /<SelectedUserDetailsPanel[\s\S]*selectedUser=\{selectedUser\}[\s\S]*details=\{selectedUserDetails\}[\s\S]*detailsLoading=\{selectedUserDetailsLoading\}[\s\S]*detailsRefreshing=\{selectedUserDetailsRefreshing\}[\s\S]*detailsError=\{selectedUserDetailsError\}[\s\S]*onRetryDetails=\{retrySelectedUserDetails\}/,
-    'page should pass the hook state and retry callback into the panel'
-  );
-  assert.doesNotMatch(
-    source,
-    /<ArrowLeft className="h-4 w-4" \/>[\s\S]*<Avatar className="h-10 w-10">[\s\S]*<div className="text-zinc-500">动态拆分<\/div>/,
-    'page should remove the old inline selected-user summary block'
-  );
+
+  const selectedUser = makeUser();
+  const selectedUserDetails = makeDetails(selectedUser);
+  const props = buildSelectedUserDetailsPanelProps({
+    selectedUser,
+    onBack: () => {},
+    matchedFeedCount: 7,
+    hasMore: true,
+    activityBreakdown: {
+      twitterCount: 3,
+      tradeCount: 4,
+    },
+    selectedUserDetails,
+    selectedUserDetailsLoading: true,
+    selectedUserDetailsRefreshing: false,
+    selectedUserDetailsError: '读取失败',
+    retrySelectedUserDetails,
+  });
+
+  assert.ok(props, 'helper should build panel props when a selected user exists');
+  assert.equal(props?.selectedUser, selectedUser);
+  assert.equal(props?.matchedFeedCount, 7);
+  assert.equal(props?.hasMore, true);
+  assert.deepEqual(props?.activityBreakdown, {
+    twitterCount: 3,
+    tradeCount: 4,
+  });
+  assert.equal(props?.details, selectedUserDetails);
+  assert.equal(props?.detailsLoading, true);
+  assert.equal(props?.detailsRefreshing, false);
+  assert.equal(props?.detailsError, '读取失败');
+  assert.equal(props?.onRetryDetails, retrySelectedUserDetails);
 
   console.log('feed selected user details contract tests: ok');
 }

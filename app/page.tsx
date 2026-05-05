@@ -5,7 +5,10 @@ import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
 import { FeedDebugPanel } from '@/components/FeedDebugPanel';
-import { SelectedUserDetailsPanel } from '@/components/SelectedUserDetailsPanel';
+import {
+  SelectedUserDetailsPanel,
+  type SelectedUserDetailsPanelProps,
+} from '@/components/SelectedUserDetailsPanel';
 import { TopNav } from '@/components/TopNav';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -40,6 +43,52 @@ const TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY = 'pilipili:trade-value-display-mode'
 
 function getActivityRenderKey(userId: string, activityId: string, scopedKey: string) {
   return scopedKey || `${userId}:${activityId}`;
+}
+
+interface BuildSelectedUserDetailsPanelPropsArgs {
+  selectedUser: User | null;
+  onBack: () => void;
+  matchedFeedCount: number;
+  hasMore: boolean;
+  activityBreakdown: {
+    twitterCount: number;
+    tradeCount: number;
+  } | null;
+  selectedUserDetails: SelectedUserDetailsPanelProps['details'];
+  selectedUserDetailsLoading: boolean;
+  selectedUserDetailsRefreshing: boolean;
+  selectedUserDetailsError: string | null;
+  retrySelectedUserDetails: () => void;
+}
+
+export function buildSelectedUserDetailsPanelProps({
+  selectedUser,
+  onBack,
+  matchedFeedCount,
+  hasMore,
+  activityBreakdown,
+  selectedUserDetails,
+  selectedUserDetailsLoading,
+  selectedUserDetailsRefreshing,
+  selectedUserDetailsError,
+  retrySelectedUserDetails,
+}: BuildSelectedUserDetailsPanelPropsArgs): SelectedUserDetailsPanelProps | null {
+  if (!selectedUser) {
+    return null;
+  }
+
+  return {
+    selectedUser,
+    onBack,
+    matchedFeedCount,
+    hasMore,
+    activityBreakdown,
+    details: selectedUserDetails,
+    detailsLoading: selectedUserDetailsLoading,
+    detailsRefreshing: selectedUserDetailsRefreshing,
+    detailsError: selectedUserDetailsError,
+    onRetryDetails: retrySelectedUserDetails,
+  };
 }
 
 export default function Home() {
@@ -255,6 +304,19 @@ export default function Home() {
   const handleBackToAll = () => {
     void handleSelectUser(null);
   };
+
+  const selectedUserDetailsPanelProps = buildSelectedUserDetailsPanelProps({
+    selectedUser,
+    onBack: handleBackToAll,
+    matchedFeedCount: matchedFeed.length,
+    hasMore,
+    activityBreakdown,
+    selectedUserDetails,
+    selectedUserDetailsLoading,
+    selectedUserDetailsRefreshing,
+    selectedUserDetailsError,
+    retrySelectedUserDetails,
+  });
 
   const handleLoadMore = useCallback(async () => {
     if (isExpanding || loading || !hasMore) {
@@ -578,22 +640,7 @@ export default function Home() {
               ) : null}
             </div>
 
-            {selectedUser && (
-              <SelectedUserDetailsPanel
-                selectedUser={selectedUser}
-                onBack={handleBackToAll}
-                matchedFeedCount={matchedFeed.length}
-                hasMore={hasMore}
-                activityBreakdown={activityBreakdown}
-                hasAnyActiveFilter={hasAnyActiveFilter}
-                completenessWindow={completenessWindow}
-                details={selectedUserDetails}
-                detailsLoading={selectedUserDetailsLoading}
-                detailsRefreshing={selectedUserDetailsRefreshing}
-                detailsError={selectedUserDetailsError}
-                onRetryDetails={retrySelectedUserDetails}
-              />
-            )}
+            {selectedUserDetailsPanelProps ? <SelectedUserDetailsPanel {...selectedUserDetailsPanelProps} /> : null}
 
             <div className="space-y-2">
               {isInitialLoading ? (

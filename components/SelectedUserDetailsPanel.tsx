@@ -11,7 +11,7 @@ import {
 import { getUserAvatar } from '@/lib/userProfile';
 import type { User } from '@/types';
 
-interface SelectedUserDetailsPanelProps {
+export interface SelectedUserDetailsPanelProps {
   selectedUser: User;
   onBack: () => void;
   matchedFeedCount: number;
@@ -19,11 +19,6 @@ interface SelectedUserDetailsPanelProps {
   activityBreakdown: {
     twitterCount: number;
     tradeCount: number;
-  } | null;
-  hasAnyActiveFilter: boolean;
-  completenessWindow: {
-    label: string | null;
-    complete: boolean;
   } | null;
   details: UserDetailsSuccessPayload | null;
   detailsLoading: boolean;
@@ -49,8 +44,6 @@ export function SelectedUserDetailsPanel({
   matchedFeedCount,
   hasMore,
   activityBreakdown,
-  hasAnyActiveFilter,
-  completenessWindow,
   details,
   detailsLoading,
   detailsRefreshing,
@@ -111,16 +104,6 @@ export function SelectedUserDetailsPanel({
             推特 {activityBreakdown?.twitterCount ?? 0} 条 / 交易 {activityBreakdown?.tradeCount ?? 0} 笔
           </div>
         </div>
-
-        {!hasAnyActiveFilter ? (
-          <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-            <div className="text-zinc-500">个人完备起点</div>
-            <div className="text-sm font-medium text-zinc-100">{completenessWindow?.label || '尚未建立'}</div>
-            <div className={`mt-1 text-[11px] ${completenessWindow?.complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
-              {completenessWindow?.complete ? '窗口已建立' : '等待建立窗口'}
-            </div>
-          </div>
-        ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {selectedUser.tags.map((tag) => (
