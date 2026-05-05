@@ -5,15 +5,14 @@ import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
 import { FeedDebugPanel } from '@/components/FeedDebugPanel';
+import { SelectedUserDetailsPanel } from '@/components/SelectedUserDetailsPanel';
 import { TopNav } from '@/components/TopNav';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
 import { useIsClient } from '@/hooks/useIsClient';
+import { useSelectedUserDetails } from '@/hooks/useSelectedUserDetails';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
-import { ArrowLeft, User as UserIcon } from 'lucide-react';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { getUserAvatar } from '@/lib/userProfile';
-import { formatUsdCompact } from '@/lib/assetFormat';
+import { User as UserIcon } from 'lucide-react';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { shouldShowGlobalCompletenessWindow } from '@/lib/feedCompletenessVisibility';
 import { Input } from '@/components/ui/input';
@@ -136,6 +135,13 @@ export default function Home() {
     if (!selectedUserId) return null;
     return users.find(u => u.id === selectedUserId) || null;
   }, [selectedUserId, users]);
+  const {
+    details: selectedUserDetails,
+    loading: selectedUserDetailsLoading,
+    refreshing: selectedUserDetailsRefreshing,
+    error: selectedUserDetailsError,
+    retry: retrySelectedUserDetails,
+  } = useSelectedUserDetails(selectedUserId);
 
   const {
     matchedFeed,
@@ -573,78 +579,20 @@ export default function Home() {
             </div>
 
             {selectedUser && (
-              <div className="mb-6 flex items-center gap-4 rounded-xl border border-zinc-800/50 bg-zinc-900/50 p-4">
-                <button
-                  onClick={handleBackToAll}
-                  className="flex items-center gap-2 text-zinc-400 transition-colors hover:text-zinc-200"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  <span className="text-sm">返回</span>
-                </button>
-
-                <div className="h-6 w-px bg-zinc-800" />
-
-                <Avatar className="h-10 w-10">
-                  <AvatarImage src={getUserAvatar(selectedUser)} alt={selectedUser.name} />
-                  <AvatarFallback className="bg-zinc-800 text-zinc-400">
-                    {selectedUser.name.slice(0, 2).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-
-                <div>
-                  <h2 className="font-medium text-zinc-100">{selectedUser.name}</h2>
-                  <p className="text-sm text-zinc-500">@{selectedUser.handle}</p>
-                </div>
-
-                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">总资产</div>
-                  <div className="text-sm font-medium text-zinc-100">{formatUsdCompact(selectedUser.totalAssetUsd)}</div>
-                </div>
-
-                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">历史最高</div>
-                  <div className="text-sm font-medium text-zinc-100">
-                    {formatUsdCompact(selectedUser.historicalMaxAssetUsd)}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">已加载结果</div>
-                  <div className="text-sm font-medium text-zinc-100">
-                    {matchedFeed.length}
-                    <span className="ml-2 text-xs text-zinc-500">
-                      {hasMore ? '可继续加载' : '已显示全部'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                  <div className="text-zinc-500">动态拆分</div>
-                  <div className="text-sm font-medium text-zinc-100">
-                    推特 {activityBreakdown?.twitterCount ?? 0} 条 / 交易 {activityBreakdown?.tradeCount ?? 0} 笔
-                  </div>
-                </div>
-
-                {!hasAnyActiveFilter ? (
-                  <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
-                    <div className="text-zinc-500">个人完备起点</div>
-                    <div className="text-sm font-medium text-zinc-100">
-                      {completenessWindow?.label || '尚未建立'}
-                    </div>
-                    <div className={`mt-1 text-[11px] ${completenessWindow?.complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                      {completenessWindow?.complete ? '窗口已建立' : '等待建立窗口'}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="ml-auto flex items-center gap-2">
-                  {selectedUser.tags.map((tag) => (
-                    <span key={tag} className="rounded bg-zinc-800/50 px-2 py-0.5 text-xs text-zinc-400">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
+              <SelectedUserDetailsPanel
+                selectedUser={selectedUser}
+                onBack={handleBackToAll}
+                matchedFeedCount={matchedFeed.length}
+                hasMore={hasMore}
+                activityBreakdown={activityBreakdown}
+                hasAnyActiveFilter={hasAnyActiveFilter}
+                completenessWindow={completenessWindow}
+                details={selectedUserDetails}
+                detailsLoading={selectedUserDetailsLoading}
+                detailsRefreshing={selectedUserDetailsRefreshing}
+                detailsError={selectedUserDetailsError}
+                onRetryDetails={retrySelectedUserDetails}
+              />
             )}
 
             <div className="space-y-2">
