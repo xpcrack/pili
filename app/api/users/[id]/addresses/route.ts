@@ -5,7 +5,7 @@ import {
   removeTrackedAddress,
   TrackedAddressOwnershipConflictError,
 } from '@/lib/server/trackedUsersRepo';
-import { notifyBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
+import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 import { type ChainType } from '@/types';
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     if (!updated) {
       return NextResponse.json({ ok: false, error: '用户不存在' }, { status: 404 });
     }
-    await notifyBid2MirrorSync({
+    triggerBid2MirrorSync({
       entity: 'address',
       action: 'created',
       userId: id,
@@ -81,7 +81,7 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     if (!removed) {
       return NextResponse.json({ ok: false, error: '地址不存在' }, { status: 404 });
     }
-    await notifyBid2MirrorSync({
+    triggerBid2MirrorSync({
       entity: 'address',
       action: 'deleted',
       userId: id,
