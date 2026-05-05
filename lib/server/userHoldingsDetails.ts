@@ -26,8 +26,13 @@ interface ReadUserHoldingsDetailsResult {
   summary: UserHoldingsSummary;
 }
 
+function normalizeHoldingTokenAddress(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenAddress'>) {
+  const tokenAddress = asset.tokenAddress.trim();
+  return asset.chain === 'solana' ? tokenAddress : tokenAddress.toLowerCase();
+}
+
 function getHoldingMergeKey(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenAddress'>) {
-  const tokenAddress = asset.chain === 'solana' ? asset.tokenAddress.trim() : asset.tokenAddress.trim().toLowerCase();
+  const tokenAddress = normalizeHoldingTokenAddress(asset);
   return `${asset.chain}:${tokenAddress}`;
 }
 
@@ -39,7 +44,7 @@ function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
   const merged = new Map<string, UserHoldingRow>();
 
   for (const asset of assets) {
-    const tokenAddress = asset.chain === 'solana' ? asset.tokenAddress.trim() : asset.tokenAddress.trim().toLowerCase();
+    const tokenAddress = normalizeHoldingTokenAddress(asset);
     const mergeKey = getHoldingMergeKey(asset);
     const existing = merged.get(mergeKey);
     if (!existing) {
@@ -98,7 +103,13 @@ export async function readUserHoldingsDetails(
   const settled = await Promise.all(
     user.addresses.map(async (address) => ({
       address,
-      result: await fetchAddressAssetDetails(address.address, address.chain),
+      result: await fetchAddressAssetDetails(address.address, address.chain).catch((error) => ({
+        ok: false as const,
+        configured: true,
+        totalAssetUsd: null,
+        assets: [],
+        error: error instanceof Error ? error.message : 'unknown fetch failure',
+      })),
     }))
   );
 

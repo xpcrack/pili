@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 
-import './server-only-shim.cjs';
-
 import {
   readUserHoldingsDetails,
   UserHoldingsDetailsUnavailableError,
@@ -146,16 +144,181 @@ async function run() {
   assert.deepEqual(
     details.holdings.map((holding) => [
       holding.chain,
+      holding.tokenAddress,
       holding.symbol,
       holding.balance,
       holding.priceUsd,
       holding.valueUsd,
     ]),
     [
-      ['bsc', 'USDT', 8, 1, 8],
-      ['bsc', 'WBNB', 2, 3, 6],
+      ['bsc', '0xusdt', 'USDT', 8, 1, 8],
+      ['bsc', '0xwbnb', 'WBNB', 2, 3, 6],
     ],
     'same-chain same-token holdings should merge, rows under 5 USD should drop, and rows should sort by value desc'
+  );
+
+  const normalizationUser = makeUser([
+    {
+      address: '0xWalletThree',
+      name: '#4',
+      chain: 'bsc',
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
+    },
+    {
+      address: '0xWalletFour',
+      name: '#5',
+      chain: 'bsc',
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
+    },
+    {
+      address: 'SoWalletCaseOne111111111111111111111111111111',
+      name: '#6',
+      chain: 'solana',
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
+    },
+    {
+      address: 'SoWalletCaseTwo111111111111111111111111111111',
+      name: '#7',
+      chain: 'solana',
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
+    },
+    {
+      address: '0xWalletFive',
+      name: '#8',
+      chain: 'bsc',
+      totalAssetUsd: null,
+      assetUpdatedAt: null,
+    },
+  ]);
+
+  const normalizationDetails = await readUserHoldingsDetails(normalizationUser, {
+    now: () => 4_321,
+    fetchAddressAssetDetails: async (address, chain) => {
+      if (address === '0xWalletThree' && chain === 'bsc') {
+        return {
+          ok: true,
+          configured: true,
+          totalAssetUsd: 6,
+          assets: [
+            {
+              address,
+              chain,
+              assetKey: 'bsc:mixed-upper',
+              tokenAddress: ' 0xAbC ',
+              symbol: 'ABC',
+              name: 'Token ABC',
+              balance: 2,
+              priceUsd: 1,
+              valueUsd: 2,
+            },
+          ],
+          error: null,
+        };
+      }
+
+      if (address === '0xWalletFour' && chain === 'bsc') {
+        return {
+          ok: true,
+          configured: true,
+          totalAssetUsd: 4,
+          assets: [
+            {
+              address,
+              chain,
+              assetKey: 'bsc:mixed-lower',
+              tokenAddress: '0xabc',
+              symbol: 'ABC',
+              name: 'Token ABC',
+              balance: 4,
+              priceUsd: 1,
+              valueUsd: 4,
+            },
+          ],
+          error: null,
+        };
+      }
+
+      if (address === 'SoWalletCaseOne111111111111111111111111111111' && chain === 'solana') {
+        return {
+          ok: true,
+          configured: true,
+          totalAssetUsd: 6,
+          assets: [
+            {
+              address,
+              chain,
+              assetKey: 'solana:token-upper',
+              tokenAddress: ' SoTokenCase ',
+              symbol: 'SOLA',
+              name: 'Sol Token A',
+              balance: 1,
+              priceUsd: 6,
+              valueUsd: 6,
+            },
+          ],
+          error: null,
+        };
+      }
+
+      if (address === 'SoWalletCaseTwo111111111111111111111111111111' && chain === 'solana') {
+        return {
+          ok: true,
+          configured: true,
+          totalAssetUsd: 7,
+          assets: [
+            {
+              address,
+              chain,
+              assetKey: 'solana:token-lower',
+              tokenAddress: 'sotokenCase',
+              symbol: 'SOLB',
+              name: 'Sol Token B',
+              balance: 1,
+              priceUsd: 7,
+              valueUsd: 7,
+            },
+          ],
+          error: null,
+        };
+      }
+
+      if (address === '0xWalletFive' && chain === 'bsc') {
+        throw new Error('temporary fetch exception');
+      }
+
+      return {
+        ok: false,
+        configured: true,
+        totalAssetUsd: null,
+        assets: [],
+        error: 'unexpected',
+      };
+    },
+  });
+
+  assert.equal(normalizationDetails.holdingsUpdatedAt, 4_321);
+  assert.equal(normalizationDetails.summary.partial, true);
+  assert.equal(normalizationDetails.summary.successfulAddressCount, 4);
+  assert.equal(normalizationDetails.summary.failedAddressCount, 1);
+  assert.deepEqual(
+    normalizationDetails.holdings.map((holding) => [
+      holding.chain,
+      holding.tokenAddress,
+      holding.symbol,
+      holding.balance,
+      holding.priceUsd,
+      holding.valueUsd,
+    ]),
+    [
+      ['solana', 'sotokenCase', 'SOLB', 1, 7, 7],
+      ['bsc', '0xabc', 'ABC', 6, 1, 6],
+      ['solana', 'SoTokenCase', 'SOLA', 1, 6, 6],
+    ],
+    'thrown address fetches should count as partial failures, EVM token addresses should trim and merge case-insensitively, and Solana token addresses should remain case-sensitive after trimming'
   );
 
   const empty = await readUserHoldingsDetails(makeUser([]), {
