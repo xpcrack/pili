@@ -217,7 +217,7 @@ async function run() {
         assert.notEqual(observed, 'timed-out');
         assert.equal(observed, 'failed');
       } finally {
-        releaseFetch?.();
+        (releaseFetch ?? (() => {}))();
         await resultPromise.catch(() => null);
       }
 

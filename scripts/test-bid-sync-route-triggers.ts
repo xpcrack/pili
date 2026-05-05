@@ -148,7 +148,7 @@ async function run() {
         assert.equal(calls[0]?.body.action, 'created');
       } finally {
         globalThis.fetch = previousFetch;
-        releaseFetch?.();
+        (releaseFetch ?? (() => {}))();
         await waitForBid2MirrorSyncDrain();
       }
     });
