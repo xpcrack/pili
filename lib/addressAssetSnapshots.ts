@@ -1,6 +1,6 @@
-import { fetchOkxTotalValueByAddress } from '@/lib/okx';
+import { fetchOkxAddressAssetDetails } from '@/lib/okx';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
-import type { User } from '@/types';
+import type { ChainType, User } from '@/types';
 
 const ASSET_REFRESH_INTERVAL_WITH_BALANCE_MS = 2 * 60 * 60 * 1000;
 const ASSET_REFRESH_INTERVAL_EMPTY_MS = 3 * 24 * 60 * 60 * 1000;
@@ -9,12 +9,13 @@ interface TotalValueResult {
   ok: boolean;
   configured: boolean;
   totalAssetUsd: number | null;
+  assets?: Array<{ valueUsd: number }>;
   error: string | null;
 }
 
 type TotalValueFetcher = (
   address: string,
-  chain: string
+  chain: ChainType
 ) => Promise<TotalValueResult>;
 
 interface CollectAddressAssetSnapshotsOptions {
@@ -23,6 +24,17 @@ interface CollectAddressAssetSnapshotsOptions {
 
 function toFiniteAmount(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function resolveAssetTotal(result: TotalValueResult) {
+  if (Array.isArray(result.assets)) {
+    return result.assets.reduce((sum, asset) => {
+      const valueUsd = toFiniteAmount(asset?.valueUsd);
+      return sum + (valueUsd ?? 0);
+    }, 0);
+  }
+
+  return toFiniteAmount(result.totalAssetUsd);
 }
 
 function shouldRefreshAddressAsset(address: User['addresses'][number], nowMs: number) {
@@ -45,7 +57,7 @@ function shouldRefreshAddressAsset(address: User['addresses'][number], nowMs: nu
 
 export async function collectAddressAssetSnapshots(
   users: User[],
-  fetcher: TotalValueFetcher = fetchOkxTotalValueByAddress,
+  fetcher: TotalValueFetcher = fetchOkxAddressAssetDetails,
   options?: CollectAddressAssetSnapshotsOptions
 ) {
   const nowMs =
@@ -73,7 +85,7 @@ export async function collectAddressAssetSnapshots(
   const totalsByUserId = new Map<string, number>();
 
   for (const item of settled) {
-    const totalAssetUsd = toFiniteAmount(item.result.totalAssetUsd);
+    const totalAssetUsd = resolveAssetTotal(item.result);
     if (!item.result.ok || totalAssetUsd === null) {
       continue;
     }
