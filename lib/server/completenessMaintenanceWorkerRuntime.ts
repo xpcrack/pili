@@ -6,6 +6,7 @@ import {
   createCompletenessRun,
   deleteClaimedCompletenessPokes,
   finishCompletenessRun,
+  releaseClaimedCompletenessPokes,
   readCompletenessGlobalState,
   readCompletenessSourceStates,
   readPendingCompletenessPokes,
@@ -307,34 +308,77 @@ function mergePokesIntoRunInput(pokes: ReturnType<typeof readPendingCompleteness
   };
 }
 
-export async function runCompletenessMaintenanceWorkerCycle() {
-  ensureGlobalStateConfiguredStartMs();
-  const pokes = readPendingCompletenessPokes(20);
-  const claimedIds = pokes.map((poke) => poke.id);
-  if (claimedIds.length > 0) {
-    claimCompletenessPokes(claimedIds, Date.now());
-  }
-
-  try {
-    const input = pokes.length > 0 ? mergePokesIntoRunInput(pokes) : { trigger: 'interval' as CompletenessTrigger, reason: 'periodic sweep' };
-    const result = await runCompletenessMaintenancePass(input);
-    const sourceStates = readCompletenessSourceStates();
-    const retryDelayMs = sourceStates
-      .filter((state) => state.status === 'retrying')
-      .map((state) => computeCompletenessRetryDelayMs(state.failureCount))
-      .reduce((best, current) => (best === null ? current : Math.min(best, current)), null as number | null);
-
-    return {
-      ...result,
-      sleepMs: result.busy ? BUSY_RETRY_DELAY_MS : retryDelayMs ?? DEFAULT_INTERVAL_MS,
-      claimedPokeCount: claimedIds.length,
-    };
-  } finally {
-    if (claimedIds.length > 0) {
-      deleteClaimedCompletenessPokes(claimedIds);
-    }
-  }
+interface CompletenessMaintenanceWorkerCycleDeps {
+  ensureGlobalStateConfiguredStartMs: typeof ensureGlobalStateConfiguredStartMs;
+  readPendingCompletenessPokes: typeof readPendingCompletenessPokes;
+  claimCompletenessPokes: typeof claimCompletenessPokes;
+  releaseClaimedCompletenessPokes: typeof releaseClaimedCompletenessPokes;
+  deleteClaimedCompletenessPokes: typeof deleteClaimedCompletenessPokes;
+  runCompletenessMaintenancePass: typeof runCompletenessMaintenancePass;
+  readCompletenessSourceStates: typeof readCompletenessSourceStates;
+  now?: () => number;
 }
+
+export function createCompletenessMaintenanceWorkerCycle(
+  overrides: Partial<CompletenessMaintenanceWorkerCycleDeps> = {}
+) {
+  const deps: CompletenessMaintenanceWorkerCycleDeps = {
+    ensureGlobalStateConfiguredStartMs,
+    readPendingCompletenessPokes,
+    claimCompletenessPokes,
+    releaseClaimedCompletenessPokes,
+    deleteClaimedCompletenessPokes,
+    runCompletenessMaintenancePass,
+    readCompletenessSourceStates,
+    ...overrides,
+  };
+
+  return async function runCompletenessMaintenanceWorkerCycle() {
+    deps.ensureGlobalStateConfiguredStartMs();
+    const pokes = deps.readPendingCompletenessPokes(20);
+    const claimedIds = pokes.map((poke) => poke.id);
+    if (claimedIds.length > 0) {
+      deps.claimCompletenessPokes(claimedIds, deps.now ? deps.now() : Date.now());
+    }
+
+    try {
+      const input = pokes.length > 0 ? mergePokesIntoRunInput(pokes) : { trigger: 'interval' as CompletenessTrigger, reason: 'periodic sweep' };
+      const result = await deps.runCompletenessMaintenancePass(input);
+      const sourceStates = deps.readCompletenessSourceStates();
+      const retryDelayMs = sourceStates
+        .filter((state) => state.status === 'retrying')
+        .map((state) => computeCompletenessRetryDelayMs(state.failureCount))
+        .reduce((best, current) => (best === null ? current : Math.min(best, current)), null as number | null);
+
+      if (claimedIds.length > 0) {
+        if (result.busy) {
+          deps.releaseClaimedCompletenessPokes(claimedIds);
+        } else {
+          deps.deleteClaimedCompletenessPokes(claimedIds);
+        }
+      }
+
+      return {
+        ...result,
+        sleepMs: result.busy ? BUSY_RETRY_DELAY_MS : retryDelayMs ?? DEFAULT_INTERVAL_MS,
+        claimedPokeCount: claimedIds.length,
+      };
+    } catch (error) {
+      if (claimedIds.length > 0) {
+        deps.releaseClaimedCompletenessPokes(claimedIds);
+      }
+      throw error;
+    }
+  };
+}
+
+export async function runCompletenessMaintenanceWorkerCycleWithDeps(
+  overrides: Partial<CompletenessMaintenanceWorkerCycleDeps> = {}
+) {
+  return createCompletenessMaintenanceWorkerCycle(overrides)();
+}
+
+export const runCompletenessMaintenanceWorkerCycle = createCompletenessMaintenanceWorkerCycle();
 
 export async function runCompletenessMaintenanceWorkerLoop() {
   upsertCompletenessWorkerStatus('running');

@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { readCompletenessSourceStates } from '@/lib/server/completenessRepo';
-import { computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
+import { computeGlobalProvenEndMs, computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
 import { COMPLETENESS_SOURCES, type CompletenessSourceState } from '@/lib/server/completenessTypes';
 import { readFeedBackfillWindowState, type FeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
@@ -28,6 +28,7 @@ interface BuildCompletenessWindowInput {
   endMs?: number | null;
   windowState?: FeedBackfillWindowState | null;
   requiredSourceStarts?: Array<number | null | undefined>;
+  completeOverride?: boolean;
 }
 
 function normalizeTimestamp(value: number | null | undefined) {
@@ -208,16 +209,19 @@ export function buildCompletenessWindow(input: BuildCompletenessWindowInput): Co
   );
   const startMs = resolveUnifiedWindowStartMs(primaryStartMs, input.requiredSourceStarts || []);
   const endMs = normalizeTimestamp(input.endMs);
+  const complete =
+    typeof input.completeOverride === 'boolean'
+      ? input.completeOverride
+      : startMs !== null &&
+        endMs !== null &&
+        (scope === 'global' ? windowState?.globalAlignment !== 'partial' : true);
 
   return {
     scope,
     startMs,
     endMs,
     label: buildCompletenessLabel(startMs, endMs),
-    complete:
-      startMs !== null &&
-      endMs !== null &&
-      (scope === 'global' ? windowState?.globalAlignment !== 'partial' : true),
+    complete,
   };
 }
 
@@ -231,6 +235,8 @@ export function readFeedViewMeta(options?: { userId?: string | null; endMs?: num
   if (configuredStartMs !== null) {
     const sourceStates = mergeCompletenessSourceStates(readCompletenessSourceStates());
     const globalProvenStartMs = computeGlobalProvenStartMs(sourceStates);
+    const globalProvenEndMs = computeGlobalProvenEndMs(sourceStates);
+    const requestedEndMs = normalizeTimestamp(options?.endMs);
     const complete =
       sourceStates.length > 0 &&
       sourceStates.every(
@@ -238,16 +244,29 @@ export function readFeedViewMeta(options?: { userId?: string | null; endMs?: num
           typeof sourceState.provenStartMs === 'number' &&
           Number.isFinite(sourceState.provenStartMs) &&
           sourceState.provenStartMs <= configuredStartMs
-      );
+      ) &&
+      globalProvenEndMs !== null &&
+      (requestedEndMs === null || globalProvenEndMs >= requestedEndMs);
+    const effectiveEndMs =
+      globalProvenEndMs === null
+        ? null
+        : requestedEndMs === null
+          ? globalProvenEndMs
+          : Math.min(requestedEndMs, globalProvenEndMs);
     return {
       activityBreakdown: userId ? readActivityBreakdownByUser(userId) : null,
       completenessWindow: buildCompletenessWindow({
         scope: userId ? 'user' : 'global',
         userId,
-        endMs: options?.endMs ?? Date.now(),
+        endMs: effectiveEndMs,
         windowState: {
           globalEarliestMs: globalProvenStartMs,
-          perUserEarliestMs: {},
+          perUserEarliestMs:
+            userId && globalProvenStartMs !== null
+              ? {
+                  [userId]: globalProvenStartMs,
+                }
+              : {},
           perUserHistoryComplete: {},
           perUserLastBackfillAt: {},
           perUserLocalQualifiedCount: {},
@@ -255,6 +274,7 @@ export function readFeedViewMeta(options?: { userId?: string | null; endMs?: num
           updatedAt: Date.now(),
         },
         requiredSourceStarts: [],
+        completeOverride: complete,
       }),
     };
   }

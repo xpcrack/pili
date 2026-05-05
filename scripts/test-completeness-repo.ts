@@ -16,6 +16,7 @@ import {
   readCompletenessGlobalState,
   readCompletenessSourceStates,
   readPendingCompletenessPokes,
+  releaseClaimedCompletenessPokes,
   saveCompletenessGlobalState,
   saveCompletenessSourceState,
 } from '../lib/server/completenessRepo';
@@ -366,6 +367,26 @@ async function run() {
     });
     assert.equal(readPendingCompletenessPokes(10).length, 0);
 
+    releaseClaimedCompletenessPokes([pokeId]);
+    const releasedRow = db
+      .prepare('SELECT trigger, source_hint, reason, claimed_at FROM completeness_pokes WHERE id = ?')
+      .get(pokeId) as
+      | {
+          trigger: string;
+          source_hint: string | null;
+          reason: string | null;
+          claimed_at: number | null;
+        }
+      | undefined;
+    assert.deepEqual(releasedRow, {
+      trigger: 'recovery',
+      source_hint: 'telegram-channel',
+      reason: null,
+      claimed_at: null,
+    });
+    assert.equal(readPendingCompletenessPokes(10).length, 1);
+
+    claimCompletenessPokes([pokeId], 1712345906000);
     deleteClaimedCompletenessPokes([pokeId]);
     const remainingPokes = db.prepare('SELECT COUNT(*) as count FROM completeness_pokes').get() as { count: number };
     assert.equal(remainingPokes.count, 0);

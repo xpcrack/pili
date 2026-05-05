@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 
 import './server-only-shim.cjs';
 
-import { computeCompletenessGlobalStatus, computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
+import {
+  computeCompletenessGlobalStatus,
+  computeGlobalProvenEndMs,
+  computeGlobalProvenStartMs,
+} from '@/lib/server/completenessStatus';
 
 function run() {
   assert.equal(computeGlobalProvenStartMs([]), null);
@@ -20,6 +24,25 @@ function run() {
     computeGlobalProvenStartMs([
       { provenStartMs: 1713000000000 },
       { provenStartMs: null },
+    ]),
+    null
+  );
+
+  assert.equal(computeGlobalProvenEndMs([]), null);
+
+  assert.equal(
+    computeGlobalProvenEndMs([
+      { provenEndMs: 1713000000000 },
+      { provenEndMs: 1712500000000 },
+      { provenEndMs: 1712800000000 },
+    ]),
+    1712500000000
+  );
+
+  assert.equal(
+    computeGlobalProvenEndMs([
+      { provenEndMs: 1713000000000 },
+      { provenEndMs: null },
     ]),
     null
   );
