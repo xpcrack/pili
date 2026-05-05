@@ -6,6 +6,77 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.data');
+const COMPLETENESS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS completeness_global_state (
+  singleton_key TEXT PRIMARY KEY,
+  configured_start_ms INTEGER,
+  global_proven_start_ms INTEGER,
+  status TEXT NOT NULL,
+  active_run_id INTEGER,
+  last_success_at INTEGER,
+  last_failure_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completeness_source_state (
+  source TEXT PRIMARY KEY,
+  requested_start_ms INTEGER,
+  proven_start_ms INTEGER,
+  proven_end_ms INTEGER,
+  status TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_success_at INTEGER,
+  last_failure_at INTEGER,
+  blocked_reason TEXT,
+  checkpoint_json TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completeness_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reason TEXT,
+  trigger TEXT NOT NULL,
+  configured_start_ms INTEGER,
+  status TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  global_proven_start_ms INTEGER,
+  summary_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS completeness_run_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  requested_start_ms INTEGER,
+  proven_start_ms INTEGER,
+  proven_end_ms INTEGER,
+  status TEXT NOT NULL,
+  fetched_count INTEGER NOT NULL DEFAULT 0,
+  stored_count INTEGER NOT NULL DEFAULT 0,
+  projected_count INTEGER NOT NULL DEFAULT 0,
+  blocked_reason TEXT,
+  checkpoint_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(run_id, source),
+  FOREIGN KEY (run_id) REFERENCES completeness_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS completeness_pokes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger TEXT NOT NULL,
+  source_hint TEXT,
+  reason TEXT,
+  claimed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_completeness_pokes_claimed
+ON completeness_pokes(claimed_at, created_at ASC);
+`;
 
 function getDataDir() {
   const customDataDir = (process.env.PILIPILI_DATA_DIR || '').trim();
@@ -685,6 +756,8 @@ CREATE TABLE IF NOT EXISTS feed_conflict_notifications (
 CREATE INDEX IF NOT EXISTS idx_feed_conflict_notifications_pending
 ON feed_conflict_notifications(status, next_retry_at, id);
 
+${COMPLETENESS_SCHEMA_SQL}
+
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   event_id UNINDEXED,
   content,
@@ -889,6 +962,7 @@ function initializeDb(db: Database.Database) {
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
   ensureTwitterIdentityColumns(db);
+  ensureCompletenessSchema(db);
   ensureEventsFtsIndexing(db);
   migrateLegacyJudgments(db);
   initialized = true;
@@ -1056,6 +1130,13 @@ function ensureTwitterIdentityColumns(db: Database.Database) {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_twitter_tweets_author_user_created
      ON twitter_tweets(author_user_id, created_at_ms DESC)`
+  );
+}
+
+function ensureCompletenessSchema(db: Database.Database) {
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_completeness_run_sources_run_source
+     ON completeness_run_sources(run_id, source)`
   );
 }
 

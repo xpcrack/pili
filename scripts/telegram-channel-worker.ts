@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { acquireIngestionLease, heartbeatIngestionLease, releaseIngestionLease } from '@/lib/server/twitterRepo';
 import { readTelegramMtprotoPolicy, sleep } from '@/lib/server/telegramMtprotoPolicy';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
@@ -60,6 +61,11 @@ async function waitForWorkerLease(leaseTtlMs: number) {
       leaseLost = false;
       leaseOwned = true;
       upsertChannelWorkerStatus('running');
+      queueCompletenessPoke({
+        trigger: 'recovery',
+        sourceHint: 'telegram-channel',
+        reason: 'telegram channel worker lease recovered',
+      });
       startHeartbeat(leaseTtlMs);
       console.log('[telegram-channel-worker] worker lease acquired');
       return;

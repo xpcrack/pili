@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/server/apiGuard';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { readSystemConfig, saveSystemConfig } from '@/lib/server/systemConfigRepo';
 
 export const runtime = 'nodejs';
@@ -20,12 +21,14 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
+    const previousConfig = readSystemConfig();
     const body = (await request.json().catch(() => null)) as
       | {
           telegramUnknownPersonAlertChatId?: string | null;
           telegramTradeMonitorSourceChatId?: string | null;
           telegramTwitterMonitorSourceChatId?: string | null;
           conflictNotificationTelegramChatId?: string | null;
+          completenessStartMs?: number | string | null;
           twitterRelayCoveredPollingIntervalMinutes?: number | string | null;
           twitterUncoveredPollingIntervalMinutes?: number | string | null;
         }
@@ -60,6 +63,12 @@ export async function PATCH(request: NextRequest) {
           : typeof body.conflictNotificationTelegramChatId === 'string'
             ? body.conflictNotificationTelegramChatId
             : undefined,
+      completenessStartMs:
+        body.completenessStartMs === null
+          ? null
+          : typeof body.completenessStartMs === 'number' || typeof body.completenessStartMs === 'string'
+            ? body.completenessStartMs
+            : undefined,
       twitterRelayCoveredPollingIntervalMinutes:
         body.twitterRelayCoveredPollingIntervalMinutes === null
           ? ''
@@ -75,6 +84,14 @@ export async function PATCH(request: NextRequest) {
             ? body.twitterUncoveredPollingIntervalMinutes
             : undefined,
     });
+
+    if (previousConfig.completenessStartMs !== config.completenessStartMs) {
+      queueCompletenessPoke({
+        trigger: 'config-change',
+        sourceHint: null,
+        reason: 'completenessStartMs updated',
+      });
+    }
 
     return NextResponse.json({ ok: true, config });
   } catch (error) {
