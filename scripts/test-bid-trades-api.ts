@@ -85,6 +85,7 @@ function makeTradeActivity(params: {
   txAction: 'buy' | 'sell';
   txActionVariant: 'open' | 'add' | 'reduce' | 'close';
   marketCapUsd: number | null;
+  tradeAmountUsdAtTx?: number;
   chain?: 'base' | 'bsc' | 'ethereum' | 'solana' | '';
 }): Activity {
   return {
@@ -106,6 +107,7 @@ function makeTradeActivity(params: {
       txActionVariant: params.txActionVariant,
       trackedAddress: params.trackedAddress,
       marketCapAtTxUsd: params.marketCapUsd ?? undefined,
+      tradeAmountUsdAtTx: params.tradeAmountUsdAtTx,
     },
   };
 }
@@ -220,6 +222,25 @@ async function run() {
         {
           user: alpha,
           activity: makeTradeActivity({
+            id: 'trade-native-quote-repaired-usd',
+            userId: alpha.id,
+            timestamp: 1_717_178_983_500,
+            txHash: '0xnativequote',
+            trackedAddress: alpha.addresses[0].address,
+            tokenAddress: '0xTokenNativeQuote',
+            tokenSymbol: 'NATIVE',
+            tokenAmount: '12',
+            quoteSymbol: 'ETH',
+            quoteAmount: '0.1',
+            txAction: 'buy',
+            txActionVariant: 'add',
+            marketCapUsd: 640_000,
+            tradeAmountUsdAtTx: 321.45,
+          }),
+        },
+        {
+          user: alpha,
+          activity: makeTradeActivity({
             id: 'trade-add',
             userId: alpha.id,
             timestamp: 1_717_178_982_000,
@@ -298,7 +319,7 @@ async function run() {
 
     const page1Response = await route.GET(
       new NextRequest(
-        `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=2&fromMs=1717178979000&toMs=1717178985000`,
+        `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=3&fromMs=1717178979000&toMs=1717178985000`,
         {
           headers: {
             authorization: 'Bearer bid-internal-token',
@@ -312,11 +333,11 @@ async function run() {
     assert.equal(page1Payload.ok, true);
     assert.deepEqual(
       page1Payload.trades.map((trade) => trade.eventId),
-      ['trade-open', 'trade-add']
+      ['trade-open', 'trade-native-quote-repaired-usd', 'trade-add']
     );
     assert.deepEqual(
       page1Payload.trades.map((trade) => `${trade.action}/${trade.actionVariant}`),
-      ['buy/open', 'buy/add']
+      ['buy/open', 'buy/add', 'buy/add']
     );
     assert.equal(page1Payload.trades[0].trackedWalletAddress, alpha.addresses[0].address.toLowerCase());
     assert.equal(page1Payload.trades[0].trackedWalletAddressRaw, alpha.addresses[0].address);
@@ -325,11 +346,15 @@ async function run() {
     assert.equal(page1Payload.trades[0].amountUsd, 250);
     assert.equal(page1Payload.trades[0].marketCapUsd, 1_250_000);
     assert.equal(page1Payload.trades[0].costDataStatus, 'complete');
+    assert.equal(page1Payload.trades[1].quoteSymbol, 'ETH');
+    assert.equal(page1Payload.trades[1].quoteAmount, 0.1);
+    assert.equal(page1Payload.trades[1].amountUsd, 321.45);
+    assert.equal(page1Payload.trades[1].costDataStatus, 'complete');
     assert.ok(page1Payload.nextCursor);
 
     const page1RepeatResponse = await route.GET(
       new NextRequest(
-        `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=2&fromMs=1717178979000&toMs=1717178985000`,
+        `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=3&fromMs=1717178979000&toMs=1717178985000`,
         {
           headers: {
             authorization: 'Bearer bid-internal-token',
