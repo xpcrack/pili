@@ -2,12 +2,14 @@ import 'server-only';
 
 import { collectAddressAssetSnapshots } from '@/lib/addressAssetSnapshots';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
+import {
+  countSnapshotsByUserId,
+  isCompleteAssetSnapshotForUser,
+  isSuspiciousHistoricalPeak,
+} from '@/lib/server/assetAnomalyRules';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { listTrackedUsers, updateAssetSnapshots } from '@/lib/server/trackedUsersRepo';
 import type { User } from '@/types';
-
-const DEFAULT_SUSPICIOUS_PEAK_RATIO = 2;
-const DEFAULT_SUSPICIOUS_PEAK_DELTA_USD = 50_000;
 
 type AssetSnapshotCollection = Awaited<ReturnType<typeof collectAddressAssetSnapshots>>;
 
@@ -43,34 +45,6 @@ function forceRefreshUsers(users: readonly User[]) {
   }));
 }
 
-function countSnapshotsByUserId(addressAssets: readonly AddressAssetSnapshot[]) {
-  const counts = new Map<string, number>();
-
-  for (const asset of addressAssets) {
-    if (!asset.userId) {
-      continue;
-    }
-    counts.set(asset.userId, (counts.get(asset.userId) || 0) + 1);
-  }
-
-  return counts;
-}
-
-function isSuspiciousHistoricalPeak(
-  historicalMaxAssetUsd: number,
-  currentTotalAssetUsd: number,
-  suspiciousPeakRatio: number,
-  suspiciousPeakDeltaUsd: number
-) {
-  if (!(historicalMaxAssetUsd > currentTotalAssetUsd) || !(currentTotalAssetUsd > 0)) {
-    return false;
-  }
-
-  const ratio = historicalMaxAssetUsd / currentTotalAssetUsd;
-  const deltaUsd = historicalMaxAssetUsd - currentTotalAssetUsd;
-  return ratio >= suspiciousPeakRatio && deltaUsd >= suspiciousPeakDeltaUsd;
-}
-
 export async function repairSuspiciousHistoricalPeaks(params?: {
   users?: User[];
   collectAssetSnapshots?: (users: User[]) => Promise<AssetSnapshotCollection>;
@@ -86,19 +60,17 @@ export async function repairSuspiciousHistoricalPeaks(params?: {
   const suspiciousPeakRatio =
     typeof params?.suspiciousPeakRatio === 'number' && Number.isFinite(params.suspiciousPeakRatio)
       ? params.suspiciousPeakRatio
-      : DEFAULT_SUSPICIOUS_PEAK_RATIO;
+      : undefined;
   const suspiciousPeakDeltaUsd =
     typeof params?.suspiciousPeakDeltaUsd === 'number' && Number.isFinite(params.suspiciousPeakDeltaUsd)
       ? params.suspiciousPeakDeltaUsd
-      : DEFAULT_SUSPICIOUS_PEAK_DELTA_USD;
+      : undefined;
 
   const refreshedUsers = forceRefreshUsers(users);
   const snapshots = await collectAssetSnapshots(refreshedUsers);
   const snapshotCounts = countSnapshotsByUserId(snapshots.addressAssets);
   const completeUserIds = new Set(
-    users
-      .filter((user) => (snapshotCounts.get(user.id) || 0) === user.addresses.length)
-      .map((user) => user.id)
+    users.filter((user) => isCompleteAssetSnapshotForUser(user, snapshotCounts)).map((user) => user.id)
   );
 
   const completeAddressAssets = snapshots.addressAssets.filter(

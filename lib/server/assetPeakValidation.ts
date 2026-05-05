@@ -6,14 +6,15 @@ import {
   type OkxAddressAssetDetail,
 } from '@/lib/okx';
 import { fetchDexscreenerTokenInfo } from '@/lib/tokenLogo';
+import {
+  isDetailTotalMismatch,
+  LIQUIDITY_RATIO_LIMIT,
+} from '@/lib/server/assetAnomalyRules';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { updateAssetSnapshots } from '@/lib/server/trackedUsersRepo';
 import type { ChainType, User } from '@/types';
 
 const TOP_HOLDINGS_LIMIT = 5;
-const LIQUIDITY_RATIO_LIMIT = 0.5;
-const DETAIL_TOTAL_MISMATCH_RATIO_LIMIT = 2;
-const DETAIL_TOTAL_MISMATCH_MIN_DELTA_USD = 50_000;
 
 type FetchAddressAssetDetails = typeof fetchOkxAddressAssetDetails;
 type FetchTokenLiquidity = (
@@ -81,19 +82,6 @@ function buildTopHoldingsSnapshot(holdings: PeakValidationHolding[]) {
     liquidityUsd: holding.liquidityUsd,
     liquidityRatio: holding.liquidityRatio,
   }));
-}
-
-function isDetailTotalMismatch(candidateTotalAssetUsd: number, detailTotalAssetUsd: number) {
-  if (!(candidateTotalAssetUsd > 0) || !(detailTotalAssetUsd > 0)) {
-    return false;
-  }
-
-  const larger = Math.max(candidateTotalAssetUsd, detailTotalAssetUsd);
-  const smaller = Math.min(candidateTotalAssetUsd, detailTotalAssetUsd);
-  const ratio = larger / smaller;
-  const deltaUsd = Math.abs(candidateTotalAssetUsd - detailTotalAssetUsd);
-
-  return ratio >= DETAIL_TOTAL_MISMATCH_RATIO_LIMIT && deltaUsd >= DETAIL_TOTAL_MISMATCH_MIN_DELTA_USD;
 }
 
 function writeBlockedPeakAuditRows(rows: BlockedPeakSnapshot[]) {
