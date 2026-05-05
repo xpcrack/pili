@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  cleanTwitterDisplayText,
   collapseActivityCardText,
   getActivityCardTypeLabel,
   getTelegramCardPrimaryText,
@@ -34,6 +35,18 @@ function run() {
     collapseActivityCardText('A\r\n\r\nB'),
     'A\nB',
     'social body copy should normalize line endings and collapse blank lines'
+  );
+
+  assert.equal(
+    cleanTwitterDisplayText('DRAM is now live. 20x leverage, 24/7, 365. https://t.co/4671GVIP0h'),
+    'DRAM is now live. 20x leverage, 24/7, 365.',
+    'twitter card text should hide inline urls while preserving the surrounding sentence'
+  );
+
+  assert.equal(
+    cleanTwitterDisplayText('https://t.co/MU3UISkJ0r'),
+    '',
+    'twitter card text should hide url-only quote stubs'
   );
 
   console.log('activity card social tests: ok');

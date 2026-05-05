@@ -12,6 +12,8 @@ export interface TwitterRelayPayload {
   tweetId?: string;
   action?: 'tweet' | 'quote' | 'reply' | string;
   content?: string;
+  quotedAuthorHandle?: string;
+  quotedContent?: string;
   url?: string;
   authorHandle?: string;
   createdAtMs?: number;
@@ -137,6 +139,8 @@ export async function ingestTwitterRelayPayload(payload: TwitterRelayPayload) {
 
   const tweetId = parseTweetId(payload);
   const fullText = (payload.content || '').trim();
+  const quotedAuthorHandle = normalizeTwitterHandle(payload.quotedAuthorHandle || '');
+  const quotedContent = (payload.quotedContent || '').trim();
   const authorHandle = normalizeTwitterHandle(payload.authorHandle || '');
 
   const normalizedAuthorHandle = normalize(authorHandle);
@@ -191,6 +195,8 @@ export async function ingestTwitterRelayPayload(payload: TwitterRelayPayload) {
       sourceChatId: sourceChatId || null,
       messageId: sourceMessageId,
       action: payload.action || null,
+      quotedAuthorHandle: quotedAuthorHandle || null,
+      quotedContent: quotedContent || null,
       url: payload.url || null,
     },
   };

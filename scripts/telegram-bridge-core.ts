@@ -48,6 +48,8 @@ export interface ParsedTwitterRelayPayload {
   tweetId?: string;
   action: 'tweet' | 'quote' | 'reply';
   content: string;
+  quotedAuthorHandle?: string;
+  quotedContent?: string;
   url?: string;
   authorHandle: string;
   createdAtMs: number;
@@ -299,6 +301,9 @@ function extractAuthorHandleFromText(text: string) {
 const TWITTER_CONTENT_LABEL_PATTERN = /^(?:推文内容|📝\s*推文)[:：]\s*/;
 const TWITTER_CONTENT_STOP_PATTERN =
   /^(监控到新推文|✨监控到新推文|你关注的用户[:：]|用户所属分组[:：]|共建|X \(formerly Twitter\)|View Details\b|👤\s*原推作者[:：]|原推作者[:：]|📝\s*原推[:：]|🔗)/;
+const TWITTER_QUOTED_AUTHOR_LABEL_PATTERN = /^(?:👤\s*原推作者|原推作者)[:：]\s*@?([A-Za-z0-9_]{1,15})\b/;
+const TWITTER_QUOTED_CONTENT_LABEL_PATTERN = /^(?:📝\s*原推)[:：]\s*/;
+const TWITTER_QUOTED_CONTENT_STOP_PATTERN = /^(?:🔗|View Details\b)/;
 
 function extractTwitterContent(text: string) {
   const lines = text.replace(/\r/g, '').split('\n');
@@ -316,6 +321,47 @@ function extractTwitterContent(text: string) {
       const nextLine = lines[nextIndex] || '';
       const trimmed = nextLine.trim();
       if (TWITTER_CONTENT_STOP_PATTERN.test(trimmed)) {
+        break;
+      }
+      contentLines.push(nextLine.trimEnd());
+    }
+
+    const content = contentLines.join('\n').trim();
+    if (content) {
+      return content;
+    }
+  }
+
+  return '';
+}
+
+function extractTwitterQuotedAuthorHandle(text: string) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  for (const line of lines) {
+    const match = line.trim().match(TWITTER_QUOTED_AUTHOR_LABEL_PATTERN);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return '';
+}
+
+function extractTwitterQuotedContent(text: string) {
+  const lines = text.replace(/\r/g, '').split('\n');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || '';
+    if (!TWITTER_QUOTED_CONTENT_LABEL_PATTERN.test(line.trim())) {
+      continue;
+    }
+
+    const firstLine = line.replace(TWITTER_QUOTED_CONTENT_LABEL_PATTERN, '').trimEnd();
+    const contentLines = firstLine ? [firstLine] : [];
+
+    for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+      const nextLine = lines[nextIndex] || '';
+      const trimmed = nextLine.trim();
+      if (TWITTER_QUOTED_CONTENT_STOP_PATTERN.test(trimmed)) {
         break;
       }
       contentLines.push(nextLine.trimEnd());
@@ -377,6 +423,8 @@ export function parseTwitterRelayPayload(message: TelegramMessageLike): ParsedTw
   const text = getMessageText(message);
   const refs = findTwitterRefs(message);
   const content = extractTwitterContent(text);
+  const quotedAuthorHandle = normalizeLower(extractTwitterQuotedAuthorHandle(text));
+  const quotedContent = extractTwitterQuotedContent(text);
   const authorHandle = normalizeLower(refs.status?.authorHandle || refs.profile?.authorHandle || extractAuthorHandleFromText(text));
   const tweetId = normalize(refs.status?.tweetId);
   const url = normalize(refs.status?.url);
@@ -396,6 +444,8 @@ export function parseTwitterRelayPayload(message: TelegramMessageLike): ParsedTw
     tweetId: tweetId || undefined,
     action: inferTwitterAction(text, content),
     content,
+    quotedAuthorHandle: quotedAuthorHandle || undefined,
+    quotedContent: quotedContent || undefined,
     url: url || undefined,
     authorHandle,
     createdAtMs,
