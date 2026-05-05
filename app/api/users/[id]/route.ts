@@ -96,6 +96,27 @@ function sanitizeUpdatePayload(id: string, body: unknown): Partial<User> {
   return updates;
 }
 
+function serializeUser(user: User): User {
+  return {
+    id: user.id,
+    name: user.name,
+    handle: user.handle,
+    avatar: user.avatar,
+    currentChainAssetTotal: user.currentChainAssetTotal,
+    historicalMaxChainAssetTotal: user.historicalMaxChainAssetTotal,
+    twitter: user.twitter,
+    twitterUserId: user.twitterUserId,
+    twitterAvatarUrl: user.twitterAvatarUrl,
+    telegram: user.telegram,
+    addresses: user.addresses,
+    totalAssetUsd: user.totalAssetUsd,
+    historicalMaxAssetUsd: user.historicalMaxAssetUsd,
+    assetUpdatedAt: user.assetUpdatedAt,
+    tags: user.tags,
+    relayCoverage: user.relayCoverage,
+  };
+}
+
 export function createGetUserDetailsHandler(deps: GetUserDetailsHandlerDependencies = {}) {
   const listUsers = deps.listUsers ?? listTrackedUsers;
   const readHoldingsDetails = deps.readHoldingsDetails ?? readUserHoldingsDetails;
@@ -113,7 +134,7 @@ export function createGetUserDetailsHandler(deps: GetUserDetailsHandlerDependenc
 
       return NextResponse.json({
         ok: true,
-        user,
+        user: serializeUser(user),
         holdings,
         holdingsUpdatedAt,
         holdingsThresholdUsd: USER_HOLDINGS_THRESHOLD_USD,
