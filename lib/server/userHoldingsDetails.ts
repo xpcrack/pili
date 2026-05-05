@@ -31,6 +31,10 @@ function getHoldingMergeKey(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenA
   return `${asset.chain}:${tokenAddress}`;
 }
 
+function getHoldingPriceUsd(balance: number, valueUsd: number) {
+  return balance > 0 ? valueUsd / balance : 0;
+}
+
 function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
   const merged = new Map<string, UserHoldingRow>();
 
@@ -45,7 +49,7 @@ function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
         symbol: asset.symbol,
         name: asset.name,
         balance: asset.balance,
-        priceUsd: asset.priceUsd,
+        priceUsd: getHoldingPriceUsd(asset.balance, asset.valueUsd),
         valueUsd: asset.valueUsd,
       });
       continue;
@@ -53,7 +57,7 @@ function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
 
     existing.balance += asset.balance;
     existing.valueUsd += asset.valueUsd;
-    existing.priceUsd = existing.balance > 0 ? existing.valueUsd / existing.balance : existing.priceUsd;
+    existing.priceUsd = getHoldingPriceUsd(existing.balance, existing.valueUsd);
     if (!existing.name && asset.name) {
       existing.name = asset.name;
     }

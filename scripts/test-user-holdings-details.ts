@@ -76,8 +76,8 @@ async function run() {
               tokenAddress: '0xwbnb',
               symbol: 'WBNB',
               name: 'Wrapped BNB',
-              balance: 1,
-              priceUsd: 6,
+              balance: 2,
+              priceUsd: 999,
               valueUsd: 6,
             },
           ],
@@ -153,7 +153,7 @@ async function run() {
     ]),
     [
       ['bsc', 'USDT', 8, 1, 8],
-      ['bsc', 'WBNB', 1, 6, 6],
+      ['bsc', 'WBNB', 2, 3, 6],
     ],
     'same-chain same-token holdings should merge, rows under 5 USD should drop, and rows should sort by value desc'
   );
