@@ -8,6 +8,10 @@ function hasNumericProvenStartMs(value: number | null) {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function hasNumericProvenEndMs(value: number | null) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 export function computeGlobalProvenStartMs(sources: ReadonlyArray<Pick<CompletenessSourceState, 'provenStartMs'>>) {
   if (sources.length === 0) {
     return null;
@@ -19,6 +23,19 @@ export function computeGlobalProvenStartMs(sources: ReadonlyArray<Pick<Completen
   }
 
   return Math.max(...(provenStartValues as number[]));
+}
+
+export function computeGlobalProvenEndMs(sources: ReadonlyArray<Pick<CompletenessSourceState, 'provenEndMs'>>) {
+  if (sources.length === 0) {
+    return null;
+  }
+
+  const provenEndValues = sources.map((source) => source.provenEndMs);
+  if (!provenEndValues.every((value) => hasNumericProvenEndMs(value))) {
+    return null;
+  }
+
+  return Math.min(...(provenEndValues as number[]));
 }
 
 export function computeCompletenessGlobalStatus(input: {

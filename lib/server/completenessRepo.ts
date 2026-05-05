@@ -492,6 +492,28 @@ export function claimCompletenessPokes(ids: number[], claimedAt: number): void {
   ).run(normalizedClaimedAt, ...normalizedIds);
 }
 
+export function releaseClaimedCompletenessPokes(ids: number[]): void {
+  if (ids.length === 0) {
+    return;
+  }
+
+  const normalizedIds = ids
+    .map((id) => normalizePositiveInteger(id))
+    .filter((id): id is number => typeof id === 'number');
+  if (normalizedIds.length === 0) {
+    return;
+  }
+
+  const db = getDb();
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  db.prepare(
+    `UPDATE completeness_pokes
+     SET claimed_at = NULL
+     WHERE claimed_at IS NOT NULL
+       AND id IN (${placeholders})`
+  ).run(...normalizedIds);
+}
+
 export function deleteClaimedCompletenessPokes(ids: number[]): void {
   if (ids.length === 0) {
     return;
