@@ -27,7 +27,6 @@ function makeDetails(
 
   return {
     ok: true,
-    user,
     holdings: [
       {
         chain: 'bsc',
@@ -48,7 +47,7 @@ function makeDetails(
       failedAddressCount: 0,
     },
     ...overrides,
-    user,
+    user: overrides.user ?? user,
   };
 }
 
