@@ -86,6 +86,60 @@ async function run() {
   assert.equal(result.userAssets.length, 1);
   assert.equal(result.userAssets[0]?.totalAssetUsd, 100, '人物总资产应汇总三条 EVM 链和其它链');
 
+  const detailPreferred = await collectAddressAssetSnapshots(users, async (_address, chain) => {
+    if (chain === 'bsc') {
+      return {
+        ok: true,
+        configured: true,
+        totalAssetUsd: 10_000_000,
+        assets: [
+          { valueUsd: 11 },
+          { valueUsd: 12 },
+        ],
+        error: null,
+      };
+    }
+    if (chain === 'ethereum') {
+      return {
+        ok: true,
+        configured: true,
+        totalAssetUsd: 10_000_000,
+        assets: [{ valueUsd: 21 }],
+        error: null,
+      };
+    }
+    if (chain === 'base') {
+      return {
+        ok: true,
+        configured: true,
+        totalAssetUsd: 10_000_000,
+        assets: [{ valueUsd: 31 }],
+        error: null,
+      };
+    }
+    return {
+      ok: true,
+      configured: true,
+      totalAssetUsd: 10_000_000,
+      assets: [
+        { valueUsd: 41 },
+        { valueUsd: 1 },
+      ],
+      error: null,
+    };
+  });
+
+  assert.deepEqual(
+    detailPreferred.addressAssets.map((item) => `${item.chain}:${item.totalAssetUsd}`),
+    ['bsc:23', 'ethereum:21', 'base:31', 'solana:42'],
+    '当明细接口提供资产列表时，应以明细求和结果为准，而不是信任外层 totalAssetUsd'
+  );
+  assert.equal(
+    detailPreferred.userAssets[0]?.totalAssetUsd,
+    117,
+    '人物总资产应汇总各地址明细求和结果，避免被异常总值污染'
+  );
+
   const partial = await collectAddressAssetSnapshots(users, async (_address, chain) => {
     if (chain === 'ethereum') {
       return { ok: false, configured: true, totalAssetUsd: null, error: 'fail' };

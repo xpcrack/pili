@@ -12,6 +12,8 @@ import type { ChainType, User } from '@/types';
 
 const TOP_HOLDINGS_LIMIT = 5;
 const LIQUIDITY_RATIO_LIMIT = 0.5;
+const DETAIL_TOTAL_MISMATCH_RATIO_LIMIT = 2;
+const DETAIL_TOTAL_MISMATCH_MIN_DELTA_USD = 50_000;
 
 type FetchAddressAssetDetails = typeof fetchOkxAddressAssetDetails;
 type FetchTokenLiquidity = (
@@ -30,7 +32,7 @@ export interface BlockedPeakSnapshot {
   userName: string;
   candidateTotalAssetUsd: number;
   previousHistoricalMaxAssetUsd: number;
-  status: 'missing_liquidity' | 'liquidity_ratio_exceeded';
+  status: 'missing_liquidity' | 'liquidity_ratio_exceeded' | 'detail_total_mismatch';
   reason: string;
   topHoldings: PeakValidationHolding[];
 }
@@ -79,6 +81,19 @@ function buildTopHoldingsSnapshot(holdings: PeakValidationHolding[]) {
     liquidityUsd: holding.liquidityUsd,
     liquidityRatio: holding.liquidityRatio,
   }));
+}
+
+function isDetailTotalMismatch(candidateTotalAssetUsd: number, detailTotalAssetUsd: number) {
+  if (!(candidateTotalAssetUsd > 0) || !(detailTotalAssetUsd > 0)) {
+    return false;
+  }
+
+  const larger = Math.max(candidateTotalAssetUsd, detailTotalAssetUsd);
+  const smaller = Math.min(candidateTotalAssetUsd, detailTotalAssetUsd);
+  const ratio = larger / smaller;
+  const deltaUsd = Math.abs(candidateTotalAssetUsd - detailTotalAssetUsd);
+
+  return ratio >= DETAIL_TOTAL_MISMATCH_RATIO_LIMIT && deltaUsd >= DETAIL_TOTAL_MISMATCH_MIN_DELTA_USD;
 }
 
 function writeBlockedPeakAuditRows(rows: BlockedPeakSnapshot[]) {
@@ -192,9 +207,24 @@ export async function inspectUserPeakSnapshot(params: InspectUserPeakSnapshotPar
         address: item.address.address,
       }))
     )
-  ).slice(0, TOP_HOLDINGS_LIMIT);
+  );
 
-  if (mergedHoldings.length === 0) {
+  const detailTotalAssetUsd = mergedHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
+  if (isDetailTotalMismatch(params.candidateTotalAssetUsd, detailTotalAssetUsd)) {
+    return {
+      userId: params.user.id,
+      userName: params.user.name,
+      candidateTotalAssetUsd: params.candidateTotalAssetUsd,
+      previousHistoricalMaxAssetUsd: params.previousHistoricalMaxAssetUsd,
+      status: 'detail_total_mismatch' as const,
+      reason: `candidate/detail total mismatch: candidate=${params.candidateTotalAssetUsd.toFixed(2)} detail=${detailTotalAssetUsd.toFixed(2)}`,
+      topHoldings: mergedHoldings.slice(0, TOP_HOLDINGS_LIMIT),
+    };
+  }
+
+  const topHoldings = mergedHoldings.slice(0, TOP_HOLDINGS_LIMIT);
+
+  if (topHoldings.length === 0) {
     return {
       userId: params.user.id,
       userName: params.user.name,
@@ -207,8 +237,8 @@ export async function inspectUserPeakSnapshot(params: InspectUserPeakSnapshotPar
   }
 
   const liquidityCache = new Map<string, number | null>();
-  const topHoldings = await Promise.all(
-    mergedHoldings.map(async (holding) => {
+  const topHoldingsWithLiquidity = await Promise.all(
+    topHoldings.map(async (holding) => {
       const cacheKey = `${holding.chain}:${normalizeAddressKey(holding.chain, holding.tokenAddress)}`;
       let liquidityUsd: number | null;
       if (liquidityCache.has(cacheKey)) {
@@ -228,7 +258,7 @@ export async function inspectUserPeakSnapshot(params: InspectUserPeakSnapshotPar
     })
   );
 
-  const missingLiquidityHolding = topHoldings.find((holding) => holding.liquidityUsd === null);
+  const missingLiquidityHolding = topHoldingsWithLiquidity.find((holding) => holding.liquidityUsd === null);
   if (missingLiquidityHolding) {
     return {
       userId: params.user.id,
@@ -237,11 +267,11 @@ export async function inspectUserPeakSnapshot(params: InspectUserPeakSnapshotPar
       previousHistoricalMaxAssetUsd: params.previousHistoricalMaxAssetUsd,
       status: 'missing_liquidity' as const,
       reason: `missing liquidity for ${missingLiquidityHolding.chain}:${missingLiquidityHolding.tokenAddress}`,
-      topHoldings,
+      topHoldings: topHoldingsWithLiquidity,
     };
   }
 
-  const liquidityExceededHolding = topHoldings.find(
+  const liquidityExceededHolding = topHoldingsWithLiquidity.find(
     (holding) => holding.liquidityRatio !== null && holding.liquidityRatio > LIQUIDITY_RATIO_LIMIT
   );
   if (liquidityExceededHolding) {
@@ -252,7 +282,7 @@ export async function inspectUserPeakSnapshot(params: InspectUserPeakSnapshotPar
       previousHistoricalMaxAssetUsd: params.previousHistoricalMaxAssetUsd,
       status: 'liquidity_ratio_exceeded' as const,
       reason: `${liquidityExceededHolding.symbol} position/liquidity ratio ${liquidityExceededHolding.liquidityRatio?.toFixed(2)} > ${LIQUIDITY_RATIO_LIMIT.toFixed(2)}`,
-      topHoldings,
+      topHoldings: topHoldingsWithLiquidity,
     };
   }
 

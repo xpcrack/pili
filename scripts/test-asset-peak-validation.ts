@@ -351,6 +351,71 @@ async function run() {
     assert.equal(lowLiquidityValidation.userAssets.length, 0, '被拦截用户的总资产快照应被过滤');
     assert.equal(lowLiquidityValidation.addressAssets.length, 0, '被拦截用户的地址资产快照应被过滤');
 
+    const mismatchedDetailUser = createUser('blocked-detail-mismatch', 120_000, 120_000, '0xMismatchAddress');
+    const mismatchedDetailValidation = await validatePeakAssetSnapshots({
+      users: [mismatchedDetailUser],
+      addressAssets: [
+        createAddressAssetSnapshot(mismatchedDetailUser.id, mismatchedDetailUser.addresses[0]!.address, 5_250_000),
+      ],
+      userAssets: [createUserAssetSnapshot(mismatchedDetailUser.id, 5_250_000)],
+      fetchAddressAssetDetails: async () => ({
+        ok: true,
+        configured: true,
+        totalAssetUsd: 108_222.77,
+        assets: [
+          {
+            userId: mismatchedDetailUser.id,
+            address: mismatchedDetailUser.addresses[0]!.address,
+            chain: 'bsc',
+            assetKey: 'bsc:0xjoe',
+            tokenAddress: '0xjoe',
+            symbol: 'JOE',
+            name: 'Joe',
+            balance: 8_225_968,
+            priceUsd: 0.01289,
+            valueUsd: 106_057.52,
+          },
+          {
+            userId: mismatchedDetailUser.id,
+            address: mismatchedDetailUser.addresses[0]!.address,
+            chain: 'bsc',
+            assetKey: 'bsc:0xeth',
+            tokenAddress: '0xeth',
+            symbol: 'ETH',
+            name: 'Ether',
+            balance: 0.083,
+            priceUsd: 2_379.47,
+            valueUsd: 198.79,
+          },
+          {
+            userId: mismatchedDetailUser.id,
+            address: mismatchedDetailUser.addresses[0]!.address,
+            chain: 'bsc',
+            assetKey: 'bsc:0xusd1',
+            tokenAddress: '0xusd1',
+            symbol: 'USD1',
+            name: 'USD1',
+            balance: 47,
+            priceUsd: 0.9998,
+            valueUsd: 46.99,
+          },
+        ],
+        error: null,
+      }),
+      fetchTokenLiquidity: async () => ({ liquidityUsd: 1_000_000 }),
+    });
+    assert.equal(
+      mismatchedDetailValidation.blockedUsers.length,
+      1,
+      '候选总资产与明细合计明显不一致时，即使流动性健康也应拦截'
+    );
+    assert.equal(mismatchedDetailValidation.blockedUsers[0]?.status, 'detail_total_mismatch');
+    assert.equal(
+      mismatchedDetailValidation.userAssets.length,
+      0,
+      '明细口径冲突被拦截后，不应保留对应人物总资产快照'
+    );
+
     const missingLiquidityUser = createUser('blocked-missing-liquidity', 95, 95, '0xMissingLiquidity');
     const missingLiquidityValidation = await validatePeakAssetSnapshots({
       users: [missingLiquidityUser],
