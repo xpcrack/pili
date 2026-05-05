@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { USER_HOLDINGS_THRESHOLD_USD } from '@/lib/userDetails';
 import { UserHoldingsDetailsUnavailableError } from '@/lib/server/userHoldingsDetails';
@@ -21,9 +24,12 @@ function makeUser(id: string): User {
 }
 
 async function run() {
-  const { createGetUserDetailsHandler } = await import('../app/api/users/[id]/route');
+  const { GET, createGetUserDetailsHandler } = await import('../app/api/users/[id]/route');
 
-  const user = makeUser('user-1');
+  const user = {
+    ...makeUser('user-1'),
+    internalOnly: 'should-not-leak',
+  } as User & { internalOnly: string };
   const holdings = [
     {
       chain: 'bsc' as const,
@@ -70,6 +76,7 @@ async function run() {
   assert.equal(successResponse.status, 200);
   assert.equal(readUser, user);
   const successPayload = await successResponse.json();
+  assert.equal('internalOnly' in successPayload.user, false);
   assert.deepEqual(successPayload, {
     ok: true,
     user: {
@@ -136,6 +143,99 @@ async function run() {
     ok: false,
     error: '上游明细暂不可用',
   });
+
+  const genericFailureHandler = createGetUserDetailsHandler({
+    listUsers: () => [user],
+    readHoldingsDetails: async () => {
+      throw new Error('持仓服务异常');
+    },
+  });
+
+  const genericFailureResponse = await genericFailureHandler(
+    new Request(`http://localhost/api/users/${user.id}`) as never,
+    {
+      params: Promise.resolve({
+        id: user.id,
+      }),
+    }
+  );
+
+  assert.equal(genericFailureResponse.status, 500);
+  assert.deepEqual(await genericFailureResponse.json(), {
+    ok: false,
+    error: '持仓服务异常',
+  });
+
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-user-details-route-'));
+  const previousDbPath = process.env.PILIPILI_DB_PATH;
+  const previousDataDir = process.env.PILIPILI_DATA_DIR;
+  process.env.PILIPILI_DATA_DIR = tempDir;
+  process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
+
+  try {
+    const { createTrackedUser } = await import('@/lib/server/trackedUsersRepo');
+    const storedUser = createTrackedUser({
+      name: '导出路由用户',
+      handle: 'exported-get',
+      avatar: '',
+      addresses: [],
+      totalAssetUsd: 0,
+      historicalMaxAssetUsd: 0,
+      assetUpdatedAt: null,
+      tags: [],
+      twitter: undefined,
+      telegram: undefined,
+    });
+
+    const exportedGetResponse = await GET(
+      new Request(`http://localhost/api/users/${storedUser.id}`) as never,
+      {
+        params: Promise.resolve({
+          id: storedUser.id,
+        }),
+      }
+    );
+
+    assert.equal(exportedGetResponse.status, 200);
+    assert.deepEqual(await exportedGetResponse.json(), {
+      ok: true,
+      user: {
+        id: storedUser.id,
+        name: storedUser.name,
+        handle: storedUser.handle,
+        avatar: storedUser.avatar,
+        currentChainAssetTotal: storedUser.currentChainAssetTotal,
+        historicalMaxChainAssetTotal: storedUser.historicalMaxChainAssetTotal,
+        addresses: storedUser.addresses,
+        totalAssetUsd: storedUser.totalAssetUsd,
+        historicalMaxAssetUsd: storedUser.historicalMaxAssetUsd,
+        assetUpdatedAt: storedUser.assetUpdatedAt,
+        tags: storedUser.tags,
+      },
+      holdings: [],
+      holdingsUpdatedAt: null,
+      holdingsThresholdUsd: USER_HOLDINGS_THRESHOLD_USD,
+      holdingsSummary: {
+        visibleCount: 0,
+        partial: false,
+        successfulAddressCount: 0,
+        failedAddressCount: 0,
+      },
+    });
+  } finally {
+    if (typeof previousDbPath === 'string') {
+      process.env.PILIPILI_DB_PATH = previousDbPath;
+    } else {
+      delete process.env.PILIPILI_DB_PATH;
+    }
+    if (typeof previousDataDir === 'string') {
+      process.env.PILIPILI_DATA_DIR = previousDataDir;
+    } else {
+      delete process.env.PILIPILI_DATA_DIR;
+    }
+
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 run().then(() => {
