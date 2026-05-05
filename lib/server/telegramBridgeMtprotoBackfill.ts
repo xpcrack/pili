@@ -17,8 +17,11 @@ function toUpdate(message: TelegramMessageLike): TelegramUpdateLike {
 export async function backfillTelegramBridgeHistory(params: {
   client: TelegramChannelSyncClient;
   limitPerChat?: number;
+  beforeByChatId?: Record<string, number | null>;
+  startMs?: number | null;
+  endMs?: number | null;
 }) {
-  if (!params.client.listBridgeChatMessages) {
+  if (!params.client.listBridgeChatMessages && !params.client.listBridgeChatHistoryPage) {
     throw new Error('Bridge history backfill requires a client with listBridgeChatMessages support.');
   }
 
@@ -39,13 +42,40 @@ export async function backfillTelegramBridgeHistory(params: {
   let fetchedCount = 0;
   let ingestedCount = 0;
   let ignoredCount = 0;
+  const chatResults: Array<{
+    chatId: string;
+    oldestScannedMessageId: number | null;
+    oldestScannedMessageTimeMs: number | null;
+    reachedHistoryBoundary: boolean;
+    nextBeforeMessageId: number | null;
+    fetchedCount: number;
+    ingestedCount: number;
+    ignoredCount: number;
+  }> = [];
 
   for (let index = 0; index < targets.length; index += 1) {
     const target = targets[index];
-    const messages = await params.client.listBridgeChatMessages({
-      chatId: target.chatId,
-      limit: limitPerChat,
-    });
+    const historyPage = params.client.listBridgeChatHistoryPage
+      ? await params.client.listBridgeChatHistoryPage({
+          chatId: target.chatId,
+          beforeMessageId: params.beforeByChatId?.[target.chatId] ?? null,
+          startMs: params.startMs ?? null,
+          endMs: params.endMs ?? null,
+          limit: limitPerChat,
+        })
+      : {
+          messages: await params.client.listBridgeChatMessages!({
+            chatId: target.chatId,
+            limit: limitPerChat,
+          }),
+          oldestScannedMessageId: null,
+          oldestScannedMessageTimeMs: null,
+          reachedHistoryBoundary: false,
+          nextBeforeMessageId: null,
+        };
+    const messages = historyPage.messages;
+    let chatIngestedCount = 0;
+    let chatIgnoredCount = 0;
 
     fetchedCount += messages.length;
     for (const message of messages) {
@@ -53,8 +83,10 @@ export async function backfillTelegramBridgeHistory(params: {
         const result = await ingestTelegramMonitorUpdate(toUpdate(message));
         if ('ignored' in result && result.ignored) {
           ignoredCount += 1;
+          chatIgnoredCount += 1;
         } else {
           ingestedCount += 1;
+          chatIngestedCount += 1;
         }
         continue;
       }
@@ -62,15 +94,29 @@ export async function backfillTelegramBridgeHistory(params: {
       const payload = parseTwitterRelayPayload(message);
       if (!payload) {
         ignoredCount += 1;
+        chatIgnoredCount += 1;
         continue;
       }
       const result = await ingestTwitterRelayPayload(payload);
       if ('ignored' in result && result.ignored) {
         ignoredCount += 1;
+        chatIgnoredCount += 1;
       } else {
         ingestedCount += 1;
+        chatIngestedCount += 1;
       }
     }
+
+    chatResults.push({
+      chatId: target.chatId,
+      oldestScannedMessageId: historyPage.oldestScannedMessageId,
+      oldestScannedMessageTimeMs: historyPage.oldestScannedMessageTimeMs,
+      reachedHistoryBoundary: historyPage.reachedHistoryBoundary,
+      nextBeforeMessageId: historyPage.nextBeforeMessageId,
+      fetchedCount: messages.length,
+      ingestedCount: chatIngestedCount,
+      ignoredCount: chatIgnoredCount,
+    });
 
     if (index < targets.length - 1) {
       await sleep(policy.requestDelayMs);
@@ -82,5 +128,6 @@ export async function backfillTelegramBridgeHistory(params: {
     fetchedCount,
     ingestedCount,
     ignoredCount,
+    chatResults,
   };
 }

@@ -3,7 +3,7 @@ import 'server-only';
 import { getDb } from '@/lib/server/sqlite';
 
 export type SyncLogLevel = 'debug' | 'info' | 'warn' | 'error';
-export type SyncRunKind = 'sync' | 'twitter';
+export type SyncRunKind = 'sync' | 'twitter' | 'completeness';
 
 export interface SyncLogInput {
   runKind: SyncRunKind;

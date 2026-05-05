@@ -9,6 +9,8 @@ import { readTelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import type {
   TelegramAgentReadItem,
+  TelegramBridgeHistoryPage,
+  TelegramChannelHistoryPage,
   TelegramChannelRemoteMessage,
   TelegramChannelResolveInput,
   TelegramChannelResolved,
@@ -450,6 +452,22 @@ function toBridgeMessage(chatId: string, message: Record<string, unknown>): Tele
   };
 }
 
+function resolveHistoryPageBoundary(input: {
+  requestedLimit: number;
+  oldestScannedMessageId: number | null;
+  oldestScannedMessageTimeMs: number | null;
+  scannedCount: number;
+}) {
+  const reachedHistoryBoundary = input.scannedCount < input.requestedLimit;
+  return {
+    oldestScannedMessageId: input.oldestScannedMessageId,
+    oldestScannedMessageTimeMs: input.oldestScannedMessageTimeMs,
+    reachedHistoryBoundary,
+    nextBeforeMessageId:
+      reachedHistoryBoundary || input.oldestScannedMessageId === null ? null : input.oldestScannedMessageId,
+  };
+}
+
 export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncClient> {
   const config = readTelegramClientConfig();
   const policy = readTelegramMtprotoPolicy();
@@ -512,6 +530,58 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
 
       return results.sort((left, right) => left.messageId - right.messageId);
     },
+    async listChannelHistoryPage(params: {
+      source: TelegramChannelSource;
+      resolved: TelegramChannelResolved;
+      beforeMessageId?: number | null;
+      startMs?: number | null;
+      endMs?: number | null;
+      limit?: number;
+    }): Promise<TelegramChannelHistoryPage> {
+      const entityRef = buildTelegramChannelEntityRef({
+        channelRef: params.source.channelRef,
+        channelUsername: params.resolved.channelUsername || params.source.channelUsername,
+        channelChatId: params.resolved.channelChatId || params.source.channelChatId,
+        accessHash: params.resolved.accessHash || params.source.accessHash,
+      });
+      const requestedLimit = params.limit || 50;
+      const results: TelegramChannelRemoteMessage[] = [];
+      let scannedCount = 0;
+      let oldestScannedMessageId: number | null = null;
+      let oldestScannedMessageTimeMs: number | null = null;
+
+      for await (const message of client.iterMessages(entityRef, {
+        limit: requestedLimit,
+        maxId:
+          typeof params.beforeMessageId === 'number' && Number.isFinite(params.beforeMessageId) && params.beforeMessageId > 0
+            ? Math.max(0, Math.floor(params.beforeMessageId) - 1)
+            : undefined,
+      })) {
+        scannedCount += 1;
+        const mapped = mapTelegramMessageToRemoteMessage(message as unknown as Record<string, unknown>);
+        if (!mapped) {
+          continue;
+        }
+        if (typeof params.endMs === 'number' && Number.isFinite(params.endMs) && mapped.postedAtMs > params.endMs) {
+          continue;
+        }
+        results.push(mapped);
+        oldestScannedMessageId = oldestScannedMessageId === null ? mapped.messageId : Math.min(oldestScannedMessageId, mapped.messageId);
+        oldestScannedMessageTimeMs =
+          oldestScannedMessageTimeMs === null ? mapped.postedAtMs : Math.min(oldestScannedMessageTimeMs, mapped.postedAtMs);
+      }
+
+      const boundary = resolveHistoryPageBoundary({
+        requestedLimit,
+        oldestScannedMessageId,
+        oldestScannedMessageTimeMs,
+        scannedCount,
+      });
+      return {
+        messages: results.sort((left, right) => left.messageId - right.messageId),
+        ...boundary,
+      };
+    },
     async listBridgeChatMessages(params: { chatId: string; limit: number }) {
       const results: TelegramMessageLike[] = [];
       await client.getDialogs({
@@ -527,6 +597,62 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
         }
       }
       return results.sort((left, right) => (left.message_id || 0) - (right.message_id || 0));
+    },
+    async listBridgeChatHistoryPage(params: {
+      chatId: string;
+      beforeMessageId?: number | null;
+      startMs?: number | null;
+      endMs?: number | null;
+      limit: number;
+    }): Promise<TelegramBridgeHistoryPage> {
+      const results: TelegramMessageLike[] = [];
+      let scannedCount = 0;
+      let oldestScannedMessageId: number | null = null;
+      let oldestScannedMessageTimeMs: number | null = null;
+      await client.getDialogs({
+        limit: 1000,
+      });
+      const entity = await client.getEntity(params.chatId);
+      for await (const message of client.iterMessages(entity, {
+        limit: params.limit,
+        maxId:
+          typeof params.beforeMessageId === 'number' && Number.isFinite(params.beforeMessageId) && params.beforeMessageId > 0
+            ? Math.max(0, Math.floor(params.beforeMessageId) - 1)
+            : undefined,
+      })) {
+        scannedCount += 1;
+        const mapped = toBridgeMessage(params.chatId, message as unknown as Record<string, unknown>);
+        if (!mapped) {
+          continue;
+        }
+        const messageTimeMs =
+          typeof mapped.date === 'number' && Number.isFinite(mapped.date) ? Math.floor(mapped.date) * 1000 : null;
+        if (typeof params.endMs === 'number' && Number.isFinite(params.endMs) && messageTimeMs !== null && messageTimeMs > params.endMs) {
+          continue;
+        }
+        results.push(mapped);
+        const mappedMessageId =
+          typeof mapped.message_id === 'number' && Number.isFinite(mapped.message_id) ? Math.floor(mapped.message_id) : null;
+        if (mappedMessageId !== null) {
+          oldestScannedMessageId =
+            oldestScannedMessageId === null ? mappedMessageId : Math.min(oldestScannedMessageId, mappedMessageId);
+        }
+        if (messageTimeMs !== null) {
+          oldestScannedMessageTimeMs =
+            oldestScannedMessageTimeMs === null ? messageTimeMs : Math.min(oldestScannedMessageTimeMs, messageTimeMs);
+        }
+      }
+
+      const boundary = resolveHistoryPageBoundary({
+        requestedLimit: params.limit,
+        oldestScannedMessageId,
+        oldestScannedMessageTimeMs,
+        scannedCount,
+      });
+      return {
+        messages: results.sort((left, right) => (left.message_id || 0) - (right.message_id || 0)),
+        ...boundary,
+      };
     },
     async listAgentChatMessages(params: { chatId: string; limit: number }) {
       const results: TelegramAgentReadItem[] = [];

@@ -109,6 +109,8 @@ async function run() {
     assert.equal(backfillResult.chatCount, 2);
     assert.equal(backfillResult.fetchedCount, 2);
     assert.equal(backfillResult.ingestedCount, 2);
+    assert.equal(backfillResult.chatResults.length, 2);
+    assert.equal(backfillResult.chatResults[0]?.reachedHistoryBoundary, false);
     assert.equal(listTwitterTweetsByIds(['1912345678901234567']).length, 1);
     const monitorCountRow = db
       .prepare('SELECT count(*) AS c FROM telegram_monitor_events WHERE source_chat_id = ?')

@@ -12,6 +12,7 @@ export interface SystemConfigSnapshot {
   telegramTradeMonitorSourceChatId: string | null;
   telegramTwitterMonitorSourceChatId: string | null;
   conflictNotificationTelegramChatId: string | null;
+  completenessStartMs: number | null;
   twitterRelayCoveredPollingIntervalMinutes: number;
   twitterUncoveredPollingIntervalMinutes: number;
 }
@@ -51,6 +52,21 @@ function normalizePollingIntervalMinutes(value: unknown, fallback: number) {
   return Math.max(1, Math.min(MAX_TWITTER_POLLING_INTERVAL_MINUTES, Math.floor(parsed)));
 }
 
+function normalizePositiveIntegerTimestamp(value: unknown) {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return Math.floor(parsed);
+}
+
 function normalizeSnapshot(value: unknown): SystemConfigSnapshot {
   const candidate = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 
@@ -59,6 +75,7 @@ function normalizeSnapshot(value: unknown): SystemConfigSnapshot {
     telegramTradeMonitorSourceChatId: normalizeOptionalString(candidate.telegramTradeMonitorSourceChatId),
     telegramTwitterMonitorSourceChatId: normalizeOptionalString(candidate.telegramTwitterMonitorSourceChatId),
     conflictNotificationTelegramChatId: normalizeOptionalString(candidate.conflictNotificationTelegramChatId),
+    completenessStartMs: normalizePositiveIntegerTimestamp(candidate.completenessStartMs),
     twitterRelayCoveredPollingIntervalMinutes: normalizePollingIntervalMinutes(
       candidate.twitterRelayCoveredPollingIntervalMinutes,
       DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES
@@ -82,6 +99,7 @@ export function readSystemConfig() {
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
       conflictNotificationTelegramChatId: null,
+      completenessStartMs: null,
       twitterRelayCoveredPollingIntervalMinutes: DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES,
       twitterUncoveredPollingIntervalMinutes: DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES,
     } satisfies SystemConfigSnapshot;
@@ -109,6 +127,10 @@ export function saveSystemConfig(input: SystemConfigUpdate) {
       input.conflictNotificationTelegramChatId !== undefined
         ? normalizeOptionalString(input.conflictNotificationTelegramChatId)
         : current.conflictNotificationTelegramChatId,
+    completenessStartMs:
+      input.completenessStartMs !== undefined
+        ? normalizePositiveIntegerTimestamp(input.completenessStartMs)
+        : current.completenessStartMs,
     twitterRelayCoveredPollingIntervalMinutes:
       input.twitterRelayCoveredPollingIntervalMinutes !== undefined
         ? normalizePollingIntervalMinutes(

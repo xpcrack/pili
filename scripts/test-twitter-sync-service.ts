@@ -59,6 +59,12 @@ async function run() {
     const twitterRepo = await import('@/lib/server/twitterRepo');
     const twitterSyncService = await import('@/lib/server/twitterSyncService');
 
+    assert.equal(
+      twitterSyncService.computeTwitterSyncWindowDaysFromStartMs(Date.now() - 2 * DAY_MS - 60_000, Date.now()),
+      3
+    );
+    assert.equal(twitterSyncService.computeTwitterSyncWindowDaysFromStartMs(null, Date.now()), 1);
+
     function cleanup() {
       const db = getDb();
       db.prepare("DELETE FROM feed_conflict_notifications WHERE conflict_key LIKE 'twitter:test-twitter-sync-%'").run();
