@@ -75,6 +75,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: '-100',
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,
@@ -107,6 +108,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: '-100',
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,
@@ -129,6 +131,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: null,
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,
@@ -151,6 +154,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: '-100',
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,
@@ -175,6 +179,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: '-200',
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,
@@ -211,6 +216,7 @@ async function run() {
     },
     {
       readConfig: () => ({
+        completenessStartMs: null,
         telegramUnknownPersonAlertChatId: '-100',
         telegramTradeMonitorSourceChatId: null,
         telegramTwitterMonitorSourceChatId: null,

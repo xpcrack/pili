@@ -7,6 +7,7 @@ import { scheduleBackfillCompanionAfterPrimarySync } from '@/lib/server/feedBack
 import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
 import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
 import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
+import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { scheduleTelegramMonitorRepairBatch } from '@/lib/server/telegramMonitorReconciler';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { readTelegramMonitorFeed } from '@/lib/server/telegramMonitorFeed';
@@ -194,6 +195,9 @@ function triggerRefreshCompanionSyncs(options: {
   scope: 'global' | 'user';
   userId: string | null;
 }) {
+  if (typeof readSystemConfig().completenessStartMs === 'number') {
+    return;
+  }
   const users = listTrackedUsers();
   if (!hasTrackedTwitterSource(users, options.userId)) {
     return;
@@ -212,6 +216,15 @@ function triggerBackfillCompanionSyncs(options: {
   scope: 'global' | 'user';
   userId: string | null;
 }) {
+  if (typeof readSystemConfig().completenessStartMs === 'number') {
+    return {
+      twitter: {
+        ok: true,
+        skipped: true,
+        reason: 'unified-completeness-authoritative',
+      },
+    };
+  }
   const users = listTrackedUsers();
   if (!hasTrackedTwitterSource(users, options.userId)) {
     return {
@@ -253,6 +266,15 @@ function scheduleBackfillCompanionSyncs(options: {
   scope: 'global' | 'user';
   userId: string | null;
 }) {
+  if (typeof readSystemConfig().completenessStartMs === 'number') {
+    return {
+      twitter: {
+        ok: true,
+        skipped: true,
+        reason: 'unified-completeness-authoritative',
+      },
+    };
+  }
   const users = listTrackedUsers();
   if (!hasTrackedTwitterSource(users, options.userId)) {
     return {

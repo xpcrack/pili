@@ -33,7 +33,7 @@ async function run() {
       '../lib/server/telegramGramjsClient'
     );
     const { listEventTweetRefsByTweetId } = await import('../lib/server/twitterEnrichmentRepo');
-    const { syncAllTelegramChannelSources, syncTelegramChannelSource } = await import(
+    const { backfillTelegramChannelSourceHistory, syncAllTelegramChannelSources, syncTelegramChannelSource } = await import(
       '../lib/server/telegramChannelSync'
     );
 
@@ -241,6 +241,55 @@ async function run() {
     assert.equal(syncedSource?.lastMessageId, 101);
     assert.equal(getTelegramChannelPostByMessage('-100123', 101)?.messageId, 101);
     assert.equal(listEventTweetRefsByTweetId('2234567890123456789').length, 1);
+
+    const historyResult = await backfillTelegramChannelSourceHistory({
+      sourceId: source.id,
+      beforeMessageId: 101,
+      startMs: now - 7 * 24 * 60 * 60 * 1000,
+      client: {
+        async resolveChannel() {
+          return {
+            channelChatId: '-100123',
+            channelUsername: 'jiuyicall',
+            channelTitle: '旧亿 call',
+            accessHash: 'hash-1',
+          };
+        },
+        async listChannelMessages() {
+          return [];
+        },
+        async listChannelHistoryPage() {
+          return {
+            messages: [
+              {
+                messageId: 100,
+                groupedId: null,
+                postedAtMs: now - 1_000,
+                editDateMs: null,
+                text: '历史消息',
+                textEntities: [],
+                media: [],
+                linkUrls: [],
+                forwardInfo: null,
+                views: 88,
+                forwards: 0,
+                replies: 0,
+                raw: { id: 100 },
+              },
+            ],
+            oldestScannedMessageId: 100,
+            oldestScannedMessageTimeMs: now - 1_000,
+            reachedHistoryBoundary: false,
+            nextBeforeMessageId: 100,
+          };
+        },
+      },
+      fetchTweetsByIds: async () => ({ provider: 'fixture', tweets: [] }),
+    });
+    assert.equal(historyResult.storedCount, 1);
+    assert.equal(historyResult.lastMessageIdAfterRun, 101);
+    assert.equal(getTelegramChannelSourceById(source.id)?.lastMessageId, 101);
+    assert.equal(getTelegramChannelPostByMessage('-100123', 100)?.messageId, 100);
 
     db.prepare(
       `INSERT INTO tracked_users (
