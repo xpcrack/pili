@@ -13,7 +13,7 @@ import {
 } from '@/lib/server/telegramChannelSourceRepo';
 import { ingestTelegramChannelPost } from '@/lib/server/telegramChannelIngest';
 import { upsertTelegramChannelPost } from '@/lib/server/telegramChannelPostRepo';
-import type { TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
+import type { TelegramChannelSource, TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
 
 export interface TelegramChannelSweepResultItem {
   sourceId: string;
@@ -25,6 +25,85 @@ export interface TelegramChannelSweepResultItem {
   error?: string;
   errorKind?: ReturnType<typeof classifyTelegramMtprotoError>['kind'];
   waitMs?: number | null;
+}
+
+function buildDefaultFetchTweetsByIds() {
+  return async (ids: string[]) => {
+    const fetcher = createTwitterFetcher();
+    return fetcher.fetchTweetsByIds({ ids, intent: 'detail' });
+  };
+}
+
+async function storeAndProjectTelegramChannelMessages(params: {
+  source: TelegramChannelSource;
+  resolved: {
+    channelChatId: string;
+    channelUsername: string | null;
+    channelTitle: string | null;
+    accessHash: string | null;
+  };
+  remoteMessages: Array<{
+    messageId: number;
+    groupedId: string | null;
+    postedAtMs: number;
+    editDateMs: number | null;
+    text: string;
+    textEntities: unknown[];
+    media: string[];
+    linkUrls: string[];
+    forwardInfo: Record<string, unknown> | null;
+    views: number | null;
+    forwards: number | null;
+    replies: number | null;
+    raw: Record<string, unknown>;
+  }>;
+  fetchTweetsByIds: (ids: string[]) => Promise<{ provider: string; tweets: UpsertTwitterTweetInput[] }>;
+}) {
+  let storedCount = 0;
+  let projectedCount = 0;
+  let lastMessageId = params.source?.lastMessageId ?? null;
+
+  for (const message of params.remoteMessages.sort((left, right) => left.messageId - right.messageId)) {
+    const stored = upsertTelegramChannelPost({
+      channelChatId: params.resolved.channelChatId,
+      channelUsername: params.resolved.channelUsername,
+      channelTitle: params.resolved.channelTitle,
+      messageId: message.messageId,
+      groupedId: message.groupedId,
+      postedAtMs: message.postedAtMs,
+      editDateMs: message.editDateMs,
+      text: message.text,
+      textEntities: message.textEntities,
+      media: message.media,
+      linkUrls: message.linkUrls,
+      forwardInfo: message.forwardInfo,
+      views: message.views,
+      forwards: message.forwards,
+      replies: message.replies,
+      raw: message.raw,
+    });
+    storedCount += 1;
+    await ingestTelegramChannelPost({
+      source: {
+        ...params.source,
+        channelChatId: params.resolved.channelChatId,
+        channelUsername: params.resolved.channelUsername,
+        channelTitle: params.resolved.channelTitle,
+        accessHash: params.resolved.accessHash,
+        syncStatus: 'ready',
+      },
+      post: stored,
+      fetchTweetsByIds: params.fetchTweetsByIds,
+    });
+    projectedCount += 1;
+    lastMessageId = Math.max(lastMessageId || 0, message.messageId);
+  }
+
+  return {
+    storedCount,
+    projectedCount,
+    lastMessageId,
+  };
 }
 
 export async function syncTelegramChannelSource(params: {
@@ -45,11 +124,7 @@ export async function syncTelegramChannelSource(params: {
   }
 
   const fetchTweetsByIds =
-    params.fetchTweetsByIds ||
-    (async (ids: string[]) => {
-      const fetcher = createTwitterFetcher();
-      return fetcher.fetchTweetsByIds({ ids, intent: 'detail' });
-    });
+    params.fetchTweetsByIds || buildDefaultFetchTweetsByIds();
 
   try {
     const resolved = await params.client.resolveChannel({
@@ -74,44 +149,12 @@ export async function syncTelegramChannelSource(params: {
       limit: Number.parseInt(process.env.TELEGRAM_MTPROTO_CHANNEL_SYNC_LIMIT || '50', 10) || 50,
     });
 
-    let storedCount = 0;
-    let projectedCount = 0;
-    let lastMessageId = source.lastMessageId;
-    for (const message of remoteMessages.sort((left, right) => left.messageId - right.messageId)) {
-      const stored = upsertTelegramChannelPost({
-        channelChatId: resolved.channelChatId,
-        channelUsername: resolved.channelUsername,
-        channelTitle: resolved.channelTitle,
-        messageId: message.messageId,
-        groupedId: message.groupedId,
-        postedAtMs: message.postedAtMs,
-        editDateMs: message.editDateMs,
-        text: message.text,
-        textEntities: message.textEntities,
-        media: message.media,
-        linkUrls: message.linkUrls,
-        forwardInfo: message.forwardInfo,
-        views: message.views,
-        forwards: message.forwards,
-        replies: message.replies,
-        raw: message.raw,
-      });
-      storedCount += 1;
-      await ingestTelegramChannelPost({
-        source: {
-          ...source,
-          channelChatId: resolved.channelChatId,
-          channelUsername: resolved.channelUsername,
-          channelTitle: resolved.channelTitle,
-          accessHash: resolved.accessHash,
-          syncStatus: 'ready',
-        },
-        post: stored,
-        fetchTweetsByIds,
-      });
-      projectedCount += 1;
-      lastMessageId = Math.max(lastMessageId || 0, message.messageId);
-    }
+    const storedProjectResult = await storeAndProjectTelegramChannelMessages({
+      source,
+      resolved,
+      remoteMessages,
+      fetchTweetsByIds,
+    });
 
     updateTelegramChannelSourceState(source.id, {
       channelChatId: resolved.channelChatId,
@@ -119,15 +162,109 @@ export async function syncTelegramChannelSource(params: {
       channelTitle: resolved.channelTitle,
       accessHash: resolved.accessHash,
       syncStatus: 'ready',
-      lastMessageId,
+      lastMessageId: storedProjectResult.lastMessageId,
       lastSyncedAtMs: Date.now(),
       lastError: null,
     });
 
     return {
-      storedCount,
-      projectedCount,
-      lastMessageId,
+      storedCount: storedProjectResult.storedCount,
+      projectedCount: storedProjectResult.projectedCount,
+      lastMessageId: storedProjectResult.lastMessageId,
+    };
+  } catch (error) {
+    const classified = classifyTelegramMtprotoError(error);
+    updateTelegramChannelSourceState(source.id, {
+      syncStatus:
+        classified.kind === 'auth_required'
+          ? 'auth_required'
+          : classified.kind === 'unavailable'
+            ? 'unavailable'
+            : 'error',
+      lastError: classified.message.slice(0, 1000),
+    });
+    throw error;
+  }
+}
+
+export async function backfillTelegramChannelSourceHistory(params: {
+  sourceId: string;
+  client: TelegramChannelSyncClient;
+  beforeMessageId?: number | null;
+  startMs?: number | null;
+  endMs?: number | null;
+  fetchTweetsByIds?: (ids: string[]) => Promise<{ provider: string; tweets: UpsertTwitterTweetInput[] }>;
+}) {
+  const source = getTelegramChannelSourceById(params.sourceId);
+  if (!source) {
+    throw new Error(`telegram channel source not found: ${params.sourceId}`);
+  }
+  if (!source.enabled) {
+    return {
+      sourceId: source.id,
+      fetchedCount: 0,
+      storedCount: 0,
+      projectedCount: 0,
+      oldestScannedMessageId: null,
+      oldestScannedMessageTimeMs: null,
+      reachedHistoryBoundary: true,
+      nextBeforeMessageId: null,
+      lastMessageIdAfterRun: source.lastMessageId,
+    };
+  }
+
+  const fetchTweetsByIds = params.fetchTweetsByIds || buildDefaultFetchTweetsByIds();
+
+  try {
+    const resolved = await params.client.resolveChannel({
+      channelRef: source.channelRef,
+      channelUsername: source.channelUsername,
+      channelChatId: source.channelChatId,
+      accessHash: source.accessHash,
+    });
+    updateTelegramChannelSourceState(source.id, {
+      channelChatId: resolved.channelChatId,
+      channelUsername: resolved.channelUsername,
+      channelTitle: resolved.channelTitle,
+      accessHash: resolved.accessHash,
+      syncStatus: 'ready',
+      lastError: null,
+    });
+
+    const page = params.client.listChannelHistoryPage
+      ? await params.client.listChannelHistoryPage({
+          source,
+          resolved,
+          beforeMessageId: params.beforeMessageId ?? null,
+          startMs: params.startMs ?? null,
+          endMs: params.endMs ?? null,
+          limit: Number.parseInt(process.env.TELEGRAM_MTPROTO_CHANNEL_SYNC_LIMIT || '50', 10) || 50,
+        })
+      : {
+          messages: [],
+          oldestScannedMessageId: null,
+          oldestScannedMessageTimeMs: null,
+          reachedHistoryBoundary: false,
+          nextBeforeMessageId: null,
+        };
+
+    const storedProjectResult = await storeAndProjectTelegramChannelMessages({
+      source,
+      resolved,
+      remoteMessages: page.messages,
+      fetchTweetsByIds,
+    });
+
+    return {
+      sourceId: source.id,
+      fetchedCount: page.messages.length,
+      storedCount: storedProjectResult.storedCount,
+      projectedCount: storedProjectResult.projectedCount,
+      oldestScannedMessageId: page.oldestScannedMessageId,
+      oldestScannedMessageTimeMs: page.oldestScannedMessageTimeMs,
+      reachedHistoryBoundary: page.reachedHistoryBoundary,
+      nextBeforeMessageId: page.nextBeforeMessageId,
+      lastMessageIdAfterRun: source.lastMessageId,
     };
   } catch (error) {
     const classified = classifyTelegramMtprotoError(error);

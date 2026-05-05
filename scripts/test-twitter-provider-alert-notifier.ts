@@ -24,6 +24,7 @@ async function run() {
 
   const missingChat = await notifyTwitterProviderFailures(baseInput, {
     readConfig: () => ({
+      completenessStartMs: null,
       telegramUnknownPersonAlertChatId: null,
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
@@ -40,6 +41,7 @@ async function run() {
 
   const rateLimited = await notifyTwitterProviderFailures(baseInput, {
     readConfig: () => ({
+      completenessStartMs: null,
       telegramUnknownPersonAlertChatId: '-200',
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
@@ -58,6 +60,7 @@ async function run() {
   const consumedKeys: string[] = [];
   const sent = await notifyTwitterProviderFailures(baseInput, {
     readConfig: () => ({
+      completenessStartMs: null,
       telegramUnknownPersonAlertChatId: '-200',
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,
@@ -84,6 +87,7 @@ async function run() {
 
   const failedSend = await notifyTwitterProviderFailures(baseInput, {
     readConfig: () => ({
+      completenessStartMs: null,
       telegramUnknownPersonAlertChatId: null,
       telegramTradeMonitorSourceChatId: null,
       telegramTwitterMonitorSourceChatId: null,

@@ -1,7 +1,11 @@
 import 'server-only';
 
+import { readCompletenessSourceStates } from '@/lib/server/completenessRepo';
+import { computeGlobalProvenEndMs, computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
+import { COMPLETENESS_SOURCES, type CompletenessSourceState } from '@/lib/server/completenessTypes';
 import { readFeedBackfillWindowState, type FeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
+import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 
@@ -24,10 +28,30 @@ interface BuildCompletenessWindowInput {
   endMs?: number | null;
   windowState?: FeedBackfillWindowState | null;
   requiredSourceStarts?: Array<number | null | undefined>;
+  completeOverride?: boolean;
 }
 
 function normalizeTimestamp(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+function mergeCompletenessSourceStates(sourceStates: CompletenessSourceState[]) {
+  const stateBySource = new Map(sourceStates.map((state) => [state.source, state]));
+  return COMPLETENESS_SOURCES.map(
+    (source) =>
+      stateBySource.get(source) || {
+        source,
+        requestedStartMs: null,
+        provenStartMs: null,
+        provenEndMs: null,
+        status: 'idle' as const,
+        failureCount: 0,
+        lastSuccessAt: null,
+        lastFailureAt: null,
+        blockedReason: null,
+        checkpointJson: null,
+      }
+  );
 }
 
 function formatShanghaiTimestamp(ms: number) {
@@ -185,21 +209,76 @@ export function buildCompletenessWindow(input: BuildCompletenessWindowInput): Co
   );
   const startMs = resolveUnifiedWindowStartMs(primaryStartMs, input.requiredSourceStarts || []);
   const endMs = normalizeTimestamp(input.endMs);
+  const complete =
+    typeof input.completeOverride === 'boolean'
+      ? input.completeOverride
+      : startMs !== null &&
+        endMs !== null &&
+        (scope === 'global' ? windowState?.globalAlignment !== 'partial' : true);
 
   return {
     scope,
     startMs,
     endMs,
     label: buildCompletenessLabel(startMs, endMs),
-    complete:
-      startMs !== null &&
-      endMs !== null &&
-      (scope === 'global' ? windowState?.globalAlignment !== 'partial' : true),
+    complete,
   };
 }
 
 export function readFeedViewMeta(options?: { userId?: string | null; endMs?: number | null }) {
   const userId = typeof options?.userId === 'string' && options.userId.trim() ? options.userId.trim() : null;
+  const systemConfig = readSystemConfig();
+  const configuredStartMs =
+    typeof systemConfig.completenessStartMs === 'number' && Number.isFinite(systemConfig.completenessStartMs)
+      ? systemConfig.completenessStartMs
+      : null;
+  if (configuredStartMs !== null) {
+    const sourceStates = mergeCompletenessSourceStates(readCompletenessSourceStates());
+    const globalProvenStartMs = computeGlobalProvenStartMs(sourceStates);
+    const globalProvenEndMs = computeGlobalProvenEndMs(sourceStates);
+    const requestedEndMs = normalizeTimestamp(options?.endMs);
+    const complete =
+      sourceStates.length > 0 &&
+      sourceStates.every(
+        (sourceState) =>
+          typeof sourceState.provenStartMs === 'number' &&
+          Number.isFinite(sourceState.provenStartMs) &&
+          sourceState.provenStartMs <= configuredStartMs
+      ) &&
+      globalProvenEndMs !== null &&
+      (requestedEndMs === null || globalProvenEndMs >= requestedEndMs);
+    const effectiveEndMs =
+      globalProvenEndMs === null
+        ? null
+        : requestedEndMs === null
+          ? globalProvenEndMs
+          : Math.min(requestedEndMs, globalProvenEndMs);
+    return {
+      activityBreakdown: userId ? readActivityBreakdownByUser(userId) : null,
+      completenessWindow: buildCompletenessWindow({
+        scope: userId ? 'user' : 'global',
+        userId,
+        endMs: effectiveEndMs,
+        windowState: {
+          globalEarliestMs: globalProvenStartMs,
+          perUserEarliestMs:
+            userId && globalProvenStartMs !== null
+              ? {
+                  [userId]: globalProvenStartMs,
+                }
+              : {},
+          perUserHistoryComplete: {},
+          perUserLastBackfillAt: {},
+          perUserLocalQualifiedCount: {},
+          globalAlignment: complete ? 'aligned' : 'partial',
+          updatedAt: Date.now(),
+        },
+        requiredSourceStarts: [],
+        completeOverride: complete,
+      }),
+    };
+  }
+
   const windowState = readFeedBackfillWindowState();
   const users = listTrackedUsers();
   const scopedUsers = userId ? users.filter((user) => user.id === userId) : users;
