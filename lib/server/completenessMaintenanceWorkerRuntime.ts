@@ -6,8 +6,8 @@ import {
   createCompletenessRun,
   deleteClaimedCompletenessPokes,
   finishCompletenessRun,
-  releaseClaimedCompletenessPokes,
   readCompletenessGlobalState,
+  releaseClaimedCompletenessPokes,
   readCompletenessSourceStates,
   readPendingCompletenessPokes,
   saveCompletenessGlobalState,
@@ -310,6 +310,7 @@ function mergePokesIntoRunInput(pokes: ReturnType<typeof readPendingCompleteness
 
 interface CompletenessMaintenanceWorkerCycleDeps {
   ensureGlobalStateConfiguredStartMs: typeof ensureGlobalStateConfiguredStartMs;
+  readCompletenessGlobalState: typeof readCompletenessGlobalState;
   readPendingCompletenessPokes: typeof readPendingCompletenessPokes;
   claimCompletenessPokes: typeof claimCompletenessPokes;
   releaseClaimedCompletenessPokes: typeof releaseClaimedCompletenessPokes;
@@ -324,6 +325,7 @@ export function createCompletenessMaintenanceWorkerCycle(
 ) {
   const deps: CompletenessMaintenanceWorkerCycleDeps = {
     ensureGlobalStateConfiguredStartMs,
+    readCompletenessGlobalState,
     readPendingCompletenessPokes,
     claimCompletenessPokes,
     releaseClaimedCompletenessPokes,
@@ -336,13 +338,34 @@ export function createCompletenessMaintenanceWorkerCycle(
   return async function runCompletenessMaintenanceWorkerCycle() {
     deps.ensureGlobalStateConfiguredStartMs();
     const pokes = deps.readPendingCompletenessPokes(20);
-    const claimedIds = pokes.map((poke) => poke.id);
+    const pendingIds = pokes.map((poke) => poke.id);
+    const claimedAt = deps.now ? deps.now() : Date.now();
+    const claimedIds =
+      pendingIds.length > 0 ? deps.claimCompletenessPokes(pendingIds, claimedAt) : [];
+    const claimedIdSet = new Set(claimedIds);
+    const claimedPokes = pokes.filter((poke) => claimedIdSet.has(poke.id));
     if (claimedIds.length > 0) {
-      deps.claimCompletenessPokes(claimedIds, deps.now ? deps.now() : Date.now());
+      // no-op: claiming already happened above so we can know exactly which ids we own
+    }
+
+    if (pendingIds.length > 0 && claimedIds.length === 0) {
+      const globalState = deps.readCompletenessGlobalState();
+      return {
+        started: false,
+        status: globalState?.status || 'idle',
+        globalProvenStartMs: globalState?.globalProvenStartMs ?? null,
+        sourceResults: [],
+        busy: true,
+        sleepMs: BUSY_RETRY_DELAY_MS,
+        claimedPokeCount: 0,
+      };
     }
 
     try {
-      const input = pokes.length > 0 ? mergePokesIntoRunInput(pokes) : { trigger: 'interval' as CompletenessTrigger, reason: 'periodic sweep' };
+      const input =
+        claimedPokes.length > 0
+          ? mergePokesIntoRunInput(claimedPokes)
+          : { trigger: 'interval' as CompletenessTrigger, reason: 'periodic sweep' };
       const result = await deps.runCompletenessMaintenancePass(input);
       const sourceStates = deps.readCompletenessSourceStates();
       const retryDelayMs = sourceStates
@@ -352,9 +375,9 @@ export function createCompletenessMaintenanceWorkerCycle(
 
       if (claimedIds.length > 0) {
         if (result.busy) {
-          deps.releaseClaimedCompletenessPokes(claimedIds);
+          deps.releaseClaimedCompletenessPokes(claimedIds, claimedAt);
         } else {
-          deps.deleteClaimedCompletenessPokes(claimedIds);
+          deps.deleteClaimedCompletenessPokes(claimedIds, claimedAt);
         }
       }
 
@@ -365,7 +388,7 @@ export function createCompletenessMaintenanceWorkerCycle(
       };
     } catch (error) {
       if (claimedIds.length > 0) {
-        deps.releaseClaimedCompletenessPokes(claimedIds);
+        deps.releaseClaimedCompletenessPokes(claimedIds, claimedAt);
       }
       throw error;
     }
