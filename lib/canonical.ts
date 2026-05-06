@@ -105,6 +105,15 @@ function synthesizeHandle(name: string, userId: string) {
 }
 
 function amountUsdFromActivity(activity: Activity) {
+  if (
+    (activity.metadata.txAction === 'buy' || activity.metadata.txAction === 'sell') &&
+    typeof activity.metadata.tradeAmountUsdAtTx === 'number' &&
+    Number.isFinite(activity.metadata.tradeAmountUsdAtTx) &&
+    activity.metadata.tradeAmountUsdAtTx > 0
+  ) {
+    return activity.metadata.tradeAmountUsdAtTx;
+  }
+
   const tokenSymbol = (activity.metadata.token || '').trim().toUpperCase();
   const quoteToken = (activity.metadata.quoteToken || '').trim().toUpperCase();
   const tokenAmount = parseAmount(activity.metadata.value);
