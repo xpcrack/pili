@@ -1,18 +1,13 @@
-import { NextResponse } from 'next/server';
-
 import { listAddressManagementRows } from '@/lib/server/addressManagementRepo';
+import { apiError, apiOk } from '@/lib/server/apiResponse';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    return NextResponse.json({
-      ok: true,
-      rows: listAddressManagementRows(),
-    });
+    return apiOk({ rows: listAddressManagementRows() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '读取地址列表失败';
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return apiError(error, { fallback: '读取地址列表失败' });
   }
 }

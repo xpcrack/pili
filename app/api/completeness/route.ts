@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { enforceAdminRateLimit, requireAdmin } from '@/lib/server/apiGuard';
+import { apiError, apiOk } from '@/lib/server/apiResponse';
 import {
   readCompletenessGlobalState,
   readCompletenessRunSources,
@@ -16,34 +17,37 @@ import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+type CompletenessAction = 'run-now' | 'retry-source' | 'clear-source-checkpoint';
+
 function parseSource(value: unknown): CompletenessSource | null {
   return COMPLETENESS_SOURCES.includes(value as CompletenessSource) ? (value as CompletenessSource) : null;
 }
 
-function mergeSourceStates(sourceStates: CompletenessSourceState[]) {
-  const stateBySource = new Map(sourceStates.map((state) => [state.source, state]));
-  return COMPLETENESS_SOURCES.map(
-    (source) =>
-      stateBySource.get(source) || {
-        source,
-        requestedStartMs: null,
-        provenStartMs: null,
-        provenEndMs: null,
-        status: 'idle' as const,
-        failureCount: 0,
-        lastSuccessAt: null,
-        lastFailureAt: null,
-        blockedReason: null,
-        checkpointJson: null,
-      }
-  );
-}
-
-function parseAction(value: unknown) {
+function parseAction(value: unknown): CompletenessAction | null {
   if (value === 'run-now' || value === 'retry-source' || value === 'clear-source-checkpoint') {
     return value;
   }
   return null;
+}
+
+function makeIdleSourceState(source: CompletenessSource): CompletenessSourceState {
+  return {
+    source,
+    requestedStartMs: null,
+    provenStartMs: null,
+    provenEndMs: null,
+    status: 'idle',
+    failureCount: 0,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    blockedReason: null,
+    checkpointJson: null,
+  };
+}
+
+function mergeSourceStates(sourceStates: CompletenessSourceState[]) {
+  const stateBySource = new Map(sourceStates.map((state) => [state.source, state]));
+  return COMPLETENESS_SOURCES.map((source) => stateBySource.get(source) ?? makeIdleSourceState(source));
 }
 
 function buildCompletenessPayload() {
@@ -52,10 +56,7 @@ function buildCompletenessPayload() {
   const persistedGlobalState = readCompletenessGlobalState();
   const configuredStartMs = config.completenessStartMs;
   const globalProvenStartMs = computeGlobalProvenStartMs(sourceStates);
-  const status = computeCompletenessGlobalStatus({
-    configuredStartMs,
-    sources: sourceStates,
-  });
+  const status = computeCompletenessGlobalStatus({ configuredStartMs, sources: sourceStates });
   const runs = readRecentCompletenessRuns(10);
   const latestRun = runs[0] || null;
   const latestRunSources = latestRun ? readCompletenessRunSources(latestRun.id) : [];
@@ -78,10 +79,7 @@ function buildCompletenessPayload() {
 }
 
 export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    completeness: buildCompletenessPayload(),
-  });
+  return apiOk({ completeness: buildCompletenessPayload() });
 }
 
 export async function POST(request: NextRequest) {
@@ -105,16 +103,16 @@ export async function POST(request: NextRequest) {
     const source = parseSource(body?.source);
 
     if (!action) {
-      return NextResponse.json({ ok: false, error: 'invalid_action' }, { status: 400 });
+      return apiError('invalid_action', { status: 400 });
     }
 
     if (action === 'clear-source-checkpoint') {
       if (!source) {
-        return NextResponse.json({ ok: false, error: 'source_required' }, { status: 400 });
+        return apiError('source_required', { status: 400 });
       }
-      const sourceState = readCompletenessSourceStates().find((item) => item.source === source) || null;
+      const sourceState = readCompletenessSourceStates().find((item) => item.source === source) ?? null;
       if (!sourceState) {
-        return NextResponse.json({ ok: false, error: 'source_not_found' }, { status: 404 });
+        return apiError('source_not_found', { status: 404 });
       }
       saveCompletenessSourceState({
         ...sourceState,
@@ -125,19 +123,14 @@ export async function POST(request: NextRequest) {
         provenStartMs: null,
         provenEndMs: null,
       });
-      return NextResponse.json({
-        ok: true,
-        action,
-        source,
-        completeness: buildCompletenessPayload(),
-      });
+      return apiOk({ action, source, completeness: buildCompletenessPayload() });
     }
 
     if (action === 'retry-source') {
       if (!source) {
-        return NextResponse.json({ ok: false, error: 'source_required' }, { status: 400 });
+        return apiError('source_required', { status: 400 });
       }
-      const sourceState = readCompletenessSourceStates().find((item) => item.source === source) || null;
+      const sourceState = readCompletenessSourceStates().find((item) => item.source === source) ?? null;
       if (sourceState) {
         saveCompletenessSourceState({
           ...sourceState,
@@ -155,19 +148,8 @@ export async function POST(request: NextRequest) {
       reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : action,
     });
 
-    return NextResponse.json({
-      ok: true,
-      action,
-      result,
-      completeness: buildCompletenessPayload(),
-    });
+    return apiOk({ action, result, completeness: buildCompletenessPayload() });
   } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : 'completeness request failed',
-      },
-      { status: 500 }
-    );
+    return apiError(error, { fallback: 'completeness request failed' });
   }
 }

@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { enforceAdminRateLimit, requireAdmin } from '@/lib/server/apiGuard';
+import { apiError, apiOk } from '@/lib/server/apiResponse';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 
@@ -27,10 +28,7 @@ export async function POST(request: NextRequest) {
     const chatId = config.telegramUnknownPersonAlertChatId?.trim() || '';
 
     if (!chatId) {
-      return NextResponse.json(
-        { ok: false, error: '请先填写并保存通知群 Chat ID，再测试通知。' },
-        { status: 400 }
-      );
+      return apiError('请先填写并保存通知群 Chat ID，再测试通知。', { status: 400 });
     }
 
     const nowText = new Date().toLocaleString('zh-CN', {
@@ -43,33 +41,28 @@ export async function POST(request: NextRequest) {
       text: `[pilipili] 通知测试\n时间: ${nowText}\n状态: 正常`,
     });
 
-    if (!result.ok) {
-      if (result.reason === 'missing_bot_token') {
-        return NextResponse.json(
-          { ok: false, error: '缺少 TELEGRAM_RELAY_BOT_TOKEN 或 TELEGRAM_BRIDGE_BOT_TOKEN，无法发送测试通知。' },
-          { status: 500 }
-        );
-      }
+    if (result.ok) {
+      return apiOk();
+    }
 
-      if (result.reason === 'invalid_payload') {
-        return NextResponse.json({ ok: false, error: '通知参数无效，请检查 Chat ID。' }, { status: 400 });
-      }
-
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            typeof result.status === 'number'
-              ? `Telegram 请求失败（HTTP ${result.status}）${result.detail ? `: ${result.detail}` : ''}`
-              : 'Telegram 请求失败',
-        },
-        { status: 502 }
+    if (result.reason === 'missing_bot_token') {
+      return apiError(
+        '缺少 TELEGRAM_RELAY_BOT_TOKEN 或 TELEGRAM_BRIDGE_BOT_TOKEN，无法发送测试通知。',
+        { status: 500 }
       );
     }
 
-    return NextResponse.json({ ok: true });
+    if (result.reason === 'invalid_payload') {
+      return apiError('通知参数无效，请检查 Chat ID。', { status: 400 });
+    }
+
+    const detailSuffix = result.detail ? `: ${result.detail}` : '';
+    const message =
+      typeof result.status === 'number'
+        ? `Telegram 请求失败（HTTP ${result.status}）${detailSuffix}`
+        : 'Telegram 请求失败';
+    return apiError(message, { status: 502 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '测试通知发送失败';
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return apiError(error, { fallback: '测试通知发送失败' });
   }
 }

@@ -6,6 +6,7 @@ import {
   type AddressAssetSnapshot,
   type AddressDiagnostic,
 } from '@/lib/activityFeed';
+import { sleep } from '@/lib/timing';
 
 interface UserAssetSnapshot {
   userId: string;
@@ -193,10 +194,6 @@ function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | 
     sync: payload?.sync,
     syncTrigger: payload?.syncTrigger,
   } satisfies ActivityFeedResponse;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function throwIfAborted(signal?: AbortSignal) {

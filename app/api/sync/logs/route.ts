@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
+import { apiError, apiOk } from '@/lib/server/apiResponse';
 import { readSyncLogs, type SyncRunKind } from '@/lib/server/syncLogRepo';
 
 export const runtime = 'nodejs';
@@ -25,20 +26,13 @@ export async function GET(request: NextRequest) {
     const afterId = parseIntQuery(request.nextUrl.searchParams.get('afterId'));
     const limit = parseIntQuery(request.nextUrl.searchParams.get('limit'));
 
-    const logs = readSyncLogs({
-      runKind,
-      runId,
-      afterId,
-      limit: limit ?? 200,
-    });
+    const logs = readSyncLogs({ runKind, runId, afterId, limit: limit ?? 200 });
 
-    return NextResponse.json({
-      ok: true,
+    return apiOk({
       logs,
       lastId: logs.length > 0 ? logs[logs.length - 1].id : afterId || 0,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '读取同步日志失败';
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return apiError(error, { fallback: '读取同步日志失败' });
   }
 }
