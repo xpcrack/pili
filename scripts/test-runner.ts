@@ -87,6 +87,25 @@ async function testTimeoutKillsSlowFixture() {
   assert.match(result.stdout, /PASS: 0\s+FAIL: 1/);
 }
 
+async function testLiveSuffixExcludedByDefault() {
+  // test-flagged-live ends with -live and should be skipped by default.
+  // --filter=flagged matches only that file, so discovery should find 0 and exit 1.
+  const result = await spawnRunner([`--root=${FIXTURES_ROOT}`, '--filter=flagged']);
+  assert.equal(result.exitCode, 1, `expected exit 1${describeResult(result)}`);
+  assert.match(result.stderr, /no tests found/);
+}
+
+async function testIncludeLiveOptIn() {
+  const result = await spawnRunner([
+    `--root=${FIXTURES_ROOT}`,
+    '--filter=flagged',
+    '--include-live',
+  ]);
+  assert.equal(result.exitCode, 0, `expected exit 0${describeResult(result)}`);
+  assert.match(result.stdout, /✓ test-flagged-live/);
+  assert.match(result.stdout, /PASS: 1\s+FAIL: 0/);
+}
+
 async function run() {
   await testPassingFixtureExits0();
   await testFailingFixtureExits1AndReplaysStderr();
@@ -95,6 +114,8 @@ async function run() {
   await testFilterCaseInsensitive();
   await testNoMatchExits1();
   await testTimeoutKillsSlowFixture();
+  await testLiveSuffixExcludedByDefault();
+  await testIncludeLiveOptIn();
   console.log('runner self-test: ok');
 }
 
