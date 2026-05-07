@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 function readRepoFile(relativePath: string) {
@@ -71,14 +71,14 @@ function run() {
     'package.json should constrain the repo to Node 24.x'
   );
   assert.equal(
-    packageJson.scripts?.['test:node-runtime-policy'],
-    'tsx scripts/test-node-runtime-policy.ts',
-    'package.json should expose the node runtime policy regression test'
+    existsSync(join(process.cwd(), 'scripts/test-node-runtime-policy.ts')),
+    true,
+    'scripts/test-node-runtime-policy.ts must exist; the runner auto-includes it in npm test'
   );
   assert.match(
     packageJson.scripts?.test || '',
-    /\bnpm run test:node-runtime-policy\b/,
-    'npm test should include the node runtime policy regression test'
+    /scripts\/lib\/runTests\.ts/,
+    'npm test should invoke the discovery-based runner so the node runtime policy regression test is picked up automatically'
   );
 
   assert.match(
