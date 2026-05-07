@@ -8,6 +8,7 @@ interface CliFlags {
   bail: boolean;
   verbose: boolean;
   timeoutMs: number;
+  includeLive: boolean;
 }
 
 interface TestResult {
@@ -31,6 +32,8 @@ Flags:
   --bail             Stop at first failure
   --verbose          Print every test's stdout/stderr
   --timeout=<sec>    Per-test timeout (default: ${DEFAULT_TIMEOUT_SEC})
+  --include-live     Include tests whose basename ends with '-live' (excluded by default
+                     because they require live network/session resources)
   -h, --help         Show this help`);
 }
 
@@ -41,10 +44,12 @@ function parseFlags(argv: string[]): CliFlags {
     bail: false,
     verbose: false,
     timeoutMs: DEFAULT_TIMEOUT_SEC * 1000,
+    includeLive: false,
   };
   for (const arg of argv) {
     if (arg === '--bail') flags.bail = true;
     else if (arg === '--verbose') flags.verbose = true;
+    else if (arg === '--include-live') flags.includeLive = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -67,7 +72,7 @@ function parseFlags(argv: string[]): CliFlags {
   return flags;
 }
 
-function discoverTests(root: string, filter: string | null): string[] {
+function discoverTests(root: string, filter: string | null, includeLive: boolean): string[] {
   const lowerFilter = filter ? filter.toLowerCase() : null;
   const entries = readdirSync(root, { withFileTypes: true });
   const matched: string[] = [];
@@ -76,6 +81,8 @@ function discoverTests(root: string, filter: string | null): string[] {
     const name = entry.name;
     if (!name.startsWith('test-')) continue;
     if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue;
+    const baseName = name.replace(/\.tsx?$/, '');
+    if (!includeLive && baseName.endsWith('-live')) continue;
     if (lowerFilter && !name.toLowerCase().includes(lowerFilter)) continue;
     matched.push(path.join(root, name));
   }
@@ -167,7 +174,7 @@ function reportFail(result: TestResult, timeoutSec: number) {
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
-  const files = discoverTests(flags.root, flags.filter);
+  const files = discoverTests(flags.root, flags.filter, flags.includeLive);
 
   if (files.length === 0) {
     const where = flags.filter ? ` matching '${flags.filter}'` : '';
