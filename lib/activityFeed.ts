@@ -3,6 +3,7 @@ import { collectAddressAssetSnapshots } from '@/lib/addressAssetSnapshots';
 import { evaluateActivityForFeed, getDefaultFilterEngineConfig } from '@/lib/filterEngine';
 import { groupTransactionsByHash } from '@/lib/parsing/core';
 import { convertToActivity, type ParseClassification } from '@/lib/parsing/toActivity';
+import { sleep } from '@/lib/timing';
 import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
 import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
 import { Activity, User } from '@/types';
@@ -134,10 +135,6 @@ function readPositiveIntFromEnv(name: string, fallback: number) {
     return fallback;
   }
   return parsed;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function defaultShouldRetryOkxError(error: string | null | undefined) {

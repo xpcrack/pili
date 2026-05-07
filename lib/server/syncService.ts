@@ -20,6 +20,7 @@ import {
   upsertRawTransactions,
 } from '@/lib/server/feedSnapshotRepo';
 import { getDb } from '@/lib/server/sqlite';
+import { sleep } from '@/lib/timing';
 import {
   listTrackedUsers,
 } from '@/lib/server/trackedUsersRepo';
@@ -100,10 +101,6 @@ async function notifySyncFailuresSafely(input: {
   } catch (error) {
     console.error('[syncService] notify sync failures failed:', error);
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseJSON<T>(value: string | null | undefined, fallback: T): T {

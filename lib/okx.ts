@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 
+import { sleep } from '@/lib/timing';
 import type { ChainType } from '@/types';
 
 const OKX_API_BASE = 'https://web3.okx.com';
@@ -202,10 +203,6 @@ const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<ChainType, Record<string, string>> = 
     WSOL: 'So11111111111111111111111111111111111111112',
   },
 };
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function runWithEndpointRateLimit<T>(endpointKey: string, task: () => Promise<T>) {
   while (true) {
