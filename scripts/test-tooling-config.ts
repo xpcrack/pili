@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 function run() {
@@ -18,26 +18,24 @@ function run() {
   const testScript = packageJson.scripts?.test || '';
   assert.match(
     testScript,
-    /\bnpm run test:time-format\b/,
-    'npm test should include the time-format regression coverage'
+    /scripts\/lib\/runTests\.ts/,
+    'npm test should invoke the discovery-based runner so all test-*.ts files are picked up automatically'
   );
-  assert.match(
-    testScript,
-    /\bnpm run test:trade-usd\b/,
-    'npm test should include the trade-usd regression coverage'
-  );
-  assert.match(
-    testScript,
-    /\bnpm run test:telegram-monitor-reconciliation\b/,
-    'npm test should include the telegram monitor reconciliation regression coverage'
-  );
-  const telegramAgentAuthTestScript =
-    packageJson.scripts?.['test:telegram-agent-authorization'] || '';
-  assert.match(
-    telegramAgentAuthTestScript,
-    /\S/,
-    'package.json should expose a non-empty telegram agent authorization test command'
-  );
+
+  // Files the runner auto-discovers, asserted to still exist (and therefore run under npm test):
+  const requiredTestFiles = [
+    'scripts/test-time-format.ts',
+    'scripts/test-trade-usd.ts',
+    'scripts/test-telegram-monitor-reconciliation.ts',
+    'scripts/test-telegram-agent-authorization.ts',
+  ];
+  for (const relPath of requiredTestFiles) {
+    assert.equal(
+      existsSync(join(repoRoot, relPath)),
+      true,
+      `${relPath} must exist; the runner auto-includes it in npm test`
+    );
+  }
 
   console.log('tooling config tests: ok');
 }
