@@ -1,23 +1,19 @@
-import path from 'node:path';
-
 import {
   deleteTelegramApprovalBotWebhook,
   runTelegramApprovalBotCycle,
 } from '@/lib/server/telegramApprovalBotRuntime';
+import { sleep } from '@/lib/timing';
 
 import './server-only-shim.cjs';
-import { loadEnvFile } from './telegram-bridge-core';
+import { loadWorkerEnv } from './lib/workerLifecycle';
 
-loadEnvFile(path.join(process.cwd(), '.env.local'));
+loadWorkerEnv();
 
 const IDLE_POLL_DELAY_MS = 100;
 const FAILURE_SLEEP_MS = 3_000;
+const LOG_PREFIX = '[telegram-agent-approval-bot]';
 let webhookCleared = false;
 let nextWebhookRetryAtMs = 0;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function tryClearWebhook() {
   const nowMs = Date.now();
@@ -28,12 +24,12 @@ async function tryClearWebhook() {
   try {
     await deleteTelegramApprovalBotWebhook();
     webhookCleared = true;
-    console.log('[telegram-agent-approval-bot] webhook cleared');
+    console.log(`${LOG_PREFIX} webhook cleared`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     nextWebhookRetryAtMs = nowMs + FAILURE_SLEEP_MS;
     console.error(
-      `[telegram-agent-approval-bot] deleteWebhook failed: ${message} (retry in ${FAILURE_SLEEP_MS}ms)`
+      `${LOG_PREFIX} deleteWebhook failed: ${message} (retry in ${FAILURE_SLEEP_MS}ms)`
     );
   }
 }
@@ -45,7 +41,7 @@ async function run() {
     const cycle = await runTelegramApprovalBotCycle();
     if (cycle.status === 'error' || cycle.status === 'missing-credentials') {
       console.error(
-        `[telegram-agent-approval-bot] cycle ${cycle.status}: ${cycle.lastError || 'unknown error'} (sleep=${FAILURE_SLEEP_MS}ms)`
+        `${LOG_PREFIX} cycle ${cycle.status}: ${cycle.lastError || 'unknown error'} (sleep=${FAILURE_SLEEP_MS}ms)`
       );
       await sleep(FAILURE_SLEEP_MS);
       continue;
@@ -64,7 +60,7 @@ async function run() {
 
 void run().catch(async (error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[telegram-agent-approval-bot] failed: ${message}`);
+  console.error(`${LOG_PREFIX} failed: ${message}`);
   await sleep(FAILURE_SLEEP_MS);
   process.exit(1);
 });
