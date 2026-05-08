@@ -13,6 +13,7 @@ interface ActivityStatsRow {
   wallet_count_7d: number;
   total_count_7d: number;
   total_count_all: number;
+  avg_buy_market_cap_7d: number | null;
 }
 
 export async function GET() {
@@ -28,11 +29,21 @@ export async function GET() {
          CAST(SUM(CASE WHEN timestamp >= ? AND source IN ('twitter', 'telegram') THEN 1 ELSE 0 END) AS INTEGER) AS social_count_7d,
          CAST(SUM(CASE WHEN timestamp >= ? AND source = 'blockchain' THEN 1 ELSE 0 END) AS INTEGER) AS wallet_count_7d,
          CAST(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS INTEGER) AS total_count_7d,
-         CAST(COUNT(1) AS INTEGER) AS total_count_all
+         CAST(COUNT(1) AS INTEGER) AS total_count_all,
+         AVG(
+           CASE
+             WHEN timestamp >= ?
+               AND source = 'blockchain'
+               AND json_extract(metadata_json, '$.txActionVariant') IN ('open', 'add')
+               AND json_extract(metadata_json, '$.marketCapAtTxUsd') IS NOT NULL
+               AND CAST(json_extract(metadata_json, '$.marketCapAtTxUsd') AS REAL) > 0
+             THEN CAST(json_extract(metadata_json, '$.marketCapAtTxUsd') AS REAL)
+           END
+         ) AS avg_buy_market_cap_7d
        FROM events
        GROUP BY user_id`
     )
-    .all(sinceMs, sinceMs, sinceMs) as Array<{ user_id: string } & ActivityStatsRow>;
+    .all(sinceMs, sinceMs, sinceMs, sinceMs) as Array<{ user_id: string } & ActivityStatsRow>;
 
   const rowByUserId = new Map(rows.map((row) => [row.user_id, row] as const));
   const statsByUserId: Record<
@@ -42,6 +53,7 @@ export async function GET() {
       walletCount7d: number;
       totalCount7d: number;
       totalCountAll: number;
+      avgBuyMarketCap7d: number | null;
     }
   > = {};
 
@@ -52,6 +64,7 @@ export async function GET() {
       walletCount7d: row?.wallet_count_7d ?? 0,
       totalCount7d: row?.total_count_7d ?? 0,
       totalCountAll: row?.total_count_all ?? 0,
+      avgBuyMarketCap7d: row?.avg_buy_market_cap_7d ?? null,
     };
   }
 
