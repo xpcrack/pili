@@ -71,6 +71,7 @@ interface UserActivityStats {
   walletCount7d: number;
   totalCount7d: number;
   totalCountAll: number;
+  avgBuyMarketCap7d: number | null;
 }
 
 type ManageSortKey =
@@ -78,7 +79,8 @@ type ManageSortKey =
   | 'totalAssetUsd'
   | 'socialCount7d'
   | 'walletCount7d'
-  | 'totalCount7d';
+  | 'totalCount7d'
+  | 'avgBuyMarketCap7d';
 
 interface TwitterRelayCoverageView {
   latestTweetId: string;
@@ -299,6 +301,7 @@ export default function ManagePage() {
           walletCount7d: 0,
           totalCount7d: 0,
           totalCountAll: 0,
+          avgBuyMarketCap7d: null,
         };
         return {
           user,
@@ -320,7 +323,9 @@ export default function ManagePage() {
               ? left.stats.socialCount7d
               : sortState.key === 'walletCount7d'
                 ? left.stats.walletCount7d
-                : getRecentTotalCount(left.stats);
+                : sortState.key === 'avgBuyMarketCap7d'
+                  ? (left.stats.avgBuyMarketCap7d ?? -1)
+                  : getRecentTotalCount(left.stats);
       const valueRight =
         sortState.key === 'historicalMaxAssetUsd'
           ? right.user.historicalMaxAssetUsd
@@ -330,7 +335,9 @@ export default function ManagePage() {
               ? right.stats.socialCount7d
               : sortState.key === 'walletCount7d'
                 ? right.stats.walletCount7d
-                : getRecentTotalCount(right.stats);
+                : sortState.key === 'avgBuyMarketCap7d'
+                  ? (right.stats.avgBuyMarketCap7d ?? -1)
+                  : getRecentTotalCount(right.stats);
 
       if (valueLeft === valueRight) {
         return left.user.name.localeCompare(right.user.name, 'zh-CN') * directionFactor;
@@ -976,6 +983,18 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                       </span>
                     </button>
                   </th>
+                  <th className="px-2 py-2.5 text-right font-medium">
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 hover:text-zinc-100"
+                      onClick={() => toggleSort('avgBuyMarketCap7d')}
+                      title="近7天建仓/加仓时平均代币市值"
+                    >
+                      买入市值
+                      <span className="text-[10px]">
+                        {sortState.key === 'avgBuyMarketCap7d' ? (sortState.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1097,10 +1116,13 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                         <td className="px-2 py-2.5 text-right font-mono text-zinc-200">
                           {getRecentTotalCount(stats)}
                         </td>
+                        <td className="px-2 py-2.5 text-right font-mono text-zinc-200">
+                          {stats.avgBuyMarketCap7d != null ? formatUsdCompact(stats.avgBuyMarketCap7d) : '—'}
+                        </td>
                       </tr>
                       {isEditingAddresses ? (
                         <tr className="border-b border-zinc-800/70 bg-zinc-950/70">
-                          <td colSpan={10} className="px-4 py-3">
+                          <td colSpan={11} className="px-4 py-3">
                             <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
                               <div className="space-y-2">
                                 <Label className="text-xs text-zinc-400">批量追加地址</Label>
