@@ -3,13 +3,13 @@ import { NextRequest } from 'next/server';
 import { enforceAdminRateLimit, requireAdmin } from '@/lib/server/apiGuard';
 import { apiError, apiOk } from '@/lib/server/apiResponse';
 import {
+  queueCompletenessPoke,
   readCompletenessGlobalState,
   readCompletenessRunSources,
   readCompletenessSourceStates,
   readRecentCompletenessRuns,
   saveCompletenessSourceState,
 } from '@/lib/server/completenessRepo';
-import { runCompletenessMaintenancePass } from '@/lib/server/completenessMaintenanceWorkerRuntime';
 import { computeCompletenessGlobalStatus, computeGlobalProvenStartMs } from '@/lib/server/completenessStatus';
 import { COMPLETENESS_SOURCES, type CompletenessSource, type CompletenessSourceState } from '@/lib/server/completenessTypes';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
@@ -142,13 +142,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const result = await runCompletenessMaintenancePass({
+    const reason = typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : action;
+    const pokeId = queueCompletenessPoke({
       trigger: action === 'retry-source' ? 'recovery' : 'manual',
-      source,
-      reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : action,
+      sourceHint: source,
+      reason,
     });
 
-    return apiOk({ action, result, completeness: buildCompletenessPayload() });
+    return apiOk({
+      action,
+      queued: { pokeId, reason },
+      completeness: buildCompletenessPayload(),
+    });
   } catch (error) {
     return apiError(error, { fallback: 'completeness request failed' });
   }
