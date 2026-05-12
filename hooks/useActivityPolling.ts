@@ -37,9 +37,9 @@ import { useFeedDebugBridge } from './useFeedDebugBridge';
 import { useActiveContextRefs } from './useActiveContextRefs';
 import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
 import { useFeedJudgmentStream } from './useFeedJudgmentStream';
+import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
-const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
 const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
 const SERVER_BACKFILL_TIMEOUT_MS = 10000;
 
@@ -187,7 +187,6 @@ export function useActivityPolling(
   const { checkAndUpdateNewStatus } = useUserStore();
   const { users, mergeUsersFromServer, upsertUserAssetSnapshot } = useUsersDataStore();
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const snapshotPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(false);
   const requestIdRef = useRef(0);
   const pendingRefetchRef = useRef(false);
@@ -737,23 +736,14 @@ export function useActivityPolling(
     });
   }, [fetchActivities, queryFingerprint]);
 
-  // 高频本地快照轮询：不触发后台同步，只读取最新快照。
-  useEffect(() => {
-    snapshotPollIntervalRef.current = setInterval(() => {
-      void fetchActivities({
-        syncStrategy: 'local',
-        selectedUserId: activeSelectedUserIdRef.current,
-        searchQuery: activeSearchQueryRef.current,
-        source: activeSourceRef.current,
-      });
-    }, SNAPSHOT_POLL_INTERVAL);
-
-    return () => {
-      if (snapshotPollIntervalRef.current) {
-        clearInterval(snapshotPollIntervalRef.current);
-      }
-    };
-  }, [fetchActivities]);
+  useFeedSnapshotPolling(() =>
+    fetchActivities({
+      syncStrategy: 'local',
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
+    })
+  );
 
   // 低频后台刷新触发：维持原有周期性全量同步能力。
   useEffect(() => {
