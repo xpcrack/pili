@@ -12,6 +12,27 @@ const AVATAR_PROBE_TIMEOUT_MS = 7000;
 const CACHE_CONTROL = 'public, max-age=3600, s-maxage=3600';
 const FALLBACK_CACHE_CONTROL = 'no-store, max-age=0';
 const MAX_AVATAR_BYTES = 1024 * 1024;
+const AVATAR_CACHE_MAX_ENTRIES = 200;
+const NEGATIVE_CACHE_MAX_ENTRIES = 2000;
+
+function evictOldestUntilUnderLimit<K, V>(map: Map<K, V>, maxEntries: number) {
+  while (map.size >= maxEntries) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) {
+      return;
+    }
+    map.delete(oldestKey);
+  }
+}
+
+function bumpRecency<K, V>(map: Map<K, V>, key: K) {
+  const value = map.get(key);
+  if (value === undefined) {
+    return;
+  }
+  map.delete(key);
+  map.set(key, value);
+}
 
 function escapeXml(value: string) {
   return value
@@ -126,6 +147,7 @@ export async function GET(request: NextRequest) {
   const cached = avatarCache.get(cacheKey);
 
   if (cached && cached.expiresAt > now) {
+    bumpRecency(avatarCache, cacheKey);
     return new NextResponse(cached.body, {
       status: 200,
       headers: {
@@ -136,16 +158,19 @@ export async function GET(request: NextRequest) {
   }
 
   if ((negativeCache.get(cacheKey) ?? 0) > now) {
+    bumpRecency(negativeCache, cacheKey);
     return buildFallbackResponse(handle);
   }
 
   const avatar = await resolveTwitterAvatar(twitter);
 
   if (!avatar) {
+    evictOldestUntilUnderLimit(negativeCache, NEGATIVE_CACHE_MAX_ENTRIES);
     negativeCache.set(cacheKey, now + NEGATIVE_CACHE_MS);
     return buildFallbackResponse(handle);
   }
 
+  evictOldestUntilUnderLimit(avatarCache, AVATAR_CACHE_MAX_ENTRIES);
   avatarCache.set(cacheKey, {
     body: avatar.body,
     contentType: avatar.contentType,
