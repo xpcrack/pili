@@ -1,9 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { formatTokenAmount, formatUsd, formatUsdCompact } from '@/lib/assetFormat';
+import { formatUsd, formatUsdCompact } from '@/lib/assetFormat';
 import {
   type UserDetailsSuccessPayload,
   USER_HOLDINGS_THRESHOLD_USD,
@@ -51,6 +52,9 @@ export function SelectedUserDetailsPanel({
   onRetryDetails,
 }: SelectedUserDetailsPanelProps) {
   const holdingsThresholdUsd = details?.holdingsThresholdUsd ?? USER_HOLDINGS_THRESHOLD_USD;
+  const [holdingsExpanded, setHoldingsExpanded] = useState(false);
+  const holdingsTotalUsd = details?.holdings.reduce((sum, h) => sum + h.valueUsd, 0) ?? 0;
+  const totalAssetUsd = holdingsTotalUsd > 0 ? holdingsTotalUsd : selectedUser.totalAssetUsd;
 
   return (
     <div className="mb-6 space-y-4">
@@ -80,7 +84,7 @@ export function SelectedUserDetailsPanel({
 
         <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
           <div className="text-zinc-500">总资产</div>
-          <div className="text-sm font-medium text-zinc-100">{formatUsdCompact(selectedUser.totalAssetUsd)}</div>
+          <div className="text-sm font-medium text-zinc-100">{formatUsdCompact(totalAssetUsd)}</div>
         </div>
 
         <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
@@ -174,26 +178,41 @@ export function SelectedUserDetailsPanel({
                 <tr className="text-left text-zinc-500">
                   <th className="py-2 pr-4 font-medium">链</th>
                   <th className="py-2 pr-4 font-medium">Token</th>
-                  <th className="py-2 pr-4 font-medium">数量</th>
+                  <th className="py-2 pr-4 font-medium">占比</th>
                   <th className="py-2 pr-4 font-medium">单价</th>
                   <th className="py-2 font-medium">价值</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/80">
-                {details.holdings.map((holding) => (
+                {(holdingsExpanded ? details.holdings : details.holdings.slice(0, 10)).map((holding) => (
                   <tr key={`${holding.chain}:${holding.tokenAddress}`} className="align-top text-zinc-200">
                     <td className="py-3 pr-4">{CHAIN_LABELS[holding.chain] ?? holding.chain}</td>
                     <td className="py-3 pr-4">
                       <div className="font-medium text-zinc-100">{holding.symbol}</div>
                       {holding.name ? <div className="text-xs text-zinc-500">{holding.name}</div> : null}
                     </td>
-                    <td className="py-3 pr-4">{formatTokenAmount(holding.balance)}</td>
+                    <td className="py-3 pr-4">
+                      {totalAssetUsd > 0
+                        ? `${((holding.valueUsd / totalAssetUsd) * 100).toFixed(1)}%`
+                        : '-'}
+                    </td>
                     <td className="py-3 pr-4">{formatUsd(holding.priceUsd)}</td>
                     <td className="py-3 font-medium text-zinc-100">{formatUsd(holding.valueUsd)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {details.holdings.length > 10 ? (
+              <div className="mt-2 text-center">
+                <button
+                  type="button"
+                  onClick={() => setHoldingsExpanded(!holdingsExpanded)}
+                  className="text-xs text-zinc-400 transition-colors hover:text-zinc-200"
+                >
+                  {holdingsExpanded ? '收起' : `展开全部 (${details.holdings.length})`}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
