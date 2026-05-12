@@ -35,6 +35,7 @@ import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useFeedDebugBridge } from './useFeedDebugBridge';
 import { useActiveContextRefs } from './useActiveContextRefs';
+import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
@@ -774,22 +775,7 @@ export function useActivityPolling(
     };
   }, [fetchActivities]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void fetch('/api/feed/prewarm', { method: 'POST', cache: 'no-store' })
-        .then((response) => response.json())
-        .then((payload) => {
-          if (payload?.ok && typeof payload?.prewarm?.label === 'string' && payload.prewarm.label.trim()) {
-            setPrewarmLabel(payload.prewarm.label as string);
-          }
-        })
-        .catch(() => undefined);
-    }, 1500);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, []);
+  useFeedPrewarmTrigger(setPrewarmLabel);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
