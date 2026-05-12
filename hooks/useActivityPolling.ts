@@ -28,13 +28,12 @@ import {
   resolveFeedUsers,
 } from '@/lib/feed/feedClientSnapshot';
 import {
-  buildFeedDebugEntries,
   filterPoisonFromFeed,
-  type FeedDebugEntry,
 } from '@/lib/feed/feedPoisonFilter';
 import { FEED_PAGE_BATCH_SIZE, collectItemsUntilCount, shouldSearchEntireFeed } from '@/lib/feed/feedQueryMode';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
+import { useFeedDebugBridge } from './useFeedDebugBridge';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
@@ -239,38 +238,7 @@ export function useActivityPolling(
     activeSearchFiltersRef.current = activeSearchFilters;
   }, [activeSearchFilters]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const target = window as Window & {
-      __feedDebug?: {
-        findTx: (txHash: string) => {
-          raw: FeedDebugEntry[];
-          visibleAfterFilter: boolean;
-          filtered: FeedDebugEntry[];
-        };
-      };
-    };
-
-    target.__feedDebug = {
-      findTx: (txHash: string) => {
-        const rawEntries = buildFeedDebugEntries(feedRef.current, txHash);
-        const filteredFeed = filterPoisonFromFeed(feedRef.current);
-        const filteredEntries = buildFeedDebugEntries(filteredFeed, txHash);
-        return {
-          raw: rawEntries,
-          visibleAfterFilter: filteredEntries.length > 0,
-          filtered: filteredEntries,
-        };
-      },
-    };
-
-    return () => {
-      delete target.__feedDebug;
-    };
-  }, []);
+  useFeedDebugBridge(feedRef);
 
   const applyNewStatusForActivities = useCallback(
     (activitiesByUser: Map<string, Activity[]>) => {
