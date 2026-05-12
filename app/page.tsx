@@ -42,7 +42,7 @@ const FEED_TIME_DISPLAY_MODE_STORAGE_KEY = 'pilipili:feed-time-display-mode';
 const TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY = 'pilipili:trade-value-display-mode';
 
 function getActivityRenderKey(userId: string, activityId: string, scopedKey: string) {
-  return scopedKey || `${userId}:${activityId}`;
+  return scopedKey ? `${scopedKey}::${activityId}` : `${userId}:${activityId}`;
 }
 
 interface BuildSelectedUserDetailsPanelPropsArgs {
