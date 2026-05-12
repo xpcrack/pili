@@ -34,6 +34,7 @@ import { FEED_PAGE_BATCH_SIZE, collectItemsUntilCount, shouldSearchEntireFeed } 
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useFeedDebugBridge } from './useFeedDebugBridge';
+import { useActiveContextRefs } from './useActiveContextRefs';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
@@ -198,10 +199,17 @@ export function useActivityPolling(
   const serverBackfillInFlightRef = useRef(false);
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
   const usersRef = useRef(users);
-  const activeSelectedUserIdRef = useRef<string | null>(activeSelectedUserId ?? null);
-  const activeSearchQueryRef = useRef((activeSearchQuery || '').trim());
-  const activeSourceRef = useRef<Activity['source'] | null>(activeSource ?? null);
-  const activeSearchFiltersRef = useRef<FeedSearchFilters | undefined>(activeSearchFilters);
+  const {
+    selectedUserIdRef: activeSelectedUserIdRef,
+    searchQueryRef: activeSearchQueryRef,
+    sourceRef: activeSourceRef,
+    searchFiltersRef: activeSearchFiltersRef,
+  } = useActiveContextRefs({
+    selectedUserId: activeSelectedUserId,
+    searchQuery: activeSearchQuery,
+    source: activeSource,
+    searchFilters: activeSearchFilters,
+  });
   const usersFingerprintRef = useRef('');
   const queryFingerprintRef = useRef('');
   const usersFingerprint = useMemo(
@@ -221,22 +229,6 @@ export function useActivityPolling(
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
-
-  useEffect(() => {
-    activeSelectedUserIdRef.current = activeSelectedUserId ?? null;
-  }, [activeSelectedUserId]);
-
-  useEffect(() => {
-    activeSearchQueryRef.current = (activeSearchQuery || '').trim();
-  }, [activeSearchQuery]);
-
-  useEffect(() => {
-    activeSourceRef.current = activeSource ?? null;
-  }, [activeSource]);
-
-  useEffect(() => {
-    activeSearchFiltersRef.current = activeSearchFilters;
-  }, [activeSearchFilters]);
 
   useFeedDebugBridge(feedRef);
 
