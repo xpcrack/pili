@@ -37,10 +37,18 @@ import {
   type TriggerSyncOptions,
 } from '@/lib/server/syncWindowState';
 import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
+import {
+  acquireIngestionLease,
+  heartbeatIngestionLease,
+  releaseIngestionLease,
+} from '@/lib/server/twitterRepo';
 
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 const INITIAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BACKFILL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SYNC_LEASE_KEY = 'sync-service-global';
+const SYNC_LEASE_TTL_MS = 5 * 60 * 1000;
+const SYNC_LEASE_HEARTBEAT_MS = 30 * 1000;
 
 interface SyncRunRow {
   id: number;
@@ -489,6 +497,17 @@ export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
     };
   }
 
+  const now = Date.now();
+  const owner = `${process.pid}:${now.toString(36)}:${Math.random().toString(16).slice(2, 8)}`;
+  if (!acquireIngestionLease(SYNC_LEASE_KEY, owner, now, SYNC_LEASE_TTL_MS)) {
+    return {
+      started: false,
+      running: true,
+      runId: 0,
+      startedAt: now,
+    };
+  }
+
   const normalizedOptions = normalizeSyncOptions(options);
 
   const run = createRun(reason);
@@ -498,6 +517,10 @@ export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
     startedAt: run.startedAt,
     options: normalizedOptions,
   };
+
+  const heartbeatTimer = setInterval(() => {
+    heartbeatIngestionLease(SYNC_LEASE_KEY, owner, Date.now(), SYNC_LEASE_TTL_MS);
+  }, SYNC_LEASE_HEARTBEAT_MS);
 
   activeRunPromise = runSync(run.id, reason, run.startedAt, normalizedOptions)
     .catch((error) => {
@@ -533,6 +556,8 @@ export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
       console.error('[syncService] sync failed:', error);
     })
     .finally(() => {
+      clearInterval(heartbeatTimer);
+      releaseIngestionLease(SYNC_LEASE_KEY, owner);
       activeRunPromise = null;
       activeRunState = null;
     });
