@@ -36,6 +36,7 @@ import { useUsersDataStore } from '@/store/usersDataStore';
 import { useFeedDebugBridge } from './useFeedDebugBridge';
 import { useActiveContextRefs } from './useActiveContextRefs';
 import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
+import { useFeedJudgmentStream } from './useFeedJudgmentStream';
 
 const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SNAPSHOT_POLL_INTERVAL = 5 * 1000; // 每5秒读取一次本地快照，及时拿到后台刷新结果
@@ -187,9 +188,6 @@ export function useActivityPolling(
   const { users, mergeUsersFromServer, upsertUserAssetSnapshot } = useUsersDataStore();
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const snapshotPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const judgmentStreamRef = useRef<EventSource | null>(null);
-  const judgmentVersionRef = useRef<number>(0);
-  const sseRefetchingRef = useRef(false);
   const isMountedRef = useRef(false);
   const requestIdRef = useRef(0);
   const pendingRefetchRef = useRef(false);
@@ -777,59 +775,14 @@ export function useActivityPolling(
 
   useFeedPrewarmTrigger(setPrewarmLabel);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const stream = new EventSource('/api/debug/tx-judgment/stream');
-    judgmentStreamRef.current = stream;
-
-    stream.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { type?: string; version?: number };
-        if (!payload || typeof payload.version !== 'number') {
-          return;
-        }
-        if (payload.type === 'hello') {
-          judgmentVersionRef.current = payload.version;
-          return;
-        }
-        if (payload.type !== 'updated') {
-          return;
-        }
-        if (payload.version === judgmentVersionRef.current) {
-          return;
-        }
-        judgmentVersionRef.current = payload.version;
-        if (sseRefetchingRef.current) {
-          return;
-        }
-        sseRefetchingRef.current = true;
-        void fetchActivities({
-          selectedUserId: activeSelectedUserIdRef.current,
-          searchQuery: activeSearchQueryRef.current,
-          source: activeSourceRef.current,
-          syncStrategy: 'local',
-        }).finally(() => {
-          sseRefetchingRef.current = false;
-        });
-      } catch {
-        // ignore malformed events
-      }
-    };
-
-    stream.onerror = () => {
-      // browser EventSource auto-reconnects
-    };
-
-    return () => {
-      stream.close();
-      if (judgmentStreamRef.current === stream) {
-        judgmentStreamRef.current = null;
-      }
-    };
-  }, [fetchActivities]);
+  useFeedJudgmentStream(() =>
+    fetchActivities({
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
+      syncStrategy: 'local',
+    })
+  );
 
   return {
     feed,
