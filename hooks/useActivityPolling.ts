@@ -39,9 +39,7 @@ import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
 import { useFeedJudgmentStream } from './useFeedJudgmentStream';
 import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
 import { useFeedRefreshScheduler } from './useFeedRefreshScheduler';
-
-const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
-const SERVER_BACKFILL_TIMEOUT_MS = 10000;
+import { useFeedServerBackfill } from './useFeedServerBackfill';
 
 interface UseActivityPollingReturn {
   feed: { user: User; activity: Activity }[];
@@ -192,8 +190,6 @@ export function useActivityPolling(
   const pendingRefetchOptionsRef = useRef<FetchActivitiesOptions | undefined>(undefined);
   const arbiterRef = useRef(new FeedRequestArbiter());
   const hydratedFromCacheRef = useRef(false);
-  const serverBackfillAttemptedRef = useRef(false);
-  const serverBackfillInFlightRef = useRef(false);
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
   const usersRef = useRef(users);
   const {
@@ -240,82 +236,12 @@ export function useActivityPolling(
     [checkAndUpdateNewStatus]
   );
 
-  const backfillLocalUsersToServer = useCallback(async (localUsers: User[], signal?: AbortSignal) => {
-    if (serverBackfillInFlightRef.current) {
-      return false;
-    }
-
-    const usersWithAddresses = localUsers.filter((user) => user.addresses.length > 0);
-    if (usersWithAddresses.length === 0) {
-      return false;
-    }
-
-    if (signal?.aborted) {
-      throw new DOMException('The operation was aborted.', 'AbortError');
-    }
-
-    serverBackfillInFlightRef.current = true;
-    const controller = new AbortController();
-    let abortedByExternalSignal = false;
-    let detachExternalAbortListener: (() => void) | null = null;
-    if (signal) {
-      if (signal.aborted) {
-        abortedByExternalSignal = true;
-        controller.abort();
-      } else {
-        const handleExternalAbort = () => {
-          abortedByExternalSignal = true;
-          controller.abort();
-        };
-        signal.addEventListener('abort', handleExternalAbort, { once: true });
-        detachExternalAbortListener = () => {
-          signal.removeEventListener('abort', handleExternalAbort);
-        };
-      }
-    }
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, SERVER_BACKFILL_TIMEOUT_MS);
-
-    try {
-      let response: Response;
-      try {
-        response = await fetch(SERVER_BACKFILL_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            users: usersWithAddresses,
-            replaceExisting: false,
-          }),
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          if (abortedByExternalSignal) {
-            throw error;
-          }
-          throw new Error(`回灌超时（>${SERVER_BACKFILL_TIMEOUT_MS}ms）`);
-        }
-        throw new Error(error instanceof Error ? error.message : '回灌失败');
-      }
-
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || !payload?.ok) {
-        throw new Error(payload?.error || `回灌失败（HTTP ${response.status}）`);
-      }
-
-      console.info(
-        `[useActivityPolling] 已将本地用户回灌到服务端 users=${usersWithAddresses.length}`
-      );
-      return true;
-    } finally {
-      clearTimeout(timer);
-      detachExternalAbortListener?.();
-      serverBackfillInFlightRef.current = false;
-    }
-  }, []);
+  const {
+    backfill: backfillLocalUsersToServer,
+    markAttempted: markServerBackfillAttempted,
+    resetAttempted: resetServerBackfillAttempted,
+    isAttempted: isServerBackfillAttempted,
+  } = useFeedServerBackfill();
 
   // 获取并处理活动数据
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -569,12 +495,12 @@ export function useActivityPolling(
       if (
         result.summary.addressCount === 0 &&
         localAddressCount > 0 &&
-        !serverBackfillAttemptedRef.current
+        !isServerBackfillAttempted()
       ) {
         try {
           const restored = await backfillLocalUsersToServer(currentUsers, ticket.signal);
           if (restored && isMountedRef.current && requestId === requestIdRef.current) {
-            serverBackfillAttemptedRef.current = true;
+            markServerBackfillAttempted();
             pendingRefetchRef.current = true;
             pendingRefetchOptionsRef.current = {
               replace: true,
@@ -667,7 +593,9 @@ export function useActivityPolling(
     backfillLocalUsersToServer,
     hasMore,
     historyComplete,
+    isServerBackfillAttempted,
     localQualifiedCount,
+    markServerBackfillAttempted,
     mergeUsersFromServer,
     summary?.transactionCount,
     upsertUserAssetSnapshot,
@@ -706,7 +634,7 @@ export function useActivityPolling(
     }
 
     usersFingerprintRef.current = usersFingerprint;
-    serverBackfillAttemptedRef.current = false;
+    resetServerBackfillAttempted();
     void fetchActivities({
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
@@ -714,7 +642,7 @@ export function useActivityPolling(
       source: activeSourceRef.current,
       syncStrategy: 'local',
     });
-  }, [usersFingerprint, fetchActivities]);
+  }, [usersFingerprint, fetchActivities, resetServerBackfillAttempted]);
 
   useEffect(() => {
     if (!isMountedRef.current) {
