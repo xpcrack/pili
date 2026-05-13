@@ -38,8 +38,8 @@ import { useActiveContextRefs } from './useActiveContextRefs';
 import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
 import { useFeedJudgmentStream } from './useFeedJudgmentStream';
 import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
+import { useFeedRefreshScheduler } from './useFeedRefreshScheduler';
 
-const REFRESH_TRIGGER_INTERVAL = 60 * 60 * 1000; // 1小时触发一次后台刷新
 const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
 const SERVER_BACKFILL_TIMEOUT_MS = 10000;
 
@@ -186,7 +186,6 @@ export function useActivityPolling(
   
   const { checkAndUpdateNewStatus } = useUserStore();
   const { users, mergeUsersFromServer, upsertUserAssetSnapshot } = useUsersDataStore();
-  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(false);
   const requestIdRef = useRef(0);
   const pendingRefetchRef = useRef(false);
@@ -746,22 +745,14 @@ export function useActivityPolling(
   );
 
   // 低频后台刷新触发：维持原有周期性全量同步能力。
-  useEffect(() => {
-    refreshIntervalRef.current = setInterval(() => {
-      void fetchActivities({
-        syncStrategy: 'refresh',
-        selectedUserId: activeSelectedUserIdRef.current,
-        searchQuery: activeSearchQueryRef.current,
-        source: activeSourceRef.current,
-      });
-    }, REFRESH_TRIGGER_INTERVAL);
-
-    return () => {
-      if (refreshIntervalRef.current) {
-        clearInterval(refreshIntervalRef.current);
-      }
-    };
-  }, [fetchActivities]);
+  useFeedRefreshScheduler(() =>
+    fetchActivities({
+      syncStrategy: 'refresh',
+      selectedUserId: activeSelectedUserIdRef.current,
+      searchQuery: activeSearchQueryRef.current,
+      source: activeSourceRef.current,
+    })
+  );
 
   useFeedPrewarmTrigger(setPrewarmLabel);
 
