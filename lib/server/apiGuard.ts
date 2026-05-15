@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { timingSafeEqual } from 'node:crypto';
 
 import { readAdminTokenFromRequest, verifyAdminRequest } from '@/lib/server/adminAuth';
 import { checkAdminRateLimit } from '@/lib/server/adminRateLimit';
@@ -28,6 +29,49 @@ export function requireAdmin(request: NextRequest) {
     },
     { status: 401 }
   );
+}
+
+function parseBearerToken(headerValue: string | null) {
+  const value = (headerValue || '').trim();
+  if (!value.toLowerCase().startsWith('bearer ')) {
+    return '';
+  }
+  return value.slice(7).trim();
+}
+
+function safeCompare(expected: string, provided: string) {
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const providedBytes = Buffer.from(provided, 'utf8');
+  if (expectedBytes.length !== providedBytes.length) {
+    return false;
+  }
+  return timingSafeEqual(expectedBytes, providedBytes);
+}
+
+export function requireAgent(request: NextRequest) {
+  const expected = (process.env.AGENT_API_TOKEN || '').trim();
+  if (!expected) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: '服务端未配置 AGENT_API_TOKEN，agent 接口已锁定。',
+      },
+      { status: 503 }
+    );
+  }
+
+  const provided = parseBearerToken(request.headers.get('authorization'));
+  if (!provided || !safeCompare(expected, provided)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'unauthorized',
+      },
+      { status: 401 }
+    );
+  }
+
+  return null;
 }
 
 export function enforceAdminRateLimit(

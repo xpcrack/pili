@@ -1149,6 +1149,13 @@ export function getDb() {
   mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   initializeDb(db);
+  setInterval(() => {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (error) {
+      console.warn('[sqlite] wal_checkpoint failed:', error);
+    }
+  }, 10 * 60 * 1000).unref();
   dbInstance = db;
   return db;
 }

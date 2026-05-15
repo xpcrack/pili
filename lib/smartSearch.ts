@@ -120,6 +120,7 @@ function getKeywordHaystack(item: FeedItem) {
     item.activity.metadata.fromAddress,
     item.activity.metadata.toAddress,
     item.activity.metadata.trackedAddress,
+    item.activity.metadata.txActionLabel,
   ];
 
   if (item.activity.source === 'twitter' || item.activity.source === 'telegram') {

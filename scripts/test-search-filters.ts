@@ -115,6 +115,28 @@ function run() {
     },
     {}
   );
+  const openTradeActionItem = makeItem(alice, {}, {
+    txAction: 'buy',
+    txActionLabel: '建仓',
+    txActionVariant: 'open',
+    tradeAmountUsdAtTx: 1_000,
+    marketCapAtTxUsd: 500_000,
+  });
+  const addTradeActionItem = makeItem(alice, {}, {
+    txAction: 'buy',
+    txActionLabel: '加仓',
+    txActionVariant: 'add',
+    tradeAmountUsdAtTx: 1_000,
+    marketCapAtTxUsd: 500_000,
+  });
+  const tradeActionSocialItem = makeItem(
+    alice,
+    {
+      source: 'twitter',
+      content: '我刚刚决定建仓 SOL',
+    },
+    {}
+  );
 
   assert.equal(getFeedItemCategory(tradeItem), 'trade');
   assert.equal(getFeedItemCategory(transferItem), 'transfer');
@@ -176,6 +198,39 @@ function run() {
   );
 
   assert.equal(
+    matchesFeedSearchFilters(openTradeActionItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: '建仓',
+    }),
+    true,
+    'trade action keyword should match trades whose txActionLabel equals the term'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(addTradeActionItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: '建仓',
+    }),
+    false,
+    'trade action keyword should not match a different action label'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(addTradeActionItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: '加仓',
+    }),
+    true,
+    'each trade action keyword should match its own txActionLabel'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(tradeActionSocialItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: '建仓',
+    }),
+    true,
+    'trade action keyword should still match social posts whose content contains the word'
+  );
+
+  assert.equal(
     getRemoteFeedSearchKeyword(' Finn '),
     'finn',
     'single plain keywords should be forwarded to server-side feed search'
@@ -195,6 +250,13 @@ function run() {
     '',
     'ca-prefixed searches should stay client-side to preserve token-address matching semantics'
   );
+  for (const actionTerm of ['建仓', '加仓', '减仓', '清仓', '发送']) {
+    assert.equal(
+      getRemoteFeedSearchKeyword(actionTerm),
+      actionTerm,
+      `trade action keyword "${actionTerm}" should be forwarded to remote search so the server can apply its LIKE-based action filter`
+    );
+  }
   assert.equal(
     getRemoteFeedSource({
       trade: false,

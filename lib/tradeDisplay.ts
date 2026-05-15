@@ -11,6 +11,8 @@ const ACTION_VARIANT_LABELS: Record<string, string> = {
   send: '发送',
 };
 
+export const TRADE_ACTION_LABEL_VALUES = Object.values(ACTION_VARIANT_LABELS) as readonly string[];
+
 function normalize(value: string | null | undefined) {
   return (value || '').trim();
 }
