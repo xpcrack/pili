@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 import { type Activity, type User } from '@/types';
 import { getBlockchainActivityIdentity } from '@/lib/activityIdentity';
-import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
+import { buildTradeDisplayMetadata, TRADE_ACTION_LABEL_VALUES } from '@/lib/tradeDisplay';
 import {
   chooseConflictWinner,
   detectConflictDomain,
@@ -34,6 +34,8 @@ export interface EventFeedQuery {
   fromMs?: number | null;
   toMs?: number | null;
 }
+
+const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
 
 export interface EventFeedRow {
   user: User;
@@ -840,37 +842,36 @@ export function readEventsFeed(query: EventFeedQuery) {
     params.push(cursor.timestamp, cursor.timestamp, cursor.eventId);
   }
 
-  const ftsMatch = q ? parseQueryTerms(q) : null;
+  const actionTerm = q && TRADE_ACTION_KEYWORDS.has(q) ? q : null;
+  const ftsMatch = !actionTerm && q ? parseQueryTerms(q) : null;
+
+  let joinSql = '';
+  const filterParams: string[] = [];
+
+  if (ftsMatch) {
+    joinSql = 'INNER JOIN events_fts ON events_fts.rowid = e.rowid';
+    where.push('events_fts MATCH ?');
+    filterParams.push(ftsMatch);
+  } else if (actionTerm) {
+    where.push('(e.activity_json LIKE ? OR e.content LIKE ?)');
+    filterParams.push(`%"txActionLabel":"${actionTerm}"%`, `%${actionTerm}%`);
+  }
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
-  const baseSql = ftsMatch
-    ? `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
-         FROM events e
-         INNER JOIN events_fts ON events_fts.rowid = e.rowid
-         ${whereSql ? `${whereSql} AND` : 'WHERE'} events_fts MATCH ?
-         ORDER BY e.timestamp DESC, e.event_id DESC
-         LIMIT ?`
-    : `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
-         FROM events e
-         ${whereSql}
-         ORDER BY e.timestamp DESC, e.event_id DESC
-         LIMIT ?`;
+  const baseSql = `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
+       FROM events e
+       ${joinSql}
+       ${whereSql}
+       ORDER BY e.timestamp DESC, e.event_id DESC
+       LIMIT ?`;
 
-  const countSql = ftsMatch
-    ? `SELECT COUNT(1) AS count
-         FROM events e
-         INNER JOIN events_fts ON events_fts.rowid = e.rowid
-         ${where.length > 0 ? `WHERE ${where.join(' AND ')} AND` : 'WHERE'} events_fts MATCH ?`
-    : `SELECT COUNT(1) AS count
-         FROM events e
-         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}`;
+  const countSql = `SELECT COUNT(1) AS count
+       FROM events e
+       ${joinSql}
+       ${whereSql}`;
 
-  const finalParams = [...params];
-  if (ftsMatch) {
-    finalParams.push(ftsMatch);
-  }
-  finalParams.push(safeLimit + 1);
+  const finalParams = [...params, ...filterParams, safeLimit + 1];
 
   const rows = db.prepare(baseSql).all(...finalParams) as Array<{
     event_id: string;
@@ -916,17 +917,17 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   repairTelegramMonitorFeedRows(feed);
 
-  const countParams = [...params];
-  if (ftsMatch) {
-    countParams.push(ftsMatch);
-  }
-  const totalRow = db.prepare(countSql).get(...countParams) as { count: number } | undefined;
+  // 动作词分支用 LIKE OR 命中 activity_json/content，全表 COUNT 在 27k+ 行上约 200ms。
+  // 客户端 (activitiesApi.ts) 缺失 total 时已回退到 feed.length，跳过 COUNT 直接省这次扫描。
+  const totalRow = actionTerm
+    ? null
+    : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
 
   return {
     feed,
     hasMore: rows.length > safeLimit,
     nextCursor: feed.length > 0 ? feed[feed.length - 1].cursor : null,
-    total: totalRow?.count || 0,
+    total: totalRow?.count ?? feed.length,
   };
 }
 
