@@ -43,7 +43,7 @@ export function classifyTelegramMtprotoError(error: unknown) {
     };
   }
 
-  if (/session|authorized|authorization|required/i.test(message)) {
+  if (/AUTH_KEY_DUPLICATED|session|authorized|authorization|required/i.test(message)) {
     return {
       kind: 'auth_required' as const,
       message,

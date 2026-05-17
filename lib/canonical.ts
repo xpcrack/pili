@@ -63,6 +63,15 @@ export function normalizeTelegramUrl(input?: string | null) {
     return null;
   }
 
+  const webTelegramHandleMatch = raw.match(/web\.telegram\.org\/[ak]\/#[^@]*@([A-Za-z0-9_]{3,})/i);
+  if (webTelegramHandleMatch?.[1]) {
+    return `https://t.me/${webTelegramHandleMatch[1]}`;
+  }
+
+  if (/web\.telegram\.org\//i.test(raw)) {
+    return null;
+  }
+
   const trimmed = raw.replace(/^https?:\/\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '').trim();
   if (!trimmed) {
     return null;
