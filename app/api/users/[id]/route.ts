@@ -73,6 +73,9 @@ function sanitizeUpdatePayload(id: string, body: unknown): Partial<User> {
   if ('telegram' in candidate) {
     updates.telegram = normalizeOptionalString(candidate.telegram);
   }
+  if (Array.isArray(candidate.telegrams)) {
+    updates.telegrams = candidate.telegrams.filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
+  }
   if (Array.isArray(candidate.tags)) {
     updates.tags = candidate.tags.filter((tag): tag is string => typeof tag === 'string');
   }

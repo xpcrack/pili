@@ -35,6 +35,7 @@ import {
   AlertCircle,
   Search,
   ArrowRight,
+  Pencil,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -289,6 +290,17 @@ export default function ManagePage() {
   const [savingAddressUserId, setSavingAddressUserId] = useState<string | null>(null);
   const [addressActionError, setAddressActionError] = useState<string | null>(null);
   const [addressActionNotice, setAddressActionNotice] = useState<string | null>(null);
+  const [editingProfileUserId, setEditingProfileUserId] = useState<string | null>(null);
+  const [editingProfileData, setEditingProfileData] = useState<ProfileFormState>({
+    name: '',
+    handle: '',
+    twitter: '',
+    telegram: '',
+    telegrams: '',
+    isNewsSource: false,
+    tags: '',
+  });
+  const [savingProfileUserId, setSavingProfileUserId] = useState<string | null>(null);
 
   const parsedAddresses = useMemo(() => parseAddressText(addressText), [addressText]);
 
@@ -560,6 +572,54 @@ export default function ManagePage() {
       setSavingAddressUserId(null);
     }
   };
+
+  const handleSaveProfile = async (user: User) => {
+    setSavingProfileUserId(user.id);
+    try {
+      const tags = [
+        ...(editingProfileData.isNewsSource ? ['news'] : []),
+        ...editingProfileData.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      ];
+      const response = await fetch(`/api/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editingProfileData.name.trim(),
+          handle: editingProfileData.handle.trim(),
+          twitter: editingProfileData.twitter.trim() || null,
+          telegram: editingProfileData.telegram.trim() || null,
+          telegrams: editingProfileData.telegrams.split(',').map((t) => t.trim()).filter(Boolean),
+          tags,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok || !payload.user) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+      updateUser(user.id, payload.user);
+      setEditingProfileUserId(null);
+      flashAddressNotice(`已更新 ${editingProfileData.name.trim() || user.name} 的信息`);
+    } catch (error) {
+      setAddressActionError(error instanceof Error ? error.message : '更新人物信息失败');
+    } finally {
+      setSavingProfileUserId(null);
+    }
+  };
+
+  const startEditingProfile = (user: User) => {
+    setEditingProfileData({
+      name: user.name,
+      handle: user.handle,
+      twitter: user.twitter || '',
+      telegram: user.telegram || '',
+      telegrams: (user.telegrams || []).join(', '),
+      isNewsSource: user.tags.includes('news'),
+      tags: user.tags.filter((t) => t !== 'news').join(', '),
+    });
+    setEditingProfileUserId(user.id);
+    setAddressActionError(null);
+  };
+
   const copyText = async (text: string) => {
     if (!text.trim()) return;
     await navigator.clipboard.writeText(text);
@@ -1047,6 +1107,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     ? relayCoverageByHandle[twitterHandle.toLowerCase()] || null
                     : null;
                   const isEditingAddresses = editingAddressUserId === user.id;
+                  const isEditingProfile = editingProfileUserId === user.id;
 
                   return (
                     <Fragment key={user.id}>
@@ -1074,6 +1135,13 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                                 </div>
                               ) : null}
                             </div>
+                            <button
+                              onClick={() => startEditingProfile(user)}
+                              className="rounded p-1 text-zinc-600 hover:bg-blue-500/10 hover:text-blue-400"
+                              title="编辑人物"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
                             <button
                               onClick={() => void handleDeleteUser(user.id)}
                               disabled={Boolean(deletingUserIds[user.id])}
@@ -1167,6 +1235,104 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                           {stats.avgBuyMarketCap7d != null ? formatUsdCompact(stats.avgBuyMarketCap7d) : '—'}
                         </td>
                       </tr>
+                      {isEditingProfile ? (
+                        <tr className="border-b border-zinc-800/70 bg-zinc-950/70">
+                          <td colSpan={11} className="px-4 py-3">
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-zinc-400">名称</Label>
+                                  <Input
+                                    value={editingProfileData.name}
+                                    onChange={(e) => setEditingProfileData({ ...editingProfileData, name: e.target.value })}
+                                    className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-zinc-400">Handle</Label>
+                                  <Input
+                                    value={editingProfileData.handle}
+                                    onChange={(e) => setEditingProfileData({ ...editingProfileData, handle: e.target.value })}
+                                    className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-zinc-400">Twitter</Label>
+                                  <Input
+                                    value={editingProfileData.twitter}
+                                    onChange={(e) => setEditingProfileData({ ...editingProfileData, twitter: e.target.value })}
+                                    className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-zinc-400">Telegram</Label>
+                                  <Input
+                                    value={editingProfileData.telegram}
+                                    onChange={(e) => setEditingProfileData({ ...editingProfileData, telegram: e.target.value })}
+                                    className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                  />
+                                </div>
+                                {editingProfileData.isNewsSource && (
+                                  <div className="space-y-1">
+                                    <Label className="text-xs text-zinc-400">额外 TG 频道 (逗号分隔)</Label>
+                                    <Input
+                                      value={editingProfileData.telegrams}
+                                      onChange={(e) => setEditingProfileData({ ...editingProfileData, telegrams: e.target.value })}
+                                      className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                    />
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingProfileData({ ...editingProfileData, isNewsSource: !editingProfileData.isNewsSource })}
+                                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                                      editingProfileData.isNewsSource ? 'bg-amber-600' : 'bg-zinc-700'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                                        editingProfileData.isNewsSource ? 'left-[22px]' : 'left-0.5'
+                                      }`}
+                                    />
+                                  </button>
+                                  <Label className="text-xs text-zinc-400">新闻源</Label>
+                                </div>
+                                <div className="space-y-1 lg:col-span-2">
+                                  <Label className="text-xs text-zinc-400">标签 (逗号分隔)</Label>
+                                  <Input
+                                    value={editingProfileData.tags}
+                                    onChange={(e) => setEditingProfileData({ ...editingProfileData, tags: e.target.value })}
+                                    className="h-8 border-zinc-800 bg-zinc-900 text-zinc-100 text-sm"
+                                  />
+                                </div>
+                              </div>
+                              <div className="mt-3 flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setEditingProfileUserId(null);
+                                    setAddressActionError(null);
+                                  }}
+                                  disabled={savingProfileUserId === user.id}
+                                  className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                                >
+                                  取消
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => void handleSaveProfile(user)}
+                                  disabled={!editingProfileData.name.trim() || !editingProfileData.handle.trim() || savingProfileUserId === user.id}
+                                  className="bg-blue-600 text-white hover:bg-blue-700"
+                                >
+                                  {savingProfileUserId === user.id ? '保存中...' : '保存'}
+                                </Button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
                       {isEditingAddresses ? (
                         <tr className="border-b border-zinc-800/70 bg-zinc-950/70">
                           <td colSpan={11} className="px-4 py-3">
