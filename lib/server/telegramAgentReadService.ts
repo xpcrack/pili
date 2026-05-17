@@ -43,6 +43,8 @@ export interface RunTelegramAgentReadInput {
   token: string;
   query?: string | null;
   limit?: number | null;
+  /** Filter by channel type; only applies when post-level queries are supported. */
+  channelType?: 'news' | 'social';
   client?: TelegramChannelSyncClient;
 }
 
