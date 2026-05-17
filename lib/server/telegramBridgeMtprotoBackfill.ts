@@ -1,18 +1,10 @@
 import 'server-only';
 
 import { listTelegramChannelSources } from '@/lib/server/telegramChannelSourceRepo';
-import { ingestTelegramMonitorUpdate, type TelegramUpdateLike } from '@/lib/server/telegramMonitorIngest';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import { readTelegramMtprotoPolicy, sleep } from '@/lib/server/telegramMtprotoPolicy';
 import type { TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
 import { parseTwitterRelayPayload, type TelegramMessageLike } from '@/scripts/telegram-bridge-core';
-
-function toUpdate(message: TelegramMessageLike): TelegramUpdateLike {
-  return {
-    update_id: message.message_id || 0,
-    message,
-  };
-}
 
 export async function backfillTelegramBridgeHistory(params: {
   client: TelegramChannelSyncClient;
@@ -29,10 +21,9 @@ export async function backfillTelegramBridgeHistory(params: {
   const limitPerChat = params.limitPerChat || policy.bridgeBackfillLimit;
   const channelSources = listTelegramChannelSources({ enabledOnly: true });
   const targets = channelSources
-    .filter((source) => source.channelChatId)
+    .filter((source) => source.channelChatId && source.channelType === 'social')
     .map((source) => ({
       chatId: source.channelChatId!,
-      channelType: source.channelType,
       label: source.channelTitle || source.channelRef,
     }));
 
@@ -76,18 +67,6 @@ export async function backfillTelegramBridgeHistory(params: {
 
     fetchedCount += messages.length;
     for (const message of messages) {
-      if (target.channelType === 'news') {
-        const result = await ingestTelegramMonitorUpdate(toUpdate(message), target.channelType);
-        if ('ignored' in result && result.ignored) {
-          ignoredCount += 1;
-          chatIgnoredCount += 1;
-        } else {
-          ingestedCount += 1;
-          chatIngestedCount += 1;
-        }
-        continue;
-      }
-
       const payload = parseTwitterRelayPayload(message);
       if (!payload) {
         ignoredCount += 1;
