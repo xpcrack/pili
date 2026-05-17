@@ -64,6 +64,7 @@ interface ProfileFormState {
   twitter: string;
   telegram: string;
   telegrams: string;
+  isNewsSource: boolean;
   tags: string;
 }
 
@@ -267,6 +268,7 @@ export default function ManagePage() {
     twitter: '',
     telegram: '',
     telegrams: '',
+    isNewsSource: false,
     tags: '',
   });
 
@@ -471,7 +473,7 @@ export default function ManagePage() {
   };
 
   const resetForm = () => {
-    setFormData({ name: '', handle: '', twitter: '', telegram: '', telegrams: '', tags: '' });
+    setFormData({ name: '', handle: '', twitter: '', telegram: '', telegrams: '', isNewsSource: false, tags: '' });
     setAddressText('');
   };
 
@@ -491,7 +493,10 @@ export default function ManagePage() {
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
       assetUpdatedAt: null,
-      tags: formData.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      tags: [
+        ...(formData.isNewsSource ? ['news'] : []),
+        ...formData.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      ],
     });
 
     resetForm();
@@ -782,14 +787,35 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   className="border-zinc-800 bg-zinc-950 text-zinc-100"
                 />
               </div>
-              <div className="space-y-2">
-                <Label className="text-zinc-300">额外 TG 频道</Label>
-                <Input
-                  value={formData.telegrams}
-                  onChange={(e) => setFormData({ ...formData, telegrams: e.target.value })}
-                  placeholder="多个频道用逗号分隔，例如: channel1, channel2"
-                  className="border-zinc-800 bg-zinc-950 text-zinc-100"
-                />
+              {formData.isNewsSource && (
+                <div className="space-y-2">
+                  <Label className="text-zinc-300">额外 TG 频道</Label>
+                  <Input
+                    value={formData.telegrams}
+                    onChange={(e) => setFormData({ ...formData, telegrams: e.target.value })}
+                    placeholder="多个频道用逗号分隔，例如: channel1, channel2"
+                    className="border-zinc-800 bg-zinc-950 text-zinc-100"
+                  />
+                </div>
+              )}
+              <div className="flex items-center gap-3 md:col-span-2">
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, isNewsSource: !formData.isNewsSource })}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    formData.isNewsSource ? 'bg-amber-600' : 'bg-zinc-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      formData.isNewsSource ? 'left-[22px]' : 'left-0.5'
+                    }`}
+                  />
+                </button>
+                <Label className="text-zinc-300">新闻源</Label>
+                <span className="text-xs text-zinc-500">
+                  {formData.isNewsSource ? 'Feed 中默认隐藏，手动开启显示' : '开启后此人物标记为新闻源'}
+                </span>
               </div>
               <div className="space-y-2 md:col-span-2">
                 <Label className="text-zinc-300">标签 (逗号分隔)</Label>
@@ -802,6 +828,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
               </div>
             </div>
 
+            {!formData.isNewsSource && (
             <div className="border-t border-zinc-800 pt-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-medium text-zinc-300">
@@ -857,6 +884,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                 </div>
               </div>
             </div>
+            )}
 
             <div className="mt-6 flex justify-end gap-3 border-t border-zinc-800 pt-6">
               <Button
