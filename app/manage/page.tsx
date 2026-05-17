@@ -63,6 +63,7 @@ interface ProfileFormState {
   handle: string;
   twitter: string;
   telegram: string;
+  telegrams: string;
   tags: string;
 }
 
@@ -265,6 +266,7 @@ export default function ManagePage() {
     handle: '',
     twitter: '',
     telegram: '',
+    telegrams: '',
     tags: '',
   });
 
@@ -469,7 +471,7 @@ export default function ManagePage() {
   };
 
   const resetForm = () => {
-    setFormData({ name: '', handle: '', twitter: '', telegram: '', tags: '' });
+    setFormData({ name: '', handle: '', twitter: '', telegram: '', telegrams: '', tags: '' });
     setAddressText('');
   };
 
@@ -484,6 +486,7 @@ export default function ManagePage() {
       avatar: buildUserAvatar(formData.handle.trim(), normalizedTwitter),
       twitter: normalizedTwitter || undefined,
       telegram: formData.telegram.trim() || undefined,
+      telegrams: formData.telegrams.split(',').map((t) => t.trim()).filter(Boolean),
       addresses: expandTrackedAddresses(parsedAddresses),
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
@@ -779,6 +782,15 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                   className="border-zinc-800 bg-zinc-950 text-zinc-100"
                 />
               </div>
+              <div className="space-y-2">
+                <Label className="text-zinc-300">额外 TG 频道</Label>
+                <Input
+                  value={formData.telegrams}
+                  onChange={(e) => setFormData({ ...formData, telegrams: e.target.value })}
+                  placeholder="多个频道用逗号分隔，例如: channel1, channel2"
+                  className="border-zinc-800 bg-zinc-950 text-zinc-100"
+                />
+              </div>
               <div className="space-y-2 md:col-span-2">
                 <Label className="text-zinc-300">标签 (逗号分隔)</Label>
                 <Input
@@ -1067,14 +1079,21 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                         </td>
                         <td className="px-2 py-2.5">
                           {telegramUrl ? (
-                            <a
-                              href={telegramUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="truncate text-blue-400 hover:text-blue-300 hover:underline"
-                            >
-                              {telegramDisplayText || '-'}
-                            </a>
+                            <div>
+                              <a
+                                href={telegramUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="truncate text-blue-400 hover:text-blue-300 hover:underline"
+                              >
+                                {telegramDisplayText || '-'}
+                              </a>
+                              {user.telegrams && user.telegrams.length > 0 ? (
+                                <div className="text-[11px] text-zinc-500">
+                                  +{user.telegrams.length} 频道
+                                </div>
+                              ) : null}
+                            </div>
                           ) : (
                             <span className="text-zinc-600">-</span>
                           )}
