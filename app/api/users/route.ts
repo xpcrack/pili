@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
       twitterUserId: source.twitterUserId,
       twitterAvatarUrl: source.twitterAvatarUrl,
       telegram: source.telegram,
+      telegrams: source.telegrams,
       addresses: source.addresses,
       totalAssetUsd: source.totalAssetUsd,
       historicalMaxAssetUsd: source.historicalMaxAssetUsd,
