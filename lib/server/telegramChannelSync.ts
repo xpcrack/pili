@@ -76,6 +76,7 @@ async function storeAndProjectTelegramChannelMessages(params: {
       textEntities: message.textEntities,
       media: message.media,
       linkUrls: message.linkUrls,
+      channelType: params.source.channelType,
       forwardInfo: message.forwardInfo,
       views: message.views,
       forwards: message.forwards,
