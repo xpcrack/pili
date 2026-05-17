@@ -26,6 +26,7 @@ interface TelegramChannelSourceRow {
   last_message_id: number | null;
   last_synced_at_ms: number | null;
   last_error: string | null;
+  channel_type: string;
   created_at: number;
   updated_at: number;
 }
@@ -44,6 +45,10 @@ function normalizeSourceStatus(value: string | null | undefined): TelegramChanne
 
 function normalizeSourceKind(value: string | null | undefined): TelegramChannelSourceKind {
   return value === 'manual' ? 'manual' : 'auto';
+}
+
+function normalizeChannelType(value: string | null | undefined): 'news' | 'social' {
+  return value === 'news' ? 'news' : 'social';
 }
 
 function resolveSourceKind(
@@ -95,6 +100,7 @@ function mapRow(row: TelegramChannelSourceRow): TelegramChannelSource {
     lastMessageId: typeof row.last_message_id === 'number' ? row.last_message_id : null,
     lastSyncedAtMs: typeof row.last_synced_at_ms === 'number' ? row.last_synced_at_ms : null,
     lastError: row.last_error || null,
+    channelType: normalizeChannelType(row.channel_type),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -105,6 +111,7 @@ export function upsertTelegramChannelSource(input: {
   channelRef: string;
   enabled?: boolean;
   sourceKind?: TelegramChannelSourceKind;
+  channelType?: 'news' | 'social';
 }) {
   const { channelRef, channelRefNormalized } = normalizeChannelRef(input.channelRef);
   const now = Date.now();
@@ -129,23 +136,26 @@ export function upsertTelegramChannelSource(input: {
        channel_ref,
        channel_ref_normalized,
        source_kind,
+       channel_type,
        enabled,
        sync_status,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
      ON CONFLICT(user_id, channel_ref_normalized) DO UPDATE SET
        channel_ref = excluded.channel_ref,
        source_kind = excluded.source_kind,
+       channel_type = excluded.channel_type,
        enabled = excluded.enabled,
        updated_at = CASE
          WHEN telegram_channel_sources.channel_ref != excluded.channel_ref
            OR telegram_channel_sources.source_kind != excluded.source_kind
+           OR telegram_channel_sources.channel_type != excluded.channel_type
            OR telegram_channel_sources.enabled != excluded.enabled
          THEN excluded.updated_at
          ELSE telegram_channel_sources.updated_at
        END`
-  ).run(id, input.userId, channelRef, channelRefNormalized, sourceKind, enabledValue, now, now);
+  ).run(id, input.userId, channelRef, channelRefNormalized, sourceKind, input.channelType || 'social', enabledValue, now, now);
 
   return getTelegramChannelSourceById(id)!;
 }
@@ -212,6 +222,7 @@ export function getTelegramChannelSourceById(id: string) {
          channel_chat_id,
          access_hash,
          source_kind,
+         channel_type,
          enabled,
          sync_status,
          last_message_id,
@@ -241,6 +252,7 @@ export function listTelegramChannelSources(params?: { enabledOnly?: boolean }) {
          channel_chat_id,
          access_hash,
          source_kind,
+         channel_type,
          enabled,
          sync_status,
          last_message_id,

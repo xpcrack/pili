@@ -309,6 +309,7 @@ CREATE TABLE IF NOT EXISTS telegram_channel_sources (
   last_message_id INTEGER,
   last_synced_at_ms INTEGER,
   last_error TEXT,
+  channel_type TEXT NOT NULL DEFAULT 'social',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(user_id, channel_ref_normalized),
@@ -1006,6 +1007,7 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
 
 function ensureTelegramChannelSourceColumns(db: Database.Database) {
   ensureColumn(db, 'telegram_channel_sources', 'source_kind', 'TEXT', "'auto'");
+  ensureColumn(db, 'telegram_channel_sources', 'channel_type', 'TEXT', "'social'");
 }
 
 function ensureTelegramChannelPostSchema(db: Database.Database) {
