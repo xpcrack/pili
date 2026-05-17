@@ -577,6 +577,7 @@ export default function Home() {
                   ['transfer', '转账'],
                   ['twitter', '推特'],
                   ['telegram', 'TG'],
+                  ['news', '新闻'],
                 ].map(([key, label]) => {
                   const typedKey = key as keyof FeedSearchFilters['typeFilters'];
                   const active = searchFilters.typeFilters[typedKey];
