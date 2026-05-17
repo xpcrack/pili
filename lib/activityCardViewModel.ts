@@ -157,6 +157,7 @@ export function buildActivityCardViewModel(params: {
   const isBlockchain = activity.source === 'blockchain';
   const isTwitter = activity.source === 'twitter';
   const isTelegram = activity.source === 'telegram';
+  const isNews = user.tags.includes('news');
   const hasMedia = Boolean(activity.metadata.media && activity.metadata.media.length > 0);
   const isTransfer = isBlockchain && activity.type === 'transfer';
   const fromAddress = activity.metadata.fromAddress || '';
@@ -314,10 +315,16 @@ export function buildActivityCardViewModel(params: {
         ? 'bg-amber-500/15 text-amber-200 ring-1 ring-amber-400/35'
         : 'bg-zinc-800 text-zinc-300 ring-1 ring-zinc-700';
 
+  const newsChannelLabel = isNews && isTelegram
+    ? (activity.metadata.telegramChannelTitle || activity.metadata.telegramChannelUsername || '新闻频道')
+    : null;
+
   return {
     isBlockchain,
     isTwitter,
     isTelegram,
+    isNews,
+    newsChannelLabel,
     hasMedia,
     isTransfer,
     transferAction,

@@ -38,7 +38,12 @@ export function getActivityCardTypeLabel(params: {
   source: Activity['source'];
   activityType: Activity['type'];
   twitterKindLabel: string | null;
+  isNews?: boolean;
 }) {
+  if (params.isNews) {
+    return '新闻';
+  }
+
   if (params.source === 'twitter') {
     return params.twitterKindLabel;
   }
