@@ -451,18 +451,6 @@ export default function ManagePage() {
       .catch(() => undefined);
   }, [isClient, users.length]);
 
-  useEffect(() => {
-    if (!editingProfileUserId) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (profileCardRef.current && !profileCardRef.current.contains(event.target as Node)) {
-        const user = users.find((u) => u.id === editingProfileUserId);
-        if (user) void collapseProfile(user);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [editingProfileUserId, collapseProfile, users]);
-
   const handleDeleteUser = async (userId: string) => {
     if (deletingUserIds[userId]) {
       return;
@@ -654,6 +642,18 @@ export default function ManagePage() {
   }, [hasProfileChanges, handleSaveProfile]);
 
   const profileCardRef = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    if (!editingProfileUserId) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileCardRef.current && !profileCardRef.current.contains(event.target as Node)) {
+        const user = users.find((u) => u.id === editingProfileUserId);
+        if (user) void collapseProfile(user);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [editingProfileUserId, collapseProfile, users]);
 
   const copyText = async (text: string) => {
     if (!text.trim()) return;
