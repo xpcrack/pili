@@ -18,6 +18,7 @@ export interface TelegramChannelSource {
   lastMessageId: number | null;
   lastSyncedAtMs: number | null;
   lastError: string | null;
+  channelType: 'news' | 'social';
   createdAt: number;
   updatedAt: number;
 }
