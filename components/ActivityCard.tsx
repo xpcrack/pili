@@ -95,6 +95,8 @@ export function ActivityCard({
     isBlockchain,
     isTwitter,
     isTelegram,
+    isNews,
+    newsChannelLabel,
     hasMedia,
     isTransfer,
     displayActionVariantLabel,
@@ -151,6 +153,7 @@ export function ActivityCard({
     source: activity.source,
     activityType: activity.type,
     twitterKindLabel,
+    isNews,
   });
   const twitterContent = isTwitter ? cleanTwitterDisplayText(activity.content) : activity.content;
   const twitterPrimaryText =
@@ -330,7 +333,7 @@ export function ActivityCard({
               </Avatar>
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-semibold text-zinc-300">{user.name}</span>
+                  <span className="truncate font-semibold text-zinc-300">{isNews && newsChannelLabel ? newsChannelLabel : user.name}</span>
                   {(isTwitter || isTelegram) && socialPostUrl ? (
                     <button
                       type="button"
