@@ -92,6 +92,7 @@ export interface User {
   twitterUserId?: string;
   twitterAvatarUrl?: string;
   telegram?: string;
+  telegrams?: string[];
   addresses: AddressInfo[];
   totalAssetUsd: number;
   historicalMaxAssetUsd: number;
