@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -35,7 +35,6 @@ import {
   AlertCircle,
   Search,
   ArrowRight,
-  Pencil,
 } from 'lucide-react';
 
 interface AddressEntry {
@@ -452,6 +451,18 @@ export default function ManagePage() {
       .catch(() => undefined);
   }, [isClient, users.length]);
 
+  useEffect(() => {
+    if (!editingProfileUserId) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileCardRef.current && !profileCardRef.current.contains(event.target as Node)) {
+        const user = users.find((u) => u.id === editingProfileUserId);
+        if (user) void collapseProfile(user);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [editingProfileUserId, collapseProfile, users]);
+
   const handleDeleteUser = async (userId: string) => {
     if (deletingUserIds[userId]) {
       return;
@@ -619,6 +630,30 @@ export default function ManagePage() {
     setEditingProfileUserId(user.id);
     setAddressActionError(null);
   };
+
+  const hasProfileChanges = useCallback((user: User) => {
+    if (editingProfileUserId !== user.id) return false;
+    const data = editingProfileData;
+    return (
+      data.name !== user.name ||
+      data.handle !== user.handle ||
+      (data.twitter || '') !== (user.twitter || '') ||
+      (data.telegram || '') !== (user.telegram || '') ||
+      data.telegrams !== (user.telegrams || []).join(', ') ||
+      data.isNewsSource !== user.tags.includes('news') ||
+      data.tags !== user.tags.filter((t) => t !== 'news').join(', ')
+    );
+  }, [editingProfileUserId, editingProfileData]);
+
+  const collapseProfile = useCallback(async (user: User) => {
+    if (hasProfileChanges(user)) {
+      await handleSaveProfile(user);
+    } else {
+      setEditingProfileUserId(null);
+    }
+  }, [hasProfileChanges, handleSaveProfile]);
+
+  const profileCardRef = useRef<HTMLTableRowElement | null>(null);
 
   const copyText = async (text: string) => {
     if (!text.trim()) return;
@@ -1108,11 +1143,22 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                     : null;
                   const isEditingAddresses = editingAddressUserId === user.id;
                   const isEditingProfile = editingProfileUserId === user.id;
+                  const profileDirty = hasProfileChanges(user);
 
                   return (
                     <Fragment key={user.id}>
-                      <tr className="border-b border-zinc-800/70 align-top text-zinc-200">
-                        <td className="px-2 py-2.5">
+                      <tr
+                        className={`border-b border-zinc-800/70 align-top text-zinc-200 ${
+                          isEditingProfile ? 'bg-zinc-950/50' : ''
+                        }`}
+                      >
+                        <td
+                          className="cursor-pointer px-2 py-2.5"
+                          onClick={() => {
+                            if (isEditingProfile) return;
+                            startEditingProfile(user);
+                          }}
+                        >
                           <Avatar className="h-8 w-8">
                             <AvatarImage src={getUserAvatar(user)} alt={user.name} />
                             <AvatarFallback className="bg-zinc-800 text-xs text-zinc-400">
@@ -1120,36 +1166,27 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                             </AvatarFallback>
                           </Avatar>
                         </td>
-                        <td className="px-2 py-2.5">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="truncate font-medium text-zinc-100">{user.name}</div>
-                              <div className="truncate text-xs text-zinc-500">@{user.handle}</div>
-                              {user.tags.length > 0 ? (
-                                <div className="mt-1 flex flex-wrap gap-1">
-                                  {user.tags.slice(0, 3).map((tag) => (
-                                    <Badge key={tag} className="border-0 bg-zinc-800 text-[10px] text-zinc-300">
-                                      {tag}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </div>
-                            <button
-                              onClick={() => startEditingProfile(user)}
-                              className="rounded p-1 text-zinc-600 hover:bg-blue-500/10 hover:text-blue-400"
-                              title="编辑人物"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => void handleDeleteUser(user.id)}
-                              disabled={Boolean(deletingUserIds[user.id])}
-                              className="rounded p-1 text-zinc-600 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-                              title="删除人物"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
+                        <td
+                          className="cursor-pointer px-2 py-2.5"
+                          onClick={() => {
+                            if (isEditingProfile) return;
+                            startEditingProfile(user);
+                          }}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-zinc-100">{user.name}</div>
+                            <div className="truncate text-xs text-zinc-500">@{user.handle}</div>
+                            {user.tags.length > 0 ? (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {user.tags.slice(0, 3).map((tag) => (
+                                  <Badge key={tag} className={`border-0 text-[10px] ${
+                                    tag === 'news' ? 'bg-amber-600/20 text-amber-300' : 'bg-zinc-800 text-zinc-300'
+                                  }`}>
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-2 py-2.5">
@@ -1236,7 +1273,7 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                         </td>
                       </tr>
                       {isEditingProfile ? (
-                        <tr className="border-b border-zinc-800/70 bg-zinc-950/70">
+                        <tr ref={profileCardRef} className="border-b border-zinc-800/70 bg-zinc-950/70">
                           <td colSpan={11} className="px-4 py-3">
                             <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
                               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -1307,27 +1344,39 @@ bob_placeholder_solana_addr_1111111111111111:bob#1
                                   />
                                 </div>
                               </div>
-                              <div className="mt-3 flex gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    setEditingProfileUserId(null);
-                                    setAddressActionError(null);
-                                  }}
-                                  disabled={savingProfileUserId === user.id}
-                                  className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                              <div className="mt-3 flex items-center justify-between">
+                                <button
+                                  onClick={() => void handleDeleteUser(user.id)}
+                                  disabled={Boolean(deletingUserIds[user.id])}
+                                  className="rounded p-1.5 text-zinc-600 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                                  title="删除人物"
                                 >
-                                  取消
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  onClick={() => void handleSaveProfile(user)}
-                                  disabled={!editingProfileData.name.trim() || !editingProfileData.handle.trim() || savingProfileUserId === user.id}
-                                  className="bg-blue-600 text-white hover:bg-blue-700"
-                                >
-                                  {savingProfileUserId === user.id ? '保存中...' : '保存'}
-                                </Button>
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                                {profileDirty ? (
+                                  <div className="flex gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        setEditingProfileUserId(null);
+                                        setAddressActionError(null);
+                                      }}
+                                      disabled={savingProfileUserId === user.id}
+                                      className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                                    >
+                                      取消
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => void handleSaveProfile(user)}
+                                      disabled={!editingProfileData.name.trim() || !editingProfileData.handle.trim() || savingProfileUserId === user.id}
+                                      className="bg-blue-600 text-white hover:bg-blue-700"
+                                    >
+                                      {savingProfileUserId === user.id ? '保存中...' : '保存'}
+                                    </Button>
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           </td>
