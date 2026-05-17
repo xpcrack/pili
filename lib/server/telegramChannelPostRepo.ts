@@ -16,6 +16,7 @@ interface TelegramChannelPostRow {
   text_entities_json: string;
   media_json: string;
   link_urls_json: string;
+  channel_type: string;
   forward_info_json: string | null;
   views: number | null;
   forwards: number | null;
@@ -65,6 +66,7 @@ function mapRow(row: TelegramChannelPostRow): TelegramChannelPost {
     textEntities: parseJson<unknown[]>(row.text_entities_json, []),
     media: parseJson<string[]>(row.media_json, []),
     linkUrls: parseJson<string[]>(row.link_urls_json, []),
+    channelType: (row.channel_type === 'news' ? 'news' : 'social') as 'news' | 'social',
     forwardInfo: parseJson<Record<string, unknown> | null>(row.forward_info_json, null),
     views: typeof row.views === 'number' ? row.views : null,
     forwards: typeof row.forwards === 'number' ? row.forwards : null,
@@ -87,6 +89,7 @@ export function upsertTelegramChannelPost(input: {
   textEntities?: unknown[];
   media?: string[];
   linkUrls?: string[];
+  channelType?: 'news' | 'social';
   forwardInfo?: Record<string, unknown> | null;
   views?: number | null;
   forwards?: number | null;
@@ -109,6 +112,7 @@ export function upsertTelegramChannelPost(input: {
        text_entities_json,
        media_json,
        link_urls_json,
+       channel_type,
        forward_info_json,
        views,
        forwards,
@@ -116,7 +120,7 @@ export function upsertTelegramChannelPost(input: {
        raw_json,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(channel_chat_id, message_id) DO UPDATE SET
        channel_username = excluded.channel_username,
        channel_title = excluded.channel_title,
@@ -127,6 +131,7 @@ export function upsertTelegramChannelPost(input: {
        text_entities_json = excluded.text_entities_json,
        media_json = excluded.media_json,
        link_urls_json = excluded.link_urls_json,
+       channel_type = excluded.channel_type,
        forward_info_json = excluded.forward_info_json,
        views = excluded.views,
        forwards = excluded.forwards,
@@ -145,6 +150,7 @@ export function upsertTelegramChannelPost(input: {
     JSON.stringify(input.textEntities || []),
     JSON.stringify(normalizeStringArray(input.media)),
     JSON.stringify(normalizeStringArray(input.linkUrls)),
+    input.channelType || 'social',
     input.forwardInfo ? JSON.stringify(input.forwardInfo) : null,
     typeof input.views === 'number' && Number.isFinite(input.views) ? Math.max(0, Math.floor(input.views)) : null,
     typeof input.forwards === 'number' && Number.isFinite(input.forwards)
@@ -177,6 +183,7 @@ export function getTelegramChannelPostByMessage(channelChatId: string, messageId
          text_entities_json,
          media_json,
          link_urls_json,
+         channel_type,
          forward_info_json,
          views,
          forwards,

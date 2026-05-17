@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS telegram_channel_posts (
   text_entities_json TEXT NOT NULL DEFAULT '[]',
   media_json TEXT NOT NULL DEFAULT '[]',
   link_urls_json TEXT NOT NULL DEFAULT '[]',
+  channel_type TEXT NOT NULL DEFAULT 'social',
   forward_info_json TEXT,
   views INTEGER,
   forwards INTEGER,
@@ -1011,6 +1012,7 @@ function ensureTelegramChannelSourceColumns(db: Database.Database) {
 }
 
 function ensureTelegramChannelPostSchema(db: Database.Database) {
+  ensureColumn(db, 'telegram_channel_posts', 'channel_type', 'TEXT', "'social'");
   if (!hasColumn(db, 'telegram_channel_posts', 'source_id') && !hasColumn(db, 'telegram_channel_posts', 'user_id')) {
     db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_source_recent');
     db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_user_recent');
@@ -1040,6 +1042,7 @@ CREATE TABLE telegram_channel_posts (
   text_entities_json TEXT NOT NULL DEFAULT '[]',
   media_json TEXT NOT NULL DEFAULT '[]',
   link_urls_json TEXT NOT NULL DEFAULT '[]',
+  channel_type TEXT NOT NULL DEFAULT 'social',
   forward_info_json TEXT,
   views INTEGER,
   forwards INTEGER,
@@ -1066,6 +1069,7 @@ INSERT INTO telegram_channel_posts (
   text_entities_json,
   media_json,
   link_urls_json,
+  channel_type,
   forward_info_json,
   views,
   forwards,
@@ -1087,6 +1091,7 @@ SELECT
   ranked.text_entities_json,
   ranked.media_json,
   ranked.link_urls_json,
+  'social',
   ranked.forward_info_json,
   ranked.views,
   ranked.forwards,
