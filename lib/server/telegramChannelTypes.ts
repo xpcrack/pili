@@ -36,6 +36,7 @@ export interface TelegramChannelPost {
   textEntities: unknown[];
   media: string[];
   linkUrls: string[];
+  channelType: 'news' | 'social';
   forwardInfo: Record<string, unknown> | null;
   views: number | null;
   forwards: number | null;
