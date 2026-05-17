@@ -168,7 +168,7 @@ export function bootstrapTelegramChannelSourcesFromTrackedUsers() {
       const allChannels = [
         normalizeOptional(user.telegram),
         ...(user.telegrams || []).map((t) => normalizeOptional(t)),
-      ].filter((t): t is string => t.length > 0);
+      ].filter((t): t is string => Boolean(t && t.length > 0));
 
       const autoSources = db
         .prepare(

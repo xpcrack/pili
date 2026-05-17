@@ -263,6 +263,7 @@ function run() {
       transfer: false,
       twitter: false,
       telegram: true,
+      news: false,
     }),
     'telegram',
     'telegram-only filter should request the telegram source remotely'
@@ -273,6 +274,7 @@ function run() {
       transfer: false,
       twitter: false,
       telegram: false,
+      news: false,
     }),
     'blockchain',
     'chain-only filter should narrow remote reads to blockchain events'
@@ -283,6 +285,7 @@ function run() {
       transfer: false,
       twitter: true,
       telegram: true,
+      news: false,
     }),
     null,
     'mixed social filters should stay broad when they cannot be expressed as one remote source'
@@ -349,6 +352,7 @@ function run() {
     transfer: false,
     twitter: false,
     telegram: false,
+    news: false,
   };
   assert.equal(hasAnyEnabledFeedType(disabledTypes), false);
 
