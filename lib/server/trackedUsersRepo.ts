@@ -20,6 +20,7 @@ interface TrackedUserRow {
   twitter_user_id: string | null;
   twitter_avatar_url: string | null;
   telegram: string | null;
+  telegrams_json: string;
   tags_json: string;
   total_asset_usd: number;
   historical_max_asset_usd: number;
@@ -103,6 +104,17 @@ function parseTags(value: string | null | undefined) {
   }
 }
 
+function parseTelegramList(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function mapAddressRow(row: TrackedAddressRow): AddressInfo {
   return {
     address: row.address,
@@ -127,6 +139,7 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
     twitterUserId: row.twitter_user_id || undefined,
     twitterAvatarUrl: row.twitter_avatar_url || undefined,
     telegram: row.telegram || undefined,
+    telegrams: parseTelegramList(row.telegrams_json),
     addresses,
     currentChainAssetTotal: totalAssetUsd,
     historicalMaxChainAssetTotal: historicalMaxAssetUsd,
@@ -431,13 +444,14 @@ function upsertUserRow(user: User, now: number) {
       twitter_user_id,
       twitter_avatar_url,
       telegram,
+      telegrams_json,
       tags_json,
       total_asset_usd,
       historical_max_asset_usd,
       asset_updated_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       handle = excluded.handle,
@@ -446,6 +460,7 @@ function upsertUserRow(user: User, now: number) {
       twitter_user_id = excluded.twitter_user_id,
       twitter_avatar_url = excluded.twitter_avatar_url,
       telegram = excluded.telegram,
+      telegrams_json = excluded.telegrams_json,
       tags_json = excluded.tags_json,
       updated_at = excluded.updated_at`
   ).run(
@@ -457,6 +472,7 @@ function upsertUserRow(user: User, now: number) {
     user.twitterUserId ?? null,
     user.twitterAvatarUrl ?? null,
     user.telegram ?? null,
+    JSON.stringify(user.telegrams ?? []),
     JSON.stringify(user.tags),
     totalAssetUsd,
     Math.max(historicalMaxAssetUsd, totalAssetUsd),
@@ -610,6 +626,7 @@ export function listTrackedUsers() {
         twitter_user_id,
         twitter_avatar_url,
         telegram,
+        telegrams_json,
         tags_json,
         total_asset_usd,
         historical_max_asset_usd,
