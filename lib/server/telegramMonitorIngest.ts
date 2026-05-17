@@ -258,7 +258,10 @@ async function notifyUnknownTrackedUser(params: {
   await sendTelegramTextMessage({ chatId, text });
 }
 
-export async function ingestTelegramMonitorUpdate(body: TelegramUpdateLike) {
+export async function ingestTelegramMonitorUpdate(
+  body: TelegramUpdateLike,
+  channelType?: 'news' | 'social',
+) {
   const message = extractMessage(body);
   if (!message) {
     return { ok: true, ignored: true, reason: 'no-message' as const };
