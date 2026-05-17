@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS tracked_users (
   twitter_user_id TEXT,
   twitter_avatar_url TEXT,
   telegram TEXT,
+  telegrams_json TEXT NOT NULL DEFAULT '[]',
   tags_json TEXT NOT NULL DEFAULT '[]',
   total_asset_usd REAL NOT NULL DEFAULT 0,
   historical_max_asset_usd REAL NOT NULL DEFAULT 0,
@@ -964,6 +965,7 @@ function initializeDb(db: Database.Database) {
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
   ensureTwitterIdentityColumns(db);
+  ensureTelegramsJsonColumn(db);
   ensureCompletenessSchema(db);
   ensureEventsFtsIndexing(db);
   migrateLegacyJudgments(db);
@@ -1138,6 +1140,10 @@ function ensureTwitterIdentityColumns(db: Database.Database) {
     `CREATE INDEX IF NOT EXISTS idx_twitter_tweets_author_user_created
      ON twitter_tweets(author_user_id, created_at_ms DESC)`
   );
+}
+
+function ensureTelegramsJsonColumn(db: Database.Database) {
+  ensureColumn(db, 'tracked_users', 'telegrams_json', 'TEXT', "'[]'");
 }
 
 function ensureCompletenessSchema(db: Database.Database) {
