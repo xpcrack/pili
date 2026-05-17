@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { readSystemConfig } from '@/lib/server/systemConfigRepo';
+import { listTelegramChannelSources } from '@/lib/server/telegramChannelSourceRepo';
 import { ingestTelegramMonitorUpdate, type TelegramUpdateLike } from '@/lib/server/telegramMonitorIngest';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import { readTelegramMtprotoPolicy, sleep } from '@/lib/server/telegramMtprotoPolicy';
@@ -25,19 +25,16 @@ export async function backfillTelegramBridgeHistory(params: {
     throw new Error('Bridge history backfill requires a client with listBridgeChatMessages support.');
   }
 
-  const config = readSystemConfig();
   const policy = readTelegramMtprotoPolicy();
   const limitPerChat = params.limitPerChat || policy.bridgeBackfillLimit;
-  const targets = [
-    {
-      chatId: config.telegramTradeMonitorSourceChatId?.trim() || '',
-      mode: 'telegram-monitor' as const,
-    },
-    {
-      chatId: config.telegramTwitterMonitorSourceChatId?.trim() || '',
-      mode: 'twitter-relay' as const,
-    },
-  ].filter((item) => item.chatId);
+  const channelSources = listTelegramChannelSources({ enabledOnly: true });
+  const targets = channelSources
+    .filter((source) => source.channelChatId)
+    .map((source) => ({
+      chatId: source.channelChatId!,
+      channelType: source.channelType,
+      label: source.channelTitle || source.channelRef,
+    }));
 
   let fetchedCount = 0;
   let ingestedCount = 0;
@@ -79,8 +76,8 @@ export async function backfillTelegramBridgeHistory(params: {
 
     fetchedCount += messages.length;
     for (const message of messages) {
-      if (target.mode === 'telegram-monitor') {
-        const result = await ingestTelegramMonitorUpdate(toUpdate(message));
+      if (target.channelType === 'news') {
+        const result = await ingestTelegramMonitorUpdate(toUpdate(message), target.channelType);
         if ('ignored' in result && result.ignored) {
           ignoredCount += 1;
           chatIgnoredCount += 1;
