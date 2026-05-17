@@ -165,7 +165,11 @@ export function bootstrapTelegramChannelSourcesFromTrackedUsers() {
     let count = 0;
     const db = getDb();
     for (const user of listTrackedUsers()) {
-      const telegram = normalizeOptional(user.telegram);
+      const allChannels = [
+        normalizeOptional(user.telegram),
+        ...(user.telegrams || []).map((t) => normalizeOptional(t)),
+      ].filter((t): t is string => t.length > 0);
+
       const autoSources = db
         .prepare(
           `SELECT id, channel_ref_normalized
@@ -175,18 +179,23 @@ export function bootstrapTelegramChannelSourcesFromTrackedUsers() {
         )
         .all(user.id) as Array<{ id: string; channel_ref_normalized: string }>;
 
-      const currentNormalized = telegram ? normalizeChannelRef(telegram).channelRefNormalized : '';
-      if (telegram && currentNormalized) {
+      const currentNormalized = new Set(
+        allChannels.map((ch) => normalizeChannelRef(ch).channelRefNormalized).filter(Boolean)
+      );
+
+      for (const channel of allChannels) {
+        const normalized = normalizeChannelRef(channel).channelRefNormalized;
+        if (!normalized) continue;
         upsertTelegramChannelSource({
           userId: user.id,
-          channelRef: telegram,
+          channelRef: channel,
           sourceKind: 'auto',
         });
         count += 1;
       }
 
       for (const staleSource of autoSources) {
-        if (currentNormalized && staleSource.channel_ref_normalized === currentNormalized) {
+        if (currentNormalized.has(staleSource.channel_ref_normalized)) {
           continue;
         }
         db.prepare(
