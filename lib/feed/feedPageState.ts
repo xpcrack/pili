@@ -18,6 +18,7 @@ export function hasActiveFeedLocalFilters(searchFilters: FeedSearchFilters) {
     !searchFilters.typeFilters.transfer ||
     !searchFilters.typeFilters.twitter ||
     !searchFilters.typeFilters.telegram ||
+    searchFilters.typeFilters.news ||
     searchFilters.minTradeAmountUsd.trim().length > 0 ||
     searchFilters.minTradeMarketCapUsd.trim().length > 0
   );
