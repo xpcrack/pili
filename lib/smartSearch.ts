@@ -13,6 +13,7 @@ export interface FeedSearchFilters {
     transfer: boolean;
     twitter: boolean;
     telegram: boolean;
+    news: boolean;
   };
   minTradeAmountUsd: string;
   minTradeMarketCapUsd: string;
@@ -25,12 +26,13 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
     transfer: true,
     twitter: true,
     telegram: true,
+    news: false,
   },
   minTradeAmountUsd: '',
   minTradeMarketCapUsd: '',
 };
 
-export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'other';
+export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'news' | 'other';
 
 export function getRemoteFeedSource(
   typeFilters: FeedSearchFilters['typeFilters']
@@ -168,6 +170,10 @@ function matchesTradeThreshold(
 }
 
 export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
+  if (item.user.tags.includes('news')) {
+    return 'news';
+  }
+
   if (item.activity.source === 'twitter') {
     return 'twitter';
   }
@@ -188,7 +194,7 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
 }
 
 export function hasAnyEnabledFeedType(typeFilters: FeedSearchFilters['typeFilters']) {
-  return typeFilters.trade || typeFilters.transfer || typeFilters.twitter || typeFilters.telegram;
+  return typeFilters.trade || typeFilters.transfer || typeFilters.twitter || typeFilters.telegram || typeFilters.news;
 }
 
 export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilters) {
@@ -207,6 +213,9 @@ export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilt
     return false;
   }
   if (category === 'telegram' && !filters.typeFilters.telegram) {
+    return false;
+  }
+  if (category === 'news' && !filters.typeFilters.news) {
     return false;
   }
   if (category === 'other') {
