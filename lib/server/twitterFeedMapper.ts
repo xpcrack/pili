@@ -18,6 +18,7 @@ import {
 } from '@/lib/server/twitterRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
+import { runTweetEnrichmentForTweetIds } from '@/lib/server/twitterEnrichmentService';
 
 function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
@@ -273,6 +274,31 @@ export function projectTwitterTweetsToFeed(options: {
   const scoredRows = scoreFeedRowsAgainstDatabase(upsertRows);
   const projectedCount = upsertFeedRows(scoredRows);
   upsertEventsFromFeedRows(scoredRows, 'twitter-projector');
+
+  // Trigger background enrichment for tweets that haven't been enriched yet
+  const pendingTweetIds = tweetCandidates
+    .filter((tweet) => {
+      const enrich = enrichmentByTweetId.get(tweet.tweetId);
+      return !enrich || enrich.translationStatus === 'pending' || enrich.translationStatus === 'failed';
+    })
+    .map((t) => t.tweetId);
+
+  if (pendingTweetIds.length > 0) {
+    void runTweetEnrichmentForTweetIds({ tweetIds: pendingTweetIds })
+      .then((result) => {
+        if (result.succeeded > 0) {
+          console.log(`[enrichment] ${result.succeeded}/${result.total} succeeded`);
+          projectTwitterTweetsToFeed({ sinceMs: 0, tweetIds: pendingTweetIds });
+        }
+        if (result.failed > 0) {
+          console.warn(`[enrichment] ${result.failed}/${result.total} failed`);
+        }
+      })
+      .catch((err) => {
+        console.warn('[enrichment] background enrichment error:', err instanceof Error ? err.message : err);
+      });
+  }
+
   return {
     projectedCount,
   };
