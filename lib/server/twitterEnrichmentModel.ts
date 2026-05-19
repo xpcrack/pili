@@ -29,17 +29,25 @@ export interface TweetEnrichmentModel {
 }
 
 export function getDefaultTweetEnrichmentModel(): TweetEnrichmentModel {
-  return {
-    async enrichTweet(input) {
-      return {
-        translationZh: null,
-        sentiments: input.mentions.map((mention) => ({
-          tokenSymbol: mention.tokenSymbol || undefined,
-          tokenAddress: mention.tokenAddress || undefined,
-          sentiment: 'neutral' as const,
-          confidence: 0.5,
-        })),
-      };
-    },
+  const apiKey = (process.env.NVIDIA_API_KEY || '').trim();
+  if (!apiKey) {
+    return {
+      async enrichTweet(input) {
+        return {
+          translationZh: null,
+          sentiments: input.mentions.map((mention) => ({
+            tokenSymbol: mention.tokenSymbol || undefined,
+            tokenAddress: mention.tokenAddress || undefined,
+            sentiment: 'neutral' as const,
+            confidence: 0.5,
+          })),
+        };
+      },
+    };
+  }
+
+  const { NvidaQwenEnrichmentModel } = require('@/lib/server/nvidiaEnrichmentModel') as {
+    NvidaQwenEnrichmentModel: new (opts: { apiKey: string }) => TweetEnrichmentModel;
   };
+  return new NvidaQwenEnrichmentModel({ apiKey });
 }
