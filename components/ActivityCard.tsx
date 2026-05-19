@@ -20,6 +20,7 @@ import {
   type FeedTimeDisplayMode,
   getRelativeTimeState,
 } from '@/lib/timeFormat';
+import { highlightSocialContent } from '@/lib/socialContentHighlight';
 import { type TradeValueDisplayMode } from '@/lib/tradeDisplay';
 
 interface ActivityCardProps {
@@ -163,7 +164,25 @@ export function ActivityCard({
   const twitterQuotedContent = isTwitter ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '') : '';
   const twitterQuotedAuthorHandle = isTwitter ? (activity.metadata.quotedTweetAuthorHandle || '').trim() : '';
   const telegramPrimaryText = isTelegram ? getTelegramCardPrimaryText(activity.content) : null;
+  const telegramTranslationZh = isTelegram ? (activity.metadata.translationZh || '').trim() : '';
+  const telegramDisplayPrimary = isTelegram
+    ? (telegramTranslationZh || telegramPrimaryText || '')
+    : '';
+  const telegramDisplaySecondary = isTelegram && telegramTranslationZh && telegramPrimaryText
+    ? telegramPrimaryText
+    : null;
   const tweetSentimentChips = isTwitter
+    ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
+        const key = `${item.tokenAddress || ''}|${item.tokenSymbol || ''}`.toLowerCase();
+        return (
+          items.findIndex((candidate) => {
+            const candidateKey = `${candidate.tokenAddress || ''}|${candidate.tokenSymbol || ''}`.toLowerCase();
+            return candidateKey === key;
+          }) === index
+        );
+      })
+    : [];
+  const telegramSentimentChips = isTelegram
     ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
         const key = `${item.tokenAddress || ''}|${item.tokenSymbol || ''}`.toLowerCase();
         return (
@@ -620,7 +639,9 @@ export function ActivityCard({
                 {!isTransfer && isTwitter && (
                   <div className="w-full space-y-1">
                     {twitterPrimaryText ? (
-                      <p className="whitespace-pre-wrap break-words text-zinc-100">{twitterPrimaryText}</p>
+                      <p className="whitespace-pre-wrap break-words text-zinc-100">
+                        {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
+                      </p>
                     ) : null}
                     {twitterSecondaryText ? (
                       <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
@@ -660,7 +681,33 @@ export function ActivityCard({
                 )}
                 {!isTransfer && isTelegram && (
                   <div className="w-full space-y-1">
-                    <p className="whitespace-pre-wrap break-words text-zinc-100">{telegramPrimaryText}</p>
+                    <p className="whitespace-pre-wrap break-words text-zinc-100">
+                      {highlightSocialContent(telegramDisplayPrimary, activity.metadata.tokenSentiments)}
+                    </p>
+                    {telegramDisplaySecondary ? (
+                      <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
+                        Original: {telegramDisplaySecondary}
+                      </p>
+                    ) : null}
+                    {telegramSentimentChips.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {telegramSentimentChips.map((chip, index) => (
+                          <span
+                            key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                            className={
+                              chip.sentiment === 'positive'
+                                ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                : chip.sentiment === 'negative'
+                                  ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                  : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                            }
+                          >
+                            {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
+                            {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
