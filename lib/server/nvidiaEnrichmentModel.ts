@@ -138,6 +138,9 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     const prompt = buildEnrichmentPrompt(text, mentions);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
       const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -150,7 +153,10 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
           temperature: 0.3,
           max_tokens: 1024,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         console.error(
