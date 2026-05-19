@@ -3,8 +3,8 @@
 import { type ReactNode } from 'react';
 
 export interface SocialContentMention {
-  tokenSymbol: string | null;
-  tokenAddress: string | null;
+  tokenSymbol?: string | null | undefined;
+  tokenAddress?: string | null | undefined;
 }
 
 const TICKER_PATTERN = /\$([A-Za-z][A-Za-z0-9]{1,14})/g;
