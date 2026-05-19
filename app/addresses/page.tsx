@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Copy, ExternalLink, Trash2 } from 'lucide-react';
 
+import { useMainPageSession } from '@/components/MainPageSessionProvider';
 import { TopNav } from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
 import type { AddressManagementRow } from '@/lib/addressManagement';
@@ -21,8 +22,10 @@ export const DELETE_ADDRESS_CONFIRMATION_TEXT = '删除地址，不会删除人�
 
 export default function AddressesPage() {
   const removeAddress = useUsersDataStore((state) => state.removeAddress);
-  const [rows, setRows] = useState<AddressManagementRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { state, setAddressesSnapshot, invalidateManage } = useMainPageSession();
+  const cachedSnapshot = state.addresses;
+  const [rows, setRows] = useState<AddressManagementRow[]>(() => cachedSnapshot?.rows || []);
+  const [loading, setLoading] = useState(() => !cachedSnapshot);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
@@ -47,8 +50,14 @@ export default function AddressesPage() {
       }
 
       setRows(payload.rows);
+      setAddressesSnapshot({
+        rows: payload.rows,
+        cachedAt: Date.now(),
+      });
     } catch (nextError) {
-      setRows([]);
+      if (!cachedSnapshot) {
+        setRows([]);
+      }
       setError(nextError instanceof Error ? nextError.message : '读取地址列表失败');
     } finally {
       setLoading(false);
@@ -111,11 +120,17 @@ export default function AddressesPage() {
       }
 
       removeAddress(row.userId, row.address);
-      setRows((currentRows) =>
-        currentRows.filter(
+      setRows((currentRows) => {
+        const nextRows = currentRows.filter(
           (currentRow) => !(currentRow.userId === row.userId && currentRow.address === row.address)
-        )
-      );
+        );
+        setAddressesSnapshot({
+          rows: nextRows,
+          cachedAt: Date.now(),
+        });
+        return nextRows;
+      });
+      invalidateManage();
       flashNotice('地址已删除');
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : '删除地址失败');
@@ -154,6 +169,14 @@ export default function AddressesPage() {
         {notice ? (
           <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
             {notice}
+          </section>
+        ) : null}
+
+        {loading && rows.length === 0 ? (
+          <section className="space-y-2 rounded-2xl border border-zinc-800/70 bg-zinc-900/40 p-4">
+            {[0, 1, 2, 3, 4].map((item) => (
+              <div key={item} className="h-12 animate-pulse rounded-xl bg-zinc-800/70" />
+            ))}
           </section>
         ) : null}
 

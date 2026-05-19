@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useMainPageSession } from '@/components/MainPageSessionProvider';
 import { User, Activity } from '@/types';
 import {
   fetchAllActivities,
@@ -40,6 +41,7 @@ import { useFeedJudgmentStream } from './useFeedJudgmentStream';
 import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
 import { useFeedRefreshScheduler } from './useFeedRefreshScheduler';
 import { useFeedServerBackfill } from './useFeedServerBackfill';
+import { toLatestActivityAtByUserMap, toLatestActivityAtByUserRecord } from '@/lib/mainPageSession';
 
 interface UseActivityPollingReturn {
   feed: { user: User; activity: Activity }[];
@@ -167,20 +169,24 @@ export function useActivityPolling(
   activeSource?: Activity['source'] | null,
   activeSearchFilters?: FeedSearchFilters
 ): UseActivityPollingReturn {
+  const { state, setFeedSnapshot } = useMainPageSession();
+  const cachedFeedSnapshot = state.feed;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [feed, setFeed] = useState<{ user: User; activity: Activity }[]>([]);
-  const [userActivities, setUserActivities] = useState<Map<string, Activity[]>>(new Map());
-  const [latestActivityAtByUser, setLatestActivityAtByUser] = useState<Map<string, number>>(new Map());
+  const [feed, setFeed] = useState<{ user: User; activity: Activity }[]>(() => cachedFeedSnapshot?.feed || []);
+  const [userActivities, setUserActivities] = useState<Map<string, Activity[]>>(() => new Map());
+  const [latestActivityAtByUser, setLatestActivityAtByUser] = useState<Map<string, number>>(() =>
+    toLatestActivityAtByUserMap(cachedFeedSnapshot?.latestActivityAtByUser)
+  );
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [summary, setSummary] = useState<ActivityFeedSummary | null>(null);
-  const [diagnostics, setDiagnostics] = useState<AddressDiagnostic[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [historyComplete, setHistoryComplete] = useState<boolean | null>(null);
-  const [localQualifiedCount, setLocalQualifiedCount] = useState(0);
-  const [activityBreakdown, setActivityBreakdown] = useState<ActivityBreakdown | null>(null);
-  const [completenessWindow, setCompletenessWindow] = useState<CompletenessWindow | null>(null);
-  const [prewarmLabel, setPrewarmLabel] = useState<string | null>(null);
+  const [summary, setSummary] = useState<ActivityFeedSummary | null>(() => cachedFeedSnapshot?.summary || null);
+  const [diagnostics, setDiagnostics] = useState<AddressDiagnostic[]>(() => cachedFeedSnapshot?.diagnostics || []);
+  const [hasMore, setHasMore] = useState(() => cachedFeedSnapshot?.hasMore || false);
+  const [historyComplete, setHistoryComplete] = useState<boolean | null>(() => cachedFeedSnapshot?.historyComplete ?? null);
+  const [localQualifiedCount, setLocalQualifiedCount] = useState(() => cachedFeedSnapshot?.localQualifiedCount || 0);
+  const [activityBreakdown, setActivityBreakdown] = useState<ActivityBreakdown | null>(() => cachedFeedSnapshot?.activityBreakdown || null);
+  const [completenessWindow, setCompletenessWindow] = useState<CompletenessWindow | null>(() => cachedFeedSnapshot?.completenessWindow || null);
+  const [prewarmLabel, setPrewarmLabel] = useState<string | null>(() => cachedFeedSnapshot?.prewarmLabel || null);
   
   const { checkAndUpdateNewStatus } = useUserStore();
   const { users, mergeUsersFromServer, upsertUserAssetSnapshot } = useUsersDataStore();
@@ -222,6 +228,38 @@ export function useActivityPolling(
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
+
+  useEffect(() => {
+    if (feed.length === 0) {
+      return;
+    }
+
+    setFeedSnapshot({
+      feed,
+      latestActivityAtByUser: toLatestActivityAtByUserRecord(latestActivityAtByUser),
+      hasMore,
+      historyComplete,
+      localQualifiedCount,
+      activityBreakdown,
+      completenessWindow,
+      summary,
+      diagnostics,
+      prewarmLabel,
+      cachedAt: Date.now(),
+    });
+  }, [
+    activityBreakdown,
+    completenessWindow,
+    diagnostics,
+    feed,
+    hasMore,
+    historyComplete,
+    latestActivityAtByUser,
+    localQualifiedCount,
+    prewarmLabel,
+    setFeedSnapshot,
+    summary,
+  ]);
 
   useFeedDebugBridge(feedRef);
 
@@ -606,6 +644,7 @@ export function useActivityPolling(
     isMountedRef.current = true;
 
     hydratedFromCacheRef.current = true;
+    feedRef.current = cachedFeedSnapshot?.feed || [];
 
     usersFingerprintRef.current = usersRef.current
       .map((user) => `${user.id}:${user.addresses.length}`)

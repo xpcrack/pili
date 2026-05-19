@@ -54,6 +54,7 @@ async function run() {
     assert.equal(source.channelRef, '@jiuyicall');
     assert.equal(source.channelRefNormalized, 'jiuyicall');
     assert.equal(source.sourceKind, 'auto');
+    assert.equal(source.channelType, 'social');
     assert.equal(source.syncStatus, 'pending');
 
     const readySource = updateTelegramChannelSourceState(source.id, {
@@ -441,6 +442,23 @@ async function run() {
       true,
       'manual source should not be touched by auto-source bootstrap reconciliation'
     );
+
+    db.prepare(
+      `INSERT INTO tracked_users (
+        id, name, handle, avatar, twitter, telegram, tags_json, total_asset_usd, historical_max_asset_usd, asset_updated_at, created_at, updated_at
+      ) VALUES (?, ?, ?, '', ?, ?, ?, 0, 0, null, ?, ?)`
+    ).run('user-telegram-news', '方程式', '方程式', null, '@bwetradfi', JSON.stringify(['news']), now, now);
+    bootstrapTelegramChannelSourcesFromTrackedUsers();
+    const newsAutoSource = listTelegramChannelSources().find((item) => item.userId === 'user-telegram-news');
+    assert.ok(newsAutoSource, 'news user should create telegram source');
+    assert.equal(newsAutoSource?.channelType, 'news', 'news-tagged user auto sources should default to news');
+
+    const newsManualSource = upsertTelegramChannelSource({
+      userId: 'user-telegram-news',
+      channelRef: '@bwe_reserved1',
+      sourceKind: 'manual',
+    });
+    assert.equal(newsManualSource.channelType, 'news', 'news-tagged user manual sources should default to news');
 
     console.log('PASS telegram channel provider');
   } finally {

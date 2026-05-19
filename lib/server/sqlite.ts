@@ -722,6 +722,9 @@ ON events(user_id, timestamp DESC, event_id DESC);
 CREATE INDEX IF NOT EXISTS idx_events_chain_address_timestamp
 ON events(chain, address, timestamp DESC, event_id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_events_blockchain_chain_address_lower_timestamp
+ON events(source, chain, LOWER(address), timestamp DESC, event_id DESC);
+
 CREATE INDEX IF NOT EXISTS idx_events_tweet_id
 ON events(tweet_id);
 

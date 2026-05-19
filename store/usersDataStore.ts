@@ -123,8 +123,8 @@ interface UsersDataState {
   users: User[];
   
   // CRUD 操作
-  addUser: (user: UserDraftInput) => void;
-  addUsers: (users: UserDraftInput[]) => void;
+  addUser: (user: UserDraftInput) => Promise<void>;
+  addUsers: (users: UserDraftInput[]) => Promise<void>;
   updateUser: (id: string, updates: Partial<User>) => void;
   deleteUser: (id: string) => void;
   
@@ -366,15 +366,45 @@ export const useUsersDataStore = create<UsersDataState>()(
     (set, get) => ({
       users: DEFAULT_USERS.map(normalizePersistedUser),
 
-      addUsers: (usersData) => {
-        const newUsers: User[] = usersData.map(buildUserWithAssetFields);
-
-        set((state) => ({
-          users: [...state.users, ...newUsers]
-        }));
+      addUsers: async (usersData) => {
+        const created: User[] = [];
+        for (const userData of usersData) {
+          try {
+            const response = await fetch('/api/users', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user: userData }),
+            });
+            const payload = await response.json().catch(() => null);
+            if (response.ok && payload?.ok && payload.user) {
+              created.push(normalizePersistedUser(payload.user));
+              continue;
+            }
+          } catch { /* fall through to local-only */ }
+          created.push(buildUserWithAssetFields(userData));
+        }
+        if (created.length > 0) {
+          set((state) => ({
+            users: [...state.users, ...created]
+          }));
+        }
       },
 
-      addUser: (userData) => {
+      addUser: async (userData) => {
+        try {
+          const response = await fetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user: userData }),
+          });
+          const payload = await response.json().catch(() => null);
+          if (response.ok && payload?.ok && payload.user) {
+            set((state) => ({
+              users: [...state.users, normalizePersistedUser(payload.user)]
+            }));
+            return;
+          }
+        } catch { /* fall through to local-only */ }
         const newUser = buildUserWithAssetFields(userData);
         set((state) => ({
           users: [...state.users, newUser]

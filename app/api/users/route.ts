@@ -14,6 +14,8 @@ import {
 import { listTwitterRelayCoverageByHandles } from '@/lib/server/twitterRepo';
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
+import { bootstrapTelegramChannelSourcesFromTrackedUsers } from '@/lib/server/telegramChannelSourceRepo';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { type User } from '@/types';
 
 export const runtime = 'nodejs';
@@ -86,6 +88,19 @@ export async function POST(request: NextRequest) {
       action: 'created',
       userId: created.id,
     });
+
+    const hasTelegramChannels = Boolean(
+      (created.telegram && created.telegram.trim()) ||
+      (created.telegrams && created.telegrams.length > 0)
+    );
+    if (hasTelegramChannels) {
+      bootstrapTelegramChannelSourcesFromTrackedUsers();
+      queueCompletenessPoke({
+        trigger: 'recovery',
+        sourceHint: 'telegram-channel',
+        reason: `user created: ${created.name}`,
+      });
+    }
 
     return NextResponse.json({
       ok: true,

@@ -222,6 +222,8 @@ function run() {
     true,
     'TopNav 必须提供地址导航入口'
   );
+  assert.match(topNavSource, /router\.prefetch\(/, 'TopNav 必须主动预热主页面路由');
+  assert.match(topNavSource, /onMouseEnter=/, 'TopNav 主导航项必须支持悬停再次触发预热');
   assert.equal(ADDRESSES_PAGE_FETCH_URL, '/api/addresses', 'addresses 页面必须从 /api/addresses 拉数据');
   assert.equal(
     DELETE_ADDRESS_CONFIRMATION_TEXT.includes('删除地址，不会删除人物'),
