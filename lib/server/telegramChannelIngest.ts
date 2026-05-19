@@ -15,11 +15,11 @@ export async function ingestTelegramChannelPost(params: {
     source: params.source,
     post: params.post,
   });
-  const enrichedActivity = await enrichTelegramChannelPost(projected.activity);
-  const enrichedResult = { user: projected.user, activity: enrichedActivity };
-  const eventId = `${enrichedResult.user.id}:${enrichedResult.activity.id}`;
 
-  upsertEventsFromFeedRows([enrichedResult], 'telegram-channel');
+  // Persist the projected activity immediately (with token mentions but no translation yet)
+  upsertEventsFromFeedRows([projected], 'telegram-channel');
+
+  const eventId = `${projected.user.id}:${projected.activity.id}`;
 
   if (params.post.linkUrls.length > 0) {
     await upsertEventTweetRefAndFetchMissing({
@@ -30,8 +30,21 @@ export async function ingestTelegramChannelPost(params: {
     });
   }
 
+  // Fire-and-forget async enrichment (translation + sentiment)
+  // Re-persist on success so the feed picks up translationZh and updated sentiments
+  void enrichTelegramChannelPost(projected.activity)
+    .then((enrichedActivity) => {
+      if (enrichedActivity.metadata.translationZh) {
+        const enrichedResult = { user: projected.user, activity: enrichedActivity };
+        upsertEventsFromFeedRows([enrichedResult], 'telegram-channel-enrichment');
+      }
+    })
+    .catch((err) => {
+      console.warn('[telegram-channel-enrichment] background enrichment error:', err instanceof Error ? err.message : err);
+    });
+
   return {
     eventId,
-    projected: enrichedResult,
+    projected,
   };
 }

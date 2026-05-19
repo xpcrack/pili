@@ -279,7 +279,7 @@ export function projectTwitterTweetsToFeed(options: {
   const pendingTweetIds = tweetCandidates
     .filter((tweet) => {
       const enrich = enrichmentByTweetId.get(tweet.tweetId);
-      return !enrich || enrich.translationStatus === 'pending' || enrich.translationStatus === 'failed';
+      return !enrich || enrich.translationStatus === 'pending';
     })
     .map((t) => t.tweetId);
 

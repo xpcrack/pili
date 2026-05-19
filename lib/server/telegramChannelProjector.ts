@@ -127,13 +127,21 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
     };
 
     if (result.sentiments.length > 0) {
-      updatedMetadata.tokenSentiments = result.sentiments.map(s => ({
-        tokenSymbol: s.tokenSymbol,
-        tokenAddress: s.tokenAddress,
-        chain: undefined as string | undefined,
-        sentiment: s.sentiment,
-        matchSource: 'both' as const,
-      }));
+      // Preserve original matchSource from pre-enrichment metadata
+      const originalSentiments = activity.metadata.tokenSentiments || [];
+      updatedMetadata.tokenSentiments = result.sentiments.map(s => {
+        const original = originalSentiments.find(o =>
+          (o.tokenSymbol || '').toLowerCase() === (s.tokenSymbol || '').toLowerCase()
+          && (o.tokenAddress || '').toLowerCase() === (s.tokenAddress || '').toLowerCase()
+        );
+        return {
+          tokenSymbol: s.tokenSymbol,
+          tokenAddress: s.tokenAddress,
+          chain: undefined as string | undefined,
+          sentiment: s.sentiment,
+          matchSource: original?.matchSource || 'both' as const,
+        };
+      });
     }
 
     return {
