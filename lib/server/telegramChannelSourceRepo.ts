@@ -51,6 +51,11 @@ function normalizeChannelType(value: string | null | undefined): 'news' | 'socia
   return value === 'news' ? 'news' : 'social';
 }
 
+function resolveDefaultChannelType(userId: string): 'news' | 'social' {
+  const user = listTrackedUsers().find((candidate) => candidate.id === userId);
+  return user?.tags.includes('news') ? 'news' : 'social';
+}
+
 function resolveSourceKind(
   requestedKind: TelegramChannelSourceKind | undefined,
   existingKind: string | null | undefined
@@ -128,6 +133,7 @@ export function upsertTelegramChannelSource(input: {
   const id = existing?.id || crypto.randomUUID();
   const enabledValue = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing?.enabled ?? 1;
   const sourceKind = resolveSourceKind(input.sourceKind, existing?.source_kind);
+  const channelType = input.channelType || resolveDefaultChannelType(input.userId);
 
   db.prepare(
     `INSERT INTO telegram_channel_sources (
@@ -155,7 +161,7 @@ export function upsertTelegramChannelSource(input: {
          THEN excluded.updated_at
          ELSE telegram_channel_sources.updated_at
        END`
-  ).run(id, input.userId, channelRef, channelRefNormalized, sourceKind, input.channelType || 'social', enabledValue, now, now);
+  ).run(id, input.userId, channelRef, channelRefNormalized, sourceKind, channelType, enabledValue, now, now);
 
   return getTelegramChannelSourceById(id)!;
 }

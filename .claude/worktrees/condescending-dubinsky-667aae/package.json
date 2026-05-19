@@ -1,0 +1,57 @@
+{
+  "name": "web3-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.11.1 <25"
+  },
+  "scripts": {
+    "dev": "next dev --port 3005",
+    "dev:proxy": "HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897 NODE_OPTIONS='--require ./scripts/proxy-bootstrap.cjs' next dev --port 3005",
+    "build": "next build",
+    "start": "next start --port 3005",
+    "lint": "eslint",
+    "telegram:bridge": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge.ts",
+    "telegram:bridge:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge-backfill.ts",
+    "telegram:bridge:install-launchagent": "./scripts/install-telegram-bridge-launchagent.sh",
+    "telegram:channel:login": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-channel-login.ts",
+    "telegram:channel:sync": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-channel-sync.ts",
+    "telegram:channel:worker": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-channel-worker.ts",
+    "telegram:channel:install-launchagent": "./scripts/install-telegram-channel-sync-launchagent.sh",
+    "completeness:worker": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/completeness-maintenance-worker.ts",
+    "telegram:agent:approval-bot": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-agent-approval-bot.ts",
+    "telegram:agent:read": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-agent-read.ts",
+    "audit:historical-asset-peaks": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/audit-historical-asset-peaks.ts",
+    "importance:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-importance-score.ts",
+    "test": "tsx scripts/lib/runTests.ts"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.4.0",
+    "better-sqlite3": "11.10.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^1.8.0",
+    "next": "^16.2.6",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "shadcn": "^4.2.0",
+    "tailwind-merge": "^3.5.0",
+    "telegram": "^2.26.22",
+    "tw-animate-css": "^1.4.0",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16.2.6",
+    "global-agent": "^4.1.3",
+    "tailwindcss": "^4",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}

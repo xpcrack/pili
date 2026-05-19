@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMainPageSession } from '@/components/MainPageSessionProvider';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useIsClient } from '@/hooks/useIsClient';
@@ -259,7 +260,9 @@ function getRecentTotalCount(stats: UserActivityStats) {
 
 export default function ManagePage() {
   const { users, addUser, addUsers, updateUser, deleteUser, mergeUsersFromServer } = useUsersDataStore();
+  const { state, setManageSnapshot, invalidateAddresses } = useMainPageSession();
   const isClient = useIsClient();
+  const cachedSnapshot = state.manage;
 
   const [isCreating, setIsCreating] = useState(false);
   const [formData, setFormData] = useState<ProfileFormState>({
@@ -278,8 +281,12 @@ export default function ManagePage() {
   const [deletingUserIds, setDeletingUserIds] = useState<Record<string, boolean>>({});
 
   const [copiedKind, setCopiedKind] = useState<'all-addresses' | 'all-twitter' | null>(null);
-  const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>({});
-  const [activityStatsByUserId, setActivityStatsByUserId] = useState<Record<string, UserActivityStats>>({});
+  const [relayCoverageByHandle, setRelayCoverageByHandle] = useState<Record<string, TwitterRelayCoverageView>>(
+    () => cachedSnapshot?.relayCoverageByHandle || {}
+  );
+  const [activityStatsByUserId, setActivityStatsByUserId] = useState<Record<string, UserActivityStats>>(
+    () => cachedSnapshot?.activityStatsByUserId || {}
+  );
   const [sortState, setSortState] = useState<{ key: ManageSortKey; direction: 'asc' | 'desc' }>({
     key: 'totalCount7d',
     direction: 'desc',
@@ -360,6 +367,15 @@ export default function ManagePage() {
       return (valueLeft - valueRight) * directionFactor;
     });
   }, [filteredUserRows, sortState.direction, sortState.key]);
+
+  useEffect(() => {
+    setManageSnapshot({
+      users,
+      relayCoverageByHandle,
+      activityStatsByUserId,
+      cachedAt: Date.now(),
+    });
+  }, [activityStatsByUserId, relayCoverageByHandle, setManageSnapshot, users]);
 
   useEffect(() => {
     if (!isClient || typeof window === 'undefined') {
@@ -467,14 +483,14 @@ export default function ManagePage() {
       if (!response.ok || !payload?.ok) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
-
-      deleteUser(userId);
     } catch (error) {
       console.warn(
         '[manage] failed to delete user from server',
         error instanceof Error ? error.message : error
       );
     } finally {
+      deleteUser(userId);
+      invalidateAddresses();
       setDeletingUserIds((state) => {
         const next = { ...state };
         delete next[userId];
@@ -488,12 +504,12 @@ export default function ManagePage() {
     setAddressText('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.name.trim() || !formData.handle.trim()) return;
 
     const normalizedTwitter = normalizeTwitterHandle(formData.twitter);
 
-    addUser({
+    await addUser({
       name: formData.name.trim(),
       handle: formData.handle.trim(),
       avatar: buildUserAvatar(formData.handle.trim(), normalizedTwitter),
@@ -512,18 +528,20 @@ export default function ManagePage() {
 
     resetForm();
     setIsCreating(false);
+    invalidateAddresses();
   };
 
-  const handleImportUsers = () => {
+  const handleImportUsers = async () => {
     if (parsedBulkUsers.length === 0) return;
 
-    addUsers(
+    await addUsers(
       parsedBulkUsers.map((user) => ({
         ...user,
         addresses: expandTrackedAddresses(user.addresses),
       }))
     );
     setBulkImportText('');
+    invalidateAddresses();
   };
 
   const flashAddressNotice = (message: string) => {
@@ -562,6 +580,7 @@ export default function ManagePage() {
       }
 
       updateUser(user.id, payload.user);
+      invalidateAddresses();
       setEditingAddressUserId(null);
       setEditingAddressText('');
       flashAddressNotice(`已为 ${user.name} 追加 ${newAddresses.length} 个地址`);
@@ -596,6 +615,7 @@ export default function ManagePage() {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
       updateUser(user.id, payload.user);
+      invalidateAddresses();
       setEditingProfileUserId(null);
       flashAddressNotice(`已更新 ${editingProfileData.name.trim() || user.name} 的信息`);
     } catch (error) {
@@ -703,7 +723,7 @@ export default function ManagePage() {
     });
   };
 
-  if (!isClient) {
+  if (!isClient && !cachedSnapshot) {
     return (
       <div className="min-h-screen bg-zinc-950">
         <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">

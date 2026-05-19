@@ -19,6 +19,8 @@ import {
 } from '@/lib/server/twitterIdentityService';
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
+import { bootstrapTelegramChannelSourcesFromTrackedUsers } from '@/lib/server/telegramChannelSourceRepo';
+import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { type User } from '@/types';
 
 export const runtime = 'nodejs';
@@ -192,6 +194,18 @@ export async function PATCH(request: NextRequest, context: UserRouteContext) {
       action: 'updated',
       userId: updated.id,
     });
+
+    const hasTelegramUpdate =
+      Object.prototype.hasOwnProperty.call(resolvedUpdates, 'telegram') ||
+      Object.prototype.hasOwnProperty.call(resolvedUpdates, 'telegrams');
+    if (hasTelegramUpdate) {
+      bootstrapTelegramChannelSourcesFromTrackedUsers();
+      queueCompletenessPoke({
+        trigger: 'recovery',
+        sourceHint: 'telegram-channel',
+        reason: `user updated: ${updated.name}`,
+      });
+    }
 
     return NextResponse.json({ ok: true, user: updated });
   } catch (error) {
