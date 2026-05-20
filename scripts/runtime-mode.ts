@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-type RuntimeModeCommand = 'status' | 'dev-on' | 'dev-off';
+type RuntimeModeCommand = 'status' | 'dev-on' | 'dev-off' | 'refresh';
 type Pm2Process = { name?: string };
 
 const repoRoot = process.cwd();
 const ecosystemPath = join(repoRoot, 'pm2', 'ecosystem.config.cjs');
 
 function printUsage() {
-  console.error('Usage: tsx scripts/runtime-mode.ts <status|dev-on|dev-off>');
+  console.error('Usage: tsx scripts/runtime-mode.ts <status|dev-on|dev-off|refresh>');
 }
 
 function runPm2(args: string[]) {
@@ -47,9 +47,22 @@ function restartPm2Process(processName: string) {
   runPm2(['restart', ecosystemPath, '--only', processName]);
 }
 
+function reloadPm2Process(processName: string) {
+  runPm2(['reload', ecosystemPath, '--only', processName]);
+}
+
 function startOrRestart(processName: string) {
   if (hasPm2Process(processName)) {
     restartPm2Process(processName);
+    return;
+  }
+
+  startPm2Process(processName);
+}
+
+function startOrReload(processName: string) {
+  if (hasPm2Process(processName)) {
+    reloadPm2Process(processName);
     return;
   }
 
@@ -75,6 +88,12 @@ function run(command: RuntimeModeCommand) {
     return;
   }
 
+  if (command === 'refresh') {
+    runNpm(['run', 'build']);
+    startOrReload('pili-web-prod');
+    return;
+  }
+
   stopIfPresent('pili-web-dev');
   runNpm(['run', 'build']);
   startOrRestart('pili-web-prod');
@@ -82,7 +101,7 @@ function run(command: RuntimeModeCommand) {
 
 const command = process.argv[2] as RuntimeModeCommand | undefined;
 
-if (!command || !['status', 'dev-on', 'dev-off'].includes(command)) {
+if (!command || !['status', 'dev-on', 'dev-off', 'refresh'].includes(command)) {
   printUsage();
   process.exit(1);
 }
