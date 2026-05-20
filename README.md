@@ -1,48 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
 ## Runtime
+
+## Runtime Setup
 
 Use Node `24.11.1` for this repo.
 
 ```bash
 nvm use
 npm install
+```
+
+If you see `better-sqlite3` or `NODE_MODULE_VERSION` errors after changing Node versions, switch back to Node `24.11.1` and run:
+
+```bash
+npm rebuild better-sqlite3
+```
+
+## Runtime Modes
+
+Normal daily usage should stay in pm2-managed production web steady state.
+
+Core runtime commands:
+
+```bash
+npm run runtime:status
+npm run runtime:refresh
+```
+
+`runtime:refresh` runs `npm run build` first, then refresh only rebuilds and replaces the production web process `pili-web-prod`.
+
+`npm run build` and `npm run start` are the underlying local equivalent / fallback when you need to run production web without pm2.
+
+Background workers are not restarted in the refresh flow; workers are intentionally left running during refresh.
+
+Production and refresh reuse the same `.env.local`, `.data`, and SQLite DB.
+
+If needed, local fallback commands are still available:
+
+```bash
+npm run build
+npm run start
 npm run dev
 ```
 
-If you see `better-sqlite3` or `NODE_MODULE_VERSION` errors, switch back to Node `24.11.1` and run `npm rebuild better-sqlite3`.
+If you are actively editing code without pm2, `npm run dev` still works locally at [http://localhost:3005](http://localhost:3005).
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run runtime:status
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

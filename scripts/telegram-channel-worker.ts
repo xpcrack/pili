@@ -44,6 +44,8 @@ installShutdownHandlers({
 
 async function run() {
   await lease.waitForAcquire();
+  let cycleCount = 0;
+  let lastActiveAt = Date.now();
 
   while (lease.shouldRun()) {
     if (lease.isLost()) {
@@ -54,6 +56,29 @@ async function run() {
     }
 
     const cycle = await runTelegramChannelWorkerCycle();
+    cycleCount += 1;
+    if (cycle.status !== 'idle' && cycle.status !== 'partial') {
+      lastActiveAt = Date.now();
+    }
+
+    const policy = readTelegramMtprotoPolicy();
+    if (cycleCount >= policy.channelWorkerMaxCyclesBeforeRestart) {
+      console.log(
+        `${LOG_PREFIX} restart reason=cycle-limit cycles=${cycleCount} limit=${policy.channelWorkerMaxCyclesBeforeRestart}`
+      );
+      lease.release();
+      process.exit(0);
+    }
+
+    const idleMs = Date.now() - lastActiveAt;
+    if (idleMs >= policy.channelWorkerMaxIdleMsBeforeRestart) {
+      console.log(
+        `${LOG_PREFIX} restart reason=idle-limit idleMs=${idleMs} limitMs=${policy.channelWorkerMaxIdleMsBeforeRestart}`
+      );
+      lease.release();
+      process.exit(0);
+    }
+
     if (lease.isShuttingDown()) {
       break;
     }
