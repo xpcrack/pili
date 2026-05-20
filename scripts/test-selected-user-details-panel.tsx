@@ -111,7 +111,7 @@ function run() {
   assert.match(partialSuccessMarkup, /更新于/, 'panel should show the holdings updated timestamp when present');
   assert.match(partialSuccessMarkup, /<th[^>]*>链<\/th>/, 'panel should render the chain column');
   assert.match(partialSuccessMarkup, /<th[^>]*>Token<\/th>/, 'panel should render the token column');
-  assert.match(partialSuccessMarkup, /<th[^>]*>数量<\/th>/, 'panel should render the balance column');
+  assert.match(partialSuccessMarkup, /<th[^>]*>占比<\/th>/, 'panel should render the ratio column');
   assert.match(partialSuccessMarkup, /<th[^>]*>单价<\/th>/, 'panel should render the price column');
   assert.match(partialSuccessMarkup, /<th[^>]*>价值<\/th>/, 'panel should render the value column');
   assert.match(partialSuccessMarkup, />USDT</, 'panel should render holdings rows');

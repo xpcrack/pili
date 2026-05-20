@@ -1,3 +1,5 @@
+## Runtime
+
 ## Runtime Setup
 
 Use Node `24.11.1` for this repo.
@@ -41,3 +43,9 @@ npm run dev
 ```
 
 If you are actively editing code without pm2, `npm run dev` still works locally at [http://localhost:3005](http://localhost:3005).
+
+## Getting Started
+
+```bash
+npm run runtime:status
+```
