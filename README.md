@@ -15,7 +15,7 @@ npm rebuild better-sqlite3
 
 ## Runtime Modes
 
-Normal daily usage should stay in production web mode, not `next dev`. For the repo-managed production web runtime, build first and then run `npm run start`.
+Normal daily usage should stay in pm2-managed production web mode, not `next dev`. `npm run build` and `npm run start` are the underlying local equivalent / fallback when you need to run the production web runtime without pm2.
 
 ```bash
 npm run build
