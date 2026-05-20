@@ -1,48 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
-## Runtime
+## Runtime Setup
 
 Use Node `24.11.1` for this repo.
 
 ```bash
 nvm use
 npm install
-npm run dev
 ```
 
-If you see `better-sqlite3` or `NODE_MODULE_VERSION` errors, switch back to Node `24.11.1` and run `npm rebuild better-sqlite3`.
-
-## Getting Started
-
-First, run the development server:
+If you see `better-sqlite3` or `NODE_MODULE_VERSION` errors after changing Node versions, switch back to Node `24.11.1` and run:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm rebuild better-sqlite3
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Runtime Modes
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Normal daily usage should stay in production web mode, not `next dev`. For the repo-managed production web runtime, build first and then run `npm run start`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm run start
+```
 
-## Learn More
+This repo also includes pm2-oriented runtime helpers:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run runtime:status
+npm run runtime:dev:on
+npm run runtime:dev:off
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`npm run runtime:dev:on` switches the web process into development mode for code changes.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`npm run runtime:dev:off` switches the web process back to production mode and runs a fresh production build first.
 
-## Deploy on Vercel
+Background workers normally stay running during web-mode switches.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Production and development reuse the same `.env.local`, `.data`, and SQLite DB. Do not create a separate dev DB unless you explicitly want one.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If you are actively editing code without pm2, `npm run dev` still works locally at [http://localhost:3005](http://localhost:3005).
