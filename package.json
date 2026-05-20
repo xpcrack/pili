@@ -27,7 +27,8 @@
     "runtime:status": "tsx scripts/runtime-mode.ts status",
     "runtime:dev:on": "tsx scripts/runtime-mode.ts dev-on",
     "runtime:dev:off": "tsx scripts/runtime-mode.ts dev-off",
-    "test:runtime-mode": "tsx scripts/test-runtime-mode.ts"
+    "test:runtime-mode": "tsx scripts/test-runtime-mode.ts",
+    "test:runtime-docs": "tsx scripts/test-runtime-docs.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
