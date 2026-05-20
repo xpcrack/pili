@@ -7,6 +7,8 @@ export interface TelegramMtprotoPolicy {
   bridgeBackfillLimit: number;
   channelSyncIntervalMs: number;
   channelSyncLeaseTtlMs: number;
+  channelWorkerMaxCyclesBeforeRestart: number;
+  channelWorkerMaxIdleMsBeforeRestart: number;
 }
 
 function readPositiveInt(value: string | undefined, fallback: number) {
@@ -25,6 +27,14 @@ export function readTelegramMtprotoPolicy(): TelegramMtprotoPolicy {
     bridgeBackfillLimit: readPositiveInt(process.env.TELEGRAM_MTPROTO_BRIDGE_BACKFILL_LIMIT, 100),
     channelSyncIntervalMs: readPositiveInt(process.env.TELEGRAM_CHANNEL_SYNC_INTERVAL_MS, 30_000),
     channelSyncLeaseTtlMs: readPositiveInt(process.env.TELEGRAM_CHANNEL_SYNC_LEASE_TTL_MS, 90_000),
+    channelWorkerMaxCyclesBeforeRestart: readPositiveInt(
+      process.env.TELEGRAM_CHANNEL_WORKER_MAX_CYCLES_BEFORE_RESTART,
+      120
+    ),
+    channelWorkerMaxIdleMsBeforeRestart: readPositiveInt(
+      process.env.TELEGRAM_CHANNEL_WORKER_MAX_IDLE_MS_BEFORE_RESTART,
+      30 * 60_000
+    ),
   };
 }
 
