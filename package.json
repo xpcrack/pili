@@ -23,7 +23,11 @@
     "telegram:agent:read": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-agent-read.ts",
     "audit:historical-asset-peaks": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/audit-historical-asset-peaks.ts",
     "importance:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-importance-score.ts",
-    "test": "tsx scripts/lib/runTests.ts"
+    "test": "tsx scripts/lib/runTests.ts",
+    "runtime:status": "tsx scripts/runtime-mode.ts status",
+    "runtime:dev:on": "tsx scripts/runtime-mode.ts dev-on",
+    "runtime:dev:off": "tsx scripts/runtime-mode.ts dev-off",
+    "test:runtime-mode": "tsx scripts/test-runtime-mode.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
