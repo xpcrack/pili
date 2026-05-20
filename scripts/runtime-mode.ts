@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 type RuntimeModeCommand = 'status' | 'dev-on' | 'dev-off';
+type Pm2Process = { name?: string };
 
 const repoRoot = process.cwd();
 const ecosystemPath = join(repoRoot, 'pm2', 'ecosystem.config.cjs');
@@ -17,25 +18,42 @@ function runPm2(args: string[]) {
   });
 }
 
-function stopIfPresent(processName: string) {
-  try {
-    runPm2(['stop', processName]);
-  } catch (error) {
-    const output = String(error);
-    if (output.includes('Process or Namespace') && output.includes('not found')) {
-      return;
-    }
+function readPm2Processes() {
+  const output = execFileSync('pm2', ['jlist'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
 
-    throw error;
+  return JSON.parse(output) as Pm2Process[];
+}
+
+function hasPm2Process(processName: string) {
+  return readPm2Processes().some(({ name }) => name === processName);
+}
+
+function stopIfPresent(processName: string) {
+  if (!hasPm2Process(processName)) {
+    return;
   }
+
+  runPm2(['stop', processName]);
+}
+
+function startPm2Process(processName: string) {
+  runPm2(['start', ecosystemPath, '--only', processName]);
+}
+
+function restartPm2Process(processName: string) {
+  runPm2(['restart', ecosystemPath, '--only', processName]);
 }
 
 function startOrRestart(processName: string) {
-  try {
-    runPm2(['restart', ecosystemPath, '--only', processName]);
-  } catch {
-    runPm2(['start', ecosystemPath, '--only', processName]);
+  if (hasPm2Process(processName)) {
+    restartPm2Process(processName);
+    return;
   }
+
+  startPm2Process(processName);
 }
 
 function runNpm(args: string[]) {
