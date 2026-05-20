@@ -71,6 +71,26 @@ async function run() {
     });
     process.env.TELEGRAM_MONITOR_INGEST_TOKEN = 'secret';
 
+    const relayTradeSource = upsertTelegramChannelSource({
+      userId: 'user-bridge-1',
+      channelRef: '@relay-trade-source',
+      channelType: 'social',
+    });
+    updateTelegramChannelSourceState(relayTradeSource.id, {
+      channelChatId: '-100123456',
+      syncStatus: 'ready',
+    });
+
+    const relayTwitterSource = upsertTelegramChannelSource({
+      userId: 'user-bridge-1',
+      channelRef: '@relay-twitter-source',
+      channelType: 'social',
+    });
+    updateTelegramChannelSourceState(relayTwitterSource.id, {
+      channelChatId: '-5299035575',
+      syncStatus: 'ready',
+    });
+
     const backfillResult = await backfillTelegramBridgeHistory({
       client: {
         async resolveChannel() {
@@ -108,21 +128,16 @@ async function run() {
 
     assert.equal(backfillResult.chatCount, 2);
     assert.equal(backfillResult.fetchedCount, 2);
-    assert.equal(backfillResult.ingestedCount, 2);
+    assert.equal(backfillResult.ingestedCount, 1);
+    assert.equal(backfillResult.ignoredCount, 1);
     assert.equal(backfillResult.chatResults.length, 2);
     assert.equal(backfillResult.chatResults[0]?.reachedHistoryBoundary, false);
     assert.equal(listTwitterTweetsByIds(['1912345678901234567']).length, 1);
-    const monitorCountRow = db
-      .prepare('SELECT count(*) AS c FROM telegram_monitor_events WHERE source_chat_id = ?')
-      .get('-100123456') as { c: number };
-    assert.equal(
-      monitorCountRow.c,
-      1
-    );
 
     const source = upsertTelegramChannelSource({
       userId: 'user-bridge-1',
       channelRef: '@finncall',
+      channelType: 'social',
     });
     assert.equal(source.sourceKind, 'manual');
     updateTelegramChannelSourceState(source.id, {
@@ -155,6 +170,7 @@ async function run() {
     const sourceTwo = upsertTelegramChannelSource({
       userId: 'user-bridge-1',
       channelRef: '@finncall-2',
+      channelType: 'social',
     });
     assert.equal(sourceTwo.sourceKind, 'manual');
     updateTelegramChannelSourceState(sourceTwo.id, {
