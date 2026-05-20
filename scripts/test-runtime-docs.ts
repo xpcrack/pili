@@ -8,26 +8,36 @@ function run() {
   const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');
 
   assert.match(agents, /`pili-web-prod`/, 'AGENTS.md should mention pili-web-prod');
-  assert.match(agents, /`pili-web-dev`/, 'AGENTS.md should mention pili-web-dev');
+  assert.match(agents, /production-only daily runtime expectation/, 'AGENTS.md should state production-only daily runtime expectation');
+  assert.match(agents, /`runtime:refresh`/, 'AGENTS.md should mention runtime:refresh');
   assert.match(
     agents,
-    /run a production build, and only if the build succeeds start `pili-web-prod`/,
-    'AGENTS.md should require a production build before switching back'
+    /build must succeed before replacing the running web process/,
+    'AGENTS.md should require successful build before replacing production web process'
   );
   assert.match(
     agents,
-    /do not stop or restart background workers unless explicitly asked/,
-    'AGENTS.md should say not to stop or restart background workers unless explicitly asked'
+    /do not restart workers by default unless user asks/,
+    'AGENTS.md should say not to restart workers by default'
   );
 
-  assert.match(readme, /^## Runtime Modes$/m, 'README.md should contain a Runtime Modes section');
+  assert.match(readme, /^## Runtime Setup$/m, 'README.md should contain a Runtime Setup section');
   assert.match(readme, /npm run runtime:status/, 'README.md should document npm run runtime:status');
-  assert.match(readme, /npm run runtime:dev:on/, 'README.md should document npm run runtime:dev:on');
-  assert.match(readme, /npm run runtime:dev:off/, 'README.md should document npm run runtime:dev:off');
+  assert.match(readme, /npm run runtime:refresh/, 'README.md should document npm run runtime:refresh');
   assert.match(
     readme,
-    /pm2-managed production web mode/,
-    'README.md should describe pm2-managed daily usage'
+    /pm2-managed production web steady state/,
+    'README.md should describe pm2-managed production steady state'
+  );
+  assert.match(
+    readme,
+    /refresh only rebuilds and replaces the production web process `pili-web-prod`/,
+    'README.md should explain refresh targets web process only'
+  );
+  assert.match(
+    readme,
+    /workers are intentionally left running during refresh/,
+    'README.md should explain workers are left running during refresh'
   );
   assert.match(
     readme,
