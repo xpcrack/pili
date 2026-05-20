@@ -5,6 +5,7 @@ import { join } from 'node:path';
 function run() {
   const repoRoot = process.cwd();
   const ecosystemPath = join(repoRoot, 'pm2', 'ecosystem.config.cjs');
+  const runtimeMode = readFileSync(join(repoRoot, 'scripts', 'runtime-mode.ts'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
     scripts?: Record<string, string>;
   };
@@ -42,6 +43,15 @@ function run() {
       `package.json should expose ${scriptName}`
     );
   }
+
+  assert.match(runtimeMode, /execFileSync\('pm2', \['jlist'\]/, 'runtime-mode should inspect pm2 jlist');
+  assert.match(runtimeMode, /JSON\.parse/, 'runtime-mode should parse pm2 jlist JSON output');
+  assert.match(runtimeMode, /name\s*===\s*processName/, 'runtime-mode should check process existence by name');
+  assert.doesNotMatch(
+    runtimeMode,
+    /Process or Namespace["]?\)\s*&&\s*output\.includes\(['"]not found['"]\)/,
+    'runtime-mode should not rely on thrown pm2 stop error strings to detect missing processes'
+  );
 
   console.log('runtime mode tests: ok');
 }
