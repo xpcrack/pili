@@ -787,13 +787,12 @@ export default function ManagePage() {
                 rows={8}
                 placeholder={`7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU:alice#1
 DEhYwVxVJwKb3p1LjJqF9DP7iT7GaMBGE7FWxH7Pp7Xz:alice#2
-bob_placeholder_solana_addr_1111111111111111:bob#1
-0xAbCdEf0123456789AbCdEf0123456789AbCdEf04:bob#2`}
+0xAbCdEf0123456789AbCdEf0123456789AbCdEf01:bob#1`}
                 className="w-full resize-none rounded-xl border border-zinc-800 bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none transition-colors focus:border-zinc-700"
               />
               <p className="text-xs text-zinc-500">
                 推荐格式: <code>地址:人物名#地址别名</code>。例如 <code>...:alice#1</code> 会创建人物
-                alice，并把这条地址记为 <code>#7</code>。导出时也会保持这个格式，不再额外附带链信息。
+                alice，并把这条地址记为 <code>#1</code>。导出时也会保持这个格式，不再额外附带链信息。
               </p>
             </div>
 

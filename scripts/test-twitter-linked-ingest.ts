@@ -62,7 +62,7 @@ async function run() {
       now
     );
 
-    process.env.TELEGRAM_MONITOR_INGEST_TOKEN = 'secret';
+process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
     saveSystemConfig({
       telegramTradeMonitorSourceChatId: '-100123456',
     });

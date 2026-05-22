@@ -45,4 +45,8 @@ next-env.d.ts
 .superpowers/
 .data/
 .worktrees/
+.claude/
 data.sqlite
+skills-lock.json
+/pm2/
+/ops/

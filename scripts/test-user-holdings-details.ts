@@ -49,7 +49,7 @@ async function run() {
 
   const details = await readUserHoldingsDetails(user, {
     now: () => 9_999,
-    fetchAddressAssetDetails: async (address, chain) => {
+    fetchAddressAssetDetails: async (address: any, chain: any) => {
       if (address === '0xWalletOne' && chain === 'bsc') {
         return {
           ok: true,
@@ -197,7 +197,7 @@ async function run() {
 
   const normalizationDetails = await readUserHoldingsDetails(normalizationUser, {
     now: () => 4_321,
-    fetchAddressAssetDetails: async (address, chain) => {
+    fetchAddressAssetDetails: async (address: any, chain: any) => {
       if (address === '0xWalletThree' && chain === 'bsc') {
         return {
           ok: true,

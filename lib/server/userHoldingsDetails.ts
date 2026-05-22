@@ -1,22 +1,18 @@
 import 'server-only';
 
 import {
-  fetchOkxAddressAssetDetails,
-  type OkxAddressAssetDetail,
-} from '@/lib/okx';
-import {
   USER_HOLDINGS_THRESHOLD_USD,
   type UserHoldingRow,
   type UserHoldingsSummary,
 } from '@/lib/userDetails';
+import { getDb } from '@/lib/server/sqlite';
 import type { User } from '@/types';
-
-type FetchAddressAssetDetails = typeof fetchOkxAddressAssetDetails;
 
 export class UserHoldingsDetailsUnavailableError extends Error {}
 
 interface ReadUserHoldingsDetailsOptions {
-  fetchAddressAssetDetails?: FetchAddressAssetDetails;
+  /** @deprecated No longer used — holdings now read from current_holdings table. */
+  fetchAddressAssetDetails?: unknown;
   now?: () => number;
 }
 
@@ -26,64 +22,21 @@ interface ReadUserHoldingsDetailsResult {
   summary: UserHoldingsSummary;
 }
 
-function normalizeHoldingTokenAddress(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenAddress'>) {
-  const tokenAddress = asset.tokenAddress.trim();
-  return asset.chain === 'solana' ? tokenAddress : tokenAddress.toLowerCase();
-}
-
-function getHoldingMergeKey(asset: Pick<OkxAddressAssetDetail, 'chain' | 'tokenAddress'>) {
-  const tokenAddress = normalizeHoldingTokenAddress(asset);
-  return `${asset.chain}:${tokenAddress}`;
-}
-
-function getHoldingPriceUsd(balance: number, valueUsd: number) {
-  return balance > 0 ? valueUsd / balance : 0;
-}
-
-function mergeHoldingRows(assets: OkxAddressAssetDetail[]) {
-  const merged = new Map<string, UserHoldingRow>();
-
-  for (const asset of assets) {
-    const tokenAddress = normalizeHoldingTokenAddress(asset);
-    const mergeKey = getHoldingMergeKey(asset);
-    const existing = merged.get(mergeKey);
-    if (!existing) {
-      merged.set(mergeKey, {
-        chain: asset.chain,
-        tokenAddress,
-        symbol: asset.symbol,
-        name: asset.name,
-        balance: asset.balance,
-        priceUsd: getHoldingPriceUsd(asset.balance, asset.valueUsd),
-        valueUsd: asset.valueUsd,
-      });
-      continue;
-    }
-
-    existing.balance += asset.balance;
-    existing.valueUsd += asset.valueUsd;
-    existing.priceUsd = getHoldingPriceUsd(existing.balance, existing.valueUsd);
-    if (!existing.name && asset.name) {
-      existing.name = asset.name;
-    }
-    if (!existing.symbol && asset.symbol) {
-      existing.symbol = asset.symbol;
-    }
-  }
-
-  return Array.from(merged.values())
-    .filter((holding) => holding.valueUsd >= USER_HOLDINGS_THRESHOLD_USD)
-    .sort(
-      (left, right) =>
-        right.valueUsd - left.valueUsd ||
-        left.chain.localeCompare(right.chain) ||
-        left.tokenAddress.localeCompare(right.tokenAddress)
-    );
+interface HoldingsRow {
+  chain: string;
+  token_address: string;
+  token_address_lower: string;
+  symbol: string;
+  name: string | null;
+  balance: number;
+  price_usd: number;
+  value_usd: number;
+  refreshed_at: number;
 }
 
 export async function readUserHoldingsDetails(
   user: User,
-  options: ReadUserHoldingsDetailsOptions = {}
+  options: ReadUserHoldingsDetailsOptions = {},
 ): Promise<ReadUserHoldingsDetailsResult> {
   if (user.addresses.length === 0) {
     return {
@@ -98,38 +51,99 @@ export async function readUserHoldingsDetails(
     };
   }
 
-  const fetchAddressAssetDetails = options.fetchAddressAssetDetails ?? fetchOkxAddressAssetDetails;
-  const now = options.now ?? Date.now;
-  const settled = await Promise.all(
-    user.addresses.map(async (address) => ({
-      address,
-      result: await fetchAddressAssetDetails(address.address, address.chain).catch((error) => ({
-        ok: false as const,
-        configured: true,
-        totalAssetUsd: null,
-        assets: [],
-        error: error instanceof Error ? error.message : 'unknown fetch failure',
-      })),
-    }))
+  const db = getDb();
+
+  // Build WHERE clause for user's addresses
+  const addressConditions = user.addresses.map(
+    (addr) => `(tracked_address_lower = '${addr.address.toLowerCase()}' AND chain = '${addr.chain}')`,
   );
+  const whereClause = addressConditions.join(' OR ');
 
-  const successful = settled.filter((item) => item.result.ok);
-  const failedCount = settled.length - successful.length;
+  const rows = db
+    .prepare(
+      `SELECT chain, token_address, token_address_lower, symbol, name,
+              balance, price_usd, value_usd, refreshed_at
+       FROM current_holdings
+       WHERE ${whereClause}`,
+    )
+    .all() as HoldingsRow[];
 
-  if (successful.length === 0) {
-    throw new UserHoldingsDetailsUnavailableError('该人物全部地址的 OKX 明细读取失败');
+  if (rows.length === 0) {
+    // Table may not have been populated yet — fall back to empty
+    const maxTs = (
+      db.prepare('SELECT MAX(refreshed_at) as ts FROM current_holdings').get() as { ts: number | null }
+    ).ts;
+
+    if (!maxTs) {
+      throw new UserHoldingsDetailsUnavailableError(
+        'current_holdings 表无数据，请等待 pili-holdings-refresh cron 运行',
+      );
+    }
+
+    return {
+      holdings: [],
+      holdingsUpdatedAt: maxTs,
+      summary: {
+        visibleCount: 0,
+        partial: false,
+        successfulAddressCount: 0,
+        failedAddressCount: 0,
+      },
+    };
   }
 
-  const merged = mergeHoldingRows(successful.flatMap((item) => item.result.assets));
+  // Merge by (chain, token_address_lower) — same logic as the old mergeHoldingRows
+  const merged = new Map<string, UserHoldingRow>();
+  const successfulAddresses = new Set<string>();
+
+  for (const row of rows) {
+    const tokenAddrNorm =
+      row.chain === 'solana' ? row.token_address : row.token_address_lower;
+    const mergeKey = `${row.chain}:${tokenAddrNorm}`;
+
+    successfulAddresses.add(`${row.chain}:${row.token_address_lower}`);
+
+    const existing = merged.get(mergeKey);
+    if (!existing) {
+      merged.set(mergeKey, {
+        chain: row.chain as UserHoldingRow['chain'],
+        tokenAddress: tokenAddrNorm,
+        symbol: row.symbol,
+        name: row.name,
+        balance: row.balance,
+        priceUsd: row.balance > 0 ? row.value_usd / row.balance : 0,
+        valueUsd: row.value_usd,
+      });
+      continue;
+    }
+
+    existing.balance += row.balance;
+    existing.valueUsd += row.value_usd;
+    existing.priceUsd =
+      existing.balance > 0 ? existing.valueUsd / existing.balance : 0;
+    if (!existing.name && row.name) existing.name = row.name;
+    if (!existing.symbol && row.symbol) existing.symbol = row.symbol;
+  }
+
+  const holdings = Array.from(merged.values())
+    .filter((h) => h.valueUsd >= USER_HOLDINGS_THRESHOLD_USD)
+    .sort(
+      (a, b) =>
+        b.valueUsd - a.valueUsd ||
+        a.chain.localeCompare(b.chain) ||
+        a.tokenAddress.localeCompare(b.tokenAddress),
+    );
+
+  const refreshedAt = (rows[0]?.refreshed_at as number) ?? null;
 
   return {
-    holdings: merged,
-    holdingsUpdatedAt: now(),
+    holdings,
+    holdingsUpdatedAt: refreshedAt,
     summary: {
-      visibleCount: merged.length,
-      partial: failedCount > 0,
-      successfulAddressCount: successful.length,
-      failedAddressCount: failedCount,
+      visibleCount: holdings.length,
+      partial: false,
+      successfulAddressCount: user.addresses.length,
+      failedAddressCount: 0,
     },
   };
 }
