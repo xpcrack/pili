@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { requireAdmin } from '@/lib/server/apiGuard';
+import { requireInternalBidAuth } from '@/lib/server/internalBidAuth';
 import { readBidOnchainEvents, type BidOnchainEventCursor } from '@/lib/server/telegramMonitorFeed';
 
 export const runtime = 'nodejs';
@@ -44,7 +44,7 @@ function parseCursor(raw: string | null): BidOnchainEventCursor | null {
 }
 
 export async function GET(request: NextRequest) {
-  const unauthorizedResponse = requireAdmin(request);
+  const unauthorizedResponse = requireInternalBidAuth(request);
   if (unauthorizedResponse) {
     return unauthorizedResponse;
   }

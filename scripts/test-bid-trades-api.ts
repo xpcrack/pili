@@ -144,15 +144,18 @@ async function run() {
   const tempDir = createTempDbDir();
   const previousDbPath = process.env.PILIPILI_DB_PATH;
   const previousDataDir = process.env.PILIPILI_DATA_DIR;
-  const previousAdminToken = process.env.ADMIN_API_TOKEN;
+  const previousHmacSecret = process.env.INTERNAL_BID_HMAC_SECRET;
 
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
-  process.env.ADMIN_API_TOKEN = 'bid-internal-token';
+  process.env.INTERNAL_BID_HMAC_SECRET = 'pili-bid-trades-test-internal-bid-secret-1234567890abcdef';
 
   try {
     const { upsertEventsFromFeedRows } = await import('@/lib/server/eventsRepo');
+    const { signInternalBidToken } = await import('@/lib/server/internalBidAuth');
     const route = await import('../app/api/internal/bid/trades/route');
+
+    const authHeader = () => `Bearer ${signInternalBidToken()}`;
 
     const alpha = makeUser({
       id: 'bid-trades-alpha',
@@ -322,7 +325,7 @@ async function run() {
         `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=3&fromMs=1717178979000&toMs=1717178985000`,
         {
           headers: {
-            authorization: 'Bearer bid-internal-token',
+            authorization: authHeader(),
           },
         }
       )
@@ -357,7 +360,7 @@ async function run() {
         `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=3&fromMs=1717178979000&toMs=1717178985000`,
         {
           headers: {
-            authorization: 'Bearer bid-internal-token',
+            authorization: authHeader(),
           },
         }
       )
@@ -370,7 +373,7 @@ async function run() {
         `http://localhost:3005/api/internal/bid/trades?userIds=${alpha.id}&limit=2&cursor=${encodeURIComponent(page1Payload.nextCursor || '')}`,
         {
           headers: {
-            authorization: 'Bearer bid-internal-token',
+            authorization: authHeader(),
           },
         }
       )
@@ -401,10 +404,10 @@ async function run() {
     } else {
       process.env.PILIPILI_DATA_DIR = previousDataDir;
     }
-    if (previousAdminToken === undefined) {
-      delete process.env.ADMIN_API_TOKEN;
+    if (previousHmacSecret === undefined) {
+      delete process.env.INTERNAL_BID_HMAC_SECRET;
     } else {
-      process.env.ADMIN_API_TOKEN = previousAdminToken;
+      process.env.INTERNAL_BID_HMAC_SECRET = previousHmacSecret;
     }
     rmSync(tempDir, { recursive: true, force: true });
   }
