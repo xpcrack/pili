@@ -73,7 +73,7 @@ async function run() {
       tags: [],
       addresses: [
         {
-          address: 'testuser_solana_placeholder_1111111111111111',
+          address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
           name: '#1',
           chain: 'solana',
           totalAssetUsd: 88,
@@ -144,7 +144,7 @@ async function run() {
         5000,
         'Alpha',
         'solana',
-        'testuser_solana_placeholder_1111111111111111',
+        '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
         'tx-alpha-sol',
         now
       ),
@@ -191,7 +191,7 @@ async function run() {
     const alphaRow = payload.rows.find((row) => row.userName === 'Alpha' && row.addressName === '#1');
     assert.ok(alphaRow);
     assert.equal(alphaRow.displayName, 'Alpha#1');
-    assert.equal(alphaRow.address, 'testuser_solana_placeholder_1111111111111111');
+    assert.equal(alphaRow.address, '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU');
     assert.equal(alphaRow.primaryChain, 'solana');
     assert.deepEqual(alphaRow.chains, ['solana']);
     assert.equal(alphaRow.networkLabel, 'SOL地址');
@@ -200,7 +200,7 @@ async function run() {
     assert.equal(alphaRow.assetUpdatedAt, 111);
     assert.equal(
       alphaRow.gmgnUrl,
-      buildGmgnAddressUrl('solana', 'testuser_solana_placeholder_1111111111111111')
+      buildGmgnAddressUrl('solana', '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU')
     );
 
     const betaRow = payload.rows.find((row) => row.userName === 'Beta' && row.addressName === '#1');

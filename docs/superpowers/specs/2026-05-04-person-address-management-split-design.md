@@ -237,7 +237,7 @@ interface AddressManagementRow {
 - `addressName`
   - 地址别名，例如 `#7`
 - `displayName`
-  - 展示名，固定为 `人物名 + 地址别名`，例如 `alice#1`
+  - 展示名，固定为 `人物名 + 地址别名`，例如 `alice#7`
 - `address`
   - 原始地址文本
 - `primaryChain`

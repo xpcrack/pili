@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 import {
   createEmptyMainPageSessionState,
@@ -25,29 +25,79 @@ const MainPageSessionContext = createContext<MainPageSessionContextValue | null>
 export function MainPageSessionProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<MainPageSessionState>(() => createEmptyMainPageSessionState());
 
+  const setFeedSnapshot = useCallback((snapshot: FeedSessionSnapshot | null) => {
+    setState((current) => {
+      if (current.feed === snapshot) {
+        return current;
+      }
+      return { ...current, feed: snapshot };
+    });
+  }, []);
+
+  const setManageSnapshot = useCallback((snapshot: ManageSessionSnapshot | null) => {
+    setState((current) => {
+      if (current.manage === snapshot) {
+        return current;
+      }
+      return { ...current, manage: snapshot };
+    });
+  }, []);
+
+  const setAddressesSnapshot = useCallback((snapshot: AddressesSessionSnapshot | null) => {
+    setState((current) => {
+      if (current.addresses === snapshot) {
+        return current;
+      }
+      return { ...current, addresses: snapshot };
+    });
+  }, []);
+
+  const invalidateFeed = useCallback(() => {
+    setState((current) => {
+      if (!current.feed) {
+        return current;
+      }
+      return { ...current, feed: null };
+    });
+  }, []);
+
+  const invalidateManage = useCallback(() => {
+    setState((current) => {
+      if (!current.manage) {
+        return current;
+      }
+      return { ...current, manage: null };
+    });
+  }, []);
+
+  const invalidateAddresses = useCallback(() => {
+    setState((current) => {
+      if (!current.addresses) {
+        return current;
+      }
+      return { ...current, addresses: null };
+    });
+  }, []);
+
   const value = useMemo<MainPageSessionContextValue>(
     () => ({
       state,
-      setFeedSnapshot: (snapshot) => {
-        setState((current) => ({ ...current, feed: snapshot }));
-      },
-      setManageSnapshot: (snapshot) => {
-        setState((current) => ({ ...current, manage: snapshot }));
-      },
-      setAddressesSnapshot: (snapshot) => {
-        setState((current) => ({ ...current, addresses: snapshot }));
-      },
-      invalidateFeed: () => {
-        setState((current) => ({ ...current, feed: null }));
-      },
-      invalidateManage: () => {
-        setState((current) => ({ ...current, manage: null }));
-      },
-      invalidateAddresses: () => {
-        setState((current) => ({ ...current, addresses: null }));
-      },
+      setFeedSnapshot,
+      setManageSnapshot,
+      setAddressesSnapshot,
+      invalidateFeed,
+      invalidateManage,
+      invalidateAddresses,
     }),
-    [state]
+    [
+      invalidateAddresses,
+      invalidateFeed,
+      invalidateManage,
+      setAddressesSnapshot,
+      setFeedSnapshot,
+      setManageSnapshot,
+      state,
+    ]
   );
 
   return <MainPageSessionContext.Provider value={value}>{children}</MainPageSessionContext.Provider>;

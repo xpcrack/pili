@@ -124,7 +124,7 @@ async function run() {
             tags: [],
             addresses: [
               {
-                address: 'testuser_solana_placeholder_2222222222222222',
+                address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
                 name: '#1',
                 chain: 'solana',
               },
