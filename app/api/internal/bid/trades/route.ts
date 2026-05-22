@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { readBidTradeExport } from '@/lib/server/bidTradeExport';
-import { requireAdmin } from '@/lib/server/apiGuard';
+import { requireInternalBidAuth } from '@/lib/server/internalBidAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ function parseNumberParam(value: string | null) {
 }
 
 export async function GET(request: NextRequest) {
-  const unauthorizedResponse = requireAdmin(request);
+  const unauthorizedResponse = requireInternalBidAuth(request);
   if (unauthorizedResponse) {
     return unauthorizedResponse;
   }

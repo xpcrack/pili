@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { requireAdmin } from '@/lib/server/apiGuard';
+import { requireInternalBidAuth } from '@/lib/server/internalBidAuth';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 
 export const runtime = 'nodejs';
@@ -15,7 +15,7 @@ function parseUserIds(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const unauthorizedResponse = requireAdmin(request);
+  const unauthorizedResponse = requireInternalBidAuth(request);
   if (unauthorizedResponse) {
     return unauthorizedResponse;
   }
