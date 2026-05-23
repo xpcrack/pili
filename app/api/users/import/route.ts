@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       importedCount: result.importedCount,
+      skippedUsers: result.skippedUsers,
       users: listTrackedUsers(),
     });
   } catch (error) {

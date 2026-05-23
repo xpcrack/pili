@@ -59,10 +59,12 @@ async function run() {
       /already belongs to another tracked user|已归属|归属于/
     );
 
-    assert.throws(
-      () => importTrackedUsers([{ id: 'alpha-import', ...buildUser('Alpha', 'alpha') } as User], { replaceExisting: false }),
-      /already belongs to another tracked user|已归属|归属于/
-    );
+    // importTrackedUsers now skips conflicting users instead of throwing
+    const importResult = importTrackedUsers([{ id: 'alpha-import', ...buildUser('Alpha', 'alpha') } as User], { replaceExisting: false });
+    assert.equal(importResult.importedCount, 0);
+    assert.equal(importResult.skippedUsers.length, 1);
+    assert.equal(importResult.skippedUsers[0].userId, 'alpha-import');
+    assert.match(importResult.skippedUsers[0].reason, /已归属|归属于/);
 
     const now = Date.now();
     const alphaId = 'alpha-conflict-user';

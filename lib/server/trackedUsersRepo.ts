@@ -673,6 +673,15 @@ export function countTrackedUsers() {
   return row.count;
 }
 
+export interface ImportSkippedUser {
+  userId: string;
+  userName: string;
+  reason: string;
+  conflictingAddress: string;
+  conflictingChain: string;
+  existingOwnerName: string;
+}
+
 export function importTrackedUsers(users: User[], options?: { replaceExisting?: boolean }) {
   const replaceExisting = options?.replaceExisting === true;
 
@@ -686,6 +695,7 @@ export function importTrackedUsers(users: User[], options?: { replaceExisting?: 
     }
 
     const importedIds: string[] = [];
+    const skippedUsers: ImportSkippedUser[] = [];
     const sanitizedUsers = users.map((incomingUser) => {
       const baseUser = sanitizeUser(incomingUser);
       const id = baseUser.id.trim() || crypto.randomUUID();
@@ -698,7 +708,22 @@ export function importTrackedUsers(users: User[], options?: { replaceExisting?: 
     assertNoIncomingBatchAddressConflicts(sanitizedUsers);
 
     for (const user of sanitizedUsers) {
-      assertNoTrackedAddressOwnershipConflicts(user.id, user.addresses);
+      try {
+        assertNoTrackedAddressOwnershipConflicts(user.id, user.addresses);
+      } catch (error) {
+        if (error instanceof TrackedAddressOwnershipConflictError) {
+          skippedUsers.push({
+            userId: user.id,
+            userName: user.name,
+            reason: error.message,
+            conflictingAddress: error.address,
+            conflictingChain: error.chain,
+            existingOwnerName: error.existingUserName,
+          });
+          continue;
+        }
+        throw error;
+      }
 
       upsertUserRow(user, now);
       upsertAddressRows(user.id, user.addresses, now, true);
@@ -710,6 +735,7 @@ export function importTrackedUsers(users: User[], options?: { replaceExisting?: 
     return {
       importedCount: importedIds.length,
       importedIds,
+      skippedUsers,
     };
   });
 }
@@ -734,15 +760,33 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
   return withTransaction(() => {
     const currentUsers = listTrackedUsers();
     const current = currentUsers.find((user) => user.id === id);
-    if (!current) {
-      return null;
-    }
+
+    // If user doesn't exist in DB yet (e.g. import skipped them due to address conflict),
+    // create a stub so the profile update (name, handle, etc.) still works.
+    const base: User = current ?? {
+      id,
+      name: updates.name || '未命名人物',
+      handle: updates.handle || `user-${id.slice(0, 8)}`,
+      avatar: updates.avatar || '',
+      twitter: updates.twitter,
+      twitterUserId: updates.twitterUserId,
+      twitterAvatarUrl: updates.twitterAvatarUrl,
+      telegram: updates.telegram,
+      telegrams: updates.telegrams || [],
+      addresses: [],
+      totalAssetUsd: 0,
+      historicalMaxAssetUsd: 0,
+      assetUpdatedAt: null,
+      tags: updates.tags || [],
+    };
 
     const next = sanitizeUser({
-      ...current,
+      ...base,
       ...updates,
       id,
-      addresses: updates.addresses ? sanitizeAddresses(updates.addresses) : current.addresses,
+      addresses: updates.addresses
+        ? sanitizeAddresses(updates.addresses)
+        : base.addresses,
     });
     const now = Date.now();
 

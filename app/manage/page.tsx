@@ -413,10 +413,22 @@ export default function ManagePage() {
           throw new Error(payload?.error || `HTTP ${response.status}`);
         }
         window.sessionStorage.setItem(syncKey, 'done');
-        console.info('[manage] synced local users to server', {
-          users: usersWithAddresses.length,
-          addresses: localAddressCount,
-        });
+        const skipped = Array.isArray(payload.skippedUsers) ? payload.skippedUsers : [];
+        if (skipped.length > 0) {
+          console.warn(
+            '[manage] synced local users to server (some skipped due to address conflicts)',
+            {
+              imported: payload.importedCount,
+              skipped: skipped.length,
+              details: skipped.map((s: { userName: string; reason: string }) => `${s.userName}: ${s.reason}`),
+            }
+          );
+        } else {
+          console.info('[manage] synced local users to server', {
+            users: usersWithAddresses.length,
+            addresses: localAddressCount,
+          });
+        }
       })
       .catch((error) => {
         console.warn(
