@@ -1019,6 +1019,41 @@ export function listTrackedAddressSyncCursors() {
   })) as TrackedAddressSyncCursor[];
 }
 
+// Latest observed on-chain transaction time per tracked address, derived from
+// raw_transactions. The key shape `${chain}|${addressLower}` matches the dedupe
+// key used elsewhere in this module. NULL entries (addresses with no recorded
+// tx_time) are omitted from the map.
+export function listTrackedAddressLastTxAtMap(): Map<string, number> {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+        ta.chain AS chain,
+        ta.address_lower AS address_lower,
+        MAX(rt.tx_time) AS last_tx_time
+      FROM tracked_addresses ta
+      LEFT JOIN raw_transactions rt
+        ON rt.chain = ta.chain
+       AND rt.tracked_address_lower = ta.address_lower
+       AND rt.tx_time IS NOT NULL
+      GROUP BY ta.chain, ta.address_lower`
+    )
+    .all() as Array<{
+    chain: string;
+    address_lower: string;
+    last_tx_time: number | null;
+  }>;
+
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (typeof row.last_tx_time !== 'number') {
+      continue;
+    }
+    map.set(`${row.chain}|${row.address_lower}`, row.last_tx_time);
+  }
+  return map;
+}
+
 export function markAddressesSynced(cursors: Array<{ chain: string; address: string; syncedAt: number }>) {
   if (cursors.length === 0) {
     return;
