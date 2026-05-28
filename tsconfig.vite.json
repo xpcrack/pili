@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "plugins": []
+  },
+  "include": [
+    "spa/**/*.ts",
+    "spa/**/*.tsx",
+    "server/**/*.ts",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "hooks/**/*.ts",
+    "hooks/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "store/**/*.ts",
+    "store/**/*.tsx",
+    "types/**/*.ts",
+    "app/**/*.tsx",
+    "app/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

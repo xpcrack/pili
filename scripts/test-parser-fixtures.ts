@@ -186,7 +186,7 @@ async function runTelegramMonitorHelperFixtures() {
     avatar: 'henry.png',
     addresses: [
       {
-        address: 'testuser_solana_placeholder_1111111111111111',
+        address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
         name: '#1',
         chain: 'solana',
         totalAssetUsd: null,
@@ -207,7 +207,7 @@ async function runTelegramMonitorHelperFixtures() {
     'tracked-address index should fan out EVM addresses across EVM chains'
   );
   assert.equal(
-    trackedAddressIndex.get('solana|cj5fhknpf3yd7fk njv5vtbjtndawfirflcutputanpis'.replace(' ', ''))?.user.id,
+    trackedAddressIndex.get('solana|7xkxtg2cw87d97txjsdpbd5jbkhetqa83tzrujosgasu')?.user.id,
     solUser.id,
     'tracked-address index should keep non-EVM addresses on their native chain only'
   );
@@ -227,7 +227,7 @@ async function runTelegramMonitorHelperFixtures() {
   );
 
   const matchedByAlias = pickMonitoredUser({
-    eventWalletAliasLabel: 'user_d#1',
+    eventWalletAliasLabel: 'finn#2',
     trackedWalletAddress: null,
     chain: 'ethereum',
     users,

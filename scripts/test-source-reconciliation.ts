@@ -86,7 +86,7 @@ function run() {
     provisional.type = 'transfer';
     provisional.metadata.chain = 'solana';
     provisional.metadata.txHash = '2tLRE1WugGAJquDrSph5XMMySFBBDmnxRgEsKPgr1tRCjqiFmLoT345V3DfkQASSdc3BMUx2brt3xEauGLsQNJsQ';
-    provisional.metadata.trackedAddress = 'testuser_solana_placeholder_1111111111111111';
+    provisional.metadata.trackedAddress = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
     provisional.metadata.quoteToken = 'SOL';
     provisional.metadata.quoteAmount = '0.1181';
     provisional.metadata.monitorTxAggregateKey =

@@ -122,3 +122,24 @@ export function markWorkerUpdateProcessed(input: { workerKey: string; updateId: 
     .run(input.workerKey, updateId, nowMs);
   return result.changes > 0;
 }
+
+export interface WorkerStatusRow {
+  worker_key: string;
+  worker_type: string;
+  status: string;
+  last_heartbeat_at_ms: number | null;
+  last_update_id: number | null;
+  last_error: string | null;
+  updated_at_ms: number;
+}
+
+export function readWorkerStatuses() {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT worker_key, worker_type, status, last_heartbeat_at_ms, last_update_id, last_error, updated_at_ms
+       FROM worker_status
+       ORDER BY worker_key ASC`
+    )
+    .all() as WorkerStatusRow[];
+}
