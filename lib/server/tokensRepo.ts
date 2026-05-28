@@ -1,7 +1,6 @@
 import 'server-only';
 
-import Database from 'better-sqlite3';
-import { getDb } from './sqlite';
+import { getDb, type DbHandle } from './sqlite';
 
 // Chain types
 export type TokenChain = 'solana' | 'ethereum' | 'bsc' | 'base' | 'hyperevm' | 'hypercore';
@@ -37,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_tokens_chain ON tokens(chain);
 
 let tokensInitialized = false;
 
-function ensureTokensTable(db: Database.Database) {
+function ensureTokensTable(db: DbHandle) {
   if (tokensInitialized) return;
   db.exec(TOKENS_SCHEMA);
   tokensInitialized = true;

@@ -10,7 +10,7 @@ process.env.OKX_SECRET_KEY ??= 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE ??= 'fixture-okx-passphrase';
 process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
 
-const TRACKED_SOL_ADDRESS = 'testuser_solana_placeholder_1111111111111111';
+const TRACKED_SOL_ADDRESS = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 const TX_HASH = '2tLRE1WugGAJquDrSph5XMMySFBBDmnxRgEsKPgr1tRCjqiFmLoT345V3DfkQASSdc3BMUx2brt3xEauGLsQNJsQ';
 const TOKEN_ADDRESS = 'CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump';
 const TX_TIME_MS = 1777178981000;
