@@ -166,13 +166,24 @@ function replaceCurrentHoldings(db: DbHandle, holdings: CurrentHoldingRecord[]) 
       (tracked_address, tracked_address_lower, user_id, chain,
        token_address, token_address_lower, symbol, name,
        balance, price_usd, value_usd, refreshed_at)
-      VALUES (@tracked_address, @tracked_address_lower, @user_id, @chain,
-              @token_address, @token_address_lower, @symbol, @name,
-              @balance, @price_usd, @value_usd, @refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const holding of holdings) {
-      insert.run(holding);
+      insert.run(
+        holding.tracked_address,
+        holding.tracked_address_lower,
+        holding.user_id,
+        holding.chain,
+        holding.token_address,
+        holding.token_address_lower,
+        holding.symbol,
+        holding.name,
+        holding.balance,
+        holding.price_usd,
+        holding.value_usd,
+        holding.refreshed_at
+      );
     }
   });
 
