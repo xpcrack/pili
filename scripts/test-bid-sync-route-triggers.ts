@@ -124,7 +124,7 @@ async function run() {
             tags: [],
             addresses: [
               {
-                address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
+                address: 'Aqa8H5hmHe9MFY9sW6widbqEuaYv7q2KnRo25ApPhWhA',
                 name: '#1',
                 chain: 'solana',
               },
@@ -163,7 +163,7 @@ async function run() {
             tags: ['alpha'],
             addresses: [
               {
-                address: 'testuser_solana_placeholder_1111111111111111',
+                address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
                 name: '#1',
                 chain: 'solana',
               },
