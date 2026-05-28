@@ -83,17 +83,20 @@ function run(command: RuntimeModeCommand) {
   }
 
   if (command === 'dev-on') {
+    stopIfPresent('pili');
     stopIfPresent('pili-web-prod');
     startOrRestart('pili-web-dev');
     return;
   }
 
   if (command === 'refresh') {
+    stopIfPresent('pili');
     runNpm(['run', 'build']);
     startOrReload('pili-web-prod');
     return;
   }
 
+  stopIfPresent('pili');
   stopIfPresent('pili-web-dev');
   runNpm(['run', 'build']);
   startOrRestart('pili-web-prod');
