@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMainPageSession } from '@/components/MainPageSessionProvider';
 import { User, ChainType, CHAIN_OPTIONS } from '@/types';
@@ -12,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { TopNav } from '@/components/TopNav';
+import { AppLink } from '@/lib/appNavigation';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
 import {
@@ -759,13 +759,13 @@ export default function ManagePage() {
             <Plus className="mr-1 h-4 w-4" />
             手动新建
           </Button>
-          <Link
+          <AppLink
             href="/addresses"
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
           >
             地址页
             <ArrowRight className="h-4 w-4" />
-          </Link>
+          </AppLink>
         </section>
 
         <section className="rounded-2xl border border-zinc-800/50 bg-zinc-900/50 p-6">
@@ -1031,9 +1031,9 @@ DEhYwVxVJwKb3p1LjJqF9DP7iT7GaMBGE7FWxH7Pp7Xz:alice#2
               </h2>
               <p className="text-xs text-zinc-600">
                 地址详情、复制和删除已拆分到{' '}
-                <Link href="/addresses" className="text-blue-400 hover:text-blue-300">
+                <AppLink href="/addresses" className="text-blue-400 hover:text-blue-300">
                   /addresses
-                </Link>
+                </AppLink>
               </p>
             </div>
             <div className="relative w-full md:w-80">
@@ -1271,9 +1271,9 @@ DEhYwVxVJwKb3p1LjJqF9DP7iT7GaMBGE7FWxH7Pp7Xz:alice#2
                             >
                               追加地址
                             </button>
-                            <Link href="/addresses" className="text-[11px] text-blue-400 hover:text-blue-300">
+                            <AppLink href="/addresses" className="text-[11px] text-blue-400 hover:text-blue-300">
                               地址页
-                            </Link>
+                            </AppLink>
                           </div>
                         </td>
                         <td className="px-2 py-2.5 text-right font-mono text-zinc-200">

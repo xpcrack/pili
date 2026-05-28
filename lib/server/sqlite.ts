@@ -1,9 +1,31 @@
 import 'server-only';
 
+import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import Database from 'better-sqlite3';
+const require = createRequire(import.meta.url);
+const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
+export interface SqlRunResult {
+  changes: number;
+  lastInsertRowid?: number | bigint;
+}
+
+export interface SqlStatement {
+  get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
+  run(...params: unknown[]): SqlRunResult;
+}
+
+export interface SqlDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqlStatement;
+  transaction<TArgs extends unknown[], TResult>(
+    fn: (...args: TArgs) => TResult
+  ): (...args: TArgs) => TResult;
+  pragma?(value: string): unknown;
+}
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.data');
 const COMPLETENESS_SCHEMA_SQL = `
@@ -78,12 +100,22 @@ CREATE INDEX IF NOT EXISTS idx_completeness_pokes_claimed
 ON completeness_pokes(claimed_at, created_at ASC);
 `;
 
-function getDataDir() {
+export function resolveDataDir() {
   const customDataDir = (process.env.PILIPILI_DATA_DIR || '').trim();
   if (customDataDir) {
     return path.resolve(customDataDir);
   }
+
+  const fallbackDataDir = path.resolve(process.cwd(), '..', '..', '.data');
+  if (existsSync(fallbackDataDir)) {
+    return fallbackDataDir;
+  }
+
   return DEFAULT_DATA_DIR;
+}
+
+function getDataDir() {
+  return resolveDataDir();
 }
 
 function getDbPath() {
@@ -106,8 +138,49 @@ function getLegacyJudgmentFilePath() {
   return path.join(getDataDir(), 'tx-judgments.json');
 }
 
-let dbInstance: Database.Database | null = null;
+let dbInstance: SqlDatabase | null = null;
 let initialized = false;
+
+function isBunRuntime() {
+  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+}
+
+function createDatabase(dbPath: string): SqlDatabase {
+  if (isBunRuntime()) {
+    const { Database: BunDatabase } = require('bun:sqlite') as {
+      Database: new (filename: string) => {
+        exec(sql: string): void;
+        prepare(sql: string): SqlStatement;
+        transaction<TArgs extends unknown[], TResult>(
+          fn: (...args: TArgs) => TResult
+        ): (...args: TArgs) => TResult;
+      };
+    };
+
+    const db = new BunDatabase(dbPath);
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    return {
+      exec(sql) {
+        db.exec(sql);
+      },
+      prepare(sql) {
+        return db.prepare(sql);
+      },
+      transaction(fn) {
+        return db.transaction(fn);
+      },
+      pragma(value) {
+        db.exec(`PRAGMA ${value}`);
+        return undefined;
+      },
+    };
+  }
+
+  const BetterSqlite3 = require('better-sqlite3') as new (filename: string) => SqlDatabase;
+  const db = new BetterSqlite3(dbPath);
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  return db;
+}
 
 function buildEventsFtsSafeJsonScalarExpr(activityJsonExpr: string, jsonPath: string) {
   return `CASE WHEN json_valid(${activityJsonExpr}) THEN coalesce(json_extract(${activityJsonExpr}, '${jsonPath}'), '') ELSE '' END`;
@@ -136,6 +209,7 @@ function buildEventsFtsAddressExpr(record: string) {
 }
 
 const SCHEMA_SQL = `
+PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
@@ -177,6 +251,32 @@ CREATE TABLE IF NOT EXISTS tracked_addresses (
 
 CREATE INDEX IF NOT EXISTS idx_tracked_addresses_chain_address
 ON tracked_addresses(chain, address_lower);
+
+CREATE TABLE IF NOT EXISTS current_holdings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tracked_address TEXT NOT NULL,
+  tracked_address_lower TEXT NOT NULL,
+  user_id TEXT,
+  chain TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_address_lower TEXT NOT NULL,
+  symbol TEXT,
+  name TEXT,
+  balance REAL,
+  price_usd REAL,
+  value_usd REAL,
+  refreshed_at INTEGER NOT NULL,
+  UNIQUE(tracked_address_lower, chain, token_address_lower)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_token
+ON current_holdings(chain, token_address_lower);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_user
+ON current_holdings(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_value
+ON current_holdings(value_usd);
 
 CREATE TABLE IF NOT EXISTS asset_peak_validation_blocks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -805,7 +905,7 @@ function parseJSON<T>(value: string, fallback: T): T {
   }
 }
 
-function getAppStateFlag(db: Database.Database, key: string) {
+function getAppStateFlag(db: SqlDatabase, key: string) {
   const row = db
     .prepare('SELECT value_json FROM app_state WHERE key = ? LIMIT 1')
     .get(key) as { value_json: string } | undefined;
@@ -816,7 +916,7 @@ function getAppStateFlag(db: Database.Database, key: string) {
   return parsed.done === true;
 }
 
-function setAppStateFlag(db: Database.Database, key: string) {
+function setAppStateFlag(db: SqlDatabase, key: string) {
   const now = Date.now();
   db.prepare(
     `INSERT INTO app_state (key, value_json, updated_at)
@@ -825,7 +925,7 @@ function setAppStateFlag(db: Database.Database, key: string) {
   ).run(key, JSON.stringify({ done: true, at: now }), now);
 }
 
-function recreateEventsFtsTriggers(db: Database.Database) {
+function recreateEventsFtsTriggers(db: SqlDatabase) {
   db.exec(`
 DROP TRIGGER IF EXISTS events_ai;
 DROP TRIGGER IF EXISTS events_ad;
@@ -850,7 +950,7 @@ END;
 `);
 }
 
-function rebuildEventsFtsIndex(db: Database.Database) {
+function rebuildEventsFtsIndex(db: SqlDatabase) {
   db.prepare(`INSERT INTO events_fts(events_fts) VALUES ('delete-all')`).run();
   db.prepare(
     `INSERT INTO events_fts(rowid, event_id, content, token, address, reference, user_name)
@@ -865,7 +965,7 @@ function rebuildEventsFtsIndex(db: Database.Database) {
   ).run();
 }
 
-function ensureEventsFtsIndexing(db: Database.Database) {
+function ensureEventsFtsIndexing(db: SqlDatabase) {
   recreateEventsFtsTriggers(db);
 
   const rebuilt = getAppStateFlag(db, 'events_fts_metadata_index_v3');
@@ -877,7 +977,7 @@ function ensureEventsFtsIndexing(db: Database.Database) {
   setAppStateFlag(db, 'events_fts_metadata_index_v3');
 }
 
-function migrateLegacyJudgments(db: Database.Database) {
+function migrateLegacyJudgments(db: SqlDatabase) {
   const legacyJudgmentFile = getLegacyJudgmentFilePath();
   const migrated = getAppStateFlag(db, 'legacy_tx_judgments_migrated_v1');
   if (migrated) {
@@ -956,7 +1056,7 @@ function migrateLegacyJudgments(db: Database.Database) {
   setAppStateFlag(db, 'legacy_tx_judgments_migrated_v1');
 }
 
-function initializeDb(db: Database.Database) {
+function initializeDb(db: SqlDatabase) {
   if (initialized) {
     return;
   }
@@ -975,13 +1075,13 @@ function initializeDb(db: Database.Database) {
   initialized = true;
 }
 
-function hasColumn(db: Database.Database, tableName: string, columnName: string) {
+function hasColumn(db: SqlDatabase, tableName: string, columnName: string) {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
   return rows.some((row) => row.name === columnName);
 }
 
 function ensureColumn(
-  db: Database.Database,
+  db: SqlDatabase,
   tableName: string,
   columnName: string,
   sqlType: string,
@@ -995,7 +1095,7 @@ function ensureColumn(
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}${defaultSql}`);
 }
 
-function ensureTelegramMonitorEventColumns(db: Database.Database) {
+function ensureTelegramMonitorEventColumns(db: SqlDatabase) {
   ensureColumn(db, 'telegram_monitor_events', 'wallet_group_label', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'wallet_alias_label', 'TEXT');
   ensureColumn(db, 'telegram_monitor_events', 'tracked_wallet_address', 'TEXT');
@@ -1011,12 +1111,12 @@ function ensureTelegramMonitorEventColumns(db: Database.Database) {
   );
 }
 
-function ensureTelegramChannelSourceColumns(db: Database.Database) {
+function ensureTelegramChannelSourceColumns(db: SqlDatabase) {
   ensureColumn(db, 'telegram_channel_sources', 'source_kind', 'TEXT', "'auto'");
   ensureColumn(db, 'telegram_channel_sources', 'channel_type', 'TEXT', "'social'");
 }
 
-function ensureTelegramChannelPostSchema(db: Database.Database) {
+function ensureTelegramChannelPostSchema(db: SqlDatabase) {
   ensureColumn(db, 'telegram_channel_posts', 'channel_type', 'TEXT', "'social'");
   if (!hasColumn(db, 'telegram_channel_posts', 'source_id') && !hasColumn(db, 'telegram_channel_posts', 'user_id')) {
     db.exec('DROP INDEX IF EXISTS idx_telegram_channel_posts_source_recent');
@@ -1120,7 +1220,7 @@ WHERE ranked.row_rank = 1;
   migrate();
 }
 
-function ensureActivityJudgmentColumns(db: Database.Database) {
+function ensureActivityJudgmentColumns(db: SqlDatabase) {
   ensureColumn(db, 'activity_judgments', 'tx_time', 'INTEGER');
   ensureColumn(db, 'activity_judgments', 'quote_token', 'TEXT');
   ensureColumn(db, 'activity_judgments', 'quote_amount', 'TEXT');
@@ -1130,11 +1230,11 @@ function ensureActivityJudgmentColumns(db: Database.Database) {
   ensureColumn(db, 'activity_judgments', 'computed_usd_value', 'REAL');
 }
 
-function ensureTwitterSyncCursorColumns(db: Database.Database) {
+function ensureTwitterSyncCursorColumns(db: SqlDatabase) {
   ensureColumn(db, 'twitter_sync_cursor', 'covered_since_ms', 'INTEGER');
 }
 
-function ensureTwitterIdentityColumns(db: Database.Database) {
+function ensureTwitterIdentityColumns(db: SqlDatabase) {
   ensureColumn(db, 'tracked_users', 'twitter_user_id', 'TEXT');
   ensureColumn(db, 'tracked_users', 'twitter_avatar_url', 'TEXT');
   ensureColumn(db, 'twitter_tweets', 'author_user_id', 'TEXT');
@@ -1145,11 +1245,11 @@ function ensureTwitterIdentityColumns(db: Database.Database) {
   );
 }
 
-function ensureTelegramsJsonColumn(db: Database.Database) {
+function ensureTelegramsJsonColumn(db: SqlDatabase) {
   ensureColumn(db, 'tracked_users', 'telegrams_json', 'TEXT', "'[]'");
 }
 
-function ensureCompletenessSchema(db: Database.Database) {
+function ensureCompletenessSchema(db: SqlDatabase) {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_completeness_run_sources_run_source
      ON completeness_run_sources(run_id, source)`
@@ -1163,11 +1263,13 @@ export function getDb() {
 
   const dbPath = getDbPath();
   mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+  const db = createDatabase(dbPath);
   initializeDb(db);
   setInterval(() => {
     try {
-      db.pragma('wal_checkpoint(TRUNCATE)');
+      if (typeof db.pragma === 'function') {
+        db.pragma('wal_checkpoint(TRUNCATE)');
+      }
     } catch (error) {
       console.warn('[sqlite] wal_checkpoint failed:', error);
     }
@@ -1176,7 +1278,15 @@ export function getDb() {
   return db;
 }
 
-export function withTransaction<T>(fn: (db: Database.Database) => T): T {
+export type DbHandle = SqlDatabase;
+
+export function withTransaction<T>(fn: (db: DbHandle) => T): T {
+  const db = getDb();
+  const wrapped = db.transaction(() => fn(db));
+  return wrapped();
+}
+
+export function withTransactionTyped<T>(fn: (db: SqlDatabase) => T): T {
   const db = getDb();
   const wrapped = db.transaction(() => fn(db));
   return wrapped();

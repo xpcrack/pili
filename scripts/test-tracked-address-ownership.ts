@@ -7,7 +7,7 @@ import './server-only-shim.cjs';
 
 import type { User } from '@/types';
 
-const TARGET_ADDRESS = 'testuser_solana_placeholder_1111111111111111';
+const TARGET_ADDRESS = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 const TARGET_CHAIN = 'solana' as const;
 
 function createTempDbDir() {

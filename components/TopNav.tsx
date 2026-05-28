@@ -1,10 +1,9 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import { Zap } from 'lucide-react';
 
+import { AppLink, useAppRouter } from '@/lib/appNavigation';
 import { isMainPageRoutePath } from '@/lib/mainPageSession';
 
 export const TOP_NAV_ACTIVE_VALUES = ['feed', 'manage', 'addresses', 'tokens', 'system'] as const;
@@ -27,7 +26,7 @@ interface TopNavProps {
 }
 
 function NavLink(props: { href: string; label: string; active: boolean }) {
-  const router = useRouter();
+  const router = useAppRouter();
 
   const prefetchRoute = () => {
     if (!isMainPageRoutePath(props.href)) {
@@ -38,7 +37,7 @@ function NavLink(props: { href: string; label: string; active: boolean }) {
   };
 
   return (
-    <Link
+    <AppLink
       href={props.href}
       onMouseEnter={prefetchRoute}
       onFocus={prefetchRoute}
@@ -49,12 +48,12 @@ function NavLink(props: { href: string; label: string; active: boolean }) {
       }`}
     >
       {props.label}
-    </Link>
+    </AppLink>
   );
 }
 
 export function TopNav({ active, rightSlot }: TopNavProps) {
-  const router = useRouter();
+  const router = useAppRouter();
 
   useEffect(() => {
     for (const item of TOP_NAV_ITEMS) {

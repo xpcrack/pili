@@ -1,8 +1,6 @@
 import 'server-only';
 
-import type Database from 'better-sqlite3';
-
-import { getDb } from '@/lib/server/sqlite';
+import { getDb, type DbHandle } from '@/lib/server/sqlite';
 
 export type ConflictDomain = 'onchain' | 'twitter';
 export type ConflictWinner = 'api' | 'opencli';
@@ -47,7 +45,7 @@ function parseDiffJson(value: string): ConflictDiffItem[] {
   }
 }
 
-function upsertConflictRecordWithDb(db: Database.Database, input: UpsertConflictRecordInput) {
+function upsertConflictRecordWithDb(db: DbHandle, input: UpsertConflictRecordInput) {
   const now = Date.now();
   db.prepare(
     `INSERT INTO feed_conflicts (
@@ -92,7 +90,7 @@ export function upsertConflictRecord(input: UpsertConflictRecordInput) {
 }
 
 function enqueueConflictNotificationWithDb(
-  db: Database.Database,
+  db: DbHandle,
   conflictId: number,
   conflictKey: string
 ) {

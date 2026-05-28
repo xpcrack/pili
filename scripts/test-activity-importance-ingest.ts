@@ -7,7 +7,7 @@ import type { Activity, User } from '@/types';
 
 import './server-only-shim.cjs';
 
-const VALID_SOLANA_WALLET = 'testuser_solana_placeholder_1111111111111111';
+const VALID_SOLANA_WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 
 function makeUser(id: string): User {
   return {
