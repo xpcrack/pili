@@ -19,6 +19,7 @@
 
 # production
 /build
+/dist
 
 # misc
 .DS_Store
@@ -48,5 +49,6 @@ next-env.d.ts
 .claude/
 data.sqlite
 skills-lock.json
-/pm2/
+/pm2/*
+!/pm2/ecosystem.config.cjs
 /ops/

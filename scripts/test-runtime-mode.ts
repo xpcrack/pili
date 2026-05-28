@@ -13,12 +13,7 @@ function run() {
   assert.equal(existsSync(ecosystemPath), true, 'pm2/ecosystem.config.cjs should exist');
 
   const ecosystemConfig = readFileSync(ecosystemPath, 'utf8');
-  for (const appName of [
-    'pili-web-prod',
-    'pili-web-dev',
-    'pili-telegram-channel-worker',
-    'pili-completeness-worker',
-  ]) {
+  for (const appName of ['pili-web-prod', 'pili-web-dev']) {
     assert.match(
       ecosystemConfig,
       new RegExp(`name:\\s*['\"]${appName}['\"]`),
@@ -26,8 +21,21 @@ function run() {
     );
   }
 
+  assert.doesNotMatch(
+    ecosystemConfig,
+    /pili-telegram-channel-worker/,
+    'ecosystem config should retire the old telegram worker pm2 app'
+  );
+  assert.doesNotMatch(
+    ecosystemConfig,
+    /pili-completeness-worker/,
+    'ecosystem config should retire the old completeness worker pm2 app'
+  );
+
   assert.match(ecosystemConfig, /npm run start/, 'ecosystem config should run npm run start');
   assert.match(ecosystemConfig, /npm run dev/, 'ecosystem config should run npm run dev');
+  assert.match(ecosystemConfig, /PORT:\s*['\"]3013['\"]/, 'ecosystem config should pin production port 3013');
+  assert.match(ecosystemConfig, /PORT:\s*['\"]3005['\"]/, 'ecosystem config should pin dev port 3005');
 
   const expectedScripts = {
     'runtime:status': 'tsx scripts/runtime-mode.ts status',
@@ -60,6 +68,11 @@ function run() {
   );
   assert.match(
     runtimeMode,
+    /stopIfPresent\('pili'\)/,
+    'runtime-mode should retire the legacy pili process'
+  );
+  assert.match(
+    runtimeMode,
     /if \(command === 'refresh'\) \{[\s\S]*runNpm\(\['run', 'build'\]\);[\s\S]*pili-web-prod[\s\S]*\}/,
     'refresh flow should run build before operating production web process'
   );
@@ -80,7 +93,7 @@ function run() {
   );
   assert.doesNotMatch(
     runtimeMode,
-    /Process or Namespace["]?\)\s*&&\s*output\.includes\(['"]not found['"]\)/,
+    /Process or Namespace["']?\)\s*&&\s*output\.includes\(['\"]not found['\"]\)/,
     'runtime-mode should not rely on thrown pm2 stop error strings to detect missing processes'
   );
 
