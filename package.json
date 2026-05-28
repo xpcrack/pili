@@ -29,7 +29,7 @@
     "audit:historical-asset-peaks": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/audit-historical-asset-peaks.ts",
     "importance:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-importance-score.ts",
     "test": "tsx scripts/lib/runTests.ts",
-    "check": "npx tsc --noEmit && npm test -- --filter=runtime-task-registry && npm test -- --filter=runtime-env-fallback && npm test -- --filter=runtime-data-fallback && npm test -- --filter=telegram-bridge-runtime && PATH=\"$HOME/.bun/bin:$PATH\" bun scripts/test-bun-route-compat.ts && PATH=\"$HOME/.bun/bin:$PATH\" bun run build",
+    "check": "npx tsc --noEmit && npm test -- --filter=runtime-task-registry && npm test -- --filter=runtime-env-fallback && npm test -- --filter=runtime-data-fallback && npm test -- --filter=telegram-bridge-runtime && PATH=\"$HOME/.bun/bin:$PATH\" bun scripts/test-bun-route-compat.ts && PATH=\"$HOME/.bun/bin:$PATH\" bun scripts/test-bun-holdings-refresh.ts && PATH=\"$HOME/.bun/bin:$PATH\" bun run build",
     "runtime:status": "tsx scripts/runtime-mode.ts status",
     "runtime:dev:on": "tsx scripts/runtime-mode.ts dev-on",
     "runtime:dev:off": "tsx scripts/runtime-mode.ts dev-off",
