@@ -515,7 +515,15 @@ async function testAutoStartFailureDoesNotLeakUnhandledRejection() {
   }
 }
 
+async function testCompatibilityImportPathExportsRuntimeTaskApi() {
+  assert.equal(typeof createLoopTask, 'function');
+  assert.equal(typeof createTaskRegistry, 'function');
+  assert.equal(typeof createDefaultRuntimeTasks, 'function');
+  assert.equal(typeof resolveDefaultRuntimeTaskOptions, 'function');
+}
+
 async function run() {
+  await testCompatibilityImportPathExportsRuntimeTaskApi();
   await testTaskRunNowAndStatusSnapshot();
   await testTaskSingleFlightQueuesOneExtraRun();
   await testRegistryControlsTasks();
