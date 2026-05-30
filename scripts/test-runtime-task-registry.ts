@@ -327,6 +327,163 @@ async function testDefaultRuntimeTaskOptionsFollowModeAndEnv() {
   );
 }
 
+async function testDefaultRuntimeTaskOptionsNormalizeEnvValues() {
+  assert.deepEqual(
+    resolveDefaultRuntimeTaskOptions({
+      mode: 'prod',
+      env: { PILIPILI_EMBED_TELEGRAM_TASKS: ' TRUE ' },
+    }),
+    {
+      embedTelegramTasks: true,
+    }
+  );
+  assert.deepEqual(
+    resolveDefaultRuntimeTaskOptions({
+      mode: 'live',
+      env: { PILIPILI_EMBED_TELEGRAM_TASKS: ' False ' },
+    }),
+    {
+      embedTelegramTasks: false,
+    }
+  );
+  assert.deepEqual(
+    resolveDefaultRuntimeTaskOptions({
+      mode: 'prod',
+      env: { PILIPILI_EMBED_TELEGRAM_TASKS: ' yes ' },
+    }),
+    {
+      embedTelegramTasks: false,
+    }
+  );
+}
+
+async function testDefaultTaskOrderIsStable() {
+  const tasksWithTelegram = createDefaultRuntimeTasks({
+    runTelegramChannelWorkerCycle: async () => ({
+      sleepMs: 60_000,
+      status: 'idle',
+      lastError: null,
+    }),
+    runCompletenessMaintenanceWorkerCycle: async () => ({
+      sleepMs: 60_000,
+      status: 'idle',
+      started: true,
+      busy: false,
+      claimedPokeCount: 0,
+      globalProvenStartMs: null,
+      sourceResults: [],
+    }),
+    runHoldingsRefreshCycle: async () => ({
+      sleepMs: 120_000,
+      status: 'idle',
+      lastError: null,
+      summary: {
+        trackedAddressCount: 1,
+        uniqueTrackedAddressCount: 1,
+        refreshedWalletCount: 1,
+        failedWalletCount: 0,
+        holdingsRowCount: 1,
+        filteredOutHoldingCount: 0,
+        refreshedAtMs: 123,
+      },
+    }),
+    runTelegramBridgeCycle: async () => ({
+      sleepMs: 15_000,
+      status: 'idle',
+      lastError: null,
+      detail: {
+        processedUpdateCount: 0,
+        lastUpdateId: 0,
+      },
+    }),
+  });
+
+  assert.deepEqual(
+    tasksWithTelegram.map((task) => task.key),
+    ['telegram-channel-sync', 'completeness-maintenance', 'holdings-refresh', 'telegram-bridge']
+  );
+
+  const tasksWithoutTelegram = createDefaultRuntimeTasks(
+    {
+      runTelegramChannelWorkerCycle: async () => ({
+        sleepMs: 60_000,
+        status: 'idle',
+        lastError: null,
+      }),
+      runCompletenessMaintenanceWorkerCycle: async () => ({
+        sleepMs: 60_000,
+        status: 'idle',
+        started: true,
+        busy: false,
+        claimedPokeCount: 0,
+        globalProvenStartMs: null,
+        sourceResults: [],
+      }),
+      runHoldingsRefreshCycle: async () => ({
+        sleepMs: 120_000,
+        status: 'idle',
+        lastError: null,
+        summary: {
+          trackedAddressCount: 1,
+          uniqueTrackedAddressCount: 1,
+          refreshedWalletCount: 1,
+          failedWalletCount: 0,
+          holdingsRowCount: 1,
+          filteredOutHoldingCount: 0,
+          refreshedAtMs: 123,
+        },
+      }),
+      runTelegramBridgeCycle: async () => ({
+        sleepMs: 15_000,
+        status: 'idle',
+        lastError: null,
+        detail: {
+          processedUpdateCount: 0,
+          lastUpdateId: 0,
+        },
+      }),
+    },
+    {
+      embedTelegramTasks: false,
+    }
+  );
+
+  assert.deepEqual(tasksWithoutTelegram.map((task) => task.key), ['completeness-maintenance', 'holdings-refresh']);
+}
+
+async function testRegistryUnknownTaskErrorIsStable() {
+  const registry = createTaskRegistry([]);
+  await assert.rejects(() => registry.runTaskNow('missing-task', 'manual-test'), /unknown task: missing-task/);
+  assert.equal(registry.getTask('missing-task'), null);
+}
+
+async function testRegistryStopsTasksInRegistrationOrder() {
+  const stops: string[] = [];
+  const registry = createTaskRegistry([
+    createLoopTask({
+      key: 'first',
+      label: 'First',
+      autoStart: false,
+      cycle: async () => ({ sleepMs: 60_000, status: 'idle' }),
+      onStop: (signal) => {
+        stops.push(`first:${signal || 'none'}`);
+      },
+    }),
+    createLoopTask({
+      key: 'second',
+      label: 'Second',
+      autoStart: false,
+      cycle: async () => ({ sleepMs: 60_000, status: 'idle' }),
+      onStop: (signal) => {
+        stops.push(`second:${signal || 'none'}`);
+      },
+    }),
+  ]);
+
+  await registry.stopAll('shutdown');
+  assert.deepEqual(stops, ['first:shutdown', 'second:shutdown']);
+}
+
 async function testAutoStartFailureDoesNotLeakUnhandledRejection() {
   const unhandled: unknown[] = [];
   const onUnhandledRejection = (error: unknown) => {
@@ -366,6 +523,10 @@ async function run() {
   await testDefaultTasksIncludeHoldingsRefresh();
   await testDefaultTasksCanExcludeEmbeddedTelegramLoops();
   await testDefaultRuntimeTaskOptionsFollowModeAndEnv();
+  await testDefaultRuntimeTaskOptionsNormalizeEnvValues();
+  await testDefaultTaskOrderIsStable();
+  await testRegistryUnknownTaskErrorIsStable();
+  await testRegistryStopsTasksInRegistrationOrder();
   await testAutoStartFailureDoesNotLeakUnhandledRejection();
   console.log('runtime task registry tests: ok');
 }
