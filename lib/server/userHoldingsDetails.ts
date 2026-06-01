@@ -23,6 +23,7 @@ interface ReadUserHoldingsDetailsResult {
 }
 
 interface HoldingsRow {
+  tracked_address_lower: string;
   chain: string;
   token_address: string;
   token_address_lower: string;
@@ -53,20 +54,18 @@ export async function readUserHoldingsDetails(
 
   const db = getDb();
 
-  // Build WHERE clause for user's addresses
-  const addressConditions = user.addresses.map(
-    (addr) => `(tracked_address_lower = '${addr.address.toLowerCase()}' AND chain = '${addr.chain}')`,
-  );
+  const addressConditions = user.addresses.map(() => '(tracked_address_lower = ? AND chain = ?)');
   const whereClause = addressConditions.join(' OR ');
+  const params = user.addresses.flatMap((addr) => [addr.address.toLowerCase(), addr.chain]);
 
   const rows = db
     .prepare(
-      `SELECT chain, token_address, token_address_lower, symbol, name,
+      `SELECT tracked_address_lower, chain, token_address, token_address_lower, symbol, name,
               balance, price_usd, value_usd, refreshed_at
        FROM current_holdings
        WHERE ${whereClause}`,
     )
-    .all() as HoldingsRow[];
+    .all(...params) as HoldingsRow[];
 
   if (rows.length === 0) {
     // Table may not have been populated yet — fall back to empty
@@ -97,11 +96,10 @@ export async function readUserHoldingsDetails(
   const successfulAddresses = new Set<string>();
 
   for (const row of rows) {
-    const tokenAddrNorm =
-      row.chain === 'solana' ? row.token_address : row.token_address_lower;
+    const tokenAddrNorm = (row.chain === 'solana' ? row.token_address : row.token_address_lower).trim();
     const mergeKey = `${row.chain}:${tokenAddrNorm}`;
 
-    successfulAddresses.add(`${row.chain}:${row.token_address_lower}`);
+    successfulAddresses.add(`${row.chain}:${row.tracked_address_lower}`);
 
     const existing = merged.get(mergeKey);
     if (!existing) {
@@ -134,16 +132,21 @@ export async function readUserHoldingsDetails(
         a.tokenAddress.localeCompare(b.tokenAddress),
     );
 
-  const refreshedAt = (rows[0]?.refreshed_at as number) ?? null;
+  const refreshedAt = rows.reduce<number | null>((latest, row) => {
+    if (typeof row.refreshed_at !== 'number') return latest;
+    return latest === null ? row.refreshed_at : Math.max(latest, row.refreshed_at);
+  }, null);
+  const successfulAddressCount = successfulAddresses.size;
+  const failedAddressCount = Math.max(0, user.addresses.length - successfulAddressCount);
 
   return {
     holdings,
     holdingsUpdatedAt: refreshedAt,
     summary: {
       visibleCount: holdings.length,
-      partial: false,
-      successfulAddressCount: user.addresses.length,
-      failedAddressCount: 0,
+      partial: failedAddressCount > 0,
+      successfulAddressCount,
+      failedAddressCount,
     },
   };
 }
