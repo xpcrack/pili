@@ -7,6 +7,7 @@ import {
   resolveDefaultRuntimeTaskOptions,
   type TaskDefinition,
 } from '@/server/runtime-tasks';
+import { readRuntimeContextSnapshot } from '@/server/runtime-context';
 
 function requireCallback(value: (() => void) | null) {
   assert.ok(value, 'expected callback to be assigned');
@@ -484,6 +485,18 @@ async function testRegistryStopsTasksInRegistrationOrder() {
   assert.deepEqual(stops, ['first:shutdown', 'second:shutdown']);
 }
 
+async function testRuntimeSnapshotIncludesProcessMemory() {
+  const snapshot = readRuntimeContextSnapshot();
+  assert.equal(snapshot.process.pid, process.pid);
+  assert.equal(typeof snapshot.process.uptimeMs, 'number');
+  assert.ok(snapshot.process.uptimeMs >= 0, 'runtime uptime should be non-negative');
+  assert.equal(typeof snapshot.process.memory.rssBytes, 'number');
+  assert.equal(typeof snapshot.process.memory.heapUsedBytes, 'number');
+  assert.equal(typeof snapshot.process.memory.heapTotalBytes, 'number');
+  assert.equal(typeof snapshot.process.memory.externalBytes, 'number');
+  assert.ok(snapshot.process.memory.rssBytes > 0, 'runtime rss should be reported');
+}
+
 async function testAutoStartFailureDoesNotLeakUnhandledRejection() {
   const unhandled: unknown[] = [];
   const onUnhandledRejection = (error: unknown) => {
@@ -535,6 +548,7 @@ async function run() {
   await testDefaultTaskOrderIsStable();
   await testRegistryUnknownTaskErrorIsStable();
   await testRegistryStopsTasksInRegistrationOrder();
+  await testRuntimeSnapshotIncludesProcessMemory();
   await testAutoStartFailureDoesNotLeakUnhandledRejection();
   console.log('runtime task registry tests: ok');
 }

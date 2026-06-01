@@ -219,9 +219,11 @@ export function parseXxyyTelegramText(
   const buyNewMatch = text.match(/\bNew\s+buy\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const buyMoreMatch = text.match(/\bBuy\s+(?:more|part)\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const buyAllMatch = text.match(/\bBuy\s+All\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
+  const buyGenericMatch = text.match(/\bBuy\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const sellNewMatch = text.match(/\bNew\s+sell\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const sellMoreMatch = text.match(/\bSell\s+(?:more|part)\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const sellAllMatch = text.match(/\bSell\s+All\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
+  const sellGenericMatch = text.match(/\bSell\s+([0-9][0-9.,]*)\s*([A-Za-z]+)/i);
   const sendToMatch = text.match(/\b(?:Send\s+to|Transfer\s+to)\b(?:\s+([0-9][0-9.,]*)\s*([A-Za-z]+))?/i);
 
   const marketCapUsd = mcapMatch ? parseCompactUsd(mcapMatch[1]) : null;
@@ -268,6 +270,18 @@ export function parseXxyyTelegramText(
   } else if (sellNewMatch) {
     quoteAmount = Number.parseFloat(sellNewMatch[1].replace(/,/g, ''));
     quoteSymbol = sellNewMatch[2]?.toUpperCase() || null;
+    action = 'sell';
+    actionLabel = '减仓';
+    actionVariant = 'reduce';
+  } else if (buyGenericMatch) {
+    quoteAmount = Number.parseFloat(buyGenericMatch[1].replace(/,/g, ''));
+    quoteSymbol = buyGenericMatch[2]?.toUpperCase() || null;
+    action = 'buy';
+    actionLabel = '加仓';
+    actionVariant = 'add';
+  } else if (sellGenericMatch) {
+    quoteAmount = Number.parseFloat(sellGenericMatch[1].replace(/,/g, ''));
+    quoteSymbol = sellGenericMatch[2]?.toUpperCase() || null;
     action = 'sell';
     actionLabel = '减仓';
     actionVariant = 'reduce';

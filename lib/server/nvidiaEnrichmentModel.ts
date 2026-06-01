@@ -8,7 +8,11 @@ import type {
 } from '@/lib/server/twitterEnrichmentModel';
 
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
-const NVIDIA_MODEL = 'qwen/qwen2.5-7b-instruct';
+export const DEFAULT_NVIDIA_ENRICHMENT_MODEL = 'meta/llama-3.1-8b-instruct';
+
+export function resolveNvidiaEnrichmentModel() {
+  return (process.env.NVIDIA_MODEL || '').trim() || DEFAULT_NVIDIA_ENRICHMENT_MODEL;
+}
 
 /**
  * Heuristic: is the text likely English (or Latin-script dominant)?
@@ -109,9 +113,11 @@ const VALID_SENTIMENTS = new Set(['positive', 'negative', 'neutral']);
 
 export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
   private apiKey: string;
+  private model: string;
 
-  constructor({ apiKey }: { apiKey: string }) {
+  constructor({ apiKey, model }: { apiKey: string; model?: string }) {
     this.apiKey = apiKey;
+    this.model = (model || '').trim() || resolveNvidiaEnrichmentModel();
   }
 
   async enrichTweet(input: {
@@ -148,7 +154,7 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: NVIDIA_MODEL,
+          model: this.model,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.3,
           max_tokens: 1024,

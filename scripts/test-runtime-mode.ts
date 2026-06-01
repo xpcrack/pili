@@ -32,7 +32,17 @@ function run() {
     'ecosystem config should retire the old completeness worker pm2 app'
   );
 
-  assert.match(ecosystemConfig, /npm run start/, 'ecosystem config should run npm run start');
+  assert.doesNotMatch(ecosystemConfig, /npm run start/, 'production pm2 app should not wrap Bun in npm');
+  assert.match(
+    ecosystemConfig,
+    /\.bun\/bin\/bun[\s\S]*server\/runtime\.ts[\s\S]*prod/,
+    'production pm2 app should let pm2 manage the Bun runtime process directly'
+  );
+  assert.match(
+    ecosystemConfig,
+    /max_memory_restart:\s*['"]1200M['"]/,
+    'production pm2 app should keep the Bun memory restart guardrail'
+  );
   assert.match(ecosystemConfig, /npm run dev/, 'ecosystem config should run npm run dev');
   assert.match(ecosystemConfig, /PORT:\s*['\"]3013['\"]/, 'ecosystem config should pin production port 3013');
   assert.match(ecosystemConfig, /PORT:\s*['\"]3005['\"]/, 'ecosystem config should pin dev port 3005');
@@ -78,8 +88,8 @@ function run() {
   );
   assert.match(
     runtimeMode,
-    /if \(command === 'refresh'\) \{[\s\S]*(reloadPm2Process|restartPm2Process|startOrRestart|startOrReload)\([\s\S]*'pili-web-prod'[\s\S]*\}/,
-    'refresh flow should only target pili-web-prod process'
+    /if \(command === 'refresh'\) \{[\s\S]*deleteIfPresent\('pili-web-prod'\);[\s\S]*startPm2Process\('pili-web-prod'\);[\s\S]*\}/,
+    'refresh flow should recreate pili-web-prod from the ecosystem config so script changes take effect'
   );
   assert.doesNotMatch(
     runtimeMode,

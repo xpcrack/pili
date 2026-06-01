@@ -159,8 +159,6 @@ export function ActivityCard({
   const twitterContent = isTwitter ? cleanTwitterDisplayText(activity.content) : activity.content;
   const twitterPrimaryText =
     isTwitter ? collapseActivityCardText(activity.metadata.translationZh || twitterContent) : primaryText;
-  const twitterSecondaryText =
-    isTwitter && activity.metadata.translationZh ? collapseActivityCardText(twitterContent) : secondaryText;
   const twitterQuotedContent = isTwitter ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '') : '';
   const twitterQuotedAuthorHandle = isTwitter ? (activity.metadata.quotedTweetAuthorHandle || '').trim() : '';
   const telegramPrimaryText = isTelegram ? getTelegramCardPrimaryText(activity.content) : null;
@@ -168,9 +166,6 @@ export function ActivityCard({
   const telegramDisplayPrimary = isTelegram
     ? (telegramTranslationZh || telegramPrimaryText || '')
     : '';
-  const telegramDisplaySecondary = isTelegram && telegramTranslationZh && telegramPrimaryText
-    ? telegramPrimaryText
-    : null;
   const tweetSentimentChips = isTwitter
     ? (activity.metadata.tokenSentiments || []).filter((item, index, items) => {
         const key = `${item.tokenAddress || ''}|${item.tokenSymbol || ''}`.toLowerCase();
@@ -643,11 +638,6 @@ export function ActivityCard({
                         {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
                       </p>
                     ) : null}
-                    {twitterSecondaryText ? (
-                      <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
-                        Original: {twitterSecondaryText}
-                      </p>
-                    ) : null}
                     {twitterQuotedContent ? (
                       <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
                         <p className="text-[11px] text-zinc-500">
@@ -684,11 +674,6 @@ export function ActivityCard({
                     <p className="whitespace-pre-wrap break-words text-zinc-100">
                       {highlightSocialContent(telegramDisplayPrimary, activity.metadata.tokenSentiments)}
                     </p>
-                    {telegramDisplaySecondary ? (
-                      <p className="whitespace-pre-wrap break-words text-xs text-zinc-500">
-                        Original: {telegramDisplaySecondary}
-                      </p>
-                    ) : null}
                     {telegramSentimentChips.length > 0 ? (
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         {telegramSentimentChips.map((chip, index) => (

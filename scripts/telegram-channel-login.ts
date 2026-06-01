@@ -10,6 +10,26 @@ import { loadEnvFile } from './telegram-bridge-core';
 
 loadEnvFile(path.join(process.cwd(), '.env.local'));
 
+function readTelegramSocksProxy() {
+  const raw = (process.env.TELEGRAM_MTPROTO_PROXY || process.env.TELEGRAM_PROXY || '').trim();
+  if (!raw) return undefined;
+  const fallbackUrl = raw.includes('://') ? raw : `socks5://${raw}`;
+  const url = new URL(fallbackUrl);
+  const port = Number.parseInt(url.port || '', 10);
+  if (!/^socks[45]:$/.test(url.protocol) || !url.hostname || !Number.isSafeInteger(port) || port <= 0) {
+    throw new Error('Invalid TELEGRAM_MTPROTO_PROXY/TELEGRAM_PROXY. Use socks5://127.0.0.1:7897');
+  }
+  const socksType: 4 | 5 = url.protocol === 'socks4:' ? 4 : 5;
+  return {
+    ip: url.hostname,
+    port,
+    socksType,
+    username: url.username ? decodeURIComponent(url.username) : undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    timeout: 10,
+  };
+}
+
 async function run() {
   const apiId = Number.parseInt(process.env.TELEGRAM_API_ID || '', 10);
   const apiHash = (process.env.TELEGRAM_API_HASH || '').trim();

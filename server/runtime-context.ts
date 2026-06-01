@@ -48,6 +48,7 @@ export function getRuntimeContext() {
 
 export function readRuntimeContextSnapshot() {
   const context = runtimeContext;
+  const memory = process.memoryUsage();
   return {
     ok: true,
     runtime: 'bun-hono-vite',
@@ -55,6 +56,16 @@ export function readRuntimeContextSnapshot() {
     mode: context?.mode ?? null,
     port: context?.port ?? null,
     tasks: context?.tasks.listStatuses() ?? [],
+    process: {
+      pid: process.pid,
+      uptimeMs: Math.round(process.uptime() * 1000),
+      memory: {
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        heapTotalBytes: memory.heapTotal,
+        externalBytes: memory.external,
+      },
+    },
     bun: typeof (globalThis as typeof globalThis & { Bun?: { version: string } }).Bun !== 'undefined'
       ? (globalThis as typeof globalThis & { Bun?: { version: string } }).Bun?.version ?? null
       : null,

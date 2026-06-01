@@ -39,6 +39,14 @@ function stopIfPresent(processName: string) {
   runPm2(['stop', processName]);
 }
 
+function deleteIfPresent(processName: string) {
+  if (!hasPm2Process(processName)) {
+    return;
+  }
+
+  runPm2(['delete', processName]);
+}
+
 function startPm2Process(processName: string) {
   runPm2(['start', ecosystemPath, '--only', processName]);
 }
@@ -91,8 +99,9 @@ function run(command: RuntimeModeCommand) {
 
   if (command === 'refresh') {
     stopIfPresent('pili');
+    deleteIfPresent('pili-web-prod');
     runNpm(['run', 'build']);
-    startOrReload('pili-web-prod');
+    startPm2Process('pili-web-prod');
     return;
   }
 
