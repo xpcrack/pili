@@ -12,6 +12,7 @@ import {
   type ConflictFieldDiff,
 } from '@/lib/server/sourceReconciliation';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
+import { triggerBidFeedPush } from '@/lib/server/bidFeedPushNotifier';
 import { repairCollapsedCanonicalActivitySync } from '@/lib/server/telegramMonitorActivity';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
@@ -800,6 +801,10 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
       }
     }
   });
+
+  if (ingestSource === 'telegram-monitor-ingest' || ingestSource === 'telegram-monitor-reconcile') {
+    triggerBidFeedPush(rowsForUpsert);
+  }
 }
 
 export function readEventsFeed(query: EventFeedQuery) {

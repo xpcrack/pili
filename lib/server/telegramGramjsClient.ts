@@ -39,6 +39,37 @@ function normalizeIdLike(value: unknown): string | null {
   return normalizeString(value) || null;
 }
 
+function readTelegramSocksProxy() {
+  const raw = (process.env.TELEGRAM_MTPROTO_PROXY || process.env.TELEGRAM_PROXY || '').trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const fallbackUrl = raw.includes('://') ? raw : `socks5://${raw}`;
+  try {
+    const url = new URL(fallbackUrl);
+    if (!/^socks[45]:$/.test(url.protocol)) {
+      throw new Error(`Unsupported Telegram proxy protocol: ${url.protocol}`);
+    }
+    const port = Number.parseInt(url.port || '', 10);
+    if (!url.hostname || !Number.isSafeInteger(port) || port <= 0) {
+      throw new Error('Invalid Telegram proxy host or port');
+    }
+    const socksType: 4 | 5 = url.protocol === 'socks4:' ? 4 : 5;
+    return {
+      ip: url.hostname,
+      port,
+      socksType,
+      username: url.username ? decodeURIComponent(url.username) : undefined,
+      password: url.password ? decodeURIComponent(url.password) : undefined,
+      timeout: 10,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid TELEGRAM_MTPROTO_PROXY/TELEGRAM_PROXY: ${message}`);
+  }
+}
+
 function readTelegramDateSeconds(value: unknown) {
   if (value instanceof Date) {
     return Math.floor(value.getTime() / 1000);
@@ -481,6 +512,7 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
   const client = new TelegramClient(new StringSession(config.sessionString), config.apiId, config.apiHash, {
     connectionRetries: 5,
     floodSleepThreshold: policy.floodSleepThresholdSec,
+    proxy: readTelegramSocksProxy(),
   });
   await client.connect();
 
