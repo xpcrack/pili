@@ -26,6 +26,15 @@ function buildAvatarVersionSeed(handle: string, twitter?: string, avatar?: strin
   return normalizedAvatar || normalizedTwitter || handle.trim();
 }
 
+function isTwitterHostedAvatar(value: string) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === 'pbs.twimg.com' || hostname.endsWith('.twimg.com');
+  } catch {
+    return false;
+  }
+}
+
 export function buildUserAvatar(handle: string, twitter?: string, avatar?: string) {
   const normalizedTwitter = normalizeTwitterHandle(twitter);
 
@@ -43,16 +52,24 @@ export function buildUserAvatar(handle: string, twitter?: string, avatar?: strin
 }
 
 export function getUserAvatar(user: Pick<User, 'handle' | 'twitter' | 'avatar' | 'twitterAvatarUrl'>) {
-  if (typeof user.avatar === 'string' && user.avatar.trim()) {
-    return user.avatar.trim();
+  const avatar = typeof user.avatar === 'string' ? user.avatar.trim() : '';
+  const twitterAvatarUrl =
+    'twitterAvatarUrl' in user && typeof user.twitterAvatarUrl === 'string' ? user.twitterAvatarUrl.trim() : '';
+
+  if (user.twitter && (isTwitterHostedAvatar(avatar) || isTwitterHostedAvatar(twitterAvatarUrl))) {
+    return buildUserAvatar(user.handle, user.twitter, avatar || twitterAvatarUrl);
   }
 
-  if ('twitterAvatarUrl' in user && typeof user.twitterAvatarUrl === 'string' && user.twitterAvatarUrl.trim()) {
-    return user.twitterAvatarUrl.trim();
+  if (avatar) {
+    return avatar;
+  }
+
+  if (twitterAvatarUrl) {
+    return twitterAvatarUrl;
   }
 
   if (user.twitter) {
-    return buildUserAvatar(user.handle, user.twitter, user.avatar);
+    return buildUserAvatar(user.handle, user.twitter, avatar);
   }
 
   return buildFallbackAvatar(user.handle);
