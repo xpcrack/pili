@@ -944,6 +944,55 @@ export function readEventStats() {
   };
 }
 
+export function readLatestBuyAtByToken(tokens: Array<{ chain: string; contractAddress: string }>) {
+  const requested = tokens
+    .map((token) => ({
+      chain: normalize(token.chain),
+      contractAddress: normalize(token.contractAddress),
+    }))
+    .filter((token) => token.chain && token.contractAddress);
+
+  if (requested.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const db = getDb();
+  const valuesSql = requested.map(() => '(?, ?)').join(', ');
+  const params = requested.flatMap((token) => [token.chain, token.contractAddress]);
+  const rows = db
+    .prepare(
+      `WITH requested_tokens(chain, token_address_lower) AS (
+         VALUES ${valuesSql}
+       )
+       SELECT
+         e.chain AS chain,
+         LOWER(COALESCE(json_extract(e.activity_json, '$.metadata.tokenAddress'), '')) AS token_address_lower,
+         MAX(e.timestamp) AS latest_ts
+       FROM events e
+       JOIN requested_tokens rt
+         ON rt.chain = e.chain
+        AND rt.token_address_lower = LOWER(COALESCE(json_extract(e.activity_json, '$.metadata.tokenAddress'), ''))
+       WHERE e.source = 'blockchain'
+         AND e.action = 'buy'
+         AND e.user_id IS NOT NULL
+         AND e.user_id != ''
+       GROUP BY e.chain, token_address_lower`
+    )
+    .all(...params) as Array<{ chain: string; token_address_lower: string; latest_ts: number | null }>;
+
+  const latestByToken = new Map<string, number>();
+  for (const row of rows) {
+    const chain = normalize(row.chain);
+    const tokenAddress = normalize(row.token_address_lower);
+    const ts = typeof row.latest_ts === 'number' && Number.isFinite(row.latest_ts) ? row.latest_ts : 0;
+    if (chain && tokenAddress && ts > 0) {
+      latestByToken.set(`${chain}:${tokenAddress}`, ts);
+    }
+  }
+
+  return latestByToken;
+}
+
 export function readLatestActivityAtByUser() {
   const db = getDb();
   const rows = db
