@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { TopNav } from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { formatRelativeTimeCompact } from '@/lib/timeFormat';
 import { RefreshCw, Trash2, Plus, Download, Upload } from 'lucide-react';
 
 interface Token {
@@ -16,6 +17,7 @@ interface Token {
   market_cap: number | null;
   price_change_24h: number | null;
   ticker: string | null;
+  last_buy_at: number | null;
 }
 
 const CHAIN_LABELS: Record<string, { label: string; color: string }> = {
@@ -287,6 +289,7 @@ export default function TokensPage() {
                 <th className="px-3 py-3 text-left">Tags</th>
                 <th className="px-3 py-3 text-right">价格</th>
                 <th className="px-3 py-3 text-right">24h</th>
+                <th className="px-3 py-3 text-right">上次买入</th>
                 <th className="px-3 py-3 text-right">市值</th>
                 <th className="px-3 py-3 text-center">操作</th>
               </tr>
@@ -326,6 +329,11 @@ export default function TokensPage() {
                     }`}>
                       {formatChange(token.price_change_24h)}
                     </td>
+                    <td className="px-3 py-3 text-right font-mono text-zinc-300">
+                      {typeof token.last_buy_at === 'number' && token.last_buy_at > 0
+                        ? formatRelativeTimeCompact(token.last_buy_at)
+                        : '-'}
+                    </td>
                     <td className="px-3 py-3 text-right font-mono text-zinc-400">
                       {formatMarketCap(token.market_cap)}
                     </td>
@@ -343,7 +351,7 @@ export default function TokensPage() {
 
               {tokens.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-8 text-center text-zinc-500">
+                  <td colSpan={9} className="px-3 py-8 text-center text-zinc-500">
                     {loading ? '加载中...' : '暂无代币，点击上方添加'}
                   </td>
                 </tr>
