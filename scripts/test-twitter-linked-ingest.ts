@@ -47,7 +47,7 @@ async function run() {
       `INSERT INTO tracked_users (
         id, name, handle, avatar, twitter, telegram, tags_json, total_asset_usd, historical_max_asset_usd, asset_updated_at, created_at, updated_at
       ) VALUES (?, ?, ?, '', ?, null, '[]', 0, 0, null, ?, ?)`
-    ).run('user-1', 'finn', 'finn', 'monitorhandle', now, now);
+    ).run('user-1', 'user_d', 'user_d', 'monitorhandle', now, now);
     db.prepare(
       `INSERT INTO tracked_addresses (
         id, user_id, address, address_lower, name, chain, total_asset_usd, asset_updated_at, last_synced_at, created_at, updated_at
@@ -57,12 +57,12 @@ async function run() {
       'user-1',
       '0x1111111111111111111111111111111111111111',
       '0x1111111111111111111111111111111111111111',
-      '#2',
+      '#1',
       now,
       now
     );
 
-process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
+    process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
     saveSystemConfig({
       telegramTradeMonitorSourceChatId: '-100123456',
     });

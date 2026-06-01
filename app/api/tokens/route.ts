@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listTokens, addToken, deleteTokens, bulkImportTokens, type TokenChain } from '@/lib/server/tokensRepo';
 import { getBatchTokenPrices } from '@/lib/server/priceService';
+import { readLatestBuyAtByToken } from '@/lib/server/eventsRepo';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +19,12 @@ export async function GET(req: NextRequest) {
     const prices = await getBatchTokenPrices(
       tokens.map(t => ({ chain: t.chain, contractAddress: t.contract_address }))
     );
+    const latestBuyByToken = readLatestBuyAtByToken(
+      tokens.map((token) => ({ chain: token.chain, contractAddress: token.contract_address }))
+    );
 
     const tokensWithPrice = tokens.map(t => {
-      const key = `${t.chain}:${t.contract_address}`;
+      const key = `${t.chain.toLowerCase()}:${t.contract_address.trim().toLowerCase()}`;
       const priceData = prices.get(key);
 
       return {
@@ -29,6 +33,7 @@ export async function GET(req: NextRequest) {
         market_cap: priceData?.marketCap ?? null,
         price_change_24h: priceData?.priceChange24h ?? null,
         ticker: priceData?.ticker ?? null,
+        last_buy_at: latestBuyByToken.get(key) ?? null,
       };
     });
 
