@@ -216,6 +216,45 @@ function run() {
     useUsersDataStore.setState({ users: originalStoreUsers });
   }
 
+  try {
+    const repairedServerUser = makeUser({
+      id: 'asset-cache-user',
+      name: '蓝月',
+      handle: 'lanyue',
+      totalAssetUsd: 97_920.58,
+      historicalMaxAssetUsd: 97_920.58,
+      addresses: [
+        {
+          address: 'Aqa8H5hmHe9MFY9sW6widbqEuaYv7q2KnRo25ApPhWhA',
+          name: '#1',
+          chain: 'solana',
+          totalAssetUsd: 3_912_547.24,
+          assetUpdatedAt: 1,
+        },
+      ],
+    });
+
+    useUsersDataStore.setState({ users: [repairedServerUser] });
+    useUsersDataStore.getState().upsertUserAssetSnapshot('asset-cache-user', {
+      totalAssetUsd: 97_920.58,
+      updatedAt: 2,
+      addresses: [
+        {
+          address: repairedServerUser.addresses[0]!.address,
+          totalAssetUsd: 3_912_547.24,
+          updatedAt: 2,
+        },
+      ],
+    } as any);
+
+    const updatedAssetUser = useUsersDataStore.getState().getUserById('asset-cache-user');
+    assert.ok(updatedAssetUser, '资产快照回灌后人物记录仍应存在');
+    assert.equal(updatedAssetUser.totalAssetUsd, 97_920.58, '服务端用户级总资产应优先于过期地址资产总和');
+    assert.equal(updatedAssetUser.historicalMaxAssetUsd, 97_920.58, '过期地址资产快照不应重新抬高历史最高资产');
+  } finally {
+    useUsersDataStore.setState({ users: originalStoreUsers });
+  }
+
   assert.equal(TOP_NAV_ACTIVE_VALUES.includes('addresses'), true, 'TopNav 必须支持 addresses active 态');
   assert.equal(
     TOP_NAV_ITEMS.some((item) => item.href === '/addresses' && item.label === '地址'),

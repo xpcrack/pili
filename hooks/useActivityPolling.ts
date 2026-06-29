@@ -485,6 +485,7 @@ export function useActivityPolling(
       }
       result.userAssets.forEach((userAsset) => {
         upsertUserAssetSnapshot(userAsset.userId, {
+          totalAssetUsd: userAsset.totalAssetUsd,
           updatedAt: userAsset.updatedAt,
           addresses: result.addressAssets
             .filter((addressAsset) => addressAsset.userId === userAsset.userId)
