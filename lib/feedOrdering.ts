@@ -7,9 +7,9 @@ export interface FeedItem {
   activity: Activity;
 }
 
-const SHORT_TRADE_MERGE_WINDOW_MS = 60_000;
+const SHORT_TRADE_MERGE_WINDOW_MS = 5 * 60_000;
 
-type MergeActionKey = 'open' | 'add' | 'reduce' | 'close' | 'send' | 'receive';
+type MergeDirectionKey = 'buy' | 'sell' | 'send' | 'receive';
 type MergeAmountSource = 'quoteAmount' | 'value';
 
 interface TradeMergeDescriptor {
@@ -63,27 +63,22 @@ function resolveCounterpartyIdentifier(activity: Activity) {
   return toAddress || fromAddress || '';
 }
 
-function resolveTradeActionKey(activity: Activity): MergeActionKey | null {
+function resolveTradeDirectionKey(activity: Activity): MergeDirectionKey | null {
   const displayLabel = normalize(activity.metadata.displayActionVariantLabel);
-  if (displayLabel === '建仓') return 'open';
-  if (displayLabel === '加仓') return 'add';
-  if (displayLabel === '减仓') return 'reduce';
-  if (displayLabel === '清仓') return 'close';
+  if (displayLabel === '建仓' || displayLabel === '加仓') return 'buy';
+  if (displayLabel === '减仓' || displayLabel === '清仓') return 'sell';
 
   const variant = normalize(activity.metadata.txActionVariant);
-  if (variant === 'open' || variant === 'add' || variant === 'reduce' || variant === 'close') {
-    return variant;
-  }
+  if (variant === 'open' || variant === 'add') return 'buy';
+  if (variant === 'reduce' || variant === 'close') return 'sell';
 
   const label = normalize(activity.metadata.txActionLabel);
-  if (label === '建仓') return 'open';
-  if (label === '加仓') return 'add';
-  if (label === '减仓') return 'reduce';
-  if (label === '清仓') return 'close';
+  if (label === '建仓' || label === '加仓') return 'buy';
+  if (label === '减仓' || label === '清仓') return 'sell';
 
   const action = normalize(activity.metadata.txAction);
-  if (action === 'buy') return 'open';
-  if (action === 'sell') return 'reduce';
+  if (action === 'buy') return 'buy';
+  if (action === 'sell') return 'sell';
   if (action === 'send') return 'send';
   if (action === 'receive') return 'receive';
 
@@ -96,8 +91,8 @@ function buildTradeMergeDescriptor(item: FeedItem): TradeMergeDescriptor | null 
     return null;
   }
 
-  const actionKey = resolveTradeActionKey(activity);
-  if (!actionKey) {
+  const directionKey = resolveTradeDirectionKey(activity);
+  if (!directionKey) {
     return null;
   }
 
@@ -113,7 +108,7 @@ function buildTradeMergeDescriptor(item: FeedItem): TradeMergeDescriptor | null 
   const amountSymbol = quoteToken || tokenSymbol;
   const amountSource: MergeAmountSource = quoteToken ? 'quoteAmount' : 'value';
   const counterpartyIdentifier =
-    actionKey === 'send' || actionKey === 'receive'
+    directionKey === 'send' || directionKey === 'receive'
       ? resolveCounterpartyIdentifier(activity)
       : '';
 
@@ -122,7 +117,7 @@ function buildTradeMergeDescriptor(item: FeedItem): TradeMergeDescriptor | null 
     !chain ||
     !tokenIdentifier ||
     !amountSymbol ||
-    ((actionKey === 'send' || actionKey === 'receive') && !counterpartyIdentifier)
+    ((directionKey === 'send' || directionKey === 'receive') && !counterpartyIdentifier)
   ) {
     return null;
   }
@@ -133,7 +128,7 @@ function buildTradeMergeDescriptor(item: FeedItem): TradeMergeDescriptor | null 
       trackedAddress,
       chain,
       tokenIdentifier,
-      actionKey,
+      directionKey,
       amountSource,
       amountSymbol,
       counterpartyIdentifier || '-',

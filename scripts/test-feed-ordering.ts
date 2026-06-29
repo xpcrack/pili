@@ -192,24 +192,42 @@ function run() {
       quoteAmount: '0.5',
       marketCapAtTxUsd: 110_000_000,
     }),
-    makeTradeItem(alice, 'merge-2', base - 30_000, {
+    makeTradeItem(alice, 'merge-2', base - 150_000, {
       quoteAmount: '1',
       marketCapAtTxUsd: 120_000_000,
     }),
-    makeTradeItem(alice, 'merge-3', base - 55_000, {
+    makeTradeItem(alice, 'merge-3', base - 290_000, {
       quoteAmount: '1.5',
       marketCapAtTxUsd: 130_000_000,
+      txActionLabel: '清仓',
+      txActionVariant: 'close',
     }),
   ]);
 
-  assert.equal(mergedTrades.length, 1, 'same user trades within one minute should merge');
+  assert.equal(mergedTrades.length, 1, 'same user same-direction trades within five minutes should merge');
   assert.equal(mergedTrades[0]?.activity.metadata.mergedTradeCount, 3);
-  assert.equal(mergedTrades[0]?.activity.metadata.mergedTradeWindowMs, 60_000);
+  assert.equal(mergedTrades[0]?.activity.metadata.mergedTradeWindowMs, 300_000);
   assert.equal(mergedTrades[0]?.activity.metadata.displayTradeAmountText, '3 ETH');
   assert.ok(
     Math.abs((mergedTrades[0]?.activity.metadata.mergedTradeAverageMarketCapUsd || 0) - 123_333_333.33333333) < 0.001,
     'merged market cap should be weighted by merged trade amount'
   );
+
+  const mergedBuyDirectionTrades = prepareUserFeed([
+    makeTradeItem(alice, 'open-a', base - 5_000, {
+      txAction: 'buy',
+      txActionLabel: '建仓',
+      txActionVariant: 'open',
+    }),
+    makeTradeItem(alice, 'add-b', base - 120_000, {
+      txAction: 'buy',
+      txActionLabel: '加仓',
+      txActionVariant: 'add',
+    }),
+  ]);
+
+  assert.equal(mergedBuyDirectionTrades.length, 1, 'open and add are same buy direction');
+  assert.equal(mergedBuyDirectionTrades[0]?.activity.metadata.mergedTradeCount, 2);
 
   const splitBySignature = prepareUserFeed([
     makeTradeItem(alice, 'reduce-a', base - 5_000),
@@ -232,7 +250,7 @@ function run() {
     makeTradeItem(alice, 'other-chain', base - 55_000, {
       chain: 'ethereum',
     }),
-    makeTradeItem(alice, 'too-old', base - 80_000),
+    makeTradeItem(alice, 'too-old', base - 360_000),
   ]);
 
   assert.equal(splitBySignature.length, 7, 'different direction, asset, unit, wallet, chain, or window must not merge');
@@ -255,11 +273,11 @@ function run() {
 
   const mergedTransfers = prepareUserFeed([
     makeTransferItem(bob, 'send-1', base - 5_000),
-    makeTransferItem(bob, 'send-2', base - 25_000),
-    makeTransferItem(bob, 'send-3', base - 55_000),
+    makeTransferItem(bob, 'send-2', base - 120_000),
+    makeTransferItem(bob, 'send-3', base - 290_000),
   ]);
 
-  assert.equal(mergedTransfers.length, 1, 'same transfer target within one minute should merge');
+  assert.equal(mergedTransfers.length, 1, 'same transfer target within five minutes should merge');
   assert.equal(mergedTransfers[0]?.activity.metadata.mergedTradeCount, 3);
   assert.equal(mergedTransfers[0]?.activity.metadata.displayTradeAmountText, '3000 USDC');
   assert.equal(mergedTransfers[0]?.activity.metadata.toAddress, 'Counterparty111');
@@ -285,7 +303,7 @@ function run() {
       tokenAddress: 'USDTMint111',
       displayTradeAmountText: '1000 USDT',
     }),
-    makeTransferItem(bob, 'send-too-old', base - 90_000),
+    makeTransferItem(bob, 'send-too-old', base - 360_000),
   ]);
 
   assert.equal(
