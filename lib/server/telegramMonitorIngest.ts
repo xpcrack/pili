@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
-import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { upsertEventsFromFeedRows, deleteTelegramMonitorEventsByTxHash } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
@@ -17,6 +17,7 @@ import {
 import {
   setTelegramMonitorTxStateCanonicalActivity,
   upsertTelegramMonitorTxStateProvisional,
+  getTelegramMonitorTxState,
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
 import {
@@ -258,6 +259,10 @@ async function notifyUnknownTrackedUser(params: {
   await sendTelegramTextMessage({ chatId, text });
 }
 
+function shouldAutoTriggerTelegramMonitorReconciliation() {
+  return (process.env.PILI_DISABLE_TELEGRAM_MONITOR_AUTO_RECONCILE || '').trim() !== '1';
+}
+
 export async function ingestTelegramMonitorUpdate(
   body: TelegramUpdateLike,
   channelType?: 'news' | 'social',
@@ -365,12 +370,32 @@ export async function ingestTelegramMonitorUpdate(
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
+  // Detect routing path: same tx hash, different token address
+  if (parsed.txHash && parsed.trackedWalletAddress && parsed.tokenAddress) {
+    const existingTxState = getTelegramMonitorTxState({
+      chain: parsed.chain,
+      trackedWalletAddress: parsed.trackedWalletAddress,
+      txHash: parsed.txHash,
+      tokenAddress: parsed.tokenAddress,
+    });
+    if (existingTxState?.tokenAddress &&
+        (existingTxState.tokenAddress || '').toLowerCase() !== (parsed.tokenAddress || '').toLowerCase()) {
+      deleteTelegramMonitorEventsByTxHash({
+        userId: trackedMatch.user.id,
+        chain: parsed.chain,
+        txHash: parsed.txHash,
+        oldTokenAddress: existingTxState.tokenAddress,
+      });
+    }
+  }
+
   const provisionalSummary =
     parsed.txHash && parsed.trackedWalletAddress
       ? summarizeTelegramMonitorTxProvisional({
           chain: parsed.chain,
           trackedWalletAddress: parsed.trackedWalletAddress,
           txHash: parsed.txHash,
+          tokenAddress: parsed.tokenAddress,
         })
       : null;
 
@@ -440,6 +465,7 @@ export async function ingestTelegramMonitorUpdate(
       chain: txState.chain,
       trackedWalletAddress: txState.trackedWalletAddress,
       txHash: txState.txHash,
+      tokenAddress: txState.tokenAddress,
       activity: scoredProjected.activity,
     });
   }
@@ -469,7 +495,7 @@ export async function ingestTelegramMonitorUpdate(
     }
   }
 
-  if (txState) {
+  if (txState && shouldAutoTriggerTelegramMonitorReconciliation()) {
     void triggerTelegramMonitorReconciliation({
       chain: txState.chain,
       trackedWalletAddress: txState.trackedWalletAddress,

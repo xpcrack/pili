@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { groupTransactionsByHash } from '@/lib/parsing/core';
+import { groupTransactionsByHash, collectTokenFlows, summarizeFlows, pickDominantFlow } from '@/lib/parsing/core';
 import { convertToActivity } from '@/lib/parsing/toActivity';
 import {
   fetchOkxTransactionDetailByTxHash,
@@ -9,7 +9,7 @@ import {
   type OkxTransactionDetailTokenTransfer,
 } from '@/lib/okx';
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
-import { repairCollapsedCanonicalActivity } from '@/lib/server/telegramMonitorActivity';
+import { buildActivityFromSnapshotSync, repairCollapsedCanonicalActivity, type MonitorActivitySnapshot } from '@/lib/server/telegramMonitorActivity';
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
@@ -21,6 +21,7 @@ import {
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { Activity, AddressInfo, User } from '@/types';
+import type { TokenFlow } from '@/lib/parsing/types';
 
 const TX_RECONCILE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PARALLEL_REPAIRS = 2;
@@ -62,6 +63,148 @@ function findTrackedUser(state: {
     user,
     addressInfo,
   };
+}
+
+function isStableFlow(flow: TokenFlow) {
+  const symbol = (flow.symbol || '').trim().toLowerCase();
+  return symbol === 'usdt' || symbol === 'usdc' || symbol === 'dai';
+}
+
+function findCounterFlow(
+  primaryAction: 'buy' | 'sell' | 'send' | 'receive',
+  transactions: OkxTransaction[],
+  userAddressLower: string,
+  chain: string
+): { flow: TokenFlow; transactions: OkxTransaction[] } | null {
+  const flows = collectTokenFlows(transactions, chain, userAddressLower);
+  const summary = summarizeFlows(flows);
+
+  const tradeFlows = (primaryAction === 'sell' || primaryAction === 'send'
+    ? summary.incomingNonNative
+    : summary.outgoingNonNative
+  ).filter((flow) => !isStableFlow(flow));
+
+  if (tradeFlows.length === 0) {
+    return null;
+  }
+
+  const dominant = pickDominantFlow(tradeFlows);
+  if (!dominant) {
+    return null;
+  }
+
+  const counterTxHashes = new Set<string>();
+  for (const tx of transactions) {
+    const hash = (tx.txHash || '').trim().toLowerCase();
+    if (hash) counterTxHashes.add(hash);
+  }
+
+  const counterTransactions = transactions.filter((tx) => {
+    const txTokenAddr = (tx.tokenContractAddress || tx.tokenAddress || '').trim().toLowerCase();
+    const txSymbol = (tx.symbol || '').trim().toLowerCase();
+    const flowTokenAddr = (dominant.tokenAddress || '').trim().toLowerCase();
+    const flowSymbol = (dominant.symbol || '').trim().toLowerCase();
+    return (
+      (txTokenAddr === flowTokenAddr) ||
+      (!txTokenAddr && txSymbol === flowSymbol)
+    );
+  });
+
+  return {
+    flow: dominant,
+    transactions: counterTransactions.length > 0 ? counterTransactions : transactions,
+  };
+}
+
+async function persistCounterFlowEvent(
+  primaryAction: 'buy' | 'sell',
+  transactions: OkxTransaction[],
+  params: {
+    user: User;
+    addressInfo: AddressInfo;
+    state: {
+      chain: string;
+      trackedWalletAddress: string;
+      txHash: string;
+      provisionalRawText: string | null;
+      provisionalWalletLabel: string | null;
+      provisionalWalletGroupLabel: string | null;
+      provisionalWalletAliasLabel: string | null;
+      eventTimeMs: number;
+    };
+  }
+): Promise<boolean> {
+  const userAddressLower = normalize(params.addressInfo.address);
+  const counterFlow = findCounterFlow(primaryAction, transactions, userAddressLower, params.state.chain);
+  if (!counterFlow) {
+    return false;
+  }
+
+  const tokenAddress = (counterFlow.flow.tokenAddress || '').trim();
+  const primaryTransactions = transactions.filter((tx) => {
+    const txTokenAddr = (tx.tokenContractAddress || tx.tokenAddress || '').trim().toLowerCase();
+    const txSymbol = (tx.symbol || '').trim().toLowerCase();
+    const flowTokenAddr = tokenAddress.toLowerCase();
+    const flowSymbol = (counterFlow.flow.symbol || '').trim().toLowerCase();
+    return (
+      (txTokenAddr === flowTokenAddr) ||
+      (!txTokenAddr && txSymbol === flowSymbol)
+    );
+  });
+
+  const canonicalCounter = primaryTransactions.length > 0
+    ? await buildCanonicalActivityFromTransactions({
+        user: params.user,
+        addressInfo: params.addressInfo,
+        transactions: primaryTransactions,
+      })
+    : null;
+
+  if (!canonicalCounter) {
+    return false;
+  }
+
+  const snapshot: MonitorActivitySnapshot = {
+    user: params.user,
+    chain: params.state.chain,
+    tokenAddress,
+    tokenSymbol: counterFlow.flow.symbol || null,
+    txHash: params.state.txHash,
+    marketCapUsd: null,
+    quoteAmount: null,
+    quoteSymbol: null,
+    tokenAmount: counterFlow.flow.amount,
+    explicitPriceUsd: null,
+    rawText: params.state.provisionalRawText,
+    action: primaryAction === 'sell' ? 'buy' : 'sell',
+    actionLabel: primaryAction === 'sell' ? '建仓' : '减仓',
+    actionVariant: primaryAction === 'sell' ? 'open' : 'reduce',
+    walletLabel: params.state.provisionalWalletLabel,
+    walletGroupLabel: params.state.provisionalWalletGroupLabel,
+    walletAliasLabel: params.state.provisionalWalletAliasLabel,
+    eventTimeMs: params.state.eventTimeMs,
+    trackedAddress: params.state.trackedWalletAddress,
+    monitorReconciliationStatus: 'reconciled',
+    monitorReconciledSource: 'okx-address',
+  };
+
+  const counterActivity = buildActivityFromSnapshotSync(snapshot, { tradeAmountUsdAtTx: null });
+
+  const aggregateKey = buildTelegramMonitorTxAggregateKey(
+    params.state.chain,
+    params.state.trackedWalletAddress,
+    params.state.txHash,
+    tokenAddress
+  );
+
+  const counterWithId: Activity = {
+    ...counterActivity,
+    id: aggregateKey || counterActivity.id,
+  };
+
+  const [scored] = scoreFeedRowsAgainstDatabase([{ user: params.user, activity: counterWithId }]);
+  upsertEventsFromFeedRows([scored || { user: params.user, activity: counterWithId }], 'telegram-monitor-reconcile');
+  return true;
 }
 
 function createSyntheticTransactionsFromDetail(params: {
@@ -204,6 +347,7 @@ async function persistReconciledMonitorActivity(params: {
     chain: params.state.chain,
     trackedWalletAddress: params.state.trackedWalletAddress,
     txHash: params.state.txHash,
+    tokenAddress: params.state.tokenAddress,
     activity: canonicalForWrite.activity,
     source: params.source,
   });
@@ -231,7 +375,8 @@ function decorateCanonicalMonitorActivity(params: {
   const aggregateKey = buildTelegramMonitorTxAggregateKey(
     params.activity.metadata.chain,
     params.trackedWalletAddress,
-    params.txHash
+    params.txHash,
+    params.activity.metadata.tokenAddress
   );
   const displayMetadata = buildTradeDisplayMetadata({
     walletLabel: params.walletAliasLabel || params.walletLabel,
@@ -316,6 +461,7 @@ export async function reconcileTelegramMonitorTxState(params: {
       chain: state.chain,
       trackedWalletAddress: state.trackedWalletAddress,
       txHash: state.txHash,
+      tokenAddress: state.tokenAddress,
       error: 'tracked-user-not-found',
     });
     return {
@@ -343,12 +489,32 @@ export async function reconcileTelegramMonitorTxState(params: {
         });
 
         if (canonicalFromDetail) {
-          return await persistReconciledMonitorActivity({
+          const primaryAction = canonicalFromDetail.metadata.txAction;
+          const primaryResult = await persistReconciledMonitorActivity({
             state,
             user: trackedUser.user,
             activity: canonicalFromDetail,
             source: 'okx-detail',
           });
+
+          if (primaryAction === 'buy' || primaryAction === 'sell') {
+            void persistCounterFlowEvent(primaryAction, syntheticTransactions, {
+              user: trackedUser.user,
+              addressInfo: trackedUser.addressInfo,
+              state: {
+                chain: state.chain,
+                trackedWalletAddress: state.trackedWalletAddress,
+                txHash: state.txHash,
+                provisionalRawText: state.provisionalRawText,
+                provisionalWalletLabel: state.provisionalWalletLabel,
+                provisionalWalletGroupLabel: state.provisionalWalletGroupLabel,
+                provisionalWalletAliasLabel: state.provisionalWalletAliasLabel,
+                eventTimeMs: state.eventTimeMs,
+              },
+            });
+          }
+
+          return primaryResult;
         }
       }
     }
@@ -372,12 +538,32 @@ export async function reconcileTelegramMonitorTxState(params: {
         });
 
         if (canonicalFromAddress) {
-          return await persistReconciledMonitorActivity({
+          const primaryAction = canonicalFromAddress.metadata.txAction;
+          const primaryResult = await persistReconciledMonitorActivity({
             state,
             user: trackedUser.user,
             activity: canonicalFromAddress,
             source: 'okx-address',
           });
+
+          if (primaryAction === 'buy' || primaryAction === 'sell') {
+            void persistCounterFlowEvent(primaryAction, matchingTransactions, {
+              user: trackedUser.user,
+              addressInfo: trackedUser.addressInfo,
+              state: {
+                chain: state.chain,
+                trackedWalletAddress: state.trackedWalletAddress,
+                txHash: state.txHash,
+                provisionalRawText: state.provisionalRawText,
+                provisionalWalletLabel: state.provisionalWalletLabel,
+                provisionalWalletGroupLabel: state.provisionalWalletGroupLabel,
+                provisionalWalletAliasLabel: state.provisionalWalletAliasLabel,
+                eventTimeMs: state.eventTimeMs,
+              },
+            });
+          }
+
+          return primaryResult;
         }
       }
     }
@@ -389,6 +575,7 @@ export async function reconcileTelegramMonitorTxState(params: {
       chain: state.chain,
       trackedWalletAddress: state.trackedWalletAddress,
       txHash: state.txHash,
+      tokenAddress: state.tokenAddress,
       error: errorText,
     });
     return {
@@ -402,6 +589,7 @@ export async function reconcileTelegramMonitorTxState(params: {
       chain: state.chain,
       trackedWalletAddress: state.trackedWalletAddress,
       txHash: state.txHash,
+      tokenAddress: state.tokenAddress,
       error: errorText,
     });
     return {

@@ -11,6 +11,28 @@ function normalize(value: string | null | undefined) {
 export function buildTelegramMonitorTxStateLookupKey(
   chain: string | null | undefined,
   trackedWalletAddress: string | null | undefined,
+  txHash: string | null | undefined,
+  tokenAddress?: string | null | undefined
+) {
+  const normalizedChain = normalize(chain);
+  const normalizedTrackedWalletAddress = normalize(trackedWalletAddress);
+  const normalizedTxHash = normalize(txHash);
+  const normalizedToken = normalize(tokenAddress);
+  if (!normalizedChain || !normalizedTrackedWalletAddress || !normalizedTxHash) {
+    return null;
+  }
+
+  return [
+    normalizedChain,
+    normalizedTrackedWalletAddress,
+    normalizedTxHash,
+    normalizedToken || 'unknown-token',
+  ].join('|');
+}
+
+export function buildLegacyTelegramMonitorTxStateLookupKey(
+  chain: string | null | undefined,
+  trackedWalletAddress: string | null | undefined,
   txHash: string | null | undefined
 ) {
   const normalizedChain = normalize(chain);
@@ -189,7 +211,8 @@ function mapRow(row: TelegramMonitorTxStateRow | undefined | null) {
   const aggregateKey = buildTelegramMonitorTxAggregateKey(
     row.chain,
     row.tracked_wallet_address,
-    row.tx_hash
+    row.tx_hash,
+    row.token_address
   );
   if (!aggregateKey) {
     return null;
@@ -257,8 +280,9 @@ function mapRow(row: TelegramMonitorTxStateRow | undefined | null) {
   } satisfies TelegramMonitorTxState;
 }
 
-function selectByKey(chain: string, trackedWalletAddress: string, txHash: string) {
+function selectByKey(chain: string, trackedWalletAddress: string, txHash: string, tokenAddress?: string | null) {
   const db = getDb();
+  const normalizedTokenAddress = normalize(tokenAddress);
   return db
     .prepare(
       `SELECT
@@ -267,45 +291,76 @@ function selectByKey(chain: string, trackedWalletAddress: string, txHash: string
        WHERE chain = ?
          AND tracked_wallet_address_lower = ?
          AND tx_hash_lower = ?
+         AND (? = '' OR token_address_lower = ?)
        LIMIT 1`
     )
-    .get(normalize(chain), normalize(trackedWalletAddress), normalize(txHash)) as TelegramMonitorTxStateRow | undefined;
+    .get(
+      normalize(chain),
+      normalize(trackedWalletAddress),
+      normalize(txHash),
+      normalizedTokenAddress,
+      normalizedTokenAddress
+    ) as TelegramMonitorTxStateRow | undefined;
 }
 
 export function getTelegramMonitorTxState(params: {
   chain: string;
   trackedWalletAddress: string;
   txHash: string;
+  tokenAddress?: string | null;
 }) {
-  return mapRow(selectByKey(params.chain, params.trackedWalletAddress, params.txHash));
+  return mapRow(selectByKey(params.chain, params.trackedWalletAddress, params.txHash, params.tokenAddress));
 }
 
 export function listTelegramMonitorTxStatesByKeys(
-  keys: Array<{ chain: string; trackedWalletAddress: string; txHash: string }>
+  keys: Array<{ chain: string; trackedWalletAddress: string; txHash: string; tokenAddress?: string | null }>
 ) {
   const normalizedKeys = Array.from(
     new Map(
       keys
         .map((key) => {
-          const lookupKey = buildTelegramMonitorTxStateLookupKey(key.chain, key.trackedWalletAddress, key.txHash);
+          const legacyLookupKey = buildLegacyTelegramMonitorTxStateLookupKey(
+            key.chain,
+            key.trackedWalletAddress,
+            key.txHash
+          );
+          if (!legacyLookupKey) {
+            return null;
+          }
+
+          const requestedTokenLower = normalize(key.tokenAddress);
+          const lookupKey = requestedTokenLower
+            ? buildTelegramMonitorTxStateLookupKey(key.chain, key.trackedWalletAddress, key.txHash, key.tokenAddress)
+            : legacyLookupKey;
           if (!lookupKey) {
             return null;
           }
 
-          const [chain, trackedWalletAddressLower, txHashLower] = lookupKey.split('|');
+          const [chain, trackedWalletAddressLower, txHashLower] = legacyLookupKey.split('|');
           return [
             lookupKey,
             {
+              lookupKey,
               chain,
               trackedWalletAddressLower,
               txHashLower,
+              requestedTokenLower,
             },
           ] as const;
         })
         .filter(
           (
             entry
-          ): entry is readonly [string, { chain: string; trackedWalletAddressLower: string; txHashLower: string }] =>
+          ): entry is readonly [
+            string,
+            {
+              chain: string;
+              lookupKey: string;
+              trackedWalletAddressLower: string;
+              txHashLower: string;
+              requestedTokenLower: string;
+            },
+          ] =>
             Boolean(entry)
         )
     ).values()
@@ -333,14 +388,35 @@ export function listTelegramMonitorTxStatesByKeys(
     .all(...normalizedKeys.flatMap((key) => [key.chain, key.trackedWalletAddressLower, key.txHashLower])) as
     TelegramMonitorTxStateRow[];
 
-  const statesByKey = new Map<string, TelegramMonitorTxState>();
+  const rowsByLegacyKey = new Map<string, TelegramMonitorTxStateRow>();
   for (const row of rows) {
-    const state = mapRow(row);
-    const lookupKey = buildTelegramMonitorTxStateLookupKey(row.chain, row.tracked_wallet_address, row.tx_hash);
-    if (!state || !lookupKey) {
+    const legacyLookupKey = buildLegacyTelegramMonitorTxStateLookupKey(row.chain, row.tracked_wallet_address, row.tx_hash);
+    if (legacyLookupKey) {
+      rowsByLegacyKey.set(legacyLookupKey, row);
+    }
+  }
+
+  const statesByKey = new Map<string, TelegramMonitorTxState>();
+  for (const key of normalizedKeys) {
+      const row = rows.find((candidate) => {
+        if (candidate.chain !== key.chain) return false;
+        if (normalize(candidate.tracked_wallet_address) !== key.trackedWalletAddressLower) return false;
+        if (normalize(candidate.tx_hash) !== key.txHashLower) return false;
+        if (key.requestedTokenLower) {
+          return normalize(candidate.token_address) === key.requestedTokenLower;
+        }
+        return true;
+      });
+    if (!row) {
       continue;
     }
-    statesByKey.set(lookupKey, state);
+    if (key.requestedTokenLower && normalize(row.token_address) !== key.requestedTokenLower) {
+      continue;
+    }
+    const state = mapRow(row);
+    if (state) {
+      statesByKey.set(key.lookupKey, state);
+    }
   }
 
   return statesByKey;
@@ -361,7 +437,7 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
     return null;
   }
 
-  const existing = selectByKey(chain, trackedWalletAddress, txHash);
+  const existing = selectByKey(chain, trackedWalletAddress, txHash, tokenAddress);
   const messageLinksJson = JSON.stringify(normalizeMessageLinks(input.provisionalMessageLinks));
 
   if (existing) {
@@ -394,7 +470,8 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
            updated_at = ?
        WHERE chain = ?
          AND tracked_wallet_address_lower = ?
-         AND tx_hash_lower = ?`
+         AND tx_hash_lower = ?
+         AND (? = '' OR token_address_lower = ?)`
     ).run(
       input.userId.trim(),
       tokenAddress,
@@ -428,7 +505,9 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
       now,
       chain,
       trackedWalletAddressLower,
-      txHashLower
+      txHashLower,
+      tokenAddressLower,
+      tokenAddressLower
     );
   } else {
     db.prepare(
@@ -510,6 +589,7 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
     chain,
     trackedWalletAddress,
     txHash,
+    tokenAddress,
   });
 }
 
@@ -517,6 +597,7 @@ export function markTelegramMonitorTxStateReconciled(input: {
   chain: string;
   trackedWalletAddress: string;
   txHash: string;
+  tokenAddress?: string | null;
   activity: Activity;
   source: 'okx-address' | 'okx-detail' | 'xxyy';
 }) {
@@ -534,7 +615,8 @@ export function markTelegramMonitorTxStateReconciled(input: {
          updated_at = ?
      WHERE chain = ?
        AND tracked_wallet_address_lower = ?
-       AND tx_hash_lower = ?`
+       AND tx_hash_lower = ?
+       AND (? = '' OR token_address_lower = ?)`
   ).run(
     JSON.stringify(input.activity),
     input.source,
@@ -542,7 +624,9 @@ export function markTelegramMonitorTxStateReconciled(input: {
     now,
     normalize(input.chain),
     normalize(input.trackedWalletAddress),
-    normalize(input.txHash)
+    normalize(input.txHash),
+    normalize(input.tokenAddress),
+    normalize(input.tokenAddress)
   );
 
   return getTelegramMonitorTxState(input);
@@ -552,6 +636,7 @@ export function setTelegramMonitorTxStateCanonicalActivity(input: {
   chain: string;
   trackedWalletAddress: string;
   txHash: string;
+  tokenAddress?: string | null;
   activity: Activity;
 }) {
   const db = getDb();
@@ -561,13 +646,16 @@ export function setTelegramMonitorTxStateCanonicalActivity(input: {
          updated_at = ?
      WHERE chain = ?
        AND tracked_wallet_address_lower = ?
-       AND tx_hash_lower = ?`
+       AND tx_hash_lower = ?
+       AND (? = '' OR token_address_lower = ?)`
   ).run(
     JSON.stringify(input.activity),
     Date.now(),
     normalize(input.chain),
     normalize(input.trackedWalletAddress),
-    normalize(input.txHash)
+    normalize(input.txHash),
+    normalize(input.tokenAddress),
+    normalize(input.tokenAddress)
   );
 }
 
@@ -575,6 +663,7 @@ export function markTelegramMonitorTxStateFailed(input: {
   chain: string;
   trackedWalletAddress: string;
   txHash: string;
+  tokenAddress?: string | null;
   error: string;
 }) {
   const db = getDb();
@@ -598,7 +687,8 @@ export function markTelegramMonitorTxStateFailed(input: {
          updated_at = ?
      WHERE chain = ?
        AND tracked_wallet_address_lower = ?
-       AND tx_hash_lower = ?`
+       AND tx_hash_lower = ?
+       AND (? = '' OR token_address_lower = ?)`
   ).run(
     nextRetryAt,
     retryCount,
@@ -606,7 +696,9 @@ export function markTelegramMonitorTxStateFailed(input: {
     now,
     normalize(input.chain),
     normalize(input.trackedWalletAddress),
-    normalize(input.txHash)
+    normalize(input.txHash),
+    normalize(input.tokenAddress),
+    normalize(input.tokenAddress)
   );
 
   return getTelegramMonitorTxState(input);
@@ -685,7 +777,7 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
 
     const candidates = db
       .prepare(
-        `SELECT chain, tracked_wallet_address, tx_hash
+        `SELECT chain, tracked_wallet_address, tx_hash, token_address
          FROM telegram_monitor_tx_states
          WHERE reconciliation_status != 'reconciled'
            AND COALESCE(next_retry_at, 0) <= ?
@@ -699,6 +791,7 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
       chain: string;
       tracked_wallet_address: string;
       tx_hash: string;
+      token_address: string | null;
     }>;
 
     if (candidates.length === 0) {
@@ -711,6 +804,7 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
        WHERE chain = ?
          AND tracked_wallet_address_lower = ?
          AND tx_hash_lower = ?
+         AND (? = '' OR token_address_lower = ?)
          AND reconciliation_status != 'reconciled'
          AND COALESCE(next_retry_at, 0) <= ?
          AND (repair_claimed_at IS NULL OR repair_claimed_at <= ?)`
@@ -723,6 +817,8 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
         normalize(candidate.chain),
         normalize(candidate.tracked_wallet_address),
         normalize(candidate.tx_hash),
+        normalize(candidate.token_address),
+        normalize(candidate.token_address),
         nowMs,
         claimCutoffMs
       );
@@ -734,6 +830,7 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
         chain: candidate.chain,
         trackedWalletAddress: candidate.tracked_wallet_address,
         txHash: candidate.tx_hash,
+        tokenAddress: candidate.token_address,
       });
       if (state) {
         claimed.push(state);
