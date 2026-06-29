@@ -6,6 +6,7 @@ import {
   computeCompletenessGlobalStatus,
   computeGlobalProvenEndMs,
   computeGlobalProvenStartMs,
+  isCompletenessEndStale,
 } from '@/lib/server/completenessStatus';
 
 function run() {
@@ -47,6 +48,10 @@ function run() {
     null
   );
 
+  assert.equal(isCompletenessEndStale({ provenEndMs: null, nowMs: 1713000000000, staleAfterMs: 60_000 }), true);
+  assert.equal(isCompletenessEndStale({ provenEndMs: 1712999950000, nowMs: 1713000000000, staleAfterMs: 60_000 }), false);
+  assert.equal(isCompletenessEndStale({ provenEndMs: 1712999000000, nowMs: 1713000000000, staleAfterMs: 60_000 }), true);
+
   assert.equal(
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
@@ -81,17 +86,34 @@ function run() {
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
       sources: [
-        { status: 'partial', provenStartMs: 1711900000000 },
-        { status: 'complete', provenStartMs: 1711500000000 },
+        { status: 'partial', provenStartMs: 1711900000000, provenEndMs: 1713000000000 },
+        { status: 'complete', provenStartMs: 1711500000000, provenEndMs: 1713000000000 },
       ],
+      nowMs: 1713000000000,
+      staleAfterMs: 60_000,
     }),
     'complete'
   );
 
   assert.equal(
     computeCompletenessGlobalStatus({
+      configuredStartMs: 1712000000000,
+      sources: [
+        { status: 'complete', provenStartMs: 1711500000000, provenEndMs: 1712990000000 },
+        { status: 'complete', provenStartMs: 1711500000000, provenEndMs: 1713000000000 },
+      ],
+      nowMs: 1713000000000,
+      staleAfterMs: 60_000,
+    }),
+    'partial'
+  );
+
+  assert.equal(
+    computeCompletenessGlobalStatus({
       configuredStartMs: null,
-      sources: [{ status: 'complete', provenStartMs: 1711500000000 }],
+      sources: [{ status: 'complete', provenStartMs: 1711500000000, provenEndMs: 1713000000000 }],
+      nowMs: 1713000000000,
+      staleAfterMs: 60_000,
     }),
     'partial'
   );
@@ -100,6 +122,8 @@ function run() {
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
       sources: [],
+      nowMs: 1713000000000,
+      staleAfterMs: 60_000,
     }),
     'partial'
   );

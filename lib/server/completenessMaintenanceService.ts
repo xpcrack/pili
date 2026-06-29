@@ -252,6 +252,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
         const status = computeCompletenessGlobalStatus({
           configuredStartMs,
           sources: currentSourceStates,
+          nowMs,
         });
 
         await appendMaintenanceLog(deps, {
@@ -343,6 +344,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
         const status = computeCompletenessGlobalStatus({
           configuredStartMs,
           sources: nextSourceStates,
+          nowMs,
         });
         const started = selectedSourceStates.length > 0;
 

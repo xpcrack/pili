@@ -40,6 +40,7 @@ import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
 import {
   acquireIngestionLease,
   heartbeatIngestionLease,
+  readIngestionLease,
   releaseIngestionLease,
 } from '@/lib/server/twitterRepo';
 
@@ -73,6 +74,66 @@ interface ActiveRunState {
 
 let activeRunState: ActiveRunState | null = null;
 let activeRunPromise: Promise<void> | null = null;
+
+export function getSyncStaleAfterMs() {
+  return DEFAULT_STALE_MS;
+}
+
+function isSyncLeaseActive(now = Date.now()) {
+  const lease = readIngestionLease(SYNC_LEASE_KEY);
+  return Boolean(lease && lease.expires_at_ms > now);
+}
+
+export function markOrphanedSyncRunsAsFailed(now = Date.now()) {
+  if (activeRunState || activeRunPromise || isSyncLeaseActive(now)) {
+    return 0;
+  }
+
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, started_at
+       FROM sync_runs
+       WHERE status = 'running'`
+    )
+    .all() as Array<{ id: number; started_at: number | null }>;
+
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  const stmt = db.prepare(
+    `UPDATE sync_runs
+     SET status = 'failed',
+         finished_at = ?,
+         duration_ms = ?,
+         total_addresses = COALESCE(total_addresses, 0),
+         successful_addresses = COALESCE(successful_addresses, 0),
+         failed_addresses = CASE
+           WHEN COALESCE(failed_addresses, 0) > 0 THEN failed_addresses
+           ELSE COALESCE(total_addresses, 0)
+         END,
+         error = ?,
+         updated_at = ?
+     WHERE id = ?
+       AND status = 'running'`
+  );
+
+  let repaired = 0;
+  for (const row of rows) {
+    const startedAt = typeof row.started_at === 'number' && Number.isFinite(row.started_at) ? row.started_at : now;
+    const result = stmt.run(
+      now,
+      Math.max(0, now - startedAt),
+      'stale_or_orphaned_sync_run',
+      now,
+      row.id
+    );
+    repaired += result.changes;
+  }
+
+  return repaired;
+}
 
 async function flushConflictNotificationsSafely(limit: number) {
   try {
@@ -488,6 +549,8 @@ async function runSync(
 }
 
 export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
+  markOrphanedSyncRunsAsFailed();
+
   if (activeRunState && activeRunPromise) {
     return {
       started: false,
@@ -617,6 +680,8 @@ function getLatestRun() {
 }
 
 export function getSyncStatus() {
+  markOrphanedSyncRunsAsFailed();
+
   const latestRun = getLatestRun();
   const lastSuccess = readLastSuccessfulSnapshotState();
   const lastFailure = readLastFailedSyncState();
@@ -632,9 +697,10 @@ export function getSyncStatus() {
     summary?: ActivityFeedSummary;
     diagnostics?: AddressDiagnostic[];
   }>(latestRun?.summary_json, {});
+  const running = Boolean(activeRunState && activeRunPromise) || isSyncLeaseActive();
 
   return {
-    running: Boolean(activeRunState),
+    running,
     activeRunId: activeRunState?.id ?? null,
     stale,
     lastSuccessAt,
