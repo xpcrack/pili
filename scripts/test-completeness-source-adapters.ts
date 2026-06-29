@@ -47,10 +47,22 @@ async function testMaintenanceServiceUsesSourceAdapterDispatchByDefault() {
   const calls: CompletenessSource[] = [];
   let globalState = makeGlobalState();
   const sourceStates = [
-    makeSourceState('blockchain', { status: 'complete', provenStartMs: CONFIGURED_START_MS - 1 }),
-    makeSourceState('twitter', { provenStartMs: CONFIGURED_START_MS + 10_000 }),
-    makeSourceState('telegram-bridge', { status: 'complete', provenStartMs: CONFIGURED_START_MS - 1 }),
-    makeSourceState('telegram-channel', { status: 'complete', provenStartMs: CONFIGURED_START_MS - 1 }),
+    makeSourceState('blockchain', {
+      status: 'complete',
+      provenStartMs: CONFIGURED_START_MS - 1,
+      provenEndMs: FIXED_NOW_MS,
+    }),
+    makeSourceState('twitter', { provenStartMs: CONFIGURED_START_MS + 10_000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('telegram-bridge', {
+      status: 'complete',
+      provenStartMs: CONFIGURED_START_MS - 1,
+      provenEndMs: FIXED_NOW_MS,
+    }),
+    makeSourceState('telegram-channel', {
+      status: 'complete',
+      provenStartMs: CONFIGURED_START_MS - 1,
+      provenEndMs: FIXED_NOW_MS,
+    }),
   ];
 
   const service = createCompletenessMaintenanceService({
@@ -143,6 +155,91 @@ async function testBlockchainAdapterOnlyCompletesWhenAlignedPastConfiguredStart(
   assert.equal(result.provenEndMs, FIXED_NOW_MS);
   assert.equal(result.madeProgress, true);
   assert.match(result.checkpointJson || '', /globalEarliestMs/);
+}
+
+async function testBlockchainAdapterTriggersRefreshWhenRecentCoverageIsStale() {
+  const triggerCalls: Array<{ reason: string; options: { mode: 'refresh' | 'backfill'; scope: 'global' | 'user'; userId?: string | null } }> = [];
+  const adapter = createBlockchainCompletenessAdapter({
+    triggerBackfillStep: async (input) => {
+      triggerCalls.push(input as typeof triggerCalls[number]);
+      return {
+        started: true,
+        running: true,
+      };
+    },
+    waitForBackfillStep: async () => {},
+    readWindowState: () => ({
+      globalEarliestMs: CONFIGURED_START_MS - 1,
+      perUserEarliestMs: {},
+      perUserHistoryComplete: {},
+      perUserLastBackfillAt: {},
+      perUserLocalQualifiedCount: {},
+      globalAlignment: 'aligned' as const,
+      updatedAt: FIXED_NOW_MS,
+    }),
+    readSyncCompletedAtMs: () => FIXED_NOW_MS - 2 * 60 * 60 * 1000,
+  });
+
+  const result = await adapter.runStep({
+    state: makeSourceState('blockchain'),
+    configuredStartMs: CONFIGURED_START_MS,
+    trigger: 'manual',
+    reason: 'refresh-needed',
+  });
+
+  assert.deepEqual(triggerCalls, [
+    {
+      reason: 'refresh-needed',
+      options: {
+        mode: 'refresh',
+        scope: 'global',
+      },
+    },
+  ]);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.provenStartMs, CONFIGURED_START_MS - 1);
+  assert.equal(result.provenEndMs, FIXED_NOW_MS - 2 * 60 * 60 * 1000);
+}
+
+async function testBlockchainAdapterBackfillsWhenHistoryCoverageIsIncomplete() {
+  const triggerCalls: Array<{ reason: string; options: { mode: 'refresh' | 'backfill'; scope: 'global' | 'user'; userId?: string | null } }> = [];
+  const adapter = createBlockchainCompletenessAdapter({
+    triggerBackfillStep: async (input) => {
+      triggerCalls.push(input as typeof triggerCalls[number]);
+      return {
+        started: true,
+        running: true,
+      };
+    },
+    waitForBackfillStep: async () => {},
+    readWindowState: () => ({
+      globalEarliestMs: CONFIGURED_START_MS + 1000,
+      perUserEarliestMs: {},
+      perUserHistoryComplete: {},
+      perUserLastBackfillAt: {},
+      perUserLocalQualifiedCount: {},
+      globalAlignment: 'partial' as const,
+      updatedAt: FIXED_NOW_MS,
+    }),
+    readSyncCompletedAtMs: () => FIXED_NOW_MS,
+  });
+
+  await adapter.runStep({
+    state: makeSourceState('blockchain'),
+    configuredStartMs: CONFIGURED_START_MS,
+    trigger: 'manual',
+    reason: 'history-needed',
+  });
+
+  assert.deepEqual(triggerCalls, [
+    {
+      reason: 'history-needed',
+      options: {
+        mode: 'backfill',
+        scope: 'global',
+      },
+    },
+  ]);
 }
 
 async function testTwitterAdapterUsesLaterLaneProofAndTreatsBudgetExhaustionAsPartial() {
@@ -310,6 +407,8 @@ async function testTelegramChannelAdapterAggregatesWorstCoveredEnabledChannel() 
 async function run() {
   await testMaintenanceServiceUsesSourceAdapterDispatchByDefault();
   await testBlockchainAdapterOnlyCompletesWhenAlignedPastConfiguredStart();
+  await testBlockchainAdapterTriggersRefreshWhenRecentCoverageIsStale();
+  await testBlockchainAdapterBackfillsWhenHistoryCoverageIsIncomplete();
   await testTwitterAdapterUsesLaterLaneProofAndTreatsBudgetExhaustionAsPartial();
   await testTelegramBridgeAdapterDoesNotTreatLatestNScanAsCompletenessProof();
   await testTelegramChannelAdapterAggregatesWorstCoveredEnabledChannel();

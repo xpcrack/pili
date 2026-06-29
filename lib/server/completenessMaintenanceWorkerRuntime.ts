@@ -25,6 +25,7 @@ import type {
 import type { CompletenessSource, CompletenessSourceState, CompletenessTrigger } from '@/lib/server/completenessTypes';
 import { appendSyncLog } from '@/lib/server/syncLogRepo';
 import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
+import { getSyncStaleAfterMs } from '@/lib/server/syncService';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { backfillTelegramBridgeHistory } from '@/lib/server/telegramBridgeMtprotoBackfill';
 import { backfillTelegramChannelSourceHistory } from '@/lib/server/telegramChannelSync';
@@ -35,12 +36,18 @@ import { listTrackedTwitterUsers, readTwitterCursor } from '@/lib/server/twitter
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
 import { acquireIngestionLease, releaseIngestionLease } from '@/lib/server/twitterRepo';
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
+import { refreshCurrentHoldings } from '@/lib/server/holdingsRefreshRuntime';
 
 const WORKER_KEY = 'completeness-maintenance';
 const WORKER_TYPE = 'completeness-maintenance';
 const WORKER_LEASE_TTL_MS = 90_000;
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const BUSY_RETRY_DELAY_MS = 30_000;
+const HOLDINGS_REFRESH_INTERVAL_MS = process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS
+  ? parseInt(process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS, 10)
+  : 60 * 60_000; // 默认 1 小时
+
+let lastHoldingsRefreshMs = 0;
 
 function normalizeOptionalString(value: string | null | undefined) {
   if (typeof value !== 'string') {
@@ -108,6 +115,7 @@ function buildSourceAdapters() {
       },
       readWindowState: () => getSyncStatus().windowState,
       readSyncCompletedAtMs: () => getSyncStatus().lastSuccessAt,
+      readSyncStaleAfterMs: () => getSyncStaleAfterMs(),
     }),
     twitter: createTwitterCompletenessAdapter({
       listTrackedUsers: () => listTrackedTwitterUsers(),
@@ -409,6 +417,20 @@ export async function runCompletenessMaintenanceWorkerLoop() {
     try {
       const cycle = await runCompletenessMaintenanceWorkerCycle();
       await sleep(cycle.sleepMs);
+
+      // 定期刷新持仓数据
+      const nowMs = Date.now();
+      if (nowMs - lastHoldingsRefreshMs >= HOLDINGS_REFRESH_INTERVAL_MS) {
+        lastHoldingsRefreshMs = nowMs;
+        console.log('[completeness-worker] triggering holdings refresh...');
+        try {
+          const result = await refreshCurrentHoldings();
+          console.log(`[completeness-worker] holdings refresh: ${result.summary.refreshedWalletCount} refreshed, ${result.summary.failedWalletCount} failed`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[completeness-worker] holdings refresh failed: ${message}`);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       upsertCompletenessWorkerStatus('error', message);

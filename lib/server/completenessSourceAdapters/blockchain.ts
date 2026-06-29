@@ -14,6 +14,8 @@ interface BlockchainCompletenessAdapterDeps {
   waitForBackfillStep: () => Promise<void>;
   readWindowState: () => FeedBackfillWindowState | null;
   readSyncCompletedAtMs: () => number | null;
+  readSyncStaleAfterMs?: () => number;
+  now?: () => number;
 }
 
 function buildWindowCheckpoint(windowState: FeedBackfillWindowState | null) {
@@ -32,11 +34,25 @@ export function createBlockchainCompletenessAdapter(
     async runStep(input) {
       const beforeWindowState = deps.readWindowState();
       const beforeCheckpoint = buildWindowCheckpoint(beforeWindowState);
+      const nowMs = deps.now ? deps.now() : Date.now();
+      const staleAfterMs = deps.readSyncStaleAfterMs ? deps.readSyncStaleAfterMs() : 30 * 60 * 1000;
+      const beforeSyncCompletedAtMs = deps.readSyncCompletedAtMs();
+      const historyCovered =
+        beforeWindowState?.globalAlignment === 'aligned' &&
+        typeof beforeWindowState.globalEarliestMs === 'number' &&
+        Number.isFinite(beforeWindowState.globalEarliestMs) &&
+        beforeWindowState.globalEarliestMs <= input.configuredStartMs;
+      const recentCoverageStale =
+        typeof beforeSyncCompletedAtMs !== 'number' ||
+        !Number.isFinite(beforeSyncCompletedAtMs) ||
+        nowMs - beforeSyncCompletedAtMs > staleAfterMs;
+
+      const mode: TriggerSyncOptions['mode'] = historyCovered && recentCoverageStale ? 'refresh' : 'backfill';
 
       const triggerResult = await deps.triggerBackfillStep({
         reason: input.reason || 'completeness-maintenance',
         options: {
-          mode: 'backfill',
+          mode,
           scope: 'global',
         },
       });
@@ -58,16 +74,19 @@ export function createBlockchainCompletenessAdapter(
       const aligned = afterWindowState?.globalAlignment === 'aligned';
       const provenStartMs =
         aligned && typeof afterEarliest === 'number' && Number.isFinite(afterEarliest) ? afterEarliest : null;
+      const provenEndMs = deps.readSyncCompletedAtMs();
+      const recentCoverageFresh =
+        typeof provenEndMs === 'number' && Number.isFinite(provenEndMs) && nowMs - provenEndMs <= staleAfterMs;
 
       return {
         status:
-          typeof provenStartMs === 'number' && provenStartMs <= input.configuredStartMs
+          typeof provenStartMs === 'number' && provenStartMs <= input.configuredStartMs && recentCoverageFresh
             ? 'complete'
             : triggerResult.running
               ? 'partial'
               : 'retrying',
         provenStartMs,
-        provenEndMs: deps.readSyncCompletedAtMs(),
+        provenEndMs,
         fetchedCount: 0,
         storedCount: 0,
         projectedCount: 0,
