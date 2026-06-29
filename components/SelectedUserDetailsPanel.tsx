@@ -54,7 +54,9 @@ export function SelectedUserDetailsPanel({
   const holdingsThresholdUsd = details?.holdingsThresholdUsd ?? USER_HOLDINGS_THRESHOLD_USD;
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
   const holdingsTotalUsd = details?.holdings.reduce((sum, h) => sum + h.valueUsd, 0) ?? 0;
-  const totalAssetUsd = holdingsTotalUsd > 0 ? holdingsTotalUsd : selectedUser.totalAssetUsd;
+  // Use API-returned user data (details.user) as source of truth, fallback to selectedUser from store
+  const totalAssetUsd = holdingsTotalUsd > 0 ? holdingsTotalUsd : (details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd);
+  const historicalMaxAssetUsd = Math.max(totalAssetUsd, details?.user.historicalMaxAssetUsd ?? selectedUser.historicalMaxAssetUsd);
 
   return (
     <div className="mb-6 space-y-4">
@@ -90,7 +92,7 @@ export function SelectedUserDetailsPanel({
         <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
           <div className="text-zinc-500">历史最高</div>
           <div className="text-sm font-medium text-zinc-100">
-            {formatUsdCompact(selectedUser.historicalMaxAssetUsd)}
+            {formatUsdCompact(historicalMaxAssetUsd)}
           </div>
         </div>
 

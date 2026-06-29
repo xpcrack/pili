@@ -141,6 +141,7 @@ interface UsersDataState {
   upsertUserAssetSnapshot: (
     userId: string,
     payload: {
+      totalAssetUsd?: number;
       addresses: Array<{ address: string; totalAssetUsd: number | null; updatedAt: number }>;
       updatedAt: number;
     }
@@ -497,12 +498,16 @@ export const useUsersDataStore = create<UsersDataState>()(
               };
             });
 
-            const successfulTotal = nextAddresses.reduce((sum, address) => {
+            const addressTotal = nextAddresses.reduce((sum, address) => {
               if (typeof address.totalAssetUsd !== 'number') {
                 return sum;
               }
               return sum + address.totalAssetUsd;
             }, 0);
+            const successfulTotal =
+              typeof payload.totalAssetUsd === 'number' && Number.isFinite(payload.totalAssetUsd) && payload.totalAssetUsd >= 0
+                ? payload.totalAssetUsd
+                : addressTotal;
 
             return {
               ...user,
