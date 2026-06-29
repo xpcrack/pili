@@ -385,7 +385,7 @@ CREATE TABLE IF NOT EXISTS telegram_monitor_tx_states (
   retry_count INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   updated_at INTEGER NOT NULL,
-  UNIQUE(chain, tracked_wallet_address_lower, tx_hash_lower),
+  UNIQUE(chain, tracked_wallet_address_lower, tx_hash_lower, token_address_lower),
   FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE CASCADE
 );
 
@@ -1065,6 +1065,7 @@ function initializeDb(db: SqlDatabase) {
   ensureTelegramChannelSourceColumns(db);
   ensureTelegramChannelPostSchema(db);
   ensureTelegramMonitorEventColumns(db);
+  ensureTelegramMonitorTxStatesTokenAwareSchema(db);
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
   ensureTwitterIdentityColumns(db);
@@ -1093,6 +1094,96 @@ function ensureColumn(
 
   const defaultSql = defaultClause ? ` DEFAULT ${defaultClause}` : '';
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}${defaultSql}`);
+}
+
+function ensureTelegramMonitorTxStatesTokenAwareSchema(db: SqlDatabase) {
+  const indexRows = db.prepare(`PRAGMA index_list(telegram_monitor_tx_states)`).all() as Array<{ name?: string; unique?: number }>;
+  const uniqueIndex = indexRows.find((row) => row.unique === 1);
+  if (uniqueIndex?.name) {
+    const columns = db.prepare(`PRAGMA index_info(${uniqueIndex.name})`).all() as Array<{ name?: string }>;
+    const columnNames = columns.map((row) => row.name || '');
+    if (columnNames.includes('token_address_lower')) {
+      return;
+    }
+  }
+
+  const migrate = db.transaction(() => {
+    db.exec('DROP INDEX IF EXISTS idx_telegram_monitor_tx_states_recent');
+    db.exec('DROP INDEX IF EXISTS idx_telegram_monitor_tx_states_repair');
+    db.exec('DROP INDEX IF EXISTS idx_telegram_monitor_tx_states_repair_claim');
+    db.exec('ALTER TABLE telegram_monitor_tx_states RENAME TO telegram_monitor_tx_states_legacy_v1');
+    db.exec(`
+CREATE TABLE telegram_monitor_tx_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  tracked_wallet_address TEXT NOT NULL,
+  tracked_wallet_address_lower TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  tx_hash_lower TEXT NOT NULL,
+  token_address TEXT,
+  token_address_lower TEXT,
+  token_symbol TEXT,
+  provisional_action TEXT,
+  provisional_action_label TEXT,
+  provisional_action_variant TEXT,
+  provisional_quote_amount REAL,
+  provisional_quote_symbol TEXT,
+  provisional_token_amount REAL,
+  provisional_token_symbol TEXT,
+  provisional_price_usd REAL,
+  provisional_market_cap_usd REAL,
+  provisional_raw_text TEXT NOT NULL DEFAULT '',
+  provisional_message_links_json TEXT NOT NULL DEFAULT '[]',
+  provisional_wallet_label TEXT,
+  provisional_wallet_group_label TEXT,
+  provisional_wallet_alias_label TEXT,
+  event_time_ms INTEGER,
+  canonical_activity_json TEXT,
+  reconciliation_status TEXT NOT NULL DEFAULT 'pending',
+  reconciled_source TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  reconciled_at INTEGER,
+  next_retry_at INTEGER,
+  repair_claimed_at INTEGER,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(chain, tracked_wallet_address_lower, tx_hash_lower, token_address_lower),
+  FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_telegram_monitor_tx_states_recent
+ON telegram_monitor_tx_states(event_time_ms DESC, updated_at DESC);
+CREATE INDEX idx_telegram_monitor_tx_states_repair
+ON telegram_monitor_tx_states(reconciliation_status, next_retry_at, updated_at DESC);
+CREATE INDEX idx_telegram_monitor_tx_states_repair_claim
+ON telegram_monitor_tx_states(reconciliation_status, repair_claimed_at, next_retry_at);
+    `);
+    db.exec(`
+INSERT INTO telegram_monitor_tx_states (
+  id, user_id, chain, tracked_wallet_address, tracked_wallet_address_lower, tx_hash, tx_hash_lower,
+  token_address, token_address_lower, token_symbol, provisional_action, provisional_action_label,
+  provisional_action_variant, provisional_quote_amount, provisional_quote_symbol, provisional_token_amount,
+  provisional_token_symbol, provisional_price_usd, provisional_market_cap_usd, provisional_raw_text,
+  provisional_message_links_json, provisional_wallet_label, provisional_wallet_group_label,
+  provisional_wallet_alias_label, event_time_ms, canonical_activity_json, reconciliation_status,
+  reconciled_source, first_seen_at, last_seen_at, reconciled_at, next_retry_at, repair_claimed_at,
+  retry_count, last_error, updated_at
+)
+SELECT id, user_id, chain, tracked_wallet_address, tracked_wallet_address_lower, tx_hash, tx_hash_lower,
+  token_address, token_address_lower, token_symbol, provisional_action, provisional_action_label,
+  provisional_action_variant, provisional_quote_amount, provisional_quote_symbol, provisional_token_amount,
+  provisional_token_symbol, provisional_price_usd, provisional_market_cap_usd, provisional_raw_text,
+  provisional_message_links_json, provisional_wallet_label, provisional_wallet_group_label,
+  provisional_wallet_alias_label, event_time_ms, canonical_activity_json, reconciliation_status,
+  reconciled_source, first_seen_at, last_seen_at, reconciled_at, next_retry_at, repair_claimed_at,
+  retry_count, last_error, updated_at
+FROM telegram_monitor_tx_states_legacy_v1;
+    `);
+    db.exec('DROP TABLE telegram_monitor_tx_states_legacy_v1');
+  });
+  migrate();
 }
 
 function ensureTelegramMonitorEventColumns(db: SqlDatabase) {

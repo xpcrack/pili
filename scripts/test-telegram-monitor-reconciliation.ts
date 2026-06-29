@@ -9,6 +9,9 @@ process.env.OKX_API_KEY ??= 'fixture-okx-key';
 process.env.OKX_SECRET_KEY ??= 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE ??= 'fixture-okx-passphrase';
 process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
+process.env.PILI_DISABLE_TELEGRAM_MONITOR_AUTO_RECONCILE = '1';
+delete process.env.INTERNAL_BID_HMAC_SECRET;
+delete process.env.BID_FEED_PUSH_URL;
 
 const TRACKED_SOL_ADDRESS = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 const TX_HASH = '2tLRE1WugGAJquDrSph5XMMySFBBDmnxRgEsKPgr1tRCjqiFmLoT345V3DfkQASSdc3BMUx2brt3xEauGLsQNJsQ';
@@ -21,12 +24,20 @@ const BSC_EVENT_TIME_MS = 1777865833000;
 const BSC_MULTI_FILL_TX_HASH = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const BSC_MULTI_FILL_TOKEN_ADDRESS = '0x0a43fc31a73013089df59194872ecae4cae14444';
 const BSC_MULTI_FILL_EVENT_TIME_MS = 1777878447000;
+const BSC_SAME_TX_DUAL_TOKEN_TX_HASH = '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+const BSC_SAME_TX_DUAL_TOKEN_BUY_ADDRESS = '0x495dfbd37e443255e075b8d2482bde6bce337777';
+const BSC_SAME_TX_DUAL_TOKEN_SELL_ADDRESS = '0x444045b0ee1ee319a660a5e3d604ca0ffa35acaa';
+const BSC_SAME_TX_DUAL_TOKEN_EVENT_TIME_MS = 1777879447000;
 const BSC_MISSING_QUOTE_TX_HASH = '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 const BSC_MISSING_QUOTE_TOKEN_ADDRESS = '0xe68bd56b99ab9a527375bd87bf03ee6344f68ca1';
 const BSC_MISSING_QUOTE_EVENT_TIME_MS = 1777933730000;
 const SPLIT_FILL_TX_HASH =
   '5VERv8NMhxG9vqMDKMt8kN6E9MPBbJqN6tG3Rz2ZjqTp3VQJuGVEJJmBwXkG7s84N2wEVCcpYPbJj8FPmYrPhJk';
 const SPLIT_FILL_TOKEN_ADDRESS = '2CKp88BFyPzr7gEuQKXMJ9cqa24AFXUNC41FR7udpump';
+
+function buildExpectedMonitorEventId(chain: string, trackedAddress: string, txHash: string, tokenAddress: string) {
+  return `xxyy-monitor:${chain.toLowerCase()}:${trackedAddress.toLowerCase()}:${txHash.toLowerCase()}:${tokenAddress.toLowerCase()}`;
+}
 
 function createJsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -178,6 +189,53 @@ function buildBscMultiFillTelegramUpdate(params: {
             {
               text: 'Bscscan',
               url: `https://bscscan.com/tx/${params.txHash || BSC_MULTI_FILL_TX_HASH}`,
+            },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function buildBscSameTxDualTokenTelegramUpdate(params: {
+  messageId: number;
+  action: 'buy' | 'sell';
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenAmount: string;
+  quoteAmount: string;
+  priceText: string;
+  marketCapText: string;
+  platform: string;
+}) {
+  const isBuy = params.action === 'buy';
+  return {
+    update_id: 940_000 + params.messageId,
+    message: {
+      message_id: params.messageId,
+      date: Math.floor(BSC_SAME_TX_DUAL_TOKEN_EVENT_TIME_MS / 1000),
+      chat: { id: -100123456 },
+      text: [
+        '[User_D#1]',
+        isBuy ? `🟢 New buy ${params.quoteAmount} BNB` : `🔴 Sell All ${params.quoteAmount} BNB`,
+        `Token: ${params.tokenAmount}  [${params.tokenSymbol}]`,
+        `Price: ${params.priceText}`,
+        `MCAP: ${params.marketCapText}`,
+        `Platform: ${params.platform}`,
+        `CA: ${params.tokenAddress}`,
+      ].join('\n'),
+      entities: [
+        {
+          type: 'text_link',
+          url: `https://www.xxyy.io/bsc/${params.tokenAddress}?wallet=${TRACKED_BSC_ADDRESS}&ref=`,
+        },
+      ],
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: 'Bscscan',
+              url: `https://bscscan.com/tx/${BSC_SAME_TX_DUAL_TOKEN_TX_HASH}`,
             },
           ],
         ],
@@ -657,6 +715,53 @@ async function run() {
       'multi-leg provisional main feed should not fall back to a stale single-leg rawText display'
     );
 
+    const sameTxSell = await ingestTelegramMonitorUpdate(
+      buildBscSameTxDualTokenTelegramUpdate({
+        messageId: 660,
+        action: 'sell',
+        tokenAddress: BSC_SAME_TX_DUAL_TOKEN_SELL_ADDRESS,
+        tokenSymbol: 'BTW',
+        tokenAmount: '150000',
+        quoteAmount: '2.7223',
+        priceText: '$0.0124',
+        marketCapText: '$124.2M',
+        platform: 'Pancake V4',
+      })
+    );
+    assert.equal(sameTxSell.ok, true, 'same-tx sell leg should ingest');
+    const sameTxBuy = await ingestTelegramMonitorUpdate(
+      buildBscSameTxDualTokenTelegramUpdate({
+        messageId: 661,
+        action: 'buy',
+        tokenAddress: BSC_SAME_TX_DUAL_TOKEN_BUY_ADDRESS,
+        tokenSymbol: '美股人生',
+        tokenAmount: '13853945.66',
+        quoteAmount: '2.7313',
+        priceText: '$0.0{3}134',
+        marketCapText: '$134.9K',
+        platform: 'Pancake V2',
+      })
+    );
+    assert.equal(sameTxBuy.ok, true, 'same-tx buy leg should ingest');
+
+    const sameTxEvents = readEventsFeed({
+      limit: 50,
+      userId: bscTrackedUser.id,
+    }).feed.filter((item) => item.activity.metadata.txHash === BSC_SAME_TX_DUAL_TOKEN_TX_HASH);
+    assert.equal(
+      sameTxEvents.length,
+      2,
+      'same-wallet same-tx monitor rows for different token addresses should remain separate feed events'
+    );
+    assert.deepEqual(
+      sameTxEvents.map((item) => item.activity.metadata.tokenAddress).sort(),
+      [BSC_SAME_TX_DUAL_TOKEN_BUY_ADDRESS, BSC_SAME_TX_DUAL_TOKEN_SELL_ADDRESS].sort()
+    );
+    assert.deepEqual(
+      sameTxEvents.map((item) => item.activity.metadata.txAction).sort(),
+      ['buy', 'sell']
+    );
+
     const legacyOnlyTxHash = '5KjD4n9hB2dMRY3oM4pX1oKZEFZ9cL5qUT8R76v9kqebCzK84j7zW8nW2vxx3G7Yd1Ny8KkG5X5hKw4mPoGdYq1V';
     const legacyOnlyUpdate = buildLegacyOnlyTelegramUpdate(599, legacyOnlyTxHash, '0.3333');
     const legacyOnlyMessage = legacyOnlyUpdate.message;
@@ -769,8 +874,8 @@ async function run() {
       .get(trackedUser.id) as { event_id: string; metadata_json: string } | undefined;
     assert.equal(
       provisionalEventRow?.event_id,
-      `xxyy-monitor:solana:${TRACKED_SOL_ADDRESS.toLowerCase()}:${TX_HASH.toLowerCase()}`,
-      'monitor events should use stable tx identity'
+      buildExpectedMonitorEventId('solana', TRACKED_SOL_ADDRESS, TX_HASH, TOKEN_ADDRESS),
+      'monitor events should use stable token-aware tx identity'
     );
 
     const reconciled = await reconcileTelegramMonitorTxState({
@@ -906,7 +1011,7 @@ async function run() {
     });
     assert.ok(collapsedCanonicalState, 'collapsed canonical fixture should create a tx-state');
     const collapsedCanonicalActivity = {
-      id: `xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_TX_HASH.toLowerCase()}`,
+      id: buildExpectedMonitorEventId('bsc', TRACKED_BSC_ADDRESS, BSC_TX_HASH, BSC_TOKEN_ADDRESS),
       userId: bscTrackedUser.id,
       source: 'blockchain' as const,
       type: 'transfer' as const,
@@ -991,7 +1096,7 @@ async function run() {
          FROM events
          WHERE event_id = ?`
       )
-      .get(`xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_TX_HASH.toLowerCase()}`) as
+      .get(buildExpectedMonitorEventId('bsc', TRACKED_BSC_ADDRESS, BSC_TX_HASH, BSC_TOKEN_ADDRESS)) as
       | { activity_json: string | null }
       | undefined;
     const persistedCollapsedCanonicalEventActivity = persistedCollapsedCanonicalEventRow?.activity_json
@@ -1038,7 +1143,12 @@ async function run() {
     });
     assert.ok(missingQuoteCanonicalState, 'missing quote canonical fixture should create a tx-state');
     const missingQuoteCanonicalActivity = {
-      id: `xxyy-monitor:bsc:${TRACKED_BSC_ADDRESS.toLowerCase()}:${BSC_MISSING_QUOTE_TX_HASH.toLowerCase()}`,
+      id: buildExpectedMonitorEventId(
+        'bsc',
+        TRACKED_BSC_ADDRESS,
+        BSC_MISSING_QUOTE_TX_HASH,
+        BSC_MISSING_QUOTE_TOKEN_ADDRESS
+      ),
       userId: bscTrackedUser.id,
       source: 'blockchain' as const,
       type: 'transfer' as const,
