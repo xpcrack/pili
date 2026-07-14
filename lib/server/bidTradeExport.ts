@@ -106,7 +106,14 @@ function toBidTradeExportRow(params: {
   const trackedWalletAddressRaw = normalize(trade.walletAddress);
   const tokenAddressRaw = normalize(trade.tokenAddress);
 
-  if (!trade.chain || !trackedWalletAddressRaw || !tokenAddressRaw || trade.tokenAmount <= 0) {
+  // Robinhood is feed-token only; trade export stays on address-asset chains.
+  if (
+    !trade.chain
+    || trade.chain === 'robinhood'
+    || !trackedWalletAddressRaw
+    || !tokenAddressRaw
+    || trade.tokenAmount <= 0
+  ) {
     return null;
   }
 

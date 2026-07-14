@@ -173,11 +173,16 @@ function isEvmChain(chain: string | null | undefined) {
   return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
+function isFeedCompatibleEvmChain(chain: string | null | undefined) {
+  // Robinhood is feed-only EVM-compatible for wallet matching, not an address asset chain.
+  return isEvmChain(chain) || chain === 'robinhood';
+}
+
 function isCompatibleChain(addressChain: string, eventChain: string) {
   if (addressChain === eventChain) {
     return true;
   }
-  return isEvmChain(addressChain) && isEvmChain(eventChain);
+  return isFeedCompatibleEvmChain(addressChain) && isFeedCompatibleEvmChain(eventChain);
 }
 
 function findTrackedUserMatch(parsed: {
@@ -495,7 +500,12 @@ export async function ingestTelegramMonitorUpdate(
     }
   }
 
-  if (txState && shouldAutoTriggerTelegramMonitorReconciliation()) {
+  // Robinhood is feed-only; OKX reconciliation has no reliable support for this chain.
+  if (
+    txState
+    && (txState.chain || '').trim().toLowerCase() !== 'robinhood'
+    && shouldAutoTriggerTelegramMonitorReconciliation()
+  ) {
     void triggerTelegramMonitorReconciliation({
       chain: txState.chain,
       trackedWalletAddress: txState.trackedWalletAddress,
