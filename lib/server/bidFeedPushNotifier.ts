@@ -2,12 +2,13 @@ import 'server-only';
 
 import { legacyFeedItemToCanonicalEvent } from '@/lib/canonical';
 import { signInternalBidToken } from '@/lib/server/internalBidAuth';
-import type { Activity, ChainType, User } from '@/types';
+import type { Activity, ChainType, FeedChain, User } from '@/types';
 
 const DEFAULT_PUSH_URL = 'http://127.0.0.1:5050/api/internal/pilipili/feed-events';
-const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_MAX_ATTEMPTS = 1;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 2_000;
+// Keep BID push non-blocking for feed ingest. Catch-up must not wait multi-second retries.
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 1_500;
 
 type FeedRow = { user: User; activity: Activity };
 
@@ -32,7 +33,7 @@ interface BidPushOnchainEvent {
   userId: string;
   userName: string;
   sourceAddressName: string | null;
-  chain: ChainType;
+  chain: FeedChain;
   trackedWalletAddress: string;
   trackedWalletAddressRaw: string;
   tokenAddress: string;
@@ -79,9 +80,13 @@ function normalizeText(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function normalizeChainAddress(chain: ChainType, value: string) {
+function normalizeChainAddress(chain: FeedChain, value: string) {
   const trimmed = normalizeText(value);
   return chain === 'solana' ? trimmed : trimmed.toLowerCase();
+}
+
+function isAddressAssetChain(chain: FeedChain): chain is ChainType {
+  return chain === 'solana' || chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
 function parseNumber(value: unknown) {
@@ -134,12 +139,14 @@ function createDefaultLogger(): BidFeedPushLog {
   };
 }
 
-function findSourceAddressName(user: User, chain: ChainType, trackedWalletAddress: string) {
+function findSourceAddressName(user: User, chain: FeedChain, trackedWalletAddress: string) {
   const normalizedTrackedAddress = normalizeChainAddress(chain, trackedWalletAddress);
-  const exact = user.addresses.find(
-    (address) => address.chain === chain && normalizeChainAddress(address.chain, address.address) === normalizedTrackedAddress
-  );
-  if (exact) return exact.name || null;
+  if (isAddressAssetChain(chain)) {
+    const exact = user.addresses.find(
+      (address) => address.chain === chain && normalizeChainAddress(address.chain, address.address) === normalizedTrackedAddress
+    );
+    if (exact) return exact.name || null;
+  }
 
   const fallback = user.addresses.find(
     (address) => normalizeChainAddress(address.chain, address.address) === normalizedTrackedAddress
@@ -216,7 +223,9 @@ export function buildBidFeedPushPayload(rows: FeedRow[]): BidFeedPushPayload {
       messageLinks,
     });
 
-    if (canonical.type !== 'trade') continue;
+    // Robinhood is feed-only: push onchain events for BID token ingestion,
+    // but never invent trades/cost positions for unsupported asset chains.
+    if (canonical.type !== 'trade' || !isAddressAssetChain(canonical.chain)) continue;
     const tokenAmount = parseNumber(canonical.tokenAmount);
     if (tokenAmount === null || tokenAmount <= 0) continue;
 
@@ -256,8 +265,11 @@ export async function notifyBidFeedPush(rows: FeedRow[], deps: BidFeedPushDeps =
   }
 
   const env = deps.env || process.env;
+  const disabled = ['1', 'true', 'yes', 'on'].includes(
+    normalizeConfigValue(env.BID_FEED_PUSH_DISABLED).toLowerCase()
+  );
   const url = resolvePushUrl(env);
-  if (!url || !hasSigningSecret(env)) {
+  if (disabled || !url || !hasSigningSecret(env)) {
     return {
       ok: false,
       status: 'skipped-missing-config',
@@ -274,7 +286,11 @@ export async function notifyBidFeedPush(rows: FeedRow[], deps: BidFeedPushDeps =
   const retryBaseDelayMs = Number.isFinite(deps.retryBaseDelayMs)
     ? Math.max(0, Math.floor(deps.retryBaseDelayMs!))
     : DEFAULT_RETRY_BASE_DELAY_MS;
-  const attemptTimeoutMs = normalizePositiveInteger(deps.attemptTimeoutMs, DEFAULT_ATTEMPT_TIMEOUT_MS);
+  const envTimeout = Number.parseInt(normalizeConfigValue(env.BID_FEED_PUSH_TIMEOUT_MS), 10);
+  const attemptTimeoutMs = normalizePositiveInteger(
+    deps.attemptTimeoutMs ?? (Number.isFinite(envTimeout) ? envTimeout : undefined),
+    DEFAULT_ATTEMPT_TIMEOUT_MS
+  );
   const body = JSON.stringify(payload);
 
   let lastError = 'unknown error';

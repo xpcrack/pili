@@ -5,6 +5,7 @@ import {
   type CanonicalTradeAction,
   type CanonicalUser,
   type ChainType,
+  type FeedChain,
   type Activity,
   type User,
 } from '@/types';
@@ -161,8 +162,14 @@ function tradeActionFromActivity(activity: Activity): CanonicalTradeAction | nul
   return null;
 }
 
-function toCanonicalChain(chain: string | undefined): ChainType | null {
-  return chain === 'bsc' || chain === 'solana' || chain === 'ethereum' || chain === 'base' ? chain : null;
+function toCanonicalChain(chain: string | undefined): FeedChain | null {
+  return chain === 'bsc'
+    || chain === 'solana'
+    || chain === 'ethereum'
+    || chain === 'base'
+    || chain === 'robinhood'
+    ? chain
+    : null;
 }
 
 export function legacyAddressToCanonical(userId: string, address: AddressInfo): CanonicalAddress {

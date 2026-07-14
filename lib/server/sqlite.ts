@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+const SQLITE_BUSY_TIMEOUT_MS = 30_000;
 
 export interface SqlRunResult {
   changes: number;
@@ -277,6 +277,86 @@ ON current_holdings(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_holdings_value
 ON current_holdings(value_usd);
+
+CREATE TABLE IF NOT EXISTS holder_snapshot_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chain TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_address_lower TEXT NOT NULL,
+  token_symbol TEXT,
+  tracked_wallet_address TEXT NOT NULL,
+  tracked_wallet_address_lower TEXT NOT NULL,
+  user_id TEXT,
+  trigger_type TEXT NOT NULL,
+  trigger_source TEXT NOT NULL,
+  trade_action TEXT,
+  tx_hash TEXT,
+  tx_hash_lower TEXT,
+  trade_time_ms INTEGER,
+  holdings_refreshed_at INTEGER,
+  period_bucket_start_ms INTEGER,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  holder_count INTEGER,
+  error TEXT,
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  requested_at INTEGER NOT NULL,
+  started_at INTEGER,
+  completed_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES tracked_users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_runs_status_requested
+ON holder_snapshot_runs(status, requested_at);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_runs_wallet_time
+ON holder_snapshot_runs(tracked_wallet_address_lower, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_runs_token_time
+ON holder_snapshot_runs(chain, token_address_lower, requested_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_runs_trade_tx
+ON holder_snapshot_runs(chain, tracked_wallet_address_lower, tx_hash_lower);
+
+CREATE TABLE IF NOT EXISTS holder_snapshot_holders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_run_id INTEGER NOT NULL,
+  holder_rank INTEGER NOT NULL,
+  address TEXT NOT NULL,
+  account_address TEXT,
+  addr_type INTEGER,
+  exchange TEXT,
+  wallet_tag_v2 TEXT,
+  name TEXT,
+  twitter_username TEXT,
+  balance REAL,
+  amount_percentage REAL,
+  usd_value REAL,
+  cost REAL,
+  profit REAL,
+  avg_cost REAL,
+  realized_profit REAL,
+  unrealized_profit REAL,
+  buy_tx_count_cur INTEGER,
+  sell_tx_count_cur INTEGER,
+  is_new INTEGER NOT NULL DEFAULT 0,
+  is_suspicious INTEGER NOT NULL DEFAULT 0,
+  raw_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(snapshot_run_id, holder_rank),
+  FOREIGN KEY (snapshot_run_id) REFERENCES holder_snapshot_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_holders_snapshot
+ON holder_snapshot_holders(snapshot_run_id, holder_rank);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_holders_address
+ON holder_snapshot_holders(address);
+
+CREATE INDEX IF NOT EXISTS idx_holder_snapshot_holders_twitter
+ON holder_snapshot_holders(twitter_username);
 
 CREATE TABLE IF NOT EXISTS asset_peak_validation_blocks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

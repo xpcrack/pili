@@ -4,6 +4,8 @@ export type ActivitySource = 'twitter' | 'telegram' | 'blockchain';
 export type ActivityType = 'post' | 'transfer' | 'swap' | 'nft_trade' | 'mint';
 
 export type ChainType = 'bsc' | 'solana' | 'ethereum' | 'base';
+// Feed-only chain support. Do not expand address/asset ChainType for robinhood.
+export type FeedChain = ChainType | 'robinhood';
 
 export interface CanonicalAddress {
   id: string;
@@ -43,7 +45,7 @@ export interface CanonicalTradeEvent extends CanonicalBaseEvent {
   priceUsd: number | null;
   marketCapUsd: number | null;
   action: CanonicalTradeAction;
-  chain: ChainType | null;
+  chain: FeedChain | null;
   quoteSymbol?: string | null;
   quoteAmount?: number | null;
   coHitUserCount?: number;
@@ -60,7 +62,7 @@ export interface CanonicalTransferEvent extends CanonicalBaseEvent {
   tokenAmount: number;
   amountUsd: number | null;
   action: CanonicalTransferAction;
-  chain: ChainType | null;
+  chain: FeedChain | null;
 }
 
 export interface CanonicalTwitterEvent extends CanonicalBaseEvent {

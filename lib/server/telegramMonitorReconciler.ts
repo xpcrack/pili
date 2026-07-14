@@ -625,6 +625,10 @@ export function scheduleTelegramMonitorRepairBatch(limit = 5) {
     leaseMs: REPAIR_CLAIM_LEASE_MS,
   });
   for (const target of targets) {
+    // Robinhood is feed-only and has no OKX reconciliation support.
+    if (normalize(target.chain) === 'robinhood') {
+      continue;
+    }
     void triggerTelegramMonitorReconciliation({
       chain: target.chain,
       trackedWalletAddress: target.trackedWalletAddress,

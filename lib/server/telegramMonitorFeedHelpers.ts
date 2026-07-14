@@ -28,11 +28,16 @@ function isEvmChain(chain: string | null | undefined) {
   return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
+function isFeedCompatibleEvmChain(chain: string | null | undefined) {
+  // Robinhood is feed-only EVM-compatible for wallet matching, not an address asset chain.
+  return isEvmChain(chain) || chain === 'robinhood';
+}
+
 function isCompatibleChain(addressChain: string, eventChain: string) {
   if (addressChain === eventChain) {
     return true;
   }
-  return isEvmChain(addressChain) && isEvmChain(eventChain);
+  return isFeedCompatibleEvmChain(addressChain) && isFeedCompatibleEvmChain(eventChain);
 }
 
 export function buildTrackedAddressIndex(users: User[]): TelegramTrackedAddressIndex {
@@ -48,7 +53,7 @@ export function buildTrackedAddressIndex(users: User[]): TelegramTrackedAddressI
         });
 
         if (isEvmChain(address.chain)) {
-          for (const evmChain of ['bsc', 'ethereum', 'base']) {
+          for (const evmChain of ['bsc', 'ethereum', 'base', 'robinhood']) {
             index.set(`${evmChain}|${normalize(address.address)}`, {
               user,
               trackedAddress: address.address,

@@ -57,7 +57,19 @@ function parsePriceLine(text: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseRobinhoodChainFromText(text: string) {
+  // Prefer explicit Robinhood feed markers over ETH/Uniswap heuristics.
+  // Allow trailing punctuation seen in real TG messages, e.g. #🟢Robinhood；
+  if (/(?:^|\n)\s*#(?:🟢)?Robinhood\s*[；;。.]?\s*(?:\n|$)/im.test(text)) return 'robinhood';
+  if (/robinhoodchain\.blockscout\.com|rpc\.mainnet\.chain\.robinhood\.com/i.test(text)) {
+    return 'robinhood';
+  }
+  return null;
+}
+
 function parseChainFromText(text: string) {
+  const robinhood = parseRobinhoodChainFromText(text);
+  if (robinhood) return robinhood;
   if (/\bBSC\b|Pancake|WBNB|Four\.meme/i.test(text)) return 'bsc';
   if (/\bETH\b|\bEthereum\b|Etherscan|Uniswap/i.test(text)) return 'ethereum';
   if (/\bSOL\b|Raydium|Pump|Jupiter|WSOL/i.test(text)) return 'solana';
@@ -98,7 +110,16 @@ function normalizeChain(value: string | null | undefined) {
   const normalized = (value || '').trim().toLowerCase();
   if (normalized === 'sol') return 'solana';
   if (normalized === 'eth') return 'ethereum';
-  if (normalized === 'solana' || normalized === 'bsc' || normalized === 'ethereum') return normalized;
+  if (normalized === 'rh' || normalized === 'hood' || normalized === 'robin') return 'robinhood';
+  if (
+    normalized === 'solana'
+    || normalized === 'bsc'
+    || normalized === 'ethereum'
+    || normalized === 'base'
+    || normalized === 'robinhood'
+  ) {
+    return normalized;
+  }
   return null;
 }
 
@@ -295,8 +316,14 @@ export function parseXxyyTelegramText(
   const sendSymbol = sendToMatch?.[2]?.toUpperCase() || null;
   const fallbackTokenAmount = Number.isFinite(sendAmount as number) ? sendAmount : null;
 
+  // Robinhood markers must beat eth/uniswap path heuristics from xxyy links.
+  const textChain = parseChainFromText(text);
+  const chain = textChain === 'robinhood'
+    ? 'robinhood'
+    : (primaryLink?.chain || textChain);
+
   return {
-    chain: primaryLink?.chain || parseChainFromText(text),
+    chain,
     tokenAddress: (caMatch ? caMatch[1] : null) || primaryLink?.tokenAddress || null,
     tokenSymbol: tokenMatch ? tokenMatch[2]?.trim() || null : sendSymbol,
     tokenAmount: tokenAmountNormalized ?? fallbackTokenAmount,

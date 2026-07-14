@@ -97,6 +97,31 @@ async function run() {
   assert.equal(payload.trades[0]?.tokenAddress, '0xPushTokenAaA000000000000000000000000000001');
   assert.equal(payload.trades[0]?.trackedWalletAddressRaw, '0xAbCdEf0000000000000000000000000000000001');
 
+  const robinhoodActivity: Activity = {
+    ...buildActivity(),
+    id: 'xxyy-monitor:robinhood:0xHashRh:1717178982000',
+    metadata: {
+      ...buildActivity().metadata,
+      chain: 'robinhood',
+      tokenAddress: '0x9dcbb9852e4846576e548ab55663e8e29909dba3',
+      token: 'ROBINSCAN',
+      txHash: '0xHashRh',
+      txAction: 'buy',
+      txActionVariant: 'add',
+      txActionLabel: '加仓',
+      value: '10696915.08',
+      quoteAmount: '0.0113',
+      quoteToken: 'ETH',
+      marketCapAtTxUsd: 187600,
+      monitorWalletAliasLabel: 'profit#1',
+    },
+  };
+  const robinhoodPayload = buildBidFeedPushPayload([{ user: buildUser(), activity: robinhoodActivity }]);
+  assert.equal(robinhoodPayload.events.length, 1);
+  assert.equal(robinhoodPayload.trades.length, 0);
+  assert.equal(robinhoodPayload.events[0]?.chain, 'robinhood');
+  assert.equal(robinhoodPayload.events[0]?.tokenAddress, '0x9dcbb9852e4846576e548ab55663e8e29909dba3');
+
   await withEnv(
     {
       BID_FEED_PUSH_URL: undefined,
