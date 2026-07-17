@@ -32,7 +32,7 @@ import { isStructuredProvider } from '@/lib/server/twitterProviderRouter';
 import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 import { updateTrackedUser } from '@/lib/server/trackedUsersRepo';
 import { collectTwitterStatusUrls, upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
-import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
+import { appendSyncLog, pruneSyncLogs, pruneSyncRuns } from '@/lib/server/syncLogRepo';
 import {
   notifyTwitterProviderFailures,
   type TwitterProviderFailureItem,
@@ -651,6 +651,7 @@ async function runSyncAction(options: {
     },
   });
   pruneSyncLogs();
+  pruneSyncRuns();
   return {
     ...summary,
     windowDays: windowDaysOverride,
