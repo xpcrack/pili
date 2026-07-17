@@ -146,3 +146,15 @@ export function pruneSyncLogs(maxRows = 5000) {
      )`
   ).run(safeMaxRows);
 }
+
+/** Drop old sync_runs rows (no FK from sync_logs). Default 90 days. */
+export function pruneSyncRuns(maxAgeDays = 90) {
+  const db = getDb();
+  const days = Math.max(7, Math.min(365, Math.floor(maxAgeDays)));
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  db.prepare(
+    `DELETE FROM sync_runs
+     WHERE started_at < ?
+       AND COALESCE(status, '') NOT IN ('running')`,
+  ).run(cutoff);
+}

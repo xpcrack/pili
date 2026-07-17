@@ -24,7 +24,7 @@ import { sleep } from '@/lib/timing';
 import {
   listTrackedUsers,
 } from '@/lib/server/trackedUsersRepo';
-import { appendSyncLog, pruneSyncLogs } from '@/lib/server/syncLogRepo';
+import { appendSyncLog, pruneSyncLogs, pruneSyncRuns } from '@/lib/server/syncLogRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
 import { notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
 import {
@@ -546,6 +546,7 @@ async function runSync(
   });
   await flushConflictNotificationsSafely(50);
   pruneSyncLogs();
+  pruneSyncRuns();
 }
 
 export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
