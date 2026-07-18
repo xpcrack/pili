@@ -1,3 +1,4 @@
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono } from 'hono';
 import { NextRequest } from 'next/server';
 
@@ -41,14 +42,50 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'POST', path: '/sync', load: () => import('@/app/api/sync/route') },
   { method: 'GET', path: '/twitter/sync', load: () => import('@/app/api/twitter/sync/route') },
   { method: 'POST', path: '/twitter/sync', load: () => import('@/app/api/twitter/sync/route') },
+  { method: 'GET', path: '/internal/bid/users', load: () => import('@/app/api/internal/bid/users/route') },
+  { method: 'GET', path: '/internal/bid/trades', load: () => import('@/app/api/internal/bid/trades/route') },
+  { method: 'GET', path: '/internal/bid/onchain-events', load: () => import('@/app/api/internal/bid/onchain-events/route') },
   { method: 'GET', path: '/debug/tx-judgment', load: () => import('@/app/api/debug/tx-judgment/route') },
   { method: 'GET', path: '/debug/tx-judgment/stream', load: () => import('@/app/api/debug/tx-judgment/stream/route') },
   { method: 'GET', path: '/avatar', load: () => import('@/app/api/avatar/route') },
   { method: 'GET', path: '/token-logo', load: () => import('@/app/api/token-logo/route') },
 ];
 
-function toNextRequest(request: Request) {
-  return new NextRequest(request);
+function normalizeLoopback(address: string | undefined | null) {
+  const value = (address || '').trim();
+  if (!value) return null;
+  if (value === '::1' || value === '0:0:0:0:0:0:0:1') return '127.0.0.1';
+  if (value.startsWith('::ffff:')) {
+    const v4 = value.slice(7);
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(v4)) return v4;
+  }
+  return value;
+}
+
+function readRemoteAddress(c: { env?: unknown; req: { raw: Request } }) {
+  try {
+    return normalizeLoopback(getConnInfo(c as never).remote.address);
+  } catch {
+    // app.request() / non-node bindings: no socket
+  }
+
+  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
+  return normalizeLoopback(env?.incoming?.socket?.remoteAddress);
+}
+
+// BID client only sends Authorization; inject socket IP so INTERNAL_BID_ALLOWED_IPS works.
+function toNextRequest(request: Request, remoteAddress?: string | null) {
+  if (
+    !remoteAddress ||
+    request.headers.get('x-forwarded-for') ||
+    request.headers.get('x-real-ip')
+  ) {
+    return new NextRequest(request);
+  }
+
+  const headers = new Headers(request.headers);
+  headers.set('x-real-ip', remoteAddress);
+  return new NextRequest(new Request(request, { headers }));
 }
 
 function buildContextParams(params: Record<string, string>) {
@@ -67,7 +104,7 @@ export function registerLegacyRouteAdapters(app: Hono) {
         return c.json({ ok: false, error: 'method not implemented' }, 501);
       }
 
-      const request = toNextRequest(c.req.raw.clone());
+      const request = toNextRequest(c.req.raw.clone(), readRemoteAddress(c));
       const params = c.req.param();
       const context = buildContextParams(params);
       return handler(request, context);
