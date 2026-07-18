@@ -594,6 +594,11 @@ export function ActivityCard({
                               合并 {mergedTradeCount} 笔
                             </span>
                           )}
+                          {isMergedTradeCard && coHitAddressCount > 1 && (
+                            <span className="shrink-0 rounded-full border border-violet-400/40 bg-violet-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-violet-200">
+                              {coHitAddressCount} 地址
+                            </span>
+                          )}
                         </div>
                         <div className="min-w-0 text-zinc-500 leading-none">
                           {activity.metadata.txHash ? (

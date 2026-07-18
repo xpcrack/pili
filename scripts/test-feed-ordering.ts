@@ -253,7 +253,54 @@ function run() {
     makeTradeItem(alice, 'too-old', base - 360_000),
   ]);
 
-  assert.equal(splitBySignature.length, 7, 'different direction, asset, unit, wallet, chain, or window must not merge');
+  // other-wallet now merges with reduce-a (same user/token/direction/unit within window)
+  assert.equal(
+    splitBySignature.length,
+    6,
+    'different direction, asset, unit, chain, or window must not merge; multi-wallet same-user should merge'
+  );
+
+  const multiWalletMerged = prepareUserFeed([
+    makeTradeItem(alice, 'wallet-a', base - 5_000, {
+      trackedAddress: '0xwallet-a',
+      quoteAmount: '1',
+    }),
+    makeTradeItem(alice, 'wallet-b', base - 15_000, {
+      trackedAddress: '0xwallet-b',
+      quoteAmount: '2',
+    }),
+  ]);
+  assert.equal(multiWalletMerged.length, 1, 'same user multi-wallet same-token same-direction should merge to one card');
+  assert.equal(multiWalletMerged[0]?.activity.metadata.mergedTradeCount, 2);
+  assert.equal(multiWalletMerged[0]?.activity.metadata.coHitAddressCount, 2);
+  assert.equal(multiWalletMerged[0]?.activity.metadata.displayTradeAmountText, '3 ETH');
+
+  const zeroQuoteFallback = prepareUserFeed([
+    makeTradeItem(alice, 'zq-1', base - 5_000, {
+      trackedAddress: '0xwallet-a',
+      quoteToken: 'ETH',
+      quoteAmount: '0',
+      value: '2.89',
+      token: 'UNICORN',
+      displayTradeAmountText: '2.89 UNICORN',
+    }),
+    makeTradeItem(alice, 'zq-2', base - 15_000, {
+      trackedAddress: '0xwallet-b',
+      quoteToken: 'ETH',
+      quoteAmount: '0',
+      value: '3.13',
+      token: 'UNICORN',
+      displayTradeAmountText: '3.13 UNICORN',
+    }),
+  ]);
+  assert.equal(zeroQuoteFallback.length, 1, 'zero quoteAmount legs should still merge');
+  assert.equal(zeroQuoteFallback[0]?.activity.metadata.mergedTradeCount, 2);
+  assert.equal(zeroQuoteFallback[0]?.activity.metadata.coHitAddressCount, 2);
+  assert.equal(
+    zeroQuoteFallback[0]?.activity.metadata.displayTradeAmountText,
+    '6.02 UNICORN',
+    'when quoteAmount is zero, sum token value instead of showing a single leg'
+  );
 
   const mergedWithoutMarketCap = prepareUserFeed([
     makeTradeItem(alice, 'null-cap-1', base - 5_000, {

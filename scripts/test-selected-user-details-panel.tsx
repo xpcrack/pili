@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { SelectedUserDetailsPanel } from '@/components/SelectedUserDetailsPanel';
+import { formatUsdCompact } from '@/lib/assetFormat';
 import type { UserDetailsSuccessPayload } from '@/lib/userDetails';
 import type { User } from '@/types';
 
@@ -36,6 +37,7 @@ function makeDetails(
         balance: 321.1234,
         priceUsd: 1,
         valueUsd: 321.1234,
+        liquidityUsd: 10_000,
       },
     ],
     holdingsUpdatedAt: 123_456,
@@ -112,10 +114,21 @@ function run() {
   assert.match(partialSuccessMarkup, /<th[^>]*>链<\/th>/, 'panel should render the chain column');
   assert.match(partialSuccessMarkup, /<th[^>]*>Token<\/th>/, 'panel should render the token column');
   assert.match(partialSuccessMarkup, /<th[^>]*>占比<\/th>/, 'panel should render the ratio column');
-  assert.match(partialSuccessMarkup, /<th[^>]*>单价<\/th>/, 'panel should render the price column');
+  assert.match(partialSuccessMarkup, /<th[^>]*>市值<\/th>/, 'panel should render the market cap column');
   assert.match(partialSuccessMarkup, /<th[^>]*>价值<\/th>/, 'panel should render the value column');
   assert.match(partialSuccessMarkup, />USDT</, 'panel should render holdings rows');
   assert.match(partialSuccessMarkup, /Tether USD/, 'panel should render the token name secondary text');
+  assert.match(
+    partialSuccessMarkup,
+    new RegExp(formatUsdCompact(123_400).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'panel total should use the authoritative user total instead of visible holdings'
+  );
+  assert.match(
+    partialSuccessMarkup,
+    new RegExp(formatUsdCompact(456_700).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'panel peak should use the same authoritative historical max as the sidebar'
+  );
+  assert.match(partialSuccessMarkup, />100\.0%<\//, 'holding share should use visible holdings total');
 
   const staleErrorMarkup = renderPanel({
     detailsError: '刷新失败',
@@ -130,6 +143,36 @@ function run() {
     staleErrorMarkup,
     />重试</,
     'panel should keep a retry button available when cached details are stale after a refresh error'
+  );
+
+  const robinhoodMarkup = renderPanel({
+    details: makeDetails({
+      holdings: [
+        {
+          chain: 'robinhood',
+          tokenAddress: '0x45242320dbb855eea8fd36804c6487e10e97fcf9',
+          symbol: 'TENDIES',
+          name: 'TENDIES',
+          balance: 1_000_000,
+          priceUsd: 0.03,
+          valueUsd: 30_000,
+          liquidityUsd: 800_000,
+        },
+      ],
+      holdingsSummary: {
+        visibleCount: 1,
+        partial: false,
+        successfulAddressCount: 1,
+        failedAddressCount: 0,
+      },
+    }),
+  });
+  assert.match(robinhoodMarkup, />Robinhood</, 'panel should label robinhood holdings');
+  assert.match(robinhoodMarkup, />TENDIES</, 'panel should render robinhood token symbol');
+  assert.doesNotMatch(
+    robinhoodMarkup,
+    /正在加载流动性数据/,
+    'robinhood holdings with server liquidity should not wait on dexscreener'
   );
 
   console.log('selected user details panel tests: ok');

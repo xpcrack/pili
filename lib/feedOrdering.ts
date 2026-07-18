@@ -122,10 +122,12 @@ function buildTradeMergeDescriptor(item: FeedItem): TradeMergeDescriptor | null 
     return null;
   }
 
+  // Signature intentionally omits trackedAddress so multi-wallet same-user
+  // same-token same-direction trades collapse to one card; address count is
+  // still aggregated via coHitAddresses in mergeTradeGroup.
   return {
     signature: [
       user.id,
-      trackedAddress,
       chain,
       tokenIdentifier,
       directionKey,
@@ -232,12 +234,35 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
     return sum + (value ?? 0);
   }, 0);
 
+  // When the preferred amount source is empty/zero (common on TG: quoteAmount=0 +
+  // quoteToken=ETH), fall back to summing token `value` so the card shows a real
+  // total instead of a single representative leg.
+  let resolvedAmountTotal = amountTotal;
+  let resolvedAmountSymbol = group.descriptor.amountSymbol;
+  if (resolvedAmountTotal <= 0 && group.descriptor.amountSource === 'quoteAmount') {
+    const valueTotal = group.entries.reduce((sum, entry) => {
+      return sum + (parsePositiveAmount(entry.item.activity.metadata.value) ?? 0);
+    }, 0);
+    if (valueTotal > 0) {
+      resolvedAmountTotal = valueTotal;
+      const tokenSymbol = group.entries
+        .map((entry) => (entry.item.activity.metadata.token || '').trim())
+        .find((symbol) => symbol.length > 0);
+      if (tokenSymbol) {
+        resolvedAmountSymbol = tokenSymbol.toUpperCase();
+      }
+    }
+  }
+
   const weightedMarketCap = group.entries.reduce(
     (accumulator, entry) => {
-      const amount =
+      let amount =
         group.descriptor.amountSource === 'quoteAmount'
           ? parsePositiveAmount(entry.item.activity.metadata.quoteAmount)
           : parsePositiveAmount(entry.item.activity.metadata.value);
+      if ((!amount || amount <= 0) && group.descriptor.amountSource === 'quoteAmount') {
+        amount = parsePositiveAmount(entry.item.activity.metadata.value);
+      }
       const marketCap = entry.item.activity.metadata.marketCapAtTxUsd;
       if (!amount || typeof marketCap !== 'number' || !Number.isFinite(marketCap) || marketCap <= 0) {
         return accumulator;
@@ -254,8 +279,8 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
   const mergedAverageMarketCapUsd =
     weightedMarketCap.totalWeight > 0 ? weightedMarketCap.weightedSum / weightedMarketCap.totalWeight : null;
   const mergedTradeAmountText =
-    amountTotal > 0
-      ? formatDisplayTradeAmount(amountTotal, group.descriptor.amountSymbol)
+    resolvedAmountTotal > 0
+      ? formatDisplayTradeAmount(resolvedAmountTotal, resolvedAmountSymbol)
       : representative.activity.metadata.displayTradeAmountText;
 
   return {

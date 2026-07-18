@@ -142,7 +142,14 @@ function defaultShouldRetryOkxError(error: string | null | undefined) {
   if (!normalized) {
     return false;
   }
-  if (normalized.includes('okx api 429')) {
+  if (normalized.includes('okx api 429') || normalized.includes('too many requests') || normalized.includes('50011')) {
+    return true;
+  }
+  if (
+    normalized.includes('timestamp request expired') ||
+    normalized.includes('50102') ||
+    normalized.includes('okx api 401')
+  ) {
     return true;
   }
   if (/okx api 5\d\d/.test(normalized)) {
