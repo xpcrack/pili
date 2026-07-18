@@ -1,12 +1,14 @@
 import crypto from 'node:crypto';
 
 import { sleep } from '@/lib/timing';
+import { isValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import type { ChainType } from '@/types';
 
 const OKX_API_BASE = 'https://web3.okx.com';
 const OKX_MARKET_API_BASE = 'https://www.okx.com';
-const OKX_REQUEST_INTERVAL_MS = 250;
-const OKX_MAX_CONCURRENT_REQUESTS = 4;
+// Slightly slower than before: 721 addresses × multi-window scans trip OKX 50011 easily.
+const OKX_REQUEST_INTERVAL_MS = 400;
+const OKX_MAX_CONCURRENT_REQUESTS = 2;
 const OKX_REQUEST_TIMEOUT_MS = 8000;
 const OKX_MARKET_PRICE_CACHE_TTL_MS = 60 * 1000;
 
@@ -432,15 +434,18 @@ async function fetchOkxHistoricalCandlePrice(
     limit: '1',
   });
   const requestPathWithQuery = `/api/v6/dex/market/historical-candles?${params.toString()}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
 
-  if (!headers) {
+  if (!getOkxCredentials().configured) {
     return null;
   }
 
   let response: Response;
   try {
     response = await runWithEndpointRateLimit('market-historical-candles', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort();
@@ -503,13 +508,16 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
     search: normalizedAddress,
   });
   const requestPathWithQuery = `/api/v5/dex/market/token/search?${params.toString()}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
-  if (!headers) {
+  if (!getOkxCredentials().configured) {
     return null;
   }
 
   try {
     const response = await runWithEndpointRateLimit('market-token-search', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort();
@@ -550,13 +558,16 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
       search: symbolQuery,
     });
     const requestPathBySymbol = `/api/v5/dex/market/token/search?${paramsBySymbol.toString()}`;
-    const headersBySymbol = createOkxHeaders(requestPathBySymbol);
-    if (!headersBySymbol) {
+    if (!getOkxCredentials().configured) {
       return null;
     }
 
     try {
       const response = await runWithEndpointRateLimit('market-token-search', () => {
+        const headersBySymbol = createOkxHeaders(requestPathBySymbol);
+        if (!headersBySymbol) {
+          throw new Error('未配置 OKX API 凭证');
+        }
         const controller = new AbortController();
         const timer = setTimeout(() => {
           controller.abort();
@@ -605,6 +616,24 @@ export async function fetchOkxTransactionsByAddress(
     };
   }
 
+  if (!isValidTrackedAddress(address, chain as ChainType)) {
+    return {
+      ok: false,
+      configured: getOkxCredentials().configured,
+      transactions: [] as OkxTransaction[],
+      error: `地址格式无效，已跳过 OKX 请求: ${address}`,
+    };
+  }
+
+  if (!getOkxCredentials().configured) {
+    return {
+      ok: false,
+      configured: false,
+      transactions: [] as OkxTransaction[],
+      error: '未配置 OKX API 凭证',
+    };
+  }
+
   const now = Date.now();
   const defaultBegin = now - 72 * 60 * 60 * 1000;
   const beginMs = typeof options?.beginMs === 'number' ? Math.max(0, Math.floor(options.beginMs)) : defaultBegin;
@@ -619,36 +648,28 @@ export async function fetchOkxTransactionsByAddress(
   });
 
   const requestPathWithQuery = `/api/v6/dex/post-transaction/transactions-by-address?${params}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
-
-  if (!headers) {
-    return {
-      ok: false,
-      configured: false,
-      transactions: [] as OkxTransaction[],
-      error: '未配置 OKX API 凭证',
-    };
-  }
 
   let response: Response;
   try {
-    response = await runWithEndpointRateLimit('transactions-by-address', () =>
-      {
-        const controller = new AbortController();
-        const timer = setTimeout(() => {
-          controller.abort();
-        }, OKX_REQUEST_TIMEOUT_MS);
-
-        return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
-          method: 'GET',
-          headers,
-          cache: 'no-store',
-          signal: controller.signal,
-        }).finally(() => {
-          clearTimeout(timer);
-        });
+    response = await runWithEndpointRateLimit('transactions-by-address', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
       }
-    );
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, OKX_REQUEST_TIMEOUT_MS);
+
+      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      }).finally(() => {
+        clearTimeout(timer);
+      });
+    });
   } catch (error) {
     return {
       ok: false,
@@ -711,9 +732,7 @@ export async function fetchOkxTransactionDetailByTxHash(txHash: string, chain: s
     chainIndex,
   });
   const requestPathWithQuery = `/api/v6/dex/post-transaction/transaction-detail-by-txhash?${params}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
-
-  if (!headers) {
+  if (!getOkxCredentials().configured) {
     return {
       ok: false,
       configured: false,
@@ -725,6 +744,10 @@ export async function fetchOkxTransactionDetailByTxHash(txHash: string, chain: s
   let response: Response;
   try {
     response = await runWithEndpointRateLimit('transaction-detail-by-txhash', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort();
@@ -878,14 +901,16 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
     };
   }
 
-  const params = new URLSearchParams({
-    address,
-    chains: chainIndex,
-  });
-  const requestPathWithQuery = `/api/v5/dex/balance/total-value-by-address?${params}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
+  if (!isValidTrackedAddress(address, chain as ChainType)) {
+    return {
+      ok: false,
+      configured: getOkxCredentials().configured,
+      totalAssetUsd: null as number | null,
+      error: `地址格式无效，已跳过 OKX 请求: ${address}`,
+    };
+  }
 
-  if (!headers) {
+  if (!getOkxCredentials().configured) {
     return {
       ok: false,
       configured: false,
@@ -894,9 +919,19 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
     };
   }
 
+  const params = new URLSearchParams({
+    address,
+    chains: chainIndex,
+  });
+  const requestPathWithQuery = `/api/v5/dex/balance/total-value-by-address?${params}`;
+
   let response: Response;
   try {
     response = await runWithEndpointRateLimit('total-value-by-address', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort();
@@ -977,14 +1012,17 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
     };
   }
 
-  const params = new URLSearchParams({
-    address,
-    chains: chainIndex,
-  });
-  const requestPathWithQuery = `/api/v6/dex/balance/all-token-balances-by-address?${params.toString()}`;
-  const headers = createOkxHeaders(requestPathWithQuery);
+  if (!isValidTrackedAddress(address, chain)) {
+    return {
+      ok: false,
+      configured: getOkxCredentials().configured,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: `地址格式无效，已跳过 OKX 请求: ${address}`,
+    };
+  }
 
-  if (!headers) {
+  if (!getOkxCredentials().configured) {
     return {
       ok: false,
       configured: false,
@@ -994,9 +1032,19 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
     };
   }
 
+  const params = new URLSearchParams({
+    address,
+    chains: chainIndex,
+  });
+  const requestPathWithQuery = `/api/v6/dex/balance/all-token-balances-by-address?${params.toString()}`;
+
   let response: Response;
   try {
     response = await runWithEndpointRateLimit('all-token-balances-by-address', () => {
+      const headers = createOkxHeaders(requestPathWithQuery);
+      if (!headers) {
+        throw new Error('未配置 OKX API 凭证');
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => {
         controller.abort();

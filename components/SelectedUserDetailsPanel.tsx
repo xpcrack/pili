@@ -1,16 +1,171 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { formatUsd, formatUsdCompact } from '@/lib/assetFormat';
+import { formatCompactMarketCap } from '@/lib/tradeDisplay';
+const LIQUIDITY_THRESHOLD_USD = 5_000;
 import {
   type UserDetailsSuccessPayload,
   USER_HOLDINGS_THRESHOLD_USD,
 } from '@/lib/userDetails';
 import { getUserAvatar } from '@/lib/userProfile';
 import type { User } from '@/types';
+
+type HoldingMetric = {
+  liquidityUsd: number | null;
+  marketCapUsd: number | null;
+};
+
+function chunkItems<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function toFiniteNumber(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function selectDexScreenerPair(
+  pairs: unknown[],
+  chain: string,
+  tokenAddress: string,
+) {
+  const normalizedChain = chain.toLowerCase();
+  const normalizedTokenAddress = tokenAddress.toLowerCase();
+
+  return pairs
+    .filter((pair): pair is {
+      chainId?: string;
+      baseToken?: { address?: string };
+      liquidity?: { usd?: unknown };
+      marketCap?: unknown;
+      fdv?: unknown;
+    } => typeof pair === 'object' && pair !== null)
+    .filter((pair) => {
+      const pairChain = pair.chainId?.toLowerCase();
+      const baseTokenAddress = pair.baseToken?.address?.toLowerCase();
+      return pairChain === normalizedChain && baseTokenAddress === normalizedTokenAddress;
+    })
+    .sort((left, right) => {
+      const rightLiquidity = toFiniteNumber(right.liquidity?.usd) ?? -1;
+      const leftLiquidity = toFiniteNumber(left.liquidity?.usd) ?? -1;
+      return rightLiquidity - leftLiquidity;
+    })[0] ?? null;
+}
+
+function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; liquidityUsd: number | null }[] | undefined) {
+  const [map, setMap] = useState<Record<string, HoldingMetric>>({});
+
+  useEffect(() => {
+    if (!holdings || holdings.length === 0) return;
+
+    const missingHoldings = holdings.filter((holding) => {
+      const key = `${holding.chain}:${holding.tokenAddress}`;
+      return !(key in map);
+    });
+    if (missingHoldings.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      // Robinhood has no DexScreener / token-logo market data yet — seed null metrics and skip network.
+      const robinhoodEntries = Object.fromEntries(
+        missingHoldings
+          .filter((holding) => holding.chain === 'robinhood')
+          .map((holding) => [
+            `${holding.chain}:${holding.tokenAddress}`,
+            { liquidityUsd: holding.liquidityUsd, marketCapUsd: null },
+          ]),
+      );
+      const metricTargets = missingHoldings.filter((holding) => holding.chain !== 'robinhood');
+
+      const tokenLogoMarketCapMap: Record<string, number | null> = {};
+      await Promise.all(
+        metricTargets.map(async (holding) => {
+          const key = `${holding.chain}:${holding.tokenAddress}`;
+          try {
+            const res = await fetch(`/api/token-logo?chain=${encodeURIComponent(holding.chain)}&tokenAddress=${encodeURIComponent(holding.tokenAddress)}`);
+            const data = await res.json();
+            tokenLogoMarketCapMap[key] = toFiniteNumber(data?.marketCapUsd);
+          } catch {
+            tokenLogoMarketCapMap[key] = null;
+          }
+        }),
+      );
+
+      const dexTargets = metricTargets.filter((holding) => {
+        const key = `${holding.chain}:${holding.tokenAddress}`;
+        return holding.liquidityUsd == null || tokenLogoMarketCapMap[key] == null;
+      });
+
+      const dexMetricsMap: Record<string, HoldingMetric> = {};
+      await Promise.all(
+        chunkItems(dexTargets, 30).map(async (batch) => {
+          if (batch.length === 0) return;
+          try {
+            const addresses = batch.map((holding) => holding.tokenAddress).join(',');
+            const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addresses}`);
+            const data = await res.json();
+            const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+
+            for (const holding of batch) {
+              const key = `${holding.chain}:${holding.tokenAddress}`;
+              const pair = selectDexScreenerPair(pairs, holding.chain, holding.tokenAddress);
+              dexMetricsMap[key] = {
+                liquidityUsd: toFiniteNumber(pair?.liquidity?.usd),
+                marketCapUsd: toFiniteNumber(pair?.marketCap) ?? toFiniteNumber(pair?.fdv),
+              };
+            }
+          } catch {
+            for (const holding of batch) {
+              const key = `${holding.chain}:${holding.tokenAddress}`;
+              dexMetricsMap[key] = {
+                liquidityUsd: null,
+                marketCapUsd: null,
+              };
+            }
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        const nextEntries = Object.fromEntries(
+          metricTargets.map((holding) => {
+            const key = `${holding.chain}:${holding.tokenAddress}`;
+            const dexMetrics = dexMetricsMap[key];
+            return [
+              key,
+              {
+                liquidityUsd: dexMetrics?.liquidityUsd ?? null,
+                marketCapUsd: tokenLogoMarketCapMap[key] ?? dexMetrics?.marketCapUsd ?? null,
+              },
+            ] as const;
+          }),
+        );
+        setMap((prev) => ({ ...prev, ...robinhoodEntries, ...nextEntries }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [holdings, map]);
+
+  return map;
+}
 
 export interface SelectedUserDetailsPanelProps {
   selectedUser: User;
@@ -33,6 +188,7 @@ const CHAIN_LABELS: Record<string, string> = {
   solana: 'Solana',
   ethereum: 'Ethereum',
   base: 'Base',
+  robinhood: 'Robinhood',
 };
 
 function formatUpdatedAt(timestamp: number) {
@@ -53,10 +209,47 @@ export function SelectedUserDetailsPanel({
 }: SelectedUserDetailsPanelProps) {
   const holdingsThresholdUsd = details?.holdingsThresholdUsd ?? USER_HOLDINGS_THRESHOLD_USD;
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
-  const holdingsTotalUsd = details?.holdings.reduce((sum, h) => sum + h.valueUsd, 0) ?? 0;
-  // Use API-returned user data (details.user) as source of truth, fallback to selectedUser from store
-  const totalAssetUsd = holdingsTotalUsd > 0 ? holdingsTotalUsd : (details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd);
-  const historicalMaxAssetUsd = Math.max(totalAssetUsd, details?.user.historicalMaxAssetUsd ?? selectedUser.historicalMaxAssetUsd);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const holdingMetricsMap = useHoldingMetricsMap(details?.holdings);
+
+  // Filter out dead coins with insufficient liquidity (client-side fallback).
+  // Robinhood uses server-side GMGN liquidity only — no DexScreener for that chain.
+  const visibleHoldings = (details?.holdings ?? []).filter((holding) => {
+    if (holding.chain === 'robinhood') {
+      return holding.liquidityUsd == null || holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
+    }
+    if (holding.liquidityUsd != null) {
+      return holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
+    }
+
+    const key = `${holding.chain}:${holding.tokenAddress}`;
+    if (!(key in holdingMetricsMap)) {
+      return false;
+    }
+
+    const fallbackLiquidityUsd = holdingMetricsMap[key]?.liquidityUsd;
+    return fallbackLiquidityUsd != null && fallbackLiquidityUsd >= LIQUIDITY_THRESHOLD_USD;
+  });
+
+  const pendingLiquidityHoldingsCount = (details?.holdings ?? []).filter((holding) => {
+    if (holding.chain === 'robinhood' || holding.liquidityUsd != null) {
+      return false;
+    }
+    const key = `${holding.chain}:${holding.tokenAddress}`;
+    return !(key in holdingMetricsMap);
+  }).length;
+  const hasPendingLiquidityLookups = pendingLiquidityHoldingsCount > 0;
+
+  const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
+  const totalAssetUsd = details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd;
+  const historicalMaxAssetUsd = details?.user.historicalMaxAssetUsd ?? selectedUser.historicalMaxAssetUsd;
+
+  const handleCopyCa = useCallback((tokenAddress: string, key: string) => {
+    navigator.clipboard.writeText(tokenAddress).then(() => {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 1500);
+    });
+  }, []);
 
   return (
     <div className="mb-6 space-y-4">
@@ -129,6 +322,7 @@ export function SelectedUserDetailsPanel({
           <div className="space-y-1 text-xs text-zinc-500 sm:text-right">
             {details?.holdingsUpdatedAt ? <div>更新于 {formatUpdatedAt(details.holdingsUpdatedAt)}</div> : null}
             {detailsRefreshing ? <div className="text-zinc-400">正在后台刷新持仓明细...</div> : null}
+            {hasPendingLiquidityLookups ? <div className="text-zinc-400">正在加载流动性数据...</div> : null}
           </div>
         </div>
 
@@ -167,13 +361,13 @@ export function SelectedUserDetailsPanel({
           </div>
         ) : null}
 
-        {details && details.holdings.length === 0 ? (
+        {details && visibleHoldings.length === 0 ? (
           <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4 text-sm text-zinc-400">
             暂无 &gt;= {holdingsThresholdUsd} USD 的持仓
           </div>
         ) : null}
 
-        {details && details.holdings.length > 0 ? (
+        {details && visibleHoldings.length > 0 ? (
           <div className="mt-4 overflow-x-auto">
             <table className="min-w-full divide-y divide-zinc-800 text-sm">
               <thead>
@@ -181,37 +375,55 @@ export function SelectedUserDetailsPanel({
                   <th className="py-2 pr-4 font-medium">链</th>
                   <th className="py-2 pr-4 font-medium">Token</th>
                   <th className="py-2 pr-4 font-medium">占比</th>
-                  <th className="py-2 pr-4 font-medium">单价</th>
+                  <th className="py-2 pr-4 font-medium">市值</th>
                   <th className="py-2 font-medium">价值</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/80">
-                {(holdingsExpanded ? details.holdings : details.holdings.slice(0, 10)).map((holding) => (
+                {(holdingsExpanded ? visibleHoldings : visibleHoldings.slice(0, 10)).map((holding) => (
                   <tr key={`${holding.chain}:${holding.tokenAddress}`} className="align-top text-zinc-200">
                     <td className="py-3 pr-4">{CHAIN_LABELS[holding.chain] ?? holding.chain}</td>
                     <td className="py-3 pr-4">
-                      <div className="font-medium text-zinc-100">{holding.symbol}</div>
+                      <div
+                        className="cursor-pointer font-medium text-zinc-100 transition-colors hover:text-emerald-400"
+                        title="点击复制合约地址"
+                        onClick={() => handleCopyCa(holding.tokenAddress, `${holding.chain}:${holding.tokenAddress}`)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleCopyCa(holding.tokenAddress, `${holding.chain}:${holding.tokenAddress}`)}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        {holding.symbol}
+                        {copiedKey === `${holding.chain}:${holding.tokenAddress}` ? (
+                          <span className="ml-1 text-xs text-emerald-400">已复制</span>
+                        ) : null}
+                      </div>
                       {holding.name ? <div className="text-xs text-zinc-500">{holding.name}</div> : null}
                     </td>
                     <td className="py-3 pr-4">
-                      {totalAssetUsd > 0
-                        ? `${((holding.valueUsd / totalAssetUsd) * 100).toFixed(1)}%`
+                      {visibleHoldingsTotalUsd > 0
+                        ? `${((holding.valueUsd / visibleHoldingsTotalUsd) * 100).toFixed(1)}%`
                         : '-'}
                     </td>
-                    <td className="py-3 pr-4">{formatUsd(holding.priceUsd)}</td>
+                    <td className="py-3 pr-4">
+                      {(() => {
+                        const mcKey = `${holding.chain}:${holding.tokenAddress}`;
+                        const marketCapUsd = holdingMetricsMap[mcKey]?.marketCapUsd;
+                        return marketCapUsd != null ? formatCompactMarketCap(marketCapUsd) : '-';
+                      })()}
+                    </td>
                     <td className="py-3 font-medium text-zinc-100">{formatUsd(holding.valueUsd)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {details.holdings.length > 10 ? (
+            {visibleHoldings.length > 10 ? (
               <div className="mt-2 text-center">
                 <button
                   type="button"
                   onClick={() => setHoldingsExpanded(!holdingsExpanded)}
                   className="text-xs text-zinc-400 transition-colors hover:text-zinc-200"
                 >
-                  {holdingsExpanded ? '收起' : `展开全部 (${details.holdings.length})`}
+                   {holdingsExpanded ? '收起' : `展开全部 (${visibleHoldings.length})`}
                 </button>
               </div>
             ) : null}
