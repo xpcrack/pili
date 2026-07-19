@@ -2,11 +2,11 @@ import 'server-only';
 
 import { legacyFeedItemToCanonicalEvent } from '@/lib/canonical';
 import { signInternalBidToken } from '@/lib/server/internalBidAuth';
+import { createInFlightTracker, postWithRetry } from '@/lib/server/webhookRetry';
 import type { Activity, ChainType, FeedChain, User } from '@/types';
 
 const DEFAULT_PUSH_URL = 'http://127.0.0.1:5050/api/internal/pilipili/feed-events';
 const DEFAULT_MAX_ATTEMPTS = 1;
-const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 // Keep BID push non-blocking for feed ingest. Catch-up must not wait multi-second retries.
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 1_500;
 
@@ -108,25 +108,6 @@ function resolvePushUrl(env: NodeJS.ProcessEnv) {
 
 function hasSigningSecret(env: NodeJS.ProcessEnv) {
   return Boolean(normalizeConfigValue(env.INTERNAL_BID_HMAC_SECRET));
-}
-
-function normalizePositiveInteger(value: number | undefined, fallback: number) {
-  return Number.isFinite(value) ? Math.max(1, Math.floor(value!)) : fallback;
-}
-
-function computeRetryDelayMs(attempt: number, retryBaseDelayMs: number) {
-  return retryBaseDelayMs * 2 ** Math.max(0, attempt - 1);
-}
-
-function formatUnknownError(error: unknown) {
-  if (error instanceof Error) return error.message || error.name;
-  if (typeof error === 'string') return error;
-  return 'unknown error';
-}
-
-function formatResponseFailure(status: number, detail: string) {
-  const normalizedDetail = detail.trim();
-  return normalizedDetail ? `BID push responded ${status}: ${normalizedDetail}` : `BID push responded ${status}`;
 }
 
 function createDefaultLogger(): BidFeedPushLog {
@@ -279,93 +260,69 @@ export async function notifyBidFeedPush(rows: FeedRow[], deps: BidFeedPushDeps =
     };
   }
 
-  const fetchImpl = deps.fetchImpl || fetch;
-  const sleep = deps.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const log = deps.log || createDefaultLogger();
-  const maxAttempts = normalizePositiveInteger(deps.maxAttempts, DEFAULT_MAX_ATTEMPTS);
-  const retryBaseDelayMs = Number.isFinite(deps.retryBaseDelayMs)
-    ? Math.max(0, Math.floor(deps.retryBaseDelayMs!))
-    : DEFAULT_RETRY_BASE_DELAY_MS;
   const envTimeout = Number.parseInt(normalizeConfigValue(env.BID_FEED_PUSH_TIMEOUT_MS), 10);
-  const attemptTimeoutMs = normalizePositiveInteger(
-    deps.attemptTimeoutMs ?? (Number.isFinite(envTimeout) ? envTimeout : undefined),
-    DEFAULT_ATTEMPT_TIMEOUT_MS
-  );
-  const body = JSON.stringify(payload);
+  const attemptTimeoutMs =
+    deps.attemptTimeoutMs ?? (Number.isFinite(envTimeout) ? envTimeout : DEFAULT_ATTEMPT_TIMEOUT_MS);
 
-  let lastError = 'unknown error';
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort(new Error(`BID push timed out after ${attemptTimeoutMs}ms`));
-    }, attemptTimeoutMs);
+  const result = await postWithRetry({
+    url,
+    body: JSON.stringify(payload),
+    headers: {
+      'Content-Type': 'application/json',
+      authorization: `Bearer ${signInternalBidToken({ scope: 'internal:bid:write' })}`,
+    },
+    maxAttempts: deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    retryBaseDelayMs: deps.retryBaseDelayMs,
+    attemptTimeoutMs,
+    fetchImpl: deps.fetchImpl,
+    sleep: deps.sleep,
+    log: deps.log || createDefaultLogger(),
+  });
 
-    try {
-      const response = await fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          authorization: `Bearer ${signInternalBidToken({ scope: 'internal:bid:write' })}`,
-        },
-        body,
-        signal: controller.signal,
-      });
-
-      const responseText = await response.text().catch(() => '');
-      if (response.ok) {
-        const responsePayload = responseText ? JSON.parse(responseText) as { ok?: boolean; error?: string } : { ok: true };
-        if (responsePayload.ok !== false) {
+  if (result.ok) {
+    // BID may return 200 with { ok: false }
+    if (result.responseText) {
+      try {
+        const responsePayload = JSON.parse(result.responseText) as { ok?: boolean; error?: string };
+        if (responsePayload.ok === false) {
           return {
-            ok: true,
-            status: 'sent',
-            attempts: attempt,
+            ok: false,
+            status: 'failed',
+            attempts: result.attempts,
+            error: responsePayload.error || 'BID push rejected',
             events: payload.events.length,
             trades: payload.trades.length,
           };
         }
-        lastError = responsePayload.error || 'BID push rejected';
-      } else {
-        lastError = formatResponseFailure(response.status, responseText);
+      } catch {
+        // non-JSON body is fine
       }
-
-      log('push request failed', { attempt, maxAttempts, error: lastError });
-    } catch (error) {
-      lastError = formatUnknownError(error);
-      log('push request threw', { attempt, maxAttempts, error: lastError });
-    } finally {
-      clearTimeout(timeoutId);
     }
-
-    if (attempt < maxAttempts) {
-      await sleep(computeRetryDelayMs(attempt, retryBaseDelayMs));
-    }
+    return {
+      ok: true,
+      status: 'sent',
+      attempts: result.attempts,
+      events: payload.events.length,
+      trades: payload.trades.length,
+    };
   }
 
   return {
     ok: false,
     status: 'failed',
-    attempts: maxAttempts,
-    error: lastError,
+    attempts: result.attempts,
+    error: result.error,
     events: payload.events.length,
     trades: payload.trades.length,
   };
 }
 
-const inFlightBidFeedPushTasks = new Set<Promise<BidFeedPushResult>>();
-
-function trackBidFeedPushTask(task: Promise<BidFeedPushResult>) {
-  inFlightBidFeedPushTasks.add(task);
-  void task.finally(() => {
-    inFlightBidFeedPushTasks.delete(task);
-  });
-}
+const inFlight = createInFlightTracker<BidFeedPushResult>();
 
 export function triggerBidFeedPush(rows: FeedRow[], deps: BidFeedPushDeps = {}) {
-  trackBidFeedPushTask(notifyBidFeedPush(rows, deps));
+  inFlight.track(notifyBidFeedPush(rows, deps));
 }
 
 export async function waitForBidFeedPushDrain() {
-  while (inFlightBidFeedPushTasks.size > 0) {
-    await Promise.allSettled(Array.from(inFlightBidFeedPushTasks));
-  }
+  await inFlight.waitForDrain();
 }

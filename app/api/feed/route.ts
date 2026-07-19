@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { requireAdmin } from '@/lib/server/apiGuard';
 import { readEventsFeed, readLatestActivityAtByUser } from '@/lib/server/eventsRepo';
 import { countQualifiedActivitiesByUser, readFeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
-import { scheduleBackfillCompanionAfterPrimarySync } from '@/lib/server/feedBackfillScheduler';
 import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
 import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
 import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
@@ -286,13 +285,22 @@ function scheduleBackfillCompanionSyncs(options: {
     };
   }
 
-  return scheduleBackfillCompanionAfterPrimarySync({
-    waitForPrimarySync: waitForSyncCompletion,
-    runCompanionSyncs: () => triggerBackfillCompanionSyncs(options),
-    onError: (error) => {
+  void waitForSyncCompletion()
+    .then(() => {
+      triggerBackfillCompanionSyncs(options);
+    })
+    .catch((error) => {
       console.error('[api/feed] deferred backfill companion sync failed:', error);
+    });
+
+  return {
+    twitter: {
+      ok: true as const,
+      started: true as const,
+      background: true as const,
+      deferredUntilPrimarySyncIdle: true as const,
     },
-  });
+  };
 }
 
 export async function GET(request: NextRequest) {

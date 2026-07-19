@@ -1,11 +1,11 @@
 import 'server-only';
 
 import type { AddressDiagnostic } from '@/lib/activityFeed';
+import { ALERT_RATE_LIMIT_WINDOW_MS, pickAlertChatId } from '@/lib/server/alertChat';
 import { isIngestAlertQuotaAvailable, markIngestAlertQuotaConsumed } from '@/lib/server/ingestAlertRepo';
 import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 
-const ALERT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURE_LINES = 8;
 
 export interface NotifySyncFailureInput {
@@ -41,14 +41,6 @@ export interface NotifySyncFailureResult {
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim();
-}
-
-function pickAlertChatId(config: SystemConfigSnapshot) {
-  return (
-    normalize(config.conflictNotificationTelegramChatId) ||
-    normalize(config.telegramUnknownPersonAlertChatId) ||
-    ''
-  );
 }
 
 function errorBucket(error: string | null | undefined) {

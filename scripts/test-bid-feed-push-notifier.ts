@@ -186,6 +186,7 @@ async function run() {
       const sleeps: number[] = [];
       let attempt = 0;
       const result = await notifyBidFeedPush([{ user: buildUser(), activity: buildActivity() }], {
+        maxAttempts: 3,
         fetchImpl: async () => {
           attempt += 1;
           if (attempt === 1) throw new Error('temporary network error');

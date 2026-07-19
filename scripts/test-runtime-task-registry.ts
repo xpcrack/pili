@@ -315,6 +315,7 @@ async function testDefaultTasksCanExcludeEmbeddedTelegramLoops() {
           failedWalletCount: 0,
           holdingsRowCount: 1,
           filteredOutHoldingCount: 0,
+          robinhoodWalletCount: 0,
           refreshedAtMs: 123,
         },
       }),
@@ -424,6 +425,7 @@ async function testDefaultTaskOrderIsStable() {
         failedWalletCount: 0,
         holdingsRowCount: 1,
         filteredOutHoldingCount: 0,
+        robinhoodWalletCount: 0,
         refreshedAtMs: 123,
       },
     }),
@@ -441,6 +443,7 @@ async function testDefaultTaskOrderIsStable() {
   assert.deepEqual(
     tasksWithTelegram.map((task) => task.key),
     [
+      'feishu-enablement-sync',
       'telegram-channel-sync',
       'completeness-maintenance',
       'holdings-refresh',
@@ -477,6 +480,7 @@ async function testDefaultTaskOrderIsStable() {
           failedWalletCount: 0,
           holdingsRowCount: 1,
           filteredOutHoldingCount: 0,
+          robinhoodWalletCount: 0,
           refreshedAtMs: 123,
         },
       }),
@@ -496,6 +500,7 @@ async function testDefaultTaskOrderIsStable() {
   );
 
   assert.deepEqual(tasksWithoutTelegram.map((task) => task.key), [
+    'feishu-enablement-sync',
     'completeness-maintenance',
     'holdings-refresh',
     'holder-snapshot',
