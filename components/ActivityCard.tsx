@@ -22,7 +22,7 @@ import {
   getRelativeTimeState,
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
-import { type TradeValueDisplayMode } from '@/lib/tradeDisplay';
+import { formatCompactMarketCap, type TradeValueDisplayMode } from '@/lib/tradeDisplay';
 
 interface ActivityCardProps {
   activity: Activity;
@@ -161,7 +161,14 @@ export function ActivityCard({
   const twitterContent = isTwitter ? cleanTwitterDisplayText(activity.content) : activity.content;
   const twitterPrimaryText =
     isTwitter ? collapseActivityCardText(activity.metadata.translationZh || twitterContent) : primaryText;
-  const twitterQuotedContent = isTwitter ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '') : '';
+  const twitterQuotedOriginal = isTwitter
+    ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '')
+    : '';
+  const twitterQuotedContent = isTwitter
+    ? cleanTwitterDisplayText(
+        activity.metadata.quotedTweetTranslationZh || activity.metadata.quotedTweetContent || ''
+      )
+    : '';
   const twitterQuotedAuthorHandle = isTwitter ? (activity.metadata.quotedTweetAuthorHandle || '').trim() : '';
   const telegramPrimaryText = isTelegram ? getTelegramCardPrimaryText(activity.content) : null;
   const telegramTranslationZh = isTelegram ? (activity.metadata.translationZh || '').trim() : '';
@@ -462,33 +469,59 @@ export function ActivityCard({
                                 {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
                               </p>
                             ) : null}
-                            {twitterQuotedContent ? (
+                            {twitterQuotedContent || twitterQuotedOriginal ? (
                               <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
                                 <p className="text-[11px] text-zinc-500">
                                   {twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用内容'}
                                 </p>
                                 <p className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-300">
-                                  {twitterQuotedContent}
+                                  {twitterQuotedContent || twitterQuotedOriginal}
                                 </p>
                               </div>
                             ) : null}
                             {tweetSentimentChips.length > 0 ? (
                               <div className="flex flex-wrap gap-1.5 pt-1">
-                                {tweetSentimentChips.map((chip, index) => (
-                                  <span
-                                    key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                                    className={
-                                      chip.sentiment === 'positive'
-                                        ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                        : chip.sentiment === 'negative'
-                                          ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                          : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                                    }
-                                  >
-                                    {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
-                                    {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
-                                  </span>
-                                ))}
+                                {tweetSentimentChips.map((chip, index) => {
+                                  const symbol = chip.tokenSymbol
+                                    ? chip.tokenSymbol.toUpperCase()
+                                    : chip.tokenAddress
+                                      ? chip.tokenAddress.length > 12
+                                        ? `${chip.tokenAddress.slice(0, 4)}…${chip.tokenAddress.slice(-4)}`
+                                        : chip.tokenAddress
+                                      : 'TOKEN';
+                                  const mcLabel = formatCompactMarketCap(chip.marketCapAtPostUsd);
+                                  const sentimentLabel =
+                                    chip.sentiment === 'positive'
+                                      ? '正面'
+                                      : chip.sentiment === 'negative'
+                                        ? '负面'
+                                        : '中性';
+                                  const currentMc = formatCompactMarketCap(chip.marketCapUsd);
+                                  const titleParts = [
+                                    chip.tokenAddress || null,
+                                    mcLabel
+                                      ? `发帖时市值 ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}`
+                                      : null,
+                                    currentMc ? `当前市值 ${currentMc}` : null,
+                                  ].filter(Boolean);
+                                  return (
+                                    <span
+                                      key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                                      title={titleParts.join(' · ') || undefined}
+                                      className={
+                                        chip.sentiment === 'positive'
+                                          ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                          : chip.sentiment === 'negative'
+                                            ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                            : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                                      }
+                                    >
+                                      {symbol}
+                                      {mcLabel ? ` · ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}` : ''}
+                                      {` · ${sentimentLabel}`}
+                                    </span>
+                                  );
+                                })}
                               </div>
                             ) : null}
                           </>
@@ -518,7 +551,7 @@ export function ActivityCard({
                             ) : null}
                           </>
                         )}
-                        {hasMedia ? <div className="text-[12px] text-zinc-500">媒体</div> : null}
+                        {hasMedia && !isTwitter ? <div className="text-[12px] text-zinc-500">媒体</div> : null}
                       </div>
                     </div>
                   </div>
@@ -749,7 +782,7 @@ export function ActivityCard({
                       {activity.metadata.replies}
                     </span>
                   )}
-                  {hasMedia && !isBlockchain && <span>媒体</span>}
+                  {hasMedia && !isBlockchain && !isTwitter && <span>媒体</span>}
                 </div>
               ) : null}
             </div>

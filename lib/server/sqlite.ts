@@ -663,6 +663,10 @@ CREATE TABLE IF NOT EXISTS twitter_tweet_enrichments (
   extraction_status TEXT NOT NULL DEFAULT 'pending',
   extractor_version TEXT,
   translator_version TEXT,
+  quoted_translation_zh TEXT,
+  quoted_translation_status TEXT NOT NULL DEFAULT 'pending',
+  vision_status TEXT NOT NULL DEFAULT 'pending',
+  vision_processed_at_ms INTEGER,
   last_processed_at_ms INTEGER,
   last_error TEXT,
   created_at_ms INTEGER NOT NULL,
@@ -681,6 +685,12 @@ CREATE TABLE IF NOT EXISTS twitter_tweet_token_mentions (
   sentiment TEXT NOT NULL,
   confidence REAL,
   rank_in_tweet INTEGER,
+  origin TEXT NOT NULL DEFAULT 'text',
+  market_cap_usd REAL,
+  market_cap_at_post_usd REAL,
+  market_cap_at_post_estimated INTEGER NOT NULL DEFAULT 0,
+  market_cap_source TEXT,
+  resolved_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
@@ -1149,6 +1159,7 @@ function initializeDb(db: SqlDatabase) {
   ensureActivityJudgmentColumns(db);
   ensureTwitterSyncCursorColumns(db);
   ensureTwitterIdentityColumns(db);
+  ensureTwitterEnrichmentColumns(db);
   ensureTelegramsJsonColumn(db);
   ensureCompletenessSchema(db);
   ensureEventsFtsIndexing(db);
@@ -1414,6 +1425,20 @@ function ensureTwitterIdentityColumns(db: SqlDatabase) {
     `CREATE INDEX IF NOT EXISTS idx_twitter_tweets_author_user_created
      ON twitter_tweets(author_user_id, created_at_ms DESC)`
   );
+}
+
+function ensureTwitterEnrichmentColumns(db: SqlDatabase) {
+  ensureColumn(db, 'twitter_tweet_enrichments', 'quoted_translation_zh', 'TEXT');
+  ensureColumn(db, 'twitter_tweet_enrichments', 'quoted_translation_status', 'TEXT', "'pending'");
+  ensureColumn(db, 'twitter_tweet_enrichments', 'vision_status', 'TEXT', "'pending'");
+  ensureColumn(db, 'twitter_tweet_enrichments', 'vision_processed_at_ms', 'INTEGER');
+
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'origin', 'TEXT', "'text'");
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'market_cap_usd', 'REAL');
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'market_cap_at_post_usd', 'REAL');
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'market_cap_at_post_estimated', 'INTEGER', '0');
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'market_cap_source', 'TEXT');
+  ensureColumn(db, 'twitter_tweet_token_mentions', 'resolved_at_ms', 'INTEGER');
 }
 
 function ensureTelegramsJsonColumn(db: SqlDatabase) {
