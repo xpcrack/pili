@@ -1,5 +1,13 @@
 import 'server-only';
 
+/**
+ * FROZEN_COMPAT_ONLY
+ *
+ * Preserve the current importance scoring behavior for compatibility only.
+ * Allowed changes are limited to compilation or data-compatibility fixes.
+ * Do not change scoring rules, fields, thresholds, or introduce new callers.
+ */
+
 import { createHash } from 'node:crypto';
 
 import {

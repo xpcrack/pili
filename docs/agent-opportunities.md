@@ -1,4 +1,22 @@
-# Pili `GET /api/agent/opportunities` 接入说明
+# [DEPRECATED] Pili `GET /api/agent/opportunities` 接入说明
+
+> **Status: Permanently Disabled (Sprint 2, 2026-07-12)**
+>
+> This API has been deactivated. The route now returns **HTTP 410 Gone** with
+> `{ ok: false, error: "gone" }`. No active callers were identified during the
+> caller audit. The underlying `opportunitySelector.ts` has been deleted as
+> it was not shared with any active service.
+>
+> This document is retained as historical reference only. Do not integrate
+> against this endpoint.
+
+---
+
+## Previous Documentation (Historical Reference)
+
+以下为此 API 停用前的原始接入说明，仅供历史参考。
+
+---
 
 供本机 cronjob agent（如 Hermes）拉取"交易机会候选"清单。pili 在内部做规则粗筛 + 字段精简，让 Hermes 这边的 LLM 直接消化。
 
