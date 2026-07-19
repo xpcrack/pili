@@ -31,10 +31,20 @@ async function run() {
       disabled INTEGER NOT NULL DEFAULT 0,
       UNIQUE (kind, external_id)
     );
+    CREATE TABLE wallets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      address TEXT NOT NULL,
+      chain TEXT NOT NULL,
+      label TEXT,
+      is_self INTEGER NOT NULL DEFAULT 0
+    );
     INSERT INTO sources (kind, external_id, label, disabled) VALUES
       ('wallet', '0xAAA', 'A', 0),
       ('wallet', 'SoLWalletOne', 'B', 0),
-      ('wallet', '0xBBB', 'C', 1);
+      ('wallet', '0xBBB', 'C', 1),
+      ('wallet', 'SelfWalletSol', 'self', 1);
+    INSERT INTO wallets (address, chain, label, is_self) VALUES
+      ('SelfWalletSol', 'solana', 'main', 1);
   `);
   newone.close();
 
@@ -58,6 +68,10 @@ async function run() {
       `INSERT INTO tracked_users (id, name, handle, avatar, tags_json, total_asset_usd, historical_max_asset_usd, created_at, updated_at)
        VALUES (?, ?, ?, '', '[]', 0, 0, ?, ?)`
     ).run('u2', 'Beta', 'beta', now, now);
+    db.prepare(
+      `INSERT INTO tracked_users (id, name, handle, avatar, tags_json, total_asset_usd, historical_max_asset_usd, created_at, updated_at)
+       VALUES (?, ?, ?, '', '[]', 0, 0, ?, ?)`
+    ).run('u3', 'SelfPerson', 'selfperson', now, now);
 
     db.prepare(
       `INSERT INTO tracked_addresses (id, user_id, address, address_lower, name, chain, created_at, updated_at)
@@ -75,10 +89,16 @@ async function run() {
       `INSERT INTO tracked_addresses (id, user_id, address, address_lower, name, chain, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run('a4', 'u2', 'OnlyInPili', 'onlyinpili', 'a4', 'solana', now, now);
+    db.prepare(
+      `INSERT INTO tracked_addresses (id, user_id, address, address_lower, name, chain, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('a5', 'u3', 'SelfWalletSol', 'selfwalletsol', '#1', 'solana', now, now);
 
     const result = syncFeishuEnablementFromNewone({ newonePath });
     assert.equal(result.ok, true, result.error);
     assert.equal(result.enabledAddressCount, 2);
+    assert.equal(result.selfAddressCount, 1);
+    assert.ok(result.selfForcedEnabled >= 1);
 
     // EVM expansion may create base/eth/bsc rows for the same address_lower.
     const flagRows = db
@@ -93,19 +113,25 @@ async function run() {
     assert.equal(byLower['0xbbb'], 0);
     assert.equal(byLower.solwalletone, 1);
     assert.equal(byLower.onlyinpili, 0);
+    // self wallet disabled in sources but forced on via wallets.is_self
+    assert.equal(byLower.selfwalletsol, 1);
 
-    assert.equal(listTrackedUsers().length, 2);
+    assert.equal(listTrackedUsers().length, 3);
     const monitored = listMonitoredUsers();
     assert.ok(monitored.some((u) => u.id === 'u1'));
     assert.ok(monitored.some((u) => u.id === 'u2'));
+    assert.ok(monitored.some((u) => u.id === 'u3'), 'self person must be monitored');
     const u1 = monitored.find((u) => u.id === 'u1')!;
     const u2 = monitored.find((u) => u.id === 'u2')!;
+    const u3 = monitored.find((u) => u.id === 'u3')!;
     const u1Lowers = new Set(u1.addresses.map((a) => a.address.toLowerCase()));
     const u2Lowers = new Set(u2.addresses.map((a) => a.address.toLowerCase()));
+    const u3Lowers = new Set(u3.addresses.map((a) => a.address.toLowerCase()));
     assert.ok(u1Lowers.has('0xaaa'));
     assert.ok(!u1Lowers.has('0xbbb'));
     assert.ok(u2Lowers.has('solwalletone'));
     assert.ok(!u2Lowers.has('onlyinpili'));
+    assert.ok(u3Lowers.has('selfwalletsol'));
     assert.ok(u1.addresses.length >= 1);
     assert.ok(u2.addresses.length >= 1);
 
@@ -114,6 +140,36 @@ async function run() {
     empty.exec(`CREATE TABLE sources (kind TEXT, external_id TEXT, disabled INTEGER);`);
     empty.close();
     assert.equal(syncFeishuEnablementFromNewone({ newonePath: emptyPath }).ok, false);
+
+    // label=self fallback when wallets table is missing
+    const labelOnlyPath = path.join(tempDir, 'label-self.sqlite');
+    const labelOnly = new BetterSqlite3(labelOnlyPath);
+    labelOnly.exec(`
+      CREATE TABLE sources (
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        label TEXT,
+        disabled INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO sources (kind, external_id, label, disabled) VALUES
+        ('wallet', '0xAAA', 'A', 0),
+        ('wallet', 'LabelSelfOnly', 'self', 1);
+    `);
+    labelOnly.close();
+
+    db.prepare(
+      `INSERT INTO tracked_addresses (id, user_id, address, address_lower, name, chain, created_at, updated_at, monitoring_enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+    ).run('a6', 'u3', 'LabelSelfOnly', 'labelselfonly', '#2', 'solana', now, now);
+
+    const labelResult = syncFeishuEnablementFromNewone({ newonePath: labelOnlyPath });
+    assert.equal(labelResult.ok, true, labelResult.error);
+    const labelEn = db
+      .prepare(
+        `SELECT monitoring_enabled AS en FROM tracked_addresses WHERE address_lower = 'labelselfonly'`
+      )
+      .get() as { en: number };
+    assert.equal(labelEn.en, 1, 'sources label=self must force enable without wallets table');
 
     console.log('OK feishu-enablement-sync');
   } finally {
