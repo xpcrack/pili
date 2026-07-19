@@ -5,6 +5,7 @@ import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import { toProxiedMediaUrl } from '@/lib/mediaProxy';
 import { getUserAvatar } from '@/lib/userProfile';
 import { getActivityCardContentColumnClass } from '@/lib/activityCardLayout';
 import { buildActivityCardViewModel } from '@/lib/activityCardViewModel';
@@ -91,7 +92,8 @@ export function ActivityCard({
         ? tokenInfoState.info
         : { logoUrl: null, marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false }
     );
-  const resolvedTokenAvatar = cachedTokenAvatar !== undefined ? cachedTokenAvatar : resolvedTokenInfo.logoUrl;
+  const resolvedTokenAvatarRaw = cachedTokenAvatar !== undefined ? cachedTokenAvatar : resolvedTokenInfo.logoUrl;
+  const resolvedTokenAvatar = toProxiedMediaUrl(resolvedTokenAvatarRaw);
   const {
     isBlockchain,
     isTwitter,
@@ -188,9 +190,7 @@ export function ActivityCard({
         );
       })
     : [];
-  const coHitUserCount = activity.metadata.coHitUserCount ?? 1;
   const coHitAddressCount = activity.metadata.coHitAddressCount ?? 1;
-  const hasCoHitMarker = coHitUserCount > 1 || coHitAddressCount > 1;
   const socialPostUrl = activity.metadata.tweetUrl || activity.metadata.telegramPostUrl || '';
   const copyText = useCallback(async (text: string) => {
     if (!text) return;
@@ -337,7 +337,7 @@ export function ActivityCard({
           </Badge>
         ) : null}
         <div className="grid gap-y-1 md:grid-cols-[minmax(0,0.78fr)_8.75rem_minmax(0,1.22fr)] md:gap-x-1">
-          {!isTransfer && (
+          {!isTransfer && !isTwitter && !isTelegram && (
             <div className="flex min-w-0 items-start gap-1.5 text-[13px] md:col-start-3 md:row-start-1 md:self-start">
               <Avatar className="h-9 w-9 shrink-0">
                 <AvatarImage src={getUserAvatar(user)} alt={user.name} />
@@ -348,31 +348,6 @@ export function ActivityCard({
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-semibold text-zinc-300">{isNews && newsChannelLabel ? newsChannelLabel : user.name}</span>
-                  {(isTwitter || isTelegram) && socialPostUrl ? (
-                    <button
-                      type="button"
-                      className="shrink-0 rounded px-1 py-0 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-                      title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
-                      onClick={async (event) => {
-                        event.stopPropagation();
-                        await copyText(socialPostUrl);
-                        setTweetLinkCopied(true);
-                        if (tweetCopyTimerRef.current !== null) {
-                          window.clearTimeout(tweetCopyTimerRef.current);
-                        }
-                        tweetCopyTimerRef.current = window.setTimeout(() => {
-                          setTweetLinkCopied(false);
-                        }, 1200);
-                      }}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
-                      }}
-                    >
-                        {tweetLinkCopied ? '已复制' : timeAgo}
-                    </button>
-                  ) : null}
                 </div>
                 {isBlockchain && (
                   <div className="mt-0.5 text-zinc-500">
@@ -426,6 +401,127 @@ export function ActivityCard({
               <div className="flex min-w-0 flex-wrap items-center gap-1 text-[13px] leading-5">
                 {!isTwitter && !isTelegram && !isTransfer && (
                   <span className="line-clamp-1 text-zinc-300">{primaryText}</span>
+                )}
+                {(isTwitter || isTelegram) && (
+                  <div className="w-full min-w-0">
+                    {/*
+                      与交易卡同一 3 列栅格宽度：
+                      左 2.5+12.167 空着对齐交易内容区，
+                      右 8.75rem 放用户头像（与交易人像同列），
+                      内容再贴在头像右边继续展开。
+                    */}
+                    <div className="flex w-full min-w-0 items-start gap-1.5">
+                      <div className="hidden shrink-0 md:block md:w-[14.667rem]" aria-hidden />
+                      <div className="grid h-10 w-[8.75rem] shrink-0 grid-cols-[2.5rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-0.5">
+                        <Avatar className="row-span-2 h-10 w-10 shrink-0">
+                          <AvatarImage src={getUserAvatar(user)} alt={user.name} />
+                          <AvatarFallback className="bg-zinc-800 text-[11px] text-zinc-400">
+                            {user.name.slice(0, 1).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 flex-1 truncate font-semibold leading-none text-zinc-300">
+                            {isNews && newsChannelLabel ? newsChannelLabel : user.name}
+                          </span>
+                        </div>
+                        <div className="min-w-0 text-zinc-500 leading-none">
+                          {socialPostUrl ? (
+                            <button
+                              type="button"
+                              className="rounded px-1 py-0 -ml-1 hover:bg-zinc-800 hover:text-zinc-300"
+                              title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
+                              onClick={async (event) => {
+                                event.stopPropagation();
+                                await copyText(socialPostUrl);
+                                setTweetLinkCopied(true);
+                                if (tweetCopyTimerRef.current !== null) {
+                                  window.clearTimeout(tweetCopyTimerRef.current);
+                                }
+                                tweetCopyTimerRef.current = window.setTimeout(() => {
+                                  setTweetLinkCopied(false);
+                                }, 1200);
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
+                              }}
+                            >
+                              {tweetLinkCopied ? '已复制' : [timeAgo, typeLabel].filter(Boolean).join(' ')}
+                            </button>
+                          ) : (
+                            <span className="px-1 -ml-1">{[timeAgo, typeLabel].filter(Boolean).join(' ')}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1 text-[13px] leading-5">
+                        {isTwitter ? (
+                          <>
+                            {twitterPrimaryText ? (
+                              <p className="whitespace-pre-wrap break-words text-zinc-100">
+                                {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
+                              </p>
+                            ) : null}
+                            {twitterQuotedContent ? (
+                              <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                                <p className="text-[11px] text-zinc-500">
+                                  {twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用内容'}
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-300">
+                                  {twitterQuotedContent}
+                                </p>
+                              </div>
+                            ) : null}
+                            {tweetSentimentChips.length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {tweetSentimentChips.map((chip, index) => (
+                                  <span
+                                    key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                                    className={
+                                      chip.sentiment === 'positive'
+                                        ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                        : chip.sentiment === 'negative'
+                                          ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                          : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                                    }
+                                  >
+                                    {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
+                                    {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </>
+                        ) : (
+                          <>
+                            <p className="whitespace-pre-wrap break-words text-zinc-100">
+                              {highlightSocialContent(telegramDisplayPrimary, activity.metadata.tokenSentiments)}
+                            </p>
+                            {telegramSentimentChips.length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {telegramSentimentChips.map((chip, index) => (
+                                  <span
+                                    key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                                    className={
+                                      chip.sentiment === 'positive'
+                                        ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                        : chip.sentiment === 'negative'
+                                          ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                          : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                                    }
+                                  >
+                                    {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
+                                    {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                        {hasMedia ? <div className="text-[12px] text-zinc-500">媒体</div> : null}
+                      </div>
+                    </div>
+                  </div>
                 )}
                 {isTransfer && (
                   <div className="w-full min-w-0">
@@ -636,96 +732,26 @@ export function ActivityCard({
                     </div>
                   </div>
                 )}
-                {!isTransfer && isTwitter && (
-                  <div className="w-full space-y-1">
-                    {twitterPrimaryText ? (
-                      <p className="whitespace-pre-wrap break-words text-zinc-100">
-                        {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
-                      </p>
-                    ) : null}
-                    {twitterQuotedContent ? (
-                      <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                        <p className="text-[11px] text-zinc-500">
-                          {twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用内容'}
-                        </p>
-                        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-300">
-                          {twitterQuotedContent}
-                        </p>
-                      </div>
-                    ) : null}
-                    {tweetSentimentChips.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {tweetSentimentChips.map((chip, index) => (
-                          <span
-                            key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                            className={
-                              chip.sentiment === 'positive'
-                                ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                : chip.sentiment === 'negative'
-                                  ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                  : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                            }
-                          >
-                            {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
-                            {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-                {!isTransfer && isTelegram && (
-                  <div className="w-full space-y-1">
-                    <p className="whitespace-pre-wrap break-words text-zinc-100">
-                      {highlightSocialContent(telegramDisplayPrimary, activity.metadata.tokenSentiments)}
-                    </p>
-                    {telegramSentimentChips.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {telegramSentimentChips.map((chip, index) => (
-                          <span
-                            key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                            className={
-                              chip.sentiment === 'positive'
-                                ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                : chip.sentiment === 'negative'
-                                  ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                  : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                            }
-                          >
-                            {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
-                            {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-x-2 text-[12px] text-zinc-500">
-                {secondaryText && <span className="line-clamp-1">{secondaryText}</span>}
-                {!isTwitter && activity.metadata.likes !== undefined && (
-                  <span className="flex items-center gap-1">
-                    👍
-                    {activity.metadata.likes}
-                  </span>
-                )}
-                {!isTwitter && activity.metadata.replies !== undefined && (
-                  <span className="flex items-center gap-1">
-                    💬
-                    {activity.metadata.replies}
-                  </span>
-                )}
-                {hasMedia && !isBlockchain && <span>媒体</span>}
-                {hasCoHitMarker && (
-                  <span
-                    className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300"
-                    title={activity.metadata.coHitUserNames?.join(' / ') || '同交易命中多个关注地址'}
-                  >
-                    命中 {coHitUserCount} 人/{coHitAddressCount} 地址
-                  </span>
-                )}
-              </div>
+              {!isTwitter && !isTelegram ? (
+                <div className="flex flex-wrap items-center gap-x-2 text-[12px] text-zinc-500">
+                  {secondaryText && <span className="line-clamp-1">{secondaryText}</span>}
+                  {activity.metadata.likes !== undefined && (
+                    <span className="flex items-center gap-1">
+                      👍
+                      {activity.metadata.likes}
+                    </span>
+                  )}
+                  {activity.metadata.replies !== undefined && (
+                    <span className="flex items-center gap-1">
+                      💬
+                      {activity.metadata.replies}
+                    </span>
+                  )}
+                  {hasMedia && !isBlockchain && <span>媒体</span>}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

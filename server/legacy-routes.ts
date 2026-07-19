@@ -48,6 +48,7 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'GET', path: '/debug/tx-judgment', load: () => import('@/app/api/debug/tx-judgment/route') },
   { method: 'GET', path: '/debug/tx-judgment/stream', load: () => import('@/app/api/debug/tx-judgment/stream/route') },
   { method: 'GET', path: '/avatar', load: () => import('@/app/api/avatar/route') },
+  { method: 'GET', path: '/media', load: () => import('@/app/api/media/route') },
   { method: 'GET', path: '/token-logo', load: () => import('@/app/api/token-logo/route') },
 ];
 
