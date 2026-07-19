@@ -1,6 +1,12 @@
 import 'server-only';
 
-import { groupTransactionsByHash, collectTokenFlows, summarizeFlows, pickDominantFlow } from '@/lib/parsing/core';
+import {
+  groupTransactionsByHash,
+  collectTokenFlows,
+  summarizeFlows,
+  pickDominantFlow,
+  isNativeAsset,
+} from '@/lib/parsing/core';
 import { convertToActivity } from '@/lib/parsing/toActivity';
 import {
   fetchOkxTransactionDetailByTxHash,
@@ -225,30 +231,41 @@ function createSyntheticTransactionsFromDetail(params: {
       const toLower = normalize(transfer.to);
       return (fromLower === trackedLower) !== (toLower === trackedLower);
     })
-    .map(
-      (transfer) =>
-        ({
-          txHash: params.txHash,
-          txTime: String(params.txTimeMs),
-          iType: '2',
-          symbol: (transfer.symbol || '').trim() || 'UNKNOWN',
-          amount: transfer.amount || '',
-          tokenContractAddress: transfer.tokenContractAddress || '',
-          from: [
-            {
-              address: transfer.from || '',
-              amount: transfer.amount || '',
-            },
-          ],
-          to: [
-            {
-              address: transfer.to || '',
-              amount: transfer.amount || '',
-            },
-          ],
-          txStatus: 'success',
-        }) satisfies OkxTransaction
-    );
+    .map((transfer) => {
+      const tokenContractAddress = (transfer.tokenContractAddress || '').trim();
+      const rawSymbol = (transfer.symbol || '').trim();
+      // Prefer real transfer symbol; if OKX omits it for WSOL/SOL mint, label as SOL
+      // so downstream collapse repair can recognize native assets (not "UNKNOWN").
+      let symbol = rawSymbol;
+      if (!symbol) {
+        if (isNativeAsset('solana', '', tokenContractAddress)) {
+          symbol = 'SOL';
+        } else {
+          symbol = 'UNKNOWN';
+        }
+      }
+      return {
+        txHash: params.txHash,
+        txTime: String(params.txTimeMs),
+        iType: '2',
+        symbol,
+        amount: transfer.amount || '',
+        tokenContractAddress,
+        from: [
+          {
+            address: transfer.from || '',
+            amount: transfer.amount || '',
+          },
+        ],
+        to: [
+          {
+            address: transfer.to || '',
+            amount: transfer.amount || '',
+          },
+        ],
+        txStatus: 'success',
+      } satisfies OkxTransaction;
+    });
 }
 
 async function buildCanonicalActivityFromTransactions(params: {

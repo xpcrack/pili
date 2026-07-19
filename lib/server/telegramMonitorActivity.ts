@@ -65,6 +65,15 @@ const NATIVE_SYMBOLS_BY_CHAIN: Record<string, Set<string>> = {
   base: new Set(['eth', 'weth']),
 };
 
+/** Solana native/wrapped SOL mints (incl. legacy So1111…111). Align with lib/parsing/core.ts. */
+const SOLANA_NATIVE_MINTS = new Set([
+  'so11111111111111111111111111111111111111111',
+  'so11111111111111111111111111111111111111112',
+]);
+
+/** Symbols that mean "parser could not identify the trade token". */
+const COLLAPSED_PLACEHOLDER_SYMBOLS = new Set(['unknown', 'token']);
+
 function isNativeSymbol(chain: string | null | undefined, symbol: string | null | undefined) {
   const normalizedChain = normalize(chain);
   const normalizedSymbol = normalize(symbol);
@@ -72,6 +81,44 @@ function isNativeSymbol(chain: string | null | undefined, symbol: string | null 
     return false;
   }
   return NATIVE_SYMBOLS_BY_CHAIN[normalizedChain]?.has(normalizedSymbol) ?? false;
+}
+
+function isNativeTokenAddress(chain: string | null | undefined, tokenAddress: string | null | undefined) {
+  const normalizedChain = normalize(chain);
+  const normalizedAddress = normalize(tokenAddress);
+  if (!normalizedChain || !normalizedAddress) {
+    return false;
+  }
+  if (normalizedChain === 'solana') {
+    return SOLANA_NATIVE_MINTS.has(normalizedAddress);
+  }
+  return false;
+}
+
+function isCollapsedPlaceholderSymbol(symbol: string | null | undefined) {
+  const normalized = normalize(symbol);
+  return !normalized || COLLAPSED_PLACEHOLDER_SYMBOLS.has(normalized);
+}
+
+/**
+ * Canonical trade token is considered "collapsed" when reconcile picked a non-trade asset
+ * (native SOL/BNB, empty/UNKNOWN symbol, or native mint) instead of the provisional meme token.
+ */
+function isCollapsedCanonicalToken(
+  chain: string | null | undefined,
+  tokenSymbol: string | null | undefined,
+  tokenAddress: string | null | undefined
+) {
+  if (isCollapsedPlaceholderSymbol(tokenSymbol)) {
+    return true;
+  }
+  if (isNativeSymbol(chain, tokenSymbol)) {
+    return true;
+  }
+  if (isNativeTokenAddress(chain, tokenAddress)) {
+    return true;
+  }
+  return false;
 }
 
 export interface MonitorActivitySnapshot {
@@ -306,17 +353,25 @@ export function buildActivityFromSnapshotSync(
 function shouldRepairCollapsedCanonicalActivity(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {
   const provisionalToken = (state.provisionalTokenSymbol || state.tokenSymbol || '').trim();
   const provisionalTokenAddress = (state.tokenAddress || '').trim();
-  if (!provisionalToken || !provisionalTokenAddress || isNativeSymbol(state.chain, provisionalToken)) {
+  // Only repair when XXYY provisional side has a real (non-native) trade token.
+  if (
+    !provisionalToken ||
+    !provisionalTokenAddress ||
+    isNativeSymbol(state.chain, provisionalToken) ||
+    isNativeTokenAddress(state.chain, provisionalTokenAddress) ||
+    isCollapsedPlaceholderSymbol(provisionalToken)
+  ) {
     return false;
   }
 
   const canonicalToken = (canonicalActivity.metadata.token || '').trim();
   const canonicalTokenAddress = (canonicalActivity.metadata.tokenAddress || '').trim();
+  // Missing either side of identity, or collapsed to UNKNOWN/native mint/native symbol.
   if (!canonicalToken || !canonicalTokenAddress) {
     return true;
   }
 
-  return isNativeSymbol(state.chain, canonicalToken);
+  return isCollapsedCanonicalToken(state.chain, canonicalToken, canonicalTokenAddress);
 }
 
 function shouldRepairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {

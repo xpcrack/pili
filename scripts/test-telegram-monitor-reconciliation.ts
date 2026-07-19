@@ -34,6 +34,11 @@ const BSC_MISSING_QUOTE_EVENT_TIME_MS = 1777933730000;
 const SPLIT_FILL_TX_HASH =
   '5VERv8NMhxG9vqMDKMt8kN6E9MPBbJqN6tG3Rz2ZjqTp3VQJuGVEJJmBwXkG7s84N2wEVCcpYPbJj8FPmYrPhJk';
 const SPLIT_FILL_TOKEN_ADDRESS = '2CKp88BFyPzr7gEuQKXMJ9cqa24AFXUNC41FR7udpump';
+const SOL_UNKNOWN_COLLAPSE_TX_HASH =
+  '3dtgw8AyJ2yLQtgkannhoSsKUcGb2aPTZfvTTds9uRgqeMgZzqnbRPVwvhN3HQhosmbhYaK3pH92fCTrWmTbdSmL';
+const SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS = 'Ge87EtsjwRQbHaqQmKRno69RFTwh9bfSsm99XNxTpump';
+const SOL_UNKNOWN_COLLAPSE_EVENT_TIME_MS = 1784427565000;
+const SOL_LEGACY_WSOL_MINT = 'So11111111111111111111111111111111111111111';
 
 function buildExpectedMonitorEventId(chain: string, trackedAddress: string, txHash: string, tokenAddress: string) {
   return `xxyy-monitor:${chain.toLowerCase()}:${trackedAddress.toLowerCase()}:${txHash.toLowerCase()}:${tokenAddress.toLowerCase()}`;
@@ -1111,6 +1116,140 @@ async function run() {
       persistedCollapsedCanonicalEventActivity?.metadata?.tokenAddress,
       BSC_TOKEN_ADDRESS,
       'collapsed canonical event rows should persist the provisional token address after healing'
+    );
+
+    // Solana path: OKX detail often labels WSOL mint as symbol=UNKNOWN (not SOL/WSOL).
+    // Collapse repair must treat UNKNOWN + So1111… as collapsed, not leave Jimothy as UNKNOWN.
+    const unknownCollapsedState = upsertTelegramMonitorTxStateProvisional({
+      userId: trackedUser.id,
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: SOL_UNKNOWN_COLLAPSE_TX_HASH,
+      tokenAddress: SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS,
+      tokenSymbol: 'Jimothy',
+      provisionalAction: 'buy',
+      provisionalActionLabel: '加仓',
+      provisionalActionVariant: 'add',
+      provisionalQuoteAmount: 1.99,
+      provisionalQuoteSymbol: 'SOL',
+      provisionalTokenAmount: 14590.72,
+      provisionalTokenSymbol: 'Jimothy',
+      provisionalPriceUsd: 0.0104,
+      provisionalMarketCapUsd: 10_300_000,
+      provisionalRawText: [
+        '[Finn#1]',
+        '🟢 Buy more 1.99 SOL',
+        'Token: 14590.72  [Jimothy]',
+        'Price: $0.0104',
+        'MCAP: $10.3M',
+        `CA: ${SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS}`,
+      ].join('\n'),
+      provisionalWalletLabel: 'Finn#1',
+      provisionalWalletAliasLabel: 'Finn#1',
+      eventTimeMs: SOL_UNKNOWN_COLLAPSE_EVENT_TIME_MS,
+    });
+    assert.ok(unknownCollapsedState, 'UNKNOWN collapse fixture should create a tx-state');
+    const unknownCollapsedActivity = {
+      id: buildExpectedMonitorEventId(
+        'solana',
+        TRACKED_SOL_ADDRESS,
+        SOL_UNKNOWN_COLLAPSE_TX_HASH,
+        SOL_LEGACY_WSOL_MINT
+      ),
+      userId: trackedUser.id,
+      source: 'blockchain' as const,
+      type: 'transfer' as const,
+      title: '收到转账 (Token)',
+      content: '收到 0.008 UNKNOWN',
+      timestamp: SOL_UNKNOWN_COLLAPSE_EVENT_TIME_MS,
+      metadata: {
+        txHash: SOL_UNKNOWN_COLLAPSE_TX_HASH,
+        value: '0.008',
+        token: 'UNKNOWN',
+        tokenAddress: SOL_LEGACY_WSOL_MINT,
+        chain: 'solana',
+        fromAddress: TRACKED_SOL_ADDRESS,
+        toAddress: '8ckLnP69xhSeoNbZCUrbJZ8aYSR86QNjRVZdpHmFfigk',
+        txStatus: 'success',
+        txAction: 'receive' as const,
+        trackedAddress: TRACKED_SOL_ADDRESS,
+        uncertainFrom: false,
+        displayTokenSymbol: 'UNKNOWN',
+        displayTokenAvatarTokenAddress: SOL_LEGACY_WSOL_MINT,
+        displayTradeAmountText: '0.008 UNKNOWN',
+      },
+    };
+    markTelegramMonitorTxStateReconciled({
+      chain: 'solana',
+      trackedWalletAddress: TRACKED_SOL_ADDRESS,
+      txHash: SOL_UNKNOWN_COLLAPSE_TX_HASH,
+      tokenAddress: SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS,
+      source: 'okx-detail',
+      activity: unknownCollapsedActivity,
+    });
+    upsertEventsFromFeedRows(
+      [{ user: trackedUser, activity: unknownCollapsedActivity }],
+      'telegram-monitor-reconcile'
+    );
+
+    const healedUnknownCollapseFeed = await readTelegramMonitorFeed(50);
+    const healedUnknownCollapseRow = healedUnknownCollapseFeed.find(
+      (item) => item.activity.metadata.txHash === SOL_UNKNOWN_COLLAPSE_TX_HASH
+    );
+    assert.equal(
+      healedUnknownCollapseRow?.activity.metadata.token,
+      'Jimothy',
+      'feed should heal UNKNOWN + native mint collapse back to provisional Jimothy'
+    );
+    assert.equal(
+      healedUnknownCollapseRow?.activity.metadata.tokenAddress,
+      SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS,
+      'feed should restore provisional mint when canonical collapsed to So1111…'
+    );
+    assert.equal(healedUnknownCollapseRow?.activity.metadata.displayTokenSymbol, 'Jimothy');
+
+    const healedUnknownCollapseEvents = readEventsFeed({
+      limit: 50,
+      userId: trackedUser.id,
+    });
+    const healedUnknownCollapseEvent = healedUnknownCollapseEvents.feed.find(
+      (item) => item.activity.metadata.txHash === SOL_UNKNOWN_COLLAPSE_TX_HASH
+    );
+    assert.equal(
+      healedUnknownCollapseEvent?.activity.metadata.token,
+      'Jimothy',
+      'events feed should heal UNKNOWN collapse from provisional tx-state data'
+    );
+    assert.equal(
+      healedUnknownCollapseEvent?.activity.metadata.tokenAddress,
+      SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS
+    );
+
+    const persistedUnknownCollapseState = db
+      .prepare(
+        `SELECT canonical_activity_json
+         FROM telegram_monitor_tx_states
+         WHERE chain = ?
+           AND tracked_wallet_address_lower = ?
+           AND tx_hash_lower = ?`
+      )
+      .get('solana', TRACKED_SOL_ADDRESS.toLowerCase(), SOL_UNKNOWN_COLLAPSE_TX_HASH.toLowerCase()) as
+      | { canonical_activity_json: string | null }
+      | undefined;
+    const persistedUnknownCollapseActivity = persistedUnknownCollapseState?.canonical_activity_json
+      ? (JSON.parse(persistedUnknownCollapseState.canonical_activity_json) as {
+          metadata?: Record<string, unknown>;
+        })
+      : null;
+    assert.equal(
+      persistedUnknownCollapseActivity?.metadata?.token,
+      'Jimothy',
+      'UNKNOWN-collapsed canonical tx-state rows should be healed in storage'
+    );
+    assert.equal(
+      persistedUnknownCollapseActivity?.metadata?.tokenAddress,
+      SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS,
+      'UNKNOWN-collapsed canonical tx-state rows should persist the provisional mint after healing'
     );
 
     const missingQuoteCanonicalState = upsertTelegramMonitorTxStateProvisional({
