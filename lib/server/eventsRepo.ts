@@ -144,11 +144,11 @@ function pickDisplaySeed(...values: Array<string | null | undefined>) {
 }
 
 function isTelegramMonitorActivity(activity: Activity, ingestSource: string) {
-  if (ingestSource.startsWith('telegram-monitor')) {
+  if (ingestSource.startsWith('telegram-monitor') || ingestSource.startsWith('live-monitor')) {
     return true;
   }
 
-  if (activity.id.startsWith('xxyy-monitor:')) {
+  if (activity.id.startsWith('xxyy-monitor:') || activity.id.startsWith('live-monitor:')) {
     return true;
   }
 
@@ -442,7 +442,10 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
          AND chain = ?
          AND LOWER(COALESCE(tx_hash, '')) = ?
          AND address = ?
-         AND ingest_source LIKE 'telegram-monitor%'
+         AND (
+           ingest_source LIKE 'telegram-monitor%'
+           OR ingest_source LIKE 'live-monitor%'
+         )
          AND event_id != ?
        ORDER BY updated_at DESC, rowid DESC
        LIMIT 1`
@@ -481,7 +484,10 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
          AND chain = ?
          AND LOWER(COALESCE(tx_hash, '')) = ?
          AND address = ?
-         AND ingest_source LIKE 'telegram-monitor%'
+         AND (
+           ingest_source LIKE 'telegram-monitor%'
+           OR ingest_source LIKE 'live-monitor%'
+         )
          AND event_id != ?`
     );
     const rawTransactionStmt = db.prepare(
@@ -1023,4 +1029,18 @@ export function readLatestActivityAtByUser() {
   }
 
   return latestByUser;
+}
+
+export function deleteTelegramMonitorEventsByTxHash(params: {
+  userId: string;
+  chain: string;
+  txHash: string;
+  oldTokenAddress: string;
+}) {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM events
+     WHERE user_id = ? AND chain = ? AND tx_hash = ? AND token = ?
+     AND source = 'telegram-monitor'`
+  ).run(params.userId, params.chain, params.txHash, params.oldTokenAddress);
 }

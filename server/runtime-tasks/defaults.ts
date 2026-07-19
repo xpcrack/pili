@@ -1,5 +1,7 @@
 import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completenessMaintenanceWorkerRuntime';
 import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
+import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
+import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
 
@@ -10,7 +12,9 @@ interface DefaultRuntimeTaskDeps {
   runTelegramChannelWorkerCycle?: typeof runTelegramChannelWorkerCycle;
   runCompletenessMaintenanceWorkerCycle?: typeof runCompletenessMaintenanceWorkerCycle;
   runHoldingsRefreshCycle?: typeof runHoldingsRefreshCycle;
+  runHolderSnapshotCycle?: typeof runHolderSnapshotCycle;
   runTelegramBridgeCycle?: typeof runTelegramBridgeCycle;
+  runLiveMonitorCycle?: typeof runLiveMonitorCycle;
 }
 
 export function createDefaultRuntimeTasks(
@@ -21,7 +25,9 @@ export function createDefaultRuntimeTasks(
   const runCompletenessCycle =
     deps.runCompletenessMaintenanceWorkerCycle ?? runCompletenessMaintenanceWorkerCycle;
   const runHoldingsCycle = deps.runHoldingsRefreshCycle ?? runHoldingsRefreshCycle;
+  const runHolderSnapshotCycleImpl = deps.runHolderSnapshotCycle ?? runHolderSnapshotCycle;
   const runTelegramBridgeCycleImpl = deps.runTelegramBridgeCycle ?? runTelegramBridgeCycle;
+  const runLiveMonitorCycleImpl = deps.runLiveMonitorCycle ?? runLiveMonitorCycle;
 
   const tasks: TaskDefinition[] = [];
 
@@ -74,6 +80,38 @@ export function createDefaultRuntimeTasks(
           status: result.status,
           detail: {
             lastError: result.lastError ?? null,
+            ...result.summary,
+          },
+        };
+      },
+    })
+  );
+  tasks.push(
+    createLoopTask({
+      key: 'holder-snapshot',
+      label: 'Holder Snapshot',
+      cycle: async ({ signal }) => {
+        const result = await runHolderSnapshotCycleImpl({ signal });
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
+        };
+      },
+    })
+  );
+
+  tasks.push(
+    createLoopTask({
+      key: 'live-monitor',
+      label: 'Live Monitor (Alchemy+GMGN)',
+      cycle: async () => {
+        const result = await runLiveMonitorCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: {
+            lastError: result.lastError,
             ...result.summary,
           },
         };

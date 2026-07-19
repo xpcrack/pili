@@ -178,6 +178,8 @@ export interface Activity {
     marketCapAtTxUsd?: number;
     tradeAmountUsdAtTx?: number;
     marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot';
+    /** Alchemy doorbell + GMGN enrichment (not XXYY TG). */
+    liveSource?: 'alchemy-gmgn';
     marketCapAtTxEstimated?: boolean;
     displayWalletLabel?: string;
     displayActionVariantLabel?: string;
