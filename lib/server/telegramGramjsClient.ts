@@ -499,6 +499,21 @@ function resolveHistoryPageBoundary(input: {
   };
 }
 
+function buildBridgeChatEntityRef(input: {
+  chatId: string;
+  channelRef?: string | null;
+  channelUsername?: string | null;
+  accessHash?: string | null;
+}) {
+  const channelRef = normalizeString(input.channelRef) || input.chatId;
+  return buildTelegramChannelEntityRef({
+    channelRef,
+    channelUsername: input.channelUsername,
+    channelChatId: input.chatId,
+    accessHash: input.accessHash,
+  });
+}
+
 export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncClient> {
   const config = readTelegramClientConfig();
   const policy = readTelegramMtprotoPolicy();
@@ -614,12 +629,18 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
         ...boundary,
       };
     },
-    async listBridgeChatMessages(params: { chatId: string; limit: number }) {
+    async listBridgeChatMessages(params: {
+      chatId: string;
+      channelRef?: string | null;
+      channelUsername?: string | null;
+      accessHash?: string | null;
+      limit: number;
+    }) {
       const results: TelegramMessageLike[] = [];
       await client.getDialogs({
         limit: 1000,
       });
-      const entity = await client.getEntity(params.chatId);
+      const entity = await client.getEntity(buildBridgeChatEntityRef(params));
       for await (const message of client.iterMessages(entity, {
         limit: params.limit,
       })) {
@@ -632,6 +653,9 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
     },
     async listBridgeChatHistoryPage(params: {
       chatId: string;
+      channelRef?: string | null;
+      channelUsername?: string | null;
+      accessHash?: string | null;
       beforeMessageId?: number | null;
       startMs?: number | null;
       endMs?: number | null;
@@ -644,7 +668,7 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
       await client.getDialogs({
         limit: 1000,
       });
-      const entity = await client.getEntity(params.chatId);
+      const entity = await client.getEntity(buildBridgeChatEntityRef(params));
       for await (const message of client.iterMessages(entity, {
         limit: params.limit,
         maxId:
