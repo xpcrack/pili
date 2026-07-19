@@ -421,7 +421,12 @@ export async function fetchRobinhoodHoldingsWithCli(
   }
 }
 
-function readPreviousRobinhoodHoldings(db: DbHandle, addressLower: string): CurrentHoldingRecord[] {
+/** Last-good bags for one wallet×chain. Used when refresh fails so absence≠sold. */
+function readPreviousHoldings(
+  db: DbHandle,
+  addressLower: string,
+  chain: HoldingsChain
+): CurrentHoldingRecord[] {
   try {
     return db
       .prepare(
@@ -430,10 +435,14 @@ function readPreviousRobinhoodHoldings(db: DbHandle, addressLower: string): Curr
          FROM current_holdings
          WHERE chain = ? AND tracked_address_lower = ?`
       )
-      .all(ROBINHOOD_CHAIN, addressLower) as CurrentHoldingRecord[];
+      .all(chain, addressLower) as CurrentHoldingRecord[];
   } catch {
     return [];
   }
+}
+
+function readPreviousRobinhoodHoldings(db: DbHandle, addressLower: string): CurrentHoldingRecord[] {
+  return readPreviousHoldings(db, addressLower, ROBINHOOD_CHAIN);
 }
 
 function replaceCurrentHoldings(
@@ -621,6 +630,8 @@ export async function refreshCurrentHoldings(
       failedUserIds.add(row.user_id);
       lastError = lastError ?? result.error;
       credentialFailure ||= !result.configured;
+      // Preserve last-good bags: failed ≠ sold. Only success+missing means zero.
+      holdings.push(...readPreviousHoldings(db, row.address_lower, row.chain));
       continue;
     }
 
@@ -761,19 +772,18 @@ export async function refreshCurrentHoldings(
     console.error('[holdingsRefresh] DexScreener liquidity fetch failed:', err);
   }
 
-  // Filter out dead coins with insufficient liquidity
-  const filteredHoldings = holdings.filter((h) => {
+  // Fact table keeps all value>=MIN bags (incl. low-liq). Display layers may filter.
+  // Still count low-liq for ops visibility; do not drop from current_holdings.
+  for (const h of holdings) {
     if (h.liquidity_usd !== null && h.liquidity_usd < MIN_LIQUIDITY_USD) {
       summary.filteredOutHoldingCount += 1;
-      return false;
     }
-    return true;
-  });
+  }
 
-  summary.holdingsRowCount = filteredHoldings.length;
+  summary.holdingsRowCount = holdings.length;
 
   if (!options.dryRun) {
-    replaceCurrentHoldings(db, filteredHoldings, walletStatuses);
+    replaceCurrentHoldings(db, holdings, walletStatuses);
 
     const users = listTrackedUsers();
     for (const user of users) {

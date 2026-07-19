@@ -261,6 +261,8 @@ async function run() {
 
     assert.equal(robinhoodCalls, 1, 'same EVM 0x should only fetch Robinhood once');
     assert.equal(rhResult.summary.robinhoodWalletCount, 1);
+    // Fact table keeps value>=$5 bags even if low-liq (ILLIQ $100 / liq $100).
+    // Dust $1 still filtered by MIN_HOLDING_USD. Display may still hide low-liq.
     assert.ok(rhResult.summary.holdingsRowCount >= 2);
 
     const rhRows = db
@@ -279,12 +281,15 @@ async function run() {
       user_id: string;
     }>;
 
-    assert.equal(rhRows.length, 1);
+    assert.equal(rhRows.length, 2);
     assert.equal(rhRows[0]?.symbol, 'TENDIES');
     assert.equal(rhRows[0]?.token_address_lower, '0x45242320dbb855eea8fd36804c6487e10e97fcf9');
     assert.equal(rhRows[0]?.value_usd, 30_000);
     assert.equal(rhRows[0]?.liquidity_usd, 800_000);
     assert.equal(rhRows[0]?.user_id, user.id);
+    assert.equal(rhRows[1]?.symbol, 'ILLIQ');
+    assert.equal(rhRows[1]?.value_usd, 100);
+    assert.equal(rhRows[1]?.liquidity_usd, 100);
 
     // Failure preserves previous Robinhood cache
     const failed = await refreshCurrentHoldings({
@@ -321,11 +326,16 @@ async function run() {
 
     assert.equal(failed.status, 'partial');
     const cachedRh = db
-      .prepare(`SELECT symbol, value_usd FROM current_holdings WHERE chain = 'robinhood'`)
+      .prepare(
+        `SELECT symbol, value_usd FROM current_holdings WHERE chain = 'robinhood' ORDER BY value_usd DESC`
+      )
       .all() as Array<{ symbol: string; value_usd: number }>;
-    assert.equal(cachedRh.length, 1);
+    // Failed RH refresh preserves last-good fact bags (TENDIES + ILLIQ; DUST was never stored)
+    assert.equal(cachedRh.length, 2);
     assert.equal(cachedRh[0]?.symbol, 'TENDIES');
     assert.equal(cachedRh[0]?.value_usd, 30_000);
+    assert.equal(cachedRh[1]?.symbol, 'ILLIQ');
+    assert.equal(cachedRh[1]?.value_usd, 100);
 
     const rhStatus = db
       .prepare(
