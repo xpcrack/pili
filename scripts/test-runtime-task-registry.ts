@@ -167,6 +167,7 @@ async function testTaskStopWaitsForActiveCycleShutdown() {
 
 async function testDefaultTasksIncludeHoldingsRefresh() {
   let holdingsCycleCount = 0;
+  let holderSnapshotCycleCount = 0;
   let bridgeCycleCount = 0;
   const tasks = createDefaultRuntimeTasks({
     runTelegramChannelWorkerCycle: async () => ({
@@ -200,6 +201,25 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
         },
       };
     },
+    runHolderSnapshotCycle: async () => {
+      holderSnapshotCycleCount += 1;
+      return {
+        sleepMs: 1_000,
+        status: 'busy',
+        detail: {
+          queuedRunCount: 2,
+          lastQueuedTradeId: 999,
+          lastPeriodicBucketStartMs: 21_600_000,
+          lastProcessedRunId: 42,
+          lastProcessedRunStatus: 'completed',
+          scannedTradeCount: 3,
+          queuedTradeCount: 1,
+          queuedPeriodicCount: 1,
+          processedHolderCount: 100,
+          lastError: null,
+        },
+      };
+    },
     runTelegramBridgeCycle: async () => {
       bridgeCycleCount += 1;
       return {
@@ -216,16 +236,21 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
 
   const registry = createTaskRegistry(tasks);
   const holdingsTask = registry.getTask('holdings-refresh');
+  const holderSnapshotTask = registry.getTask('holder-snapshot');
   const bridgeTask = registry.getTask('telegram-bridge');
 
   assert.ok(holdingsTask, 'default runtime tasks should include holdings-refresh');
+  assert.ok(holderSnapshotTask, 'default runtime tasks should include holder-snapshot');
   assert.ok(bridgeTask, 'default runtime tasks should include telegram-bridge');
   await holdingsTask.runNow('manual-holdings-test');
+  await holderSnapshotTask.runNow('manual-holder-snapshot-test');
   await bridgeTask.runNow('manual-bridge-test');
 
   const afterRun = holdingsTask.getStatus();
+  const afterHolderSnapshotRun = holderSnapshotTask.getStatus();
   const afterBridgeRun = bridgeTask.getStatus();
   assert.equal(holdingsCycleCount, 1);
+  assert.equal(holderSnapshotCycleCount, 1);
   assert.equal(bridgeCycleCount, 1);
   assert.equal(afterRun.status, 'idle');
   assert.equal(afterRun.lastReason, 'manual-holdings-test');
@@ -241,6 +266,20 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
   });
   assert.equal(afterBridgeRun.status, 'idle');
   assert.equal(afterBridgeRun.lastReason, 'manual-bridge-test');
+  assert.deepEqual(afterHolderSnapshotRun.detail, {
+    queuedRunCount: 2,
+    lastQueuedTradeId: 999,
+    lastPeriodicBucketStartMs: 21_600_000,
+    lastProcessedRunId: 42,
+    lastProcessedRunStatus: 'completed',
+    scannedTradeCount: 3,
+    queuedTradeCount: 1,
+    queuedPeriodicCount: 1,
+    processedHolderCount: 100,
+    lastError: null,
+  });
+  assert.equal(afterHolderSnapshotRun.status, 'busy');
+  assert.equal(afterHolderSnapshotRun.lastReason, 'manual-holder-snapshot-test');
   assert.deepEqual(afterBridgeRun.detail, {
     lastError: null,
     processedUpdateCount: 2,
@@ -401,7 +440,14 @@ async function testDefaultTaskOrderIsStable() {
 
   assert.deepEqual(
     tasksWithTelegram.map((task) => task.key),
-    ['telegram-channel-sync', 'completeness-maintenance', 'holdings-refresh', 'telegram-bridge']
+    [
+      'telegram-channel-sync',
+      'completeness-maintenance',
+      'holdings-refresh',
+      'holder-snapshot',
+      'live-monitor',
+      'telegram-bridge',
+    ]
   );
 
   const tasksWithoutTelegram = createDefaultRuntimeTasks(
@@ -449,7 +495,12 @@ async function testDefaultTaskOrderIsStable() {
     }
   );
 
-  assert.deepEqual(tasksWithoutTelegram.map((task) => task.key), ['completeness-maintenance', 'holdings-refresh']);
+  assert.deepEqual(tasksWithoutTelegram.map((task) => task.key), [
+    'completeness-maintenance',
+    'holdings-refresh',
+    'holder-snapshot',
+    'live-monitor',
+  ]);
 }
 
 async function testRegistryUnknownTaskErrorIsStable() {

@@ -378,13 +378,23 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
   const dedupedFeedRows: Array<{ activityKey: string; item: { user: User; activity: Activity } }> = [];
   // For each group, select the highest priority activity
   for (const [activityKey, group] of activityGroups) {
-    // Sort by priority: Telegram monitoring (xxyy-monitor: prefix) first, then by timestamp desc
+    // Sort by priority: live/xxyy monitor prefixes first, then by timestamp desc
     const prioritized = group.sort((a, b) => {
-      const aIsTelegram = a.item.activity.id.startsWith('xxyy-monitor:');
-      const bIsTelegram = b.item.activity.id.startsWith('xxyy-monitor:');
+      const aIsLive =
+        a.item.activity.id.startsWith('xxyy-monitor:') ||
+        a.item.activity.id.startsWith('live-monitor:');
+      const bIsLive =
+        b.item.activity.id.startsWith('xxyy-monitor:') ||
+        b.item.activity.id.startsWith('live-monitor:');
 
-      if (aIsTelegram && !bIsTelegram) return -1;
-      if (!aIsTelegram && bIsTelegram) return 1;
+      if (aIsLive && !bIsLive) return -1;
+      if (!aIsLive && bIsLive) return 1;
+
+      // Prefer live-monitor over xxyy when both present for same key (cutover)
+      const aIsAlchemy = a.item.activity.id.startsWith('live-monitor:');
+      const bIsAlchemy = b.item.activity.id.startsWith('live-monitor:');
+      if (aIsAlchemy && !bIsAlchemy) return -1;
+      if (!aIsAlchemy && bIsAlchemy) return 1;
 
       // If both are same source type, prefer newer timestamp
       return b.item.activity.timestamp - a.item.activity.timestamp;

@@ -8,6 +8,7 @@ import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/li
 import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import {
   summarizeTelegramMonitorTxProvisional,
@@ -321,6 +322,20 @@ export async function ingestTelegramMonitorUpdate(
       previewText: text,
     });
     return { ok: true, ignored: true, reason: 'invalid-trade-format' as const };
+  }
+
+  if (!shouldAcceptXxyyChain(parsed.chain)) {
+    return {
+      ok: true,
+      ignored: true,
+      reason: 'xxyy-chain-filtered' as const,
+      parsed: {
+        chain: parsed.chain,
+        walletLabel: parsed.walletLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
   }
 
   const trackedMatch = findTrackedUserMatch(parsed);
