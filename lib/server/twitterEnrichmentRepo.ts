@@ -2,10 +2,16 @@ import 'server-only';
 
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 
-export type TweetEnrichmentStatus = 'pending' | 'processing' | 'succeeded' | 'failed';
+export type TweetEnrichmentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'skipped';
 export type TweetMentionMatchSource = 'ticker' | 'ca' | 'both';
 export type TweetMentionSentiment = 'positive' | 'negative' | 'neutral';
+export type TweetMentionOrigin = 'text' | 'image';
 export type EventTweetRefSource = 'telegram-monitor' | 'telegram-channel' | 'historical-backfill';
+export type TweetMentionMarketCapSource =
+  | 'dexscreener'
+  | 'estimated'
+  | 'telegram-monitor-exact'
+  | null;
 
 export interface UpsertTwitterTweetEnrichmentInput {
   tweetId: string;
@@ -14,6 +20,10 @@ export interface UpsertTwitterTweetEnrichmentInput {
   extractionStatus: TweetEnrichmentStatus;
   extractorVersion: string | null;
   translatorVersion: string | null;
+  quotedTranslationZh?: string | null;
+  quotedTranslationStatus?: TweetEnrichmentStatus;
+  visionStatus?: TweetEnrichmentStatus;
+  visionProcessedAtMs?: number | null;
   lastProcessedAtMs: number | null;
   lastError: string | null;
 }
@@ -28,6 +38,12 @@ export interface ReplaceTwitterTweetTokenMentionsInput {
     sentiment: TweetMentionSentiment;
     confidence?: number | null;
     rankInTweet?: number | null;
+    origin?: TweetMentionOrigin;
+    marketCapUsd?: number | null;
+    marketCapAtPostUsd?: number | null;
+    marketCapAtPostEstimated?: boolean | null;
+    marketCapSource?: TweetMentionMarketCapSource;
+    resolvedAtMs?: number | null;
   }>;
 }
 
@@ -45,6 +61,10 @@ export interface StoredTwitterTweetEnrichment {
   extractionStatus: TweetEnrichmentStatus;
   extractorVersion: string | null;
   translatorVersion: string | null;
+  quotedTranslationZh: string | null;
+  quotedTranslationStatus: TweetEnrichmentStatus;
+  visionStatus: TweetEnrichmentStatus;
+  visionProcessedAtMs: number | null;
   lastProcessedAtMs: number | null;
   lastError: string | null;
 }
@@ -59,6 +79,12 @@ export interface StoredTwitterTweetTokenMention {
   sentiment: TweetMentionSentiment;
   confidence: number | null;
   rankInTweet: number | null;
+  origin: TweetMentionOrigin;
+  marketCapUsd: number | null;
+  marketCapAtPostUsd: number | null;
+  marketCapAtPostEstimated: boolean;
+  marketCapSource: TweetMentionMarketCapSource;
+  resolvedAtMs: number | null;
 }
 
 export interface StoredEventTweetRef {
@@ -80,7 +106,12 @@ function normalizeOptionalLower(value: string | null | undefined) {
 }
 
 function normalizeStatus(value: string): TweetEnrichmentStatus {
-  if (value === 'processing' || value === 'succeeded' || value === 'failed') {
+  if (
+    value === 'processing' ||
+    value === 'succeeded' ||
+    value === 'failed' ||
+    value === 'skipped'
+  ) {
     return value;
   }
   return 'pending';
@@ -100,6 +131,21 @@ function normalizeSentiment(value: string): TweetMentionSentiment {
   return 'neutral';
 }
 
+function normalizeOrigin(value: string | null | undefined): TweetMentionOrigin {
+  return value === 'image' ? 'image' : 'text';
+}
+
+function normalizeMarketCapSource(value: string | null | undefined): TweetMentionMarketCapSource {
+  if (value === 'dexscreener' || value === 'estimated' || value === 'telegram-monitor-exact') {
+    return value;
+  }
+  return null;
+}
+
+function normalizeFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function normalizeRefSource(value: string): EventTweetRefSource {
   if (value === 'telegram-channel') {
     return value;
@@ -108,6 +154,45 @@ function normalizeRefSource(value: string): EventTweetRefSource {
     return value;
   }
   return 'telegram-monitor';
+}
+
+function mapEnrichmentRow(row: Record<string, unknown>): StoredTwitterTweetEnrichment {
+  return {
+    tweetId: String(row.tweet_id || ''),
+    translationZh: row.translation_zh ? String(row.translation_zh) : null,
+    translationStatus: normalizeStatus(String(row.translation_status || 'pending')),
+    extractionStatus: normalizeStatus(String(row.extraction_status || 'pending')),
+    extractorVersion: row.extractor_version ? String(row.extractor_version) : null,
+    translatorVersion: row.translator_version ? String(row.translator_version) : null,
+    quotedTranslationZh: row.quoted_translation_zh ? String(row.quoted_translation_zh) : null,
+    quotedTranslationStatus: normalizeStatus(String(row.quoted_translation_status || 'pending')),
+    visionStatus: normalizeStatus(String(row.vision_status || 'pending')),
+    visionProcessedAtMs: normalizeFiniteNumber(row.vision_processed_at_ms),
+    lastProcessedAtMs: normalizeFiniteNumber(row.last_processed_at_ms),
+    lastError: row.last_error ? String(row.last_error) : null,
+  };
+}
+
+function mapMentionRow(row: Record<string, unknown>): StoredTwitterTweetTokenMention {
+  return {
+    id: Number(row.id || 0),
+    tweetId: String(row.tweet_id || ''),
+    tokenAddress: row.token_address ? String(row.token_address) : null,
+    tokenSymbol: row.token_symbol ? String(row.token_symbol) : null,
+    chain: row.chain ? String(row.chain) : null,
+    matchSource: normalizeMatchSource(String(row.match_source || 'ticker')),
+    sentiment: normalizeSentiment(String(row.sentiment || 'neutral')),
+    confidence: normalizeFiniteNumber(row.confidence),
+    rankInTweet: normalizeFiniteNumber(row.rank_in_tweet),
+    origin: normalizeOrigin(row.origin ? String(row.origin) : 'text'),
+    marketCapUsd: normalizeFiniteNumber(row.market_cap_usd),
+    marketCapAtPostUsd: normalizeFiniteNumber(row.market_cap_at_post_usd),
+    marketCapAtPostEstimated: Number(row.market_cap_at_post_estimated || 0) === 1,
+    marketCapSource: normalizeMarketCapSource(
+      row.market_cap_source ? String(row.market_cap_source) : null
+    ),
+    resolvedAtMs: normalizeFiniteNumber(row.resolved_at_ms),
+  };
 }
 
 export function upsertTwitterTweetEnrichment(input: UpsertTwitterTweetEnrichmentInput) {
@@ -121,17 +206,25 @@ export function upsertTwitterTweetEnrichment(input: UpsertTwitterTweetEnrichment
        extraction_status,
        extractor_version,
        translator_version,
+       quoted_translation_zh,
+       quoted_translation_status,
+       vision_status,
+       vision_processed_at_ms,
        last_processed_at_ms,
        last_error,
        created_at_ms,
        updated_at_ms
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(tweet_id) DO UPDATE SET
        translation_zh = excluded.translation_zh,
        translation_status = excluded.translation_status,
        extraction_status = excluded.extraction_status,
        extractor_version = excluded.extractor_version,
        translator_version = excluded.translator_version,
+       quoted_translation_zh = excluded.quoted_translation_zh,
+       quoted_translation_status = excluded.quoted_translation_status,
+       vision_status = excluded.vision_status,
+       vision_processed_at_ms = excluded.vision_processed_at_ms,
        last_processed_at_ms = excluded.last_processed_at_ms,
        last_error = excluded.last_error,
        updated_at_ms = excluded.updated_at_ms`
@@ -142,6 +235,10 @@ export function upsertTwitterTweetEnrichment(input: UpsertTwitterTweetEnrichment
     normalizeStatus(input.extractionStatus),
     normalizeOptional(input.extractorVersion),
     normalizeOptional(input.translatorVersion),
+    normalizeOptional(input.quotedTranslationZh),
+    normalizeStatus(input.quotedTranslationStatus || 'pending'),
+    normalizeStatus(input.visionStatus || 'pending'),
+    input.visionProcessedAtMs ?? null,
     input.lastProcessedAtMs,
     normalizeOptional(input.lastError),
     now,
@@ -170,6 +267,10 @@ export function listTwitterTweetEnrichmentsByTweetIds(tweetIds: string[]) {
          extraction_status,
          extractor_version,
          translator_version,
+         quoted_translation_zh,
+         quoted_translation_status,
+         vision_status,
+         vision_processed_at_ms,
          last_processed_at_ms,
          last_error
        FROM twitter_tweet_enrichments
@@ -177,19 +278,7 @@ export function listTwitterTweetEnrichmentsByTweetIds(tweetIds: string[]) {
     )
     .all(...uniqueIds) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    tweetId: String(row.tweet_id || ''),
-    translationZh: row.translation_zh ? String(row.translation_zh) : null,
-    translationStatus: normalizeStatus(String(row.translation_status || 'pending')),
-    extractionStatus: normalizeStatus(String(row.extraction_status || 'pending')),
-    extractorVersion: row.extractor_version ? String(row.extractor_version) : null,
-    translatorVersion: row.translator_version ? String(row.translator_version) : null,
-    lastProcessedAtMs:
-      typeof row.last_processed_at_ms === 'number' && Number.isFinite(row.last_processed_at_ms)
-        ? row.last_processed_at_ms
-        : null,
-    lastError: row.last_error ? String(row.last_error) : null,
-  }));
+  return rows.map(mapEnrichmentRow);
 }
 
 export function replaceTwitterTweetTokenMentions(input: ReplaceTwitterTweetTokenMentionsInput) {
@@ -208,9 +297,15 @@ export function replaceTwitterTweetTokenMentions(input: ReplaceTwitterTweetToken
          sentiment,
          confidence,
          rank_in_tweet,
+         origin,
+         market_cap_usd,
+         market_cap_at_post_usd,
+         market_cap_at_post_estimated,
+         market_cap_source,
+         resolved_at_ms,
          created_at_ms,
          updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const now = Date.now();
 
@@ -230,6 +325,12 @@ export function replaceTwitterTweetTokenMentions(input: ReplaceTwitterTweetToken
         typeof mention.rankInTweet === 'number' && Number.isFinite(mention.rankInTweet)
           ? Math.max(0, Math.floor(mention.rankInTweet))
           : null,
+        normalizeOrigin(mention.origin),
+        normalizeFiniteNumber(mention.marketCapUsd),
+        normalizeFiniteNumber(mention.marketCapAtPostUsd),
+        mention.marketCapAtPostEstimated ? 1 : 0,
+        normalizeMarketCapSource(mention.marketCapSource),
+        normalizeFiniteNumber(mention.resolvedAtMs),
         now,
         now
       );
@@ -254,25 +355,20 @@ export function listTwitterTweetTokenMentions(tweetId: string) {
          match_source,
          sentiment,
          confidence,
-         rank_in_tweet
+         rank_in_tweet,
+         origin,
+         market_cap_usd,
+         market_cap_at_post_usd,
+         market_cap_at_post_estimated,
+         market_cap_source,
+         resolved_at_ms
        FROM twitter_tweet_token_mentions
        WHERE tweet_id = ?
        ORDER BY COALESCE(rank_in_tweet, 2147483647) ASC, id ASC`
     )
     .all(tweetId) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    id: Number(row.id || 0),
-    tweetId: String(row.tweet_id || ''),
-    tokenAddress: row.token_address ? String(row.token_address) : null,
-    tokenSymbol: row.token_symbol ? String(row.token_symbol) : null,
-    chain: row.chain ? String(row.chain) : null,
-    matchSource: normalizeMatchSource(String(row.match_source || 'ticker')),
-    sentiment: normalizeSentiment(String(row.sentiment || 'neutral')),
-    confidence: typeof row.confidence === 'number' && Number.isFinite(row.confidence) ? row.confidence : null,
-    rankInTweet:
-      typeof row.rank_in_tweet === 'number' && Number.isFinite(row.rank_in_tweet) ? row.rank_in_tweet : null,
-  }));
+  return rows.map(mapMentionRow);
 }
 
 export function listTwitterTweetTokenMentionsByTweetIds(tweetIds: string[]) {
@@ -298,25 +394,20 @@ export function listTwitterTweetTokenMentionsByTweetIds(tweetIds: string[]) {
          match_source,
          sentiment,
          confidence,
-         rank_in_tweet
+         rank_in_tweet,
+         origin,
+         market_cap_usd,
+         market_cap_at_post_usd,
+         market_cap_at_post_estimated,
+         market_cap_source,
+         resolved_at_ms
        FROM twitter_tweet_token_mentions
        WHERE tweet_id IN (${placeholders})
        ORDER BY tweet_id ASC, COALESCE(rank_in_tweet, 2147483647) ASC, id ASC`
     )
     .all(...uniqueIds) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    id: Number(row.id || 0),
-    tweetId: String(row.tweet_id || ''),
-    tokenAddress: row.token_address ? String(row.token_address) : null,
-    tokenSymbol: row.token_symbol ? String(row.token_symbol) : null,
-    chain: row.chain ? String(row.chain) : null,
-    matchSource: normalizeMatchSource(String(row.match_source || 'ticker')),
-    sentiment: normalizeSentiment(String(row.sentiment || 'neutral')),
-    confidence: typeof row.confidence === 'number' && Number.isFinite(row.confidence) ? row.confidence : null,
-    rankInTweet:
-      typeof row.rank_in_tweet === 'number' && Number.isFinite(row.rank_in_tweet) ? row.rank_in_tweet : null,
-  }));
+  return rows.map(mapMentionRow);
 }
 
 export function upsertEventTweetRef(input: UpsertEventTweetRefInput) {

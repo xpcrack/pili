@@ -19,6 +19,7 @@ import {
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { runTweetEnrichmentForTweetIds } from '@/lib/server/twitterEnrichmentService';
+import { extractQuotedTextFromSourceJson } from '@/lib/server/tweetSourceTexts';
 
 function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
@@ -58,23 +59,20 @@ function readRelayQuoteMetadata(sourceJson: string) {
       quotedAuthorHandle?: unknown;
       quotedContent?: unknown;
     };
-    if (source.provider !== 'bot2bot') {
+    if (source.provider === 'bot2bot') {
       return {
-        quotedAuthorHandle: '',
-        quotedContent: '',
+        quotedAuthorHandle:
+          typeof source.quotedAuthorHandle === 'string' ? source.quotedAuthorHandle.trim() : '',
+        quotedContent: typeof source.quotedContent === 'string' ? source.quotedContent.trim() : '',
       };
     }
-
-    return {
-      quotedAuthorHandle: typeof source.quotedAuthorHandle === 'string' ? source.quotedAuthorHandle.trim() : '',
-      quotedContent: typeof source.quotedContent === 'string' ? source.quotedContent.trim() : '',
-    };
   } catch {
-    return {
-      quotedAuthorHandle: '',
-      quotedContent: '',
-    };
+    // fall through
   }
+  return {
+    quotedAuthorHandle: '',
+    quotedContent: extractQuotedTextFromSourceJson(sourceJson),
+  };
 }
 
 function toActivity(
@@ -84,11 +82,15 @@ function toActivity(
     enrichment?: StoredTwitterTweetEnrichment | null;
     mentions?: StoredTwitterTweetTokenMention[];
     quotedTweet?: StoredTwitterTweet | null;
+    quotedEnrichment?: StoredTwitterTweetEnrichment | null;
   }
 ): Activity {
   const relayAction = readRelayAction(tweet.sourceJson);
+  const relayQuote = readRelayQuoteMetadata(tweet.sourceJson);
   const isReply = relayAction === 'reply' || tweet.lane === 'replies' || Boolean(tweet.replyToTweetId);
-  const isQuote = !isReply && (relayAction === 'quote' || Boolean(tweet.quoteTweetId));
+  const isQuote =
+    !isReply &&
+    (relayAction === 'quote' || Boolean(tweet.quoteTweetId) || Boolean(relayQuote.quotedContent));
   const tweetKind: Activity['metadata']['tweetKind'] = isReply ? 'reply' : isQuote ? 'quote' : 'tweet';
   const title = isReply ? '回复推文' : isQuote ? '引用推文' : '发布推文';
   const enrichment = options.enrichment || null;
@@ -96,10 +98,16 @@ function toActivity(
   const mentionedTickers = uniqStrings(mentions.map((item) => item.tokenSymbol));
   const mentionedTokenAddresses = uniqStrings(mentions.map((item) => item.tokenAddress));
   const translationZh = enrichment?.translationZh?.trim() || '';
-  const relayQuote = readRelayQuoteMetadata(tweet.sourceJson);
   const quotedTweet = options.quotedTweet || null;
+  const quotedEnrichment = options.quotedEnrichment || null;
   const quotedTweetAuthorHandle = normalize(quotedTweet?.authorHandle || relayQuote.quotedAuthorHandle);
-  const quotedTweetContent = cleanTwitterDisplayText(quotedTweet?.fullText || relayQuote.quotedContent || '');
+  const quotedTweetContent = cleanTwitterDisplayText(
+    quotedTweet?.fullText || relayQuote.quotedContent || extractQuotedTextFromSourceJson(tweet.sourceJson) || ''
+  );
+  const quotedTweetTranslationZh =
+    quotedEnrichment?.translationZh?.trim() ||
+    enrichment?.quotedTranslationZh?.trim() ||
+    '';
   const content = cleanTwitterDisplayText(tweet.fullText);
 
   return {
@@ -121,6 +129,7 @@ function toActivity(
           : undefined,
       quotedTweetAuthorHandle: quotedTweetAuthorHandle || undefined,
       quotedTweetContent: quotedTweetContent || undefined,
+      quotedTweetTranslationZh: quotedTweetTranslationZh || undefined,
       likes: Math.max(0, Math.floor(tweet.likeCount)),
       replies: Math.max(0, Math.floor(tweet.replyCount)),
       translationZh: translationZh || undefined,
@@ -135,6 +144,10 @@ function toActivity(
               chain: item.chain || undefined,
               sentiment: item.sentiment,
               matchSource: item.matchSource,
+              marketCapUsd: item.marketCapUsd || undefined,
+              marketCapAtPostUsd: item.marketCapAtPostUsd || undefined,
+              marketCapAtPostEstimated: item.marketCapAtPostEstimated || undefined,
+              marketCapSource: item.marketCapSource || undefined,
             }))
           : undefined,
     },
@@ -234,7 +247,7 @@ export function projectTwitterTweetsToFeed(options: {
         });
   const tweetIds = tweetCandidates.map((tweet) => tweet.tweetId);
   const quotedTweetIds = uniqStrings(tweetCandidates.map((tweet) => tweet.quoteTweetId));
-  const enrichmentRows = listTwitterTweetEnrichmentsByTweetIds(tweetIds);
+  const enrichmentRows = listTwitterTweetEnrichmentsByTweetIds([...tweetIds, ...quotedTweetIds]);
   const mentionRows = listTwitterTweetTokenMentionsByTweetIds(tweetIds);
   const quotedTweets = listTwitterTweetsByIds(quotedTweetIds);
   const enrichmentByTweetId = new Map(enrichmentRows.map((row) => [row.tweetId, row] as const));
@@ -261,12 +274,16 @@ export function projectTwitterTweetsToFeed(options: {
       continue;
     }
 
+    const quotedTweet = tweet.quoteTweetId ? quotedTweetById.get(tweet.quoteTweetId) || null : null;
     upsertRows.push({
       user: matchedUser,
       activity: toActivity(tweet, matchedUser, {
         enrichment: enrichmentByTweetId.get(tweet.tweetId) || null,
         mentions: mentionsByTweetId.get(tweet.tweetId) || [],
-        quotedTweet: tweet.quoteTweetId ? quotedTweetById.get(tweet.quoteTweetId) || null : null,
+        quotedTweet,
+        quotedEnrichment: tweet.quoteTweetId
+          ? enrichmentByTweetId.get(tweet.quoteTweetId) || null
+          : null,
       }),
     });
   }
@@ -276,10 +293,11 @@ export function projectTwitterTweetsToFeed(options: {
   upsertEventsFromFeedRows(scoredRows, 'twitter-projector');
 
   // Trigger background enrichment for tweets that haven't been enriched yet
+  // Legacy → model-v2 upgrades go through scripts/backfill-enrichment-v2.ts
   const pendingTweetIds = tweetCandidates
     .filter((tweet) => {
       const enrich = enrichmentByTweetId.get(tweet.tweetId);
-      return !enrich || enrich.translationStatus === 'pending';
+      return !enrich || enrich.translationStatus === 'pending' || enrich.translationStatus === 'processing';
     })
     .map((t) => t.tweetId);
 

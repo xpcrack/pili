@@ -29,7 +29,23 @@ export interface TweetEnrichmentModel {
 }
 
 export function getDefaultTweetEnrichmentModel(): TweetEnrichmentModel {
-  const apiKey = (process.env.NVIDIA_API_KEY || '').trim();
+  const {
+    NvidaQwenEnrichmentModel,
+    resolveEnrichmentApiKey,
+    resolveEnrichmentBaseUrl,
+    resolveEnrichmentModel,
+  } = require('@/lib/server/nvidiaEnrichmentModel') as {
+    NvidaQwenEnrichmentModel: new (opts: {
+      apiKey: string;
+      model?: string;
+      baseUrl?: string;
+    }) => TweetEnrichmentModel;
+    resolveEnrichmentApiKey: () => string;
+    resolveEnrichmentBaseUrl: () => string;
+    resolveEnrichmentModel: () => string;
+  };
+
+  const apiKey = resolveEnrichmentApiKey();
   if (!apiKey) {
     return {
       async enrichTweet(input) {
@@ -46,8 +62,9 @@ export function getDefaultTweetEnrichmentModel(): TweetEnrichmentModel {
     };
   }
 
-  const { NvidaQwenEnrichmentModel } = require('@/lib/server/nvidiaEnrichmentModel') as {
-    NvidaQwenEnrichmentModel: new (opts: { apiKey: string }) => TweetEnrichmentModel;
-  };
-  return new NvidaQwenEnrichmentModel({ apiKey });
+  return new NvidaQwenEnrichmentModel({
+    apiKey,
+    model: resolveEnrichmentModel(),
+    baseUrl: resolveEnrichmentBaseUrl(),
+  });
 }

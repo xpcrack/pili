@@ -97,16 +97,31 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
     return activity;
   }
 
-  const apiKey = (process.env.NVIDIA_API_KEY || '').trim();
-  if (!apiKey) {
-    return activity;
-  }
-
   try {
-    const { NvidaQwenEnrichmentModel } = require('@/lib/server/nvidiaEnrichmentModel') as {
-      NvidaQwenEnrichmentModel: new (opts: { apiKey: string }) => import('@/lib/server/twitterEnrichmentModel').TweetEnrichmentModel;
+    const {
+      NvidaQwenEnrichmentModel,
+      resolveEnrichmentApiKey,
+      resolveEnrichmentBaseUrl,
+      resolveEnrichmentModel,
+    } = require('@/lib/server/nvidiaEnrichmentModel') as {
+      NvidaQwenEnrichmentModel: new (opts: {
+        apiKey: string;
+        model?: string;
+        baseUrl?: string;
+      }) => import('@/lib/server/twitterEnrichmentModel').TweetEnrichmentModel;
+      resolveEnrichmentApiKey: () => string;
+      resolveEnrichmentBaseUrl: () => string;
+      resolveEnrichmentModel: () => string;
     };
-    const model = new NvidaQwenEnrichmentModel({ apiKey });
+    const apiKey = resolveEnrichmentApiKey();
+    if (!apiKey) {
+      return activity;
+    }
+    const model = new NvidaQwenEnrichmentModel({
+      apiKey,
+      model: resolveEnrichmentModel(),
+      baseUrl: resolveEnrichmentBaseUrl(),
+    });
 
     const mentions = (activity.metadata.tokenSentiments || []).map(s => ({
       tokenSymbol: s.tokenSymbol || null,

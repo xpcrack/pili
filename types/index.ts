@@ -123,8 +123,9 @@ export interface Activity {
     quotedTweetUrl?: string;
     quotedTweetAuthorHandle?: string;
     quotedTweetContent?: string;
+    quotedTweetTranslationZh?: string;
     translationZh?: string;
-    translationStatus?: 'pending' | 'processing' | 'succeeded' | 'failed';
+    translationStatus?: 'pending' | 'processing' | 'succeeded' | 'failed' | 'skipped';
     mentionedTickers?: string[];
     mentionedTokenAddresses?: string[];
     tokenSentiments?: Array<{
@@ -133,6 +134,10 @@ export interface Activity {
       chain?: string;
       sentiment: 'positive' | 'negative' | 'neutral';
       matchSource: 'ticker' | 'ca' | 'both';
+      marketCapUsd?: number;
+      marketCapAtPostUsd?: number;
+      marketCapAtPostEstimated?: boolean;
+      marketCapSource?: 'dexscreener' | 'estimated' | 'telegram-monitor-exact';
     }>;
     referencedByEventCount?: number;
     txHash?: string;

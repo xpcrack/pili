@@ -201,6 +201,101 @@ async function testQuoteRelayProjectionMetadata() {
   );
 }
 
+async function testQuotedTranslationAndMcFields() {
+  const { getDb } = await import('../lib/server/sqlite');
+  const { upsertTwitterTweets } = await import('../lib/server/twitterRepo');
+  const { runTweetEnrichmentForTweetIds } = await import('../lib/server/twitterEnrichmentService');
+  const { listTwitterTweetEnrichmentsByTweetIds, listTwitterTweetTokenMentions } =
+    await import('../lib/server/twitterEnrichmentRepo');
+  const { projectTwitterTweetsToFeed } = await import('../lib/server/twitterFeedMapper');
+  const { readEventsFeed } = await import('../lib/server/eventsRepo');
+
+  const db = getDb();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO tracked_users (
+      id, name, handle, avatar, twitter, telegram, tags_json,
+      total_asset_usd, historical_max_asset_usd, asset_updated_at, created_at, updated_at
+    ) VALUES (?, ?, ?, '', ?, null, '[]', 0, 0, null, ?, ?)`
+  ).run('user-quote-v2', 'Quote V2 User', 'quote-v2-user', 'quotev2user', now, now);
+
+  upsertTwitterTweets([
+    {
+      tweetId: 'tweet-quote-v2',
+      authorHandle: 'quotev2user',
+      fullText: 'Agree with this take on $PEPE',
+      createdAtMs: 1_700_000_000_300,
+      lane: 'timeline',
+      source: {
+        provider: 'bot2bot',
+        action: 'quote',
+        quotedAuthorHandle: 'alpha',
+        quotedContent: 'This is a strong setup for the next leg higher.',
+      },
+    },
+  ]);
+
+  await runTweetEnrichmentForTweetIds({
+    tweetIds: ['tweet-quote-v2'],
+    model: {
+      enrichTweet: async (input) => {
+        if (input.tweetId === 'quoted-content') {
+          return {
+            translationZh: '这是下一波上涨的强势布局。',
+            sentiments: [],
+          };
+        }
+        return {
+          translationZh: '同意这个关于 PEPE 的看法',
+          sentiments: [{ tokenSymbol: 'PEPE', sentiment: 'positive', confidence: 0.9 }],
+        };
+      },
+    },
+    visionModel: {
+      extractMentionsFromImageUrl: async () => [],
+    },
+  });
+
+  const enrichment = listTwitterTweetEnrichmentsByTweetIds(['tweet-quote-v2'])[0];
+  assert.equal(enrichment?.translationZh, '同意这个关于 PEPE 的看法');
+  assert.equal(enrichment?.quotedTranslationZh, '这是下一波上涨的强势布局。');
+  assert.equal(enrichment?.quotedTranslationStatus, 'succeeded');
+  assert.equal(enrichment?.translatorVersion, 'model-v3');
+  assert.equal(enrichment?.visionStatus, 'skipped');
+
+  const mentions = listTwitterTweetTokenMentions('tweet-quote-v2');
+  assert.equal(mentions[0]?.tokenSymbol, 'PEPE');
+  assert.equal(mentions[0]?.origin, 'text');
+  // marketCap fields exist (null without CA)
+  assert.equal(mentions[0]?.marketCapAtPostUsd, null);
+
+  projectTwitterTweetsToFeed({ sinceMs: 0, tweetIds: ['tweet-quote-v2'] });
+  const feed = readEventsFeed({ limit: 20 }).feed;
+  const item = feed.find((row) => row.activity.metadata.tweetId === 'tweet-quote-v2');
+  assert.equal(item?.activity.metadata.quotedTweetTranslationZh, '这是下一波上涨的强势布局。');
+  assert.equal(item?.activity.metadata.translationZh, '同意这个关于 PEPE 的看法');
+}
+
+async function testMediaUrlExtraction() {
+  const { listImageUrlsFromSourceJson } = await import('../lib/server/tweetMediaUrls');
+  const urls = listImageUrlsFromSourceJson(
+    JSON.stringify({
+      provider: 'xread',
+      raw: {
+        legacy: {
+          entities: {
+            media: [
+              { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/abc.jpg' },
+              { type: 'video', media_url_https: 'https://video.twimg.com/x.mp4' },
+            ],
+          },
+        },
+      },
+    })
+  );
+  assert.deepEqual(urls, ['https://pbs.twimg.com/media/abc.jpg']);
+}
+
 async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-twitter-enrichment-'));
   process.env.PILIPILI_DATA_DIR = tempDir;
@@ -211,6 +306,8 @@ async function run() {
     testExtractTweetTokenMentions();
     await testEnrichmentProjectionMetadata();
     await testQuoteRelayProjectionMetadata();
+    await testQuotedTranslationAndMcFields();
+    await testMediaUrlExtraction();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
