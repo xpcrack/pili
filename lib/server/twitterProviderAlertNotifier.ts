@@ -1,12 +1,12 @@
 import 'server-only';
 
+import { ALERT_RATE_LIMIT_WINDOW_MS, pickAlertChatId } from '@/lib/server/alertChat';
 import { isIngestAlertQuotaAvailable, markIngestAlertQuotaConsumed } from '@/lib/server/ingestAlertRepo';
 import { readSystemConfig, type SystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 import { type TwitterLane } from '@/lib/server/twitterRepo';
 import { type TwitterFetcherProvider } from '@/lib/server/twitterFetcher';
 
-const ALERT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURE_LINES = 12;
 
 export interface TwitterProviderFailureItem {
@@ -42,14 +42,6 @@ export interface NotifyTwitterProviderFailuresResult {
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim();
-}
-
-function pickAlertChatId(config: SystemConfigSnapshot) {
-  return (
-    normalize(config.conflictNotificationTelegramChatId) ||
-    normalize(config.telegramUnknownPersonAlertChatId) ||
-    ''
-  );
 }
 
 function formatProviderChain(chain: TwitterFetcherProvider[]) {
