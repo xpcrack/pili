@@ -70,6 +70,8 @@ export interface ActivityFeedResponse {
     runId?: number;
     startedAt?: number;
   };
+  revision?: string;
+  unchanged?: boolean;
 }
 
 interface FetchAllActivitiesOptions {
@@ -83,6 +85,8 @@ interface FetchAllActivitiesOptions {
   backfillScope?: 'global' | 'user';
   backfillUserId?: string | null;
   reason?: string;
+  poll?: boolean;
+  revision?: string;
   signal?: AbortSignal;
 }
 
@@ -193,6 +197,11 @@ function normalizeActivityFeedResponse(payload: Partial<ActivityFeedResponse> | 
         : undefined,
     sync: payload?.sync,
     syncTrigger: payload?.syncTrigger,
+    revision:
+      typeof payload?.revision === 'string' && payload.revision
+        ? payload.revision
+        : undefined,
+    unchanged: payload?.unchanged === true,
   } satisfies ActivityFeedResponse;
 }
 
@@ -237,7 +246,13 @@ export async function fetchAllActivities(
     syncStrategy === 'backfill' ? FEED_BACKFILL_REQUEST_TIMEOUT_MS : FEED_REQUEST_TIMEOUT_MS;
 
   const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
-  if (isTelegramMode) {
+  if (options?.poll) {
+    query.set('mode', 'poll');
+    if (typeof options.revision === 'string' && options.revision) {
+      query.set('revision', options.revision);
+    }
+  }
+  if (isTelegramMode && !options?.poll) {
     query.set('mode', 'telegram');
   }
   if (typeof options?.cursor === 'string' && options.cursor.trim()) {

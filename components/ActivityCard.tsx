@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -48,7 +48,7 @@ interface TokenInfoSnapshot {
 const tokenAvatarCache = new Map<string, string | null>();
 const tokenInfoCache = new Map<string, TokenInfoSnapshot>();
 
-export function ActivityCard({
+export const ActivityCard = memo(function ActivityCard({
   activity,
   user,
   timeDisplayMode = 'relative',
@@ -791,4 +791,4 @@ export function ActivityCard({
       </CardContent>
     </Card>
   );
-}
+});

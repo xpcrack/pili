@@ -2,7 +2,7 @@
  * Fetch wallet buy/sell activity via local gmgn-cli (already signed).
  * Ported lightly from newone adapters — no newone dependency.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 export type GmgnChain = 'sol' | 'eth' | 'bsc' | 'base' | 'robinhood';
 
@@ -87,16 +87,14 @@ export function extractActivityItems(parsed: unknown): GmgnActivityItem[] {
   return [];
 }
 
-export function fetchGmgnWalletActivity(opts: {
+function buildActivityArgs(opts: {
   chain: GmgnChain | string;
   wallet: string;
   limit?: number;
   type?: string | string[];
   token?: string;
   cursor?: string;
-  bin?: string;
-}): { items: GmgnActivityItem[]; next: string | null; raw: unknown } {
-  const bin = opts.bin || process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
+}) {
   const args = [
     'portfolio',
     'activity',
@@ -115,7 +113,91 @@ export function fetchGmgnWalletActivity(opts: {
       ? [opts.type]
       : ['buy', 'sell'];
   for (const t of types) args.push('--type', t);
+  return args;
+}
 
+async function runGmgnActivityCli(bin: string, args: string[], signal?: AbortSignal): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(bin, args, {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const abort = () => {
+      if (!settled) child.kill('SIGTERM');
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      reject(error);
+    });
+    child.on('exit', (code, exitSignal) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      if (signal?.aborted) {
+        reject(new Error('gmgn-cli activity aborted'));
+      } else if (code !== 0) {
+        reject(new Error(`gmgn-cli activity exit ${code ?? 'null'}${exitSignal ? ` signal ${exitSignal}` : ''}: ${(stderr || stdout).trim().slice(0, 400)}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+function parseActivityOutput(rawText: string) {
+  const text = rawText.trim();
+  if (!text) return { items: [], next: null, raw: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`gmgn-cli activity invalid JSON: ${text.slice(0, 200)}`);
+  }
+  return {
+    items: extractActivityItems(parsed),
+    next: extractNextCursor(parsed),
+    raw: parsed,
+  };
+}
+
+export async function fetchGmgnWalletActivityAsync(opts: {
+  chain: GmgnChain | string;
+  wallet: string;
+  limit?: number;
+  type?: string | string[];
+  token?: string;
+  cursor?: string;
+  bin?: string;
+  signal?: AbortSignal;
+}): Promise<{ items: GmgnActivityItem[]; next: string | null; raw: unknown }> {
+  const bin = opts.bin || process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
+  const raw = await runGmgnActivityCli(bin, buildActivityArgs(opts), opts.signal);
+  return parseActivityOutput(raw);
+}
+
+export function fetchGmgnWalletActivity(opts: {
+  chain: GmgnChain | string;
+  wallet: string;
+  limit?: number;
+  type?: string | string[];
+  token?: string;
+  cursor?: string;
+  bin?: string;
+}): { items: GmgnActivityItem[]; next: string | null; raw: unknown } {
+  const bin = opts.bin || process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
+  const args = buildActivityArgs(opts);
   const r = spawnSync(bin, args, {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,

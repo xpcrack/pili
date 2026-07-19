@@ -7,7 +7,9 @@ const STREAM_ENDPOINT = '/api/debug/tx-judgment/stream';
 export function useFeedJudgmentStream(onUpdate: () => Promise<unknown> | void) {
   const versionRef = useRef<number>(0);
   const inFlightRef = useRef(false);
+  const onUpdateRef = useRef(onUpdate);
   const streamRef = useRef<EventSource | null>(null);
+  onUpdateRef.current = onUpdate;
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -38,7 +40,7 @@ export function useFeedJudgmentStream(onUpdate: () => Promise<unknown> | void) {
           return;
         }
         inFlightRef.current = true;
-        const result = onUpdate();
+        const result = onUpdateRef.current();
         if (result && typeof (result as Promise<unknown>).finally === 'function') {
           (result as Promise<unknown>).finally(() => {
             inFlightRef.current = false;
@@ -61,5 +63,5 @@ export function useFeedJudgmentStream(onUpdate: () => Promise<unknown> | void) {
         streamRef.current = null;
       }
     };
-  }, [onUpdate]);
+  }, []);
 }
