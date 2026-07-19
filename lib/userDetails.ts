@@ -3,13 +3,14 @@ import type { ChainType, User } from '@/types';
 export const USER_HOLDINGS_THRESHOLD_USD = 5;
 
 export interface UserHoldingRow {
-  chain: ChainType;
+  chain: ChainType | 'robinhood';
   tokenAddress: string;
   symbol: string;
   name: string | null;
   balance: number;
   priceUsd: number;
   valueUsd: number;
+  liquidityUsd: number | null;
 }
 
 export interface UserHoldingsSummary {

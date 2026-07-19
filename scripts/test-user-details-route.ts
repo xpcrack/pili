@@ -39,6 +39,7 @@ async function run() {
       balance: 8,
       priceUsd: 1,
       valueUsd: 8,
+      liquidityUsd: 10_000,
     },
   ];
   const holdingsUpdatedAt = 123_456;

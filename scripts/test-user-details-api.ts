@@ -34,6 +34,7 @@ function createSuccessPayload(): UserDetailsSuccessPayload {
         balance: 1,
         priceUsd: 1,
         valueUsd: 1,
+        liquidityUsd: 10_000,
       },
     ],
     holdingsUpdatedAt: null,
