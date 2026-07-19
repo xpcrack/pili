@@ -41,6 +41,14 @@ Address Activity 是否支持 RH 以 **Alchemy Dashboard** 为准。
 3. alchemy + RH webhook 或 RH 仍 xxyy  
 4. 回滚：`PILI_LIVE_SOURCE=xxyy`
 
+**切源前先跑覆盖率**（见 [live-vs-xxyy-coverage.md](./live-vs-xxyy-coverage.md)）：
+
+```bash
+npx tsx scripts/report-live-vs-xxyy-coverage.ts --since-live
+```
+
+门槛：dual ≥3 天、非 RH `both/xxyy ≥ 98%`、sol/bsc/base 各自 ≥95%。未达标保持 dual。
+
 ## 代码
 
 - `lib/server/alchemyWatchlist.ts` / `alchemyInbox.ts`
@@ -48,3 +56,4 @@ Address Activity 是否支持 RH 以 **Alchemy Dashboard** 为准。
 - `lib/server/liveMonitor{Config,Ingest,Runtime}.ts`
 - runtime key: `live-monitor`
 - 测试: `scripts/test-live-monitor-core.ts`
+- 覆盖率: `scripts/report-live-vs-xxyy-coverage.ts`

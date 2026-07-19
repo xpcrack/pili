@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { getSyncStatus, triggerSync } from '@/lib/server/syncService';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -64,7 +64,7 @@ function isSyncRunning(status: FeedPrewarmStatusLike) {
 export function triggerStartupPrewarmIfNeeded(deps?: TriggerStartupPrewarmDeps) {
   const getStatus = deps?.getStatus ?? getSyncStatus;
   const trigger = deps?.trigger ?? triggerSync;
-  const listUsers = deps?.listUsers ?? listTrackedUsers;
+  const listUsers = deps?.listUsers ?? listMonitoredUsers;
   const status = getStatus();
   if (isSyncRunning(status)) {
     return { started: false, reason: 'already-running' as const, status };
@@ -104,7 +104,7 @@ export function triggerStartupPrewarmIfNeeded(deps?: TriggerStartupPrewarmDeps) 
 
 export function readPrewarmProgressSnapshot() {
   const status = getSyncStatus();
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const now = Date.now();
   const targetBeginMs = now - SEVEN_DAYS_MS;
   const covered = countCoveredUsers(users, status, targetBeginMs);

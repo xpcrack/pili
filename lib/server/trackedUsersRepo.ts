@@ -269,20 +269,41 @@ function ensureExpandedTrackedAddressRows() {
         asset_updated_at,
         last_synced_at,
         created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+        updated_at,
+        monitoring_enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
       ON CONFLICT(user_id, chain, address_lower) DO NOTHING`
     );
 
     const now = Date.now();
+    // Inherit Feishu enablement from any existing row of the same address_lower.
+    const enabledByLower = new Map<string, number>();
+    for (const row of rows) {
+      const lower = normalize(row.address_lower || row.address);
+      if (!lower) continue;
+      // prefer explicit 0 if any sibling is disabled
+    }
+    const flagRows = db
+      .prepare(
+        `SELECT address_lower, MIN(COALESCE(monitoring_enabled, 1)) AS en
+         FROM tracked_addresses
+         GROUP BY address_lower`
+      )
+      .all() as Array<{ address_lower: string; en: number }>;
+    for (const row of flagRows) {
+      enabledByLower.set(normalize(row.address_lower), row.en ? 1 : 0);
+    }
+
     for (const row of rows) {
       if (!isEvmAddress(row.address)) {
         continue;
       }
 
+      const lower = normalize(row.address_lower || row.address);
+      const mon = enabledByLower.has(lower) ? enabledByLower.get(lower)! : 1;
       for (const chain of EVM_CHAINS) {
         const id = `${row.user_id}:${chain}:${row.address_lower}`;
-        upsert.run(id, row.user_id, row.address, row.address_lower, row.name, chain, now, now);
+        upsert.run(id, row.user_id, row.address, row.address_lower, row.name, chain, now, now, mon);
       }
     }
 
@@ -665,6 +686,94 @@ export function listTrackedUsers() {
   }
 
   return userRows.map((row) => mapUserRow(row, addressMap.get(row.id) || []));
+}
+
+/**
+ * Users/addresses currently enabled by Feishu (via newone sources).
+ * Collectors + default Feed should use this; history search keeps listTrackedUsers.
+ * Addresses with monitoring_enabled=0 are omitted from each user.
+ */
+export function listMonitoredUsers() {
+  ensureExpandedTrackedAddressRows();
+  const db = getDb();
+  const userRows = db
+    .prepare(
+      `SELECT
+        id,
+        name,
+        handle,
+        avatar,
+        twitter,
+        twitter_user_id,
+        twitter_avatar_url,
+        telegram,
+        telegrams_json,
+        tags_json,
+        total_asset_usd,
+        historical_max_asset_usd,
+        asset_updated_at
+      FROM tracked_users
+      WHERE COALESCE(monitoring_enabled, 1) = 1
+      ORDER BY created_at ASC, name ASC`
+    )
+    .all() as TrackedUserRow[];
+
+  if (userRows.length === 0) {
+    return [] as User[];
+  }
+
+  const addressRows = db
+    .prepare(
+      `SELECT
+        id,
+        user_id,
+        address,
+        address_lower,
+        name,
+        chain,
+        total_asset_usd,
+        asset_updated_at,
+        last_synced_at
+      FROM tracked_addresses
+      WHERE COALESCE(monitoring_enabled, 1) = 1
+      ORDER BY created_at ASC, name ASC`
+    )
+    .all() as TrackedAddressRow[];
+
+  const addressMap = new Map<string, AddressInfo[]>();
+  for (const row of addressRows) {
+    const list = addressMap.get(row.user_id) || [];
+    list.push(mapAddressRow(row));
+    addressMap.set(row.user_id, list);
+  }
+
+  return userRows
+    .map((row) => mapUserRow(row, addressMap.get(row.id) || []))
+    .filter((user) => user.addresses.length > 0 || Boolean((user.twitter || '').trim()));
+}
+
+export function isMonitoredAddressLower(addressLower: string) {
+  const key = normalize(addressLower);
+  if (!key) return false;
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT 1 AS ok FROM tracked_addresses
+       WHERE address_lower = ? AND COALESCE(monitoring_enabled, 1) = 1
+       LIMIT 1`
+    )
+    .get(key) as { ok?: number } | undefined;
+  return Boolean(row?.ok);
+}
+
+export function listMonitoredAddressLowers(): Set<string> {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT address_lower FROM tracked_addresses WHERE COALESCE(monitoring_enabled, 1) = 1`
+    )
+    .all() as Array<{ address_lower: string }>;
+  return new Set(rows.map((r) => normalize(r.address_lower)).filter(Boolean));
 }
 
 export function countTrackedUsers() {

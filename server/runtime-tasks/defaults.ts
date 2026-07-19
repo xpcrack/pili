@@ -1,3 +1,4 @@
+import { syncFeishuEnablementFromNewone } from '@/lib/server/feishuEnablementSync';
 import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completenessMaintenanceWorkerRuntime';
 import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
 import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
@@ -8,6 +9,8 @@ import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorke
 import { createLoopTask } from './loopTask';
 import type { DefaultRuntimeTaskOptions, TaskDefinition } from './types';
 
+const DEFAULT_ENABLEMENT_SYNC_MS = 15 * 60_000;
+
 interface DefaultRuntimeTaskDeps {
   runTelegramChannelWorkerCycle?: typeof runTelegramChannelWorkerCycle;
   runCompletenessMaintenanceWorkerCycle?: typeof runCompletenessMaintenanceWorkerCycle;
@@ -15,6 +18,7 @@ interface DefaultRuntimeTaskDeps {
   runHolderSnapshotCycle?: typeof runHolderSnapshotCycle;
   runTelegramBridgeCycle?: typeof runTelegramBridgeCycle;
   runLiveMonitorCycle?: typeof runLiveMonitorCycle;
+  syncFeishuEnablement?: typeof syncFeishuEnablementFromNewone;
 }
 
 export function createDefaultRuntimeTasks(
@@ -28,8 +32,33 @@ export function createDefaultRuntimeTasks(
   const runHolderSnapshotCycleImpl = deps.runHolderSnapshotCycle ?? runHolderSnapshotCycle;
   const runTelegramBridgeCycleImpl = deps.runTelegramBridgeCycle ?? runTelegramBridgeCycle;
   const runLiveMonitorCycleImpl = deps.runLiveMonitorCycle ?? runLiveMonitorCycle;
+  const syncEnablement = deps.syncFeishuEnablement ?? syncFeishuEnablementFromNewone;
 
   const tasks: TaskDefinition[] = [];
+
+  tasks.push(
+    createLoopTask({
+      key: 'feishu-enablement-sync',
+      label: 'Feishu Enablement Sync',
+      cycle: async () => {
+        const result = syncEnablement();
+        const envMs = Number(process.env.PILI_ENABLEMENT_SYNC_MS || DEFAULT_ENABLEMENT_SYNC_MS);
+        return {
+          sleepMs: Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_ENABLEMENT_SYNC_MS,
+          status: result.ok ? ('idle' as const) : ('error' as const),
+          detail: {
+            lastError: result.error ?? null,
+            enabledAddressCount: result.enabledAddressCount,
+            addressesEnabled: result.addressesEnabled,
+            addressesDisabled: result.addressesDisabled,
+            usersEnabled: result.usersEnabled,
+            usersDisabled: result.usersDisabled,
+            newonePath: result.newonePath,
+          },
+        };
+      },
+    })
+  );
 
   if (options.embedTelegramTasks !== false) {
     tasks.push(

@@ -6,6 +6,10 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const SQLITE_BUSY_TIMEOUT_MS = 30_000;
+const SQLITE_INIT_BUSY_ATTEMPTS = 8;
+/** Bump when events_fts trigger SQL changes; gates DROP/CREATE on startup. */
+const EVENTS_FTS_TRIGGERS_FLAG = 'events_fts_triggers_v3';
+const EVENTS_FTS_METADATA_FLAG = 'events_fts_metadata_index_v3';
 
 export interface SqlRunResult {
   changes: number;
@@ -143,6 +147,63 @@ let initialized = false;
 
 function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+}
+
+function isSqliteBusyError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const maybe = error as { code?: unknown; message?: unknown };
+  const code = typeof maybe.code === 'string' ? maybe.code : '';
+  if (code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT' || code === 'SQLITE_BUSY_RECOVERY') {
+    return true;
+  }
+  const message = typeof maybe.message === 'string' ? maybe.message : String(error);
+  return /database is locked|SQLITE_BUSY/i.test(message);
+}
+
+function sleepSync(ms: number) {
+  const delay = Math.max(0, Math.floor(ms));
+  if (delay <= 0) {
+    return;
+  }
+  const bunSleep = (globalThis as { Bun?: { sleepSync?: (value: number) => void } }).Bun?.sleepSync;
+  if (typeof bunSleep === 'function') {
+    bunSleep(delay);
+    return;
+  }
+  try {
+    const sab = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(sab), 0, 0, delay);
+  } catch {
+    const end = Date.now() + delay;
+    while (Date.now() < end) {
+      // spin for short backoff when Atomics.wait is unavailable
+    }
+  }
+}
+
+function withSqliteBusyRetry<T>(fn: () => T, opts?: { attempts?: number; label?: string }): T {
+  const attempts = Math.max(1, opts?.attempts ?? SQLITE_INIT_BUSY_ATTEMPTS);
+  const label = opts?.label || 'sqlite';
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      lastError = error;
+      if (!isSqliteBusyError(error) || attempt >= attempts) {
+        throw error;
+      }
+      const delayMs = Math.min(8_000, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 150);
+      console.warn(
+        `[sqlite] ${label} busy (attempt ${attempt}/${attempts}), retry in ${delayMs}ms:`,
+        error instanceof Error ? error.message : error
+      );
+      sleepSync(delayMs);
+    }
+  }
+  throw lastError;
 }
 
 function createDatabase(dbPath: string): SqlDatabase {
@@ -1055,16 +1116,39 @@ function rebuildEventsFtsIndex(db: SqlDatabase) {
   ).run();
 }
 
-function ensureEventsFtsIndexing(db: SqlDatabase) {
-  recreateEventsFtsTriggers(db);
+function eventsFtsTriggersPresent(db: SqlDatabase) {
+  const rows = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'trigger' AND name IN ('events_ai', 'events_ad', 'events_au')`
+    )
+    .all() as Array<{ name?: string }>;
+  const names = new Set(rows.map((row) => row.name || '').filter(Boolean));
+  return names.has('events_ai') && names.has('events_ad') && names.has('events_au');
+}
 
-  const rebuilt = getAppStateFlag(db, 'events_fts_metadata_index_v3');
+function ensureEventsFtsIndexing(db: SqlDatabase) {
+  // DROP/CREATE triggers takes a schema write lock. Only do it when triggers
+  // are missing or the version flag was bumped — every worker used to hit this
+  // on boot and thrash under SQLITE_BUSY.
+  const flagReady = getAppStateFlag(db, EVENTS_FTS_TRIGGERS_FLAG);
+  const present = eventsFtsTriggersPresent(db);
+  if (!present) {
+    recreateEventsFtsTriggers(db);
+    setAppStateFlag(db, EVENTS_FTS_TRIGGERS_FLAG);
+  } else if (!flagReady) {
+    // Triggers already exist (e.g. from SCHEMA_SQL IF NOT EXISTS). Stamp flag
+    // without DROP/CREATE so concurrent workers don't take a schema lock.
+    setAppStateFlag(db, EVENTS_FTS_TRIGGERS_FLAG);
+  }
+
+  const rebuilt = getAppStateFlag(db, EVENTS_FTS_METADATA_FLAG);
   if (rebuilt) {
     return;
   }
 
   rebuildEventsFtsIndex(db);
-  setAppStateFlag(db, 'events_fts_metadata_index_v3');
+  setAppStateFlag(db, EVENTS_FTS_METADATA_FLAG);
 }
 
 function migrateLegacyJudgments(db: SqlDatabase) {
@@ -1151,19 +1235,22 @@ function initializeDb(db: SqlDatabase) {
     return;
   }
 
-  db.exec(SCHEMA_SQL);
-  ensureTelegramChannelSourceColumns(db);
-  ensureTelegramChannelPostSchema(db);
-  ensureTelegramMonitorEventColumns(db);
-  ensureTelegramMonitorTxStatesTokenAwareSchema(db);
-  ensureActivityJudgmentColumns(db);
-  ensureTwitterSyncCursorColumns(db);
-  ensureTwitterIdentityColumns(db);
-  ensureTwitterEnrichmentColumns(db);
-  ensureTelegramsJsonColumn(db);
-  ensureCompletenessSchema(db);
-  ensureEventsFtsIndexing(db);
-  migrateLegacyJudgments(db);
+  withSqliteBusyRetry(() => {
+    db.exec(SCHEMA_SQL);
+    ensureTelegramChannelSourceColumns(db);
+    ensureTelegramChannelPostSchema(db);
+    ensureTelegramMonitorEventColumns(db);
+    ensureTelegramMonitorTxStatesTokenAwareSchema(db);
+    ensureActivityJudgmentColumns(db);
+    ensureTwitterSyncCursorColumns(db);
+    ensureTwitterIdentityColumns(db);
+    ensureTwitterEnrichmentColumns(db);
+    ensureTelegramsJsonColumn(db);
+    ensureMonitoringEnabledColumns(db);
+    ensureCompletenessSchema(db);
+    ensureEventsFtsIndexing(db);
+    migrateLegacyJudgments(db);
+  }, { label: 'initializeDb' });
   initialized = true;
 }
 
@@ -1445,6 +1532,23 @@ function ensureTelegramsJsonColumn(db: SqlDatabase) {
   ensureColumn(db, 'tracked_users', 'telegrams_json', 'TEXT', "'[]'");
 }
 
+/**
+ * Feishu/newone enablement mirror.
+ * Default 1 keeps legacy DBs collecting until the first sync:feishu-enablement run.
+ */
+function ensureMonitoringEnabledColumns(db: SqlDatabase) {
+  ensureColumn(db, 'tracked_users', 'monitoring_enabled', 'INTEGER', '1');
+  ensureColumn(db, 'tracked_addresses', 'monitoring_enabled', 'INTEGER', '1');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tracked_addresses_monitoring_enabled
+     ON tracked_addresses(monitoring_enabled, address_lower)`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tracked_users_monitoring_enabled
+     ON tracked_users(monitoring_enabled)`
+  );
+}
+
 function ensureCompletenessSchema(db: SqlDatabase) {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_completeness_run_sources_run_source
@@ -1461,10 +1565,16 @@ export function getDb() {
   mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = createDatabase(dbPath);
   initializeDb(db);
+  // PASSIVE is safe for multi-process; TRUNCATE only when explicitly requested
+  // (typically the long-lived web process) so workers don't fight over WAL.
+  const checkpointMode =
+    (process.env.PILIPILI_WAL_CHECKPOINT || '').trim().toUpperCase() === 'TRUNCATE'
+      ? 'TRUNCATE'
+      : 'PASSIVE';
   setInterval(() => {
     try {
       if (typeof db.pragma === 'function') {
-        db.pragma('wal_checkpoint(TRUNCATE)');
+        db.pragma(`wal_checkpoint(${checkpointMode})`);
       }
     } catch (error) {
       console.warn('[sqlite] wal_checkpoint failed:', error);

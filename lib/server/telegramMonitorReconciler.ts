@@ -25,7 +25,7 @@ import {
   markTelegramMonitorTxStateFailed,
   markTelegramMonitorTxStateReconciled,
 } from '@/lib/server/telegramMonitorTxStateRepo';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import type { Activity, AddressInfo, User } from '@/types';
 import type { TokenFlow } from '@/lib/parsing/types';
 
@@ -48,7 +48,7 @@ function findTrackedUser(state: {
   chain: string;
   trackedWalletAddress: string;
 }) {
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const user = users.find((candidate) => candidate.id === state.userId);
   if (!user) {
     return null;

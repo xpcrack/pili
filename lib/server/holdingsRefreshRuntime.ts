@@ -8,7 +8,7 @@ import { batchFetchFromDexScreener } from '@/lib/server/dexscreener';
 import {
   validateAndPersistPeakAssetSnapshots,
 } from '@/lib/server/assetPeakValidation';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers, listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 
 const MIN_HOLDING_USD = 5;
@@ -195,11 +195,13 @@ export function ensureCurrentHoldingsTable(db?: DbHandle) {
 }
 
 function listTrackedAddresses(db: DbHandle) {
+  // Only Feishu-enabled addresses (default 1 until first enablement sync).
   return db
     .prepare(`
       SELECT user_id, address, address_lower, chain
       FROM tracked_addresses
       WHERE chain IN (${SUPPORTED_CHAINS.map((chain) => `'${chain}'`).join(',')})
+        AND COALESCE(monitoring_enabled, 1) = 1
     `)
     .all() as TrackedAddressRow[];
 }
@@ -785,11 +787,9 @@ export async function refreshCurrentHoldings(
   if (!options.dryRun) {
     replaceCurrentHoldings(db, holdings, walletStatuses);
 
-    const users = listTrackedUsers();
+    const users = listMonitoredUsers().filter((user) => !failedUserIds.has(user.id));
     for (const user of users) {
-      if (!failedUserIds.has(user.id)) {
-        completeUserIds.add(user.id);
-      }
+      completeUserIds.add(user.id);
     }
     const completeAddressAssets = addressAssets.filter(
       (snapshot) => snapshot.userId && completeUserIds.has(snapshot.userId)

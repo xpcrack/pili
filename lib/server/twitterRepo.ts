@@ -148,6 +148,7 @@ export function listTrackedTwitterUsers() {
       `SELECT id, name, handle, twitter, twitter_user_id, twitter_avatar_url
        FROM tracked_users
        WHERE twitter IS NOT NULL
+         AND COALESCE(monitoring_enabled, 1) = 1
        ORDER BY updated_at DESC, created_at DESC`
     )
     .all() as Array<{

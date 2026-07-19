@@ -16,7 +16,7 @@ import {
   listTwitterTweetsByIds,
   type StoredTwitterTweet,
 } from '@/lib/server/twitterRepo';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { runTweetEnrichmentForTweetIds } from '@/lib/server/twitterEnrichmentService';
 import { extractQuotedTextFromSourceJson } from '@/lib/server/tweetSourceTexts';
@@ -211,7 +211,7 @@ export function projectTwitterTweetsToFeed(options: {
   userId?: string | null;
   tweetIds?: string[];
 }) {
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const userByTwitterUserId = new Map<string, User>();
   const userByTwitter = new Map<string, User>();
   for (const user of users) {

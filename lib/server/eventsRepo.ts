@@ -34,6 +34,8 @@ export interface EventFeedQuery {
   chain?: string | null;
   fromMs?: number | null;
   toMs?: number | null;
+  /** When true (default), hide users with monitoring_enabled=0 unless userId/q pin a history view. */
+  monitoredOnly?: boolean;
 }
 
 const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
@@ -824,10 +826,18 @@ export function readEventsFeed(query: EventFeedQuery) {
   const chain = normalize(query.chain);
   const fromMs = typeof query.fromMs === 'number' && Number.isFinite(query.fromMs) ? Math.floor(query.fromMs) : null;
   const toMs = typeof query.toMs === 'number' && Number.isFinite(query.toMs) ? Math.floor(query.toMs) : null;
+  // Policy A: default Feed only shows Feishu-enabled people; search / user pin can still hit history.
+  const monitoredOnly =
+    query.monitoredOnly !== false && !userId && !q;
 
   const where: string[] = [];
   const params: Array<string | number> = [];
 
+  if (monitoredOnly) {
+    where.push(
+      `(e.user_id IS NULL OR e.user_id IN (SELECT id FROM tracked_users WHERE COALESCE(monitoring_enabled, 1) = 1))`
+    );
+  }
   if (source) {
     where.push('e.source = ?');
     params.push(source);

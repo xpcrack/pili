@@ -22,6 +22,7 @@ import {
 import { getDb } from '@/lib/server/sqlite';
 import { sleep } from '@/lib/timing';
 import {
+  listMonitoredUsers,
   listTrackedUsers,
 } from '@/lib/server/trackedUsersRepo';
 import { appendSyncLog, pruneSyncLogs, pruneSyncRuns } from '@/lib/server/syncLogRepo';
@@ -290,7 +291,7 @@ async function runSync(
       userId: options.userId,
     },
   });
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const totalAddresses = users.reduce((sum, user) => sum + user.addresses.length, 0);
 
   appendSyncLog({
@@ -298,7 +299,7 @@ async function runSync(
     runId,
     level: 'info',
     phase: 'scan-users',
-    message: `loaded tracked users`,
+    message: `loaded monitored users`,
     payload: {
       userCount: users.length,
       totalAddresses,
@@ -593,7 +594,7 @@ export function triggerSync(reason = 'manual', options?: TriggerSyncOptions) {
         error instanceof Error && process.env.NODE_ENV !== 'production'
           ? error.stack || error.message
           : message;
-      const users = listTrackedUsers();
+      const users = listMonitoredUsers();
       const totalAddresses = users.reduce((sum, user) => sum + user.addresses.length, 0);
       completeRunFailure(run.id, {
         startedAt: run.startedAt,

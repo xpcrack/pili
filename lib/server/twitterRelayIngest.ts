@@ -4,7 +4,7 @@ import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTwitterTweetsToFeed } from '@/lib/server/twitterFeedMapper';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { upsertTwitterTweets, type UpsertTwitterTweetInput } from '@/lib/server/twitterRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 
@@ -165,7 +165,7 @@ export async function ingestTwitterRelayPayload(payload: TwitterRelayPayload) {
 
   const lane = payload.action === 'reply' ? 'replies' : 'timeline';
 
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const knownUserByTwitterHandle = new Map(
     users
       .map((user) => [normalize(normalizeTwitterHandle(user.twitter || '')), user] as const)

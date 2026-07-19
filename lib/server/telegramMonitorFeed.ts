@@ -11,7 +11,7 @@ import {
   listRecentTelegramMonitorTxStates,
   type TelegramMonitorTxState,
 } from '@/lib/server/telegramMonitorTxStateRepo';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import {
   buildActivityFromSnapshot,
   repairCollapsedCanonicalActivity,
@@ -199,7 +199,7 @@ export async function projectTelegramMonitorEvent(params: {
   event: TelegramMonitorFeedEvent;
   users?: User[];
 }): Promise<TelegramMonitorFeedRow | null> {
-  const users = params.users || listTrackedUsers();
+  const users = params.users || listMonitoredUsers();
   const trackedAddressIndex = buildTrackedAddressIndex(users);
   const event = params.event;
 
@@ -280,7 +280,7 @@ export async function projectTelegramMonitorTxState(params: {
   state: TelegramMonitorTxState;
   users?: User[];
 }): Promise<TelegramMonitorFeedRow | null> {
-  const users = params.users || listTrackedUsers();
+  const users = params.users || listMonitoredUsers();
   const user = users.find((candidate) => candidate.id === params.state.userId);
   if (!user) {
     return null;
@@ -335,7 +335,7 @@ export async function projectTelegramMonitorTxState(params: {
 }
 
 export async function readTelegramMonitorFeed(limit = 200): Promise<TelegramMonitorFeedRow[]> {
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const stateFeed = await projectTelegramMonitorTxStateFeed({ users, limit });
   const fallbackFeed = await projectTelegramMonitorFallbackFeed({ users, limit });
 
@@ -377,7 +377,7 @@ export async function readBidOnchainEvents(params?: {
   const { listTelegramMonitorEvents } = await import('@/lib/server/telegramMonitorRepo');
 
   const safeLimit = Math.max(1, Math.min(500, Math.floor(params?.limit || 100)));
-  const users = listTrackedUsers();
+  const users = listMonitoredUsers();
   const trackedAddressIndex = buildTrackedAddressIndex(users);
   const requestedUserIds = new Set((params?.userIds || []).map((value) => value.trim()).filter(Boolean));
   const feedEvents = listTelegramMonitorEvents({
