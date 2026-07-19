@@ -10,7 +10,6 @@ const TX_EXACT = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const TX_OTHER = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const TX_TIME = 1710000000000;
 
-process.env.XXYY_API_KEY = 'fixture_xxyy_key';
 process.env.OKX_API_KEY = 'fixture-okx-key';
 process.env.OKX_SECRET_KEY = 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE = 'fixture-okx-passphrase';
@@ -82,19 +81,6 @@ async function run() {
     globalThis.fetch = async (input: string | URL | Request) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
-      if (url.includes('/api/trade/open/api/query?')) {
-        return createJsonResponse({
-          code: 200,
-          success: true,
-          data: {
-            tradeInfo: {
-              marketCapUsd: 100000,
-              price: 0.01,
-            },
-          },
-        });
-      }
-
       if (url.includes('/api/v6/dex/market/historical-candles?')) {
         return createJsonResponse({
           code: '0',
@@ -103,7 +89,29 @@ async function run() {
       }
 
       if (url.includes('/token-pairs/v1/')) {
-        return createJsonResponse([]);
+        return createJsonResponse([
+          {
+            chainId: 'bsc',
+            pairAddress: '0xpair',
+            baseToken: {
+              address: TOKEN,
+              name: 'Fixture Token',
+              symbol: 'FIX',
+            },
+            quoteToken: {
+              address: '0x55d398326f99059fF775485246999027B3197955',
+              name: 'Tether USD',
+              symbol: 'USDT',
+            },
+            priceUsd: '0.01',
+            marketCap: 100000,
+            fdv: 100000,
+            liquidity: { usd: 200000 },
+            volume: { m5: 0, h1: 0, h6: 1000, h24: 5000 },
+            priceChange: { m5: 0, h1: 0, h6: 0, h24: 0 },
+            info: { imageUrl: 'https://fixture.example/token.png' },
+          },
+        ]);
       }
 
       throw new Error(`Unhandled fetch in test-market-cap-resolution: ${url}`);
@@ -135,20 +143,30 @@ async function run() {
 
     globalThis.fetch = async (input: string | URL | Request) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (url.includes('/api/trade/open/api/query?')) {
-        return createJsonResponse({
-          code: 200,
-          success: true,
-          data: {
-            tradeInfo: {
-              marketCapUsd: 100000,
-              price: 0.01,
-            },
-          },
-        });
-      }
       if (url.includes('/token-pairs/v1/')) {
-        return createJsonResponse([]);
+        return createJsonResponse([
+          {
+            chainId: 'bsc',
+            pairAddress: '0xpair',
+            baseToken: {
+              address: TOKEN,
+              name: 'Fixture Token',
+              symbol: 'FIX',
+            },
+            quoteToken: {
+              address: '0x55d398326f99059fF775485246999027B3197955',
+              name: 'Tether USD',
+              symbol: 'USDT',
+            },
+            priceUsd: '0.01',
+            marketCap: 100000,
+            fdv: 100000,
+            liquidity: { usd: 200000 },
+            volume: { m5: 0, h1: 0, h6: 1000, h24: 5000 },
+            priceChange: { m5: 0, h1: 0, h6: 0, h24: 0 },
+            info: { imageUrl: 'https://fixture.example/token.png' },
+          },
+        ]);
       }
       if (url.includes('/api/v6/dex/market/historical-candles?')) {
         return createJsonResponse({ code: '0', data: [] });

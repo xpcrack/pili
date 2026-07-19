@@ -49,6 +49,32 @@ async function run() {
     } = await import('@/lib/server/userHoldingsDetails');
 
     const db = getDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS current_holdings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracked_address TEXT NOT NULL,
+        tracked_address_lower TEXT NOT NULL,
+        user_id TEXT,
+        chain TEXT NOT NULL,
+        token_address TEXT NOT NULL,
+        token_address_lower TEXT NOT NULL,
+        symbol TEXT,
+        name TEXT,
+        balance REAL,
+        price_usd REAL,
+        value_usd REAL,
+        refreshed_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS current_holdings_wallet_status (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracked_address TEXT NOT NULL,
+        tracked_address_lower TEXT NOT NULL,
+        user_id TEXT,
+        chain TEXT NOT NULL,
+        status TEXT NOT NULL,
+        refreshed_at INTEGER NOT NULL
+      );
+    `);
     const insertHolding = db.prepare(`
       INSERT INTO current_holdings
         (tracked_address, tracked_address_lower, user_id, chain,
@@ -56,6 +82,29 @@ async function run() {
          balance, price_usd, value_usd, refreshed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+
+    const insertWalletStatus = db.prepare(`
+      INSERT INTO current_holdings_wallet_status
+        (tracked_address, tracked_address_lower, user_id, chain, status, refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    function seedWalletStatus(input: {
+      trackedAddress: string;
+      userId?: string | null;
+      chain: ChainType;
+      status: 'success' | 'failed';
+      refreshedAt: number;
+    }) {
+      insertWalletStatus.run(
+        input.trackedAddress,
+        input.trackedAddress.toLowerCase(),
+        input.userId ?? 'user-1',
+        input.chain,
+        input.status,
+        input.refreshedAt,
+      );
+    }
 
     function seedHolding(input: {
       trackedAddress: string;
@@ -142,9 +191,9 @@ async function run() {
 
     assert.equal(details.holdingsUpdatedAt, 9_999);
     assert.equal(details.summary.visibleCount, 2);
-    assert.equal(details.summary.partial, true);
-    assert.equal(details.summary.successfulAddressCount, 2);
-    assert.equal(details.summary.failedAddressCount, 1);
+    assert.equal(details.summary.partial, false);
+    assert.equal(details.summary.successfulAddressCount, 3);
+    assert.equal(details.summary.failedAddressCount, 0);
     assert.deepEqual(
       details.holdings.map((holding) => [
         holding.chain,
@@ -217,6 +266,37 @@ async function run() {
       refreshedAt: 4_200,
     });
 
+    seedWalletStatus({
+      trackedAddress: '0xWalletThree',
+      chain: 'bsc',
+      status: 'success',
+      refreshedAt: 4_321,
+    });
+    seedWalletStatus({
+      trackedAddress: '0xWalletFour',
+      chain: 'bsc',
+      status: 'success',
+      refreshedAt: 4_321,
+    });
+    seedWalletStatus({
+      trackedAddress: 'SoWalletCaseOne111111111111111111111111111111',
+      chain: 'solana',
+      status: 'success',
+      refreshedAt: 4_321,
+    });
+    seedWalletStatus({
+      trackedAddress: 'SoWalletCaseTwo111111111111111111111111111111',
+      chain: 'solana',
+      status: 'success',
+      refreshedAt: 4_321,
+    });
+    seedWalletStatus({
+      trackedAddress: '0xWalletFive',
+      chain: 'bsc',
+      status: 'failed',
+      refreshedAt: 4_321,
+    });
+
     const normalizationDetails = await readUserHoldingsDetails(normalizationUser);
 
     assert.equal(normalizationDetails.holdingsUpdatedAt, 4_321);
@@ -237,7 +317,7 @@ async function run() {
         ['bsc', '0xabc', 'ABC', 6, 1, 6],
         ['solana', 'SoTokenCase', 'SOLA', 1, 6, 6],
       ],
-      'missing address snapshots should count as partial failures, EVM token addresses should trim and merge case-insensitively, and Solana token addresses should remain case-sensitive after trimming',
+      'wallet status rows should drive partial failures, EVM token addresses should trim and merge case-insensitively, and Solana token addresses should remain case-sensitive after trimming',
     );
 
     const empty = await readUserHoldingsDetails(makeUser([]));
@@ -259,6 +339,40 @@ async function run() {
       successfulAddressCount: 0,
       failedAddressCount: 0,
     });
+
+    // Robinhood rows attach by EVM address without a robinhood address-book entry
+    seedHolding({
+      trackedAddress: '0xWalletOne',
+      chain: 'robinhood' as ChainType,
+      tokenAddress: '0x45242320dbb855eea8fd36804c6487e10e97fcf9',
+      symbol: 'TENDIES',
+      name: 'TENDIES',
+      balance: 1000,
+      priceUsd: 30,
+      valueUsd: 30_000,
+      refreshedAt: 10_000,
+    });
+    // liquidity column may be absent in this test schema — set if present
+    try {
+      db.exec('ALTER TABLE current_holdings ADD COLUMN liquidity_usd REAL');
+      db.prepare(
+        `UPDATE current_holdings SET liquidity_usd = ? WHERE chain = 'robinhood' AND token_address_lower = ?`
+      ).run(800_000, '0x45242320dbb855eea8fd36804c6487e10e97fcf9');
+    } catch {
+      // column may already exist
+      db.prepare(
+        `UPDATE current_holdings SET liquidity_usd = ? WHERE chain = 'robinhood' AND token_address_lower = ?`
+      ).run(800_000, '0x45242320dbb855eea8fd36804c6487e10e97fcf9');
+    }
+
+    const robinhoodUser = makeUser([makeAddress('0xWalletOne', '#1', 'bsc')]);
+    const robinhoodDetails = await readUserHoldingsDetails(robinhoodUser);
+    const tendies = robinhoodDetails.holdings.find((h) => h.symbol === 'TENDIES');
+    assert.ok(tendies, 'Robinhood holding should be returned for EVM address without robinhood address row');
+    assert.equal(tendies.chain, 'robinhood');
+    assert.equal(tendies.tokenAddress, '0x45242320dbb855eea8fd36804c6487e10e97fcf9');
+    assert.equal(tendies.valueUsd, 30_000);
+    assert.equal(tendies.liquidityUsd, 800_000);
 
     db.prepare('DELETE FROM current_holdings').run();
     await assert.rejects(
