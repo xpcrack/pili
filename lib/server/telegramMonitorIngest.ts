@@ -7,7 +7,7 @@ import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
 import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import {
@@ -196,7 +196,8 @@ function findTrackedUserMatch(parsed: {
     return false;
   }
 
-  const users = listTrackedUsers();
+  // Only Feishu-enabled wallets (monitoring_enabled=1) are match targets.
+  const users = listMonitoredUsers();
   const chain = parsed.chain;
   const trackedWalletAddress = (parsed.trackedWalletAddress || '').trim().toLowerCase();
   const aliasLabel = normalizeAlias(parsed.walletAliasLabel || parsed.walletLabel);

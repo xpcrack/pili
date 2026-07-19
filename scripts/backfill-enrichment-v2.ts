@@ -5,11 +5,14 @@
 //   npx tsx scripts/backfill-enrichment-v2.ts --limit=50
 //   npx tsx scripts/backfill-enrichment-v2.ts --feed-only --days=14
 //   npx tsx scripts/backfill-enrichment-v2.ts --exclude-news
+//   npx tsx scripts/backfill-enrichment-v2.ts --force-prod-db   # only if you accept locking prod
 // Env: AXONHUB_API_KEY + AXONHUB_BASE_URL (default http://127.0.0.1:8090/v1), model mimo-v2.5
+// Refuses default prod DB while pili-web / telegram workers are online (see scripts/lib/prodDbGuard.ts).
 
 import { getDb } from '../lib/server/sqlite';
 import { runTweetEnrichmentForTweetIds } from '../lib/server/twitterEnrichmentService';
 import { projectTwitterTweetsToFeed } from '../lib/server/twitterFeedMapper';
+import { exitIfProdDbHeavyJobBlocked } from './lib/prodDbGuard';
 
 const BATCH_SIZE = 3;
 const DELAY_MS = 500;
@@ -67,6 +70,7 @@ function listNewsTwitterHandles(db: ReturnType<typeof getDb>) {
 }
 
 async function main() {
+  exitIfProdDbHeavyJobBlocked({ jobName: 'backfill-enrichment-v2' });
   const { tweetId, limit, feedOnly, days, excludeNews } = parseArgs(process.argv.slice(2));
   const apiKey =
     (process.env.ENRICHMENT_LLM_API_KEY || '').trim() ||

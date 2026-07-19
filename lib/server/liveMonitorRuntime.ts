@@ -32,7 +32,7 @@ import {
   type LiveSourceMode,
 } from '@/lib/server/liveMonitorConfig';
 import { upsertLiveMonitorTrades } from '@/lib/server/liveMonitorIngest';
-import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import type { User } from '@/types';
 
 export { readLiveSourceMode, readXxyyAllowedChains, shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
@@ -147,7 +147,7 @@ export async function runLiveMonitorCycle(
     };
   }
 
-  const listUsers = deps.listUsers ?? listTrackedUsers;
+  const listUsers = deps.listUsers ?? listMonitoredUsers;
   const pullInbox = deps.pullInbox ?? pullAlchemyInbox;
   const syncWatchlistFn = deps.syncWatchlist ?? syncAlchemyWatchlist;
   const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivity;
