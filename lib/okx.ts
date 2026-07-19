@@ -380,6 +380,8 @@ function sanitizeTokenLogoUrl(value: unknown) {
   const trimmed = value.trim();
   if (!trimmed) return null;
   if (!/^https?:\/\//i.test(trimmed)) return null;
+  // OKX 默认占位图（default_90_0）不是真实 logo，当空白用
+  if (/type=default_/i.test(trimmed) || /\/default[_-]/i.test(trimmed)) return null;
   return trimmed;
 }
 

@@ -82,6 +82,25 @@ function buildFallbackResponse(handle: string) {
   });
 }
 
+function isAllowedAvatarSource(url: string) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return (
+      hostname === 'pbs.twimg.com' ||
+      hostname.endsWith('.twimg.com') ||
+      hostname === 'unavatar.io' ||
+      hostname.endsWith('.unavatar.io')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function upgradeTwitterAvatarSize(url: string) {
+  // _normal (48px) 太糊，优先 _400x400
+  return url.replace(/_normal(\.(jpe?g|png|webp))?$/i, '_400x400$1');
+}
+
 async function fetchAvatarBytes(url: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -124,25 +143,36 @@ async function fetchAvatarBytes(url: string) {
   }
 }
 
-async function resolveTwitterAvatar(twitter: string) {
-  const candidates = [
+async function resolveTwitterAvatar(twitter: string, preferredUrl?: string) {
+  const candidates: string[] = [];
+  if (preferredUrl && isAllowedAvatarSource(preferredUrl)) {
+    candidates.push(upgradeTwitterAvatarSize(preferredUrl));
+    if (preferredUrl !== upgradeTwitterAvatarSize(preferredUrl)) {
+      candidates.push(preferredUrl);
+    }
+  }
+  candidates.push(
     `https://unavatar.io/x/${encodeURIComponent(twitter)}`,
-    `https://unavatar.io/twitter/${encodeURIComponent(twitter)}`,
-  ];
+    `https://unavatar.io/twitter/${encodeURIComponent(twitter)}`
+  );
 
-  const results = await Promise.all(candidates.map((candidate) => fetchAvatarBytes(candidate)));
-  return results.find((result) => result !== null) ?? null;
+  for (const candidate of candidates) {
+    const result = await fetchAvatarBytes(candidate);
+    if (result) return result;
+  }
+  return null;
 }
 
 export async function GET(request: NextRequest) {
   const handle = request.nextUrl.searchParams.get('handle')?.trim() || 'user';
   const twitter = normalizeTwitterHandle(request.nextUrl.searchParams.get('twitter') || '');
+  const preferredUrl = request.nextUrl.searchParams.get('url')?.trim() || '';
 
   if (!twitter) {
     return buildFallbackResponse(handle);
   }
 
-  const cacheKey = twitter.toLowerCase();
+  const cacheKey = `${twitter.toLowerCase()}::${preferredUrl}`;
   const now = Date.now();
   const cached = avatarCache.get(cacheKey);
 
@@ -162,7 +192,7 @@ export async function GET(request: NextRequest) {
     return buildFallbackResponse(handle);
   }
 
-  const avatar = await resolveTwitterAvatar(twitter);
+  const avatar = await resolveTwitterAvatar(twitter, preferredUrl);
 
   if (!avatar) {
     evictOldestUntilUnderLimit(negativeCache, NEGATIVE_CACHE_MAX_ENTRIES);

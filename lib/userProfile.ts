@@ -35,41 +35,74 @@ function isTwitterHostedAvatar(value: string) {
   }
 }
 
+function isUnavatarUrl(value: string) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === 'unavatar.io' || hostname.endsWith('.unavatar.io');
+  } catch {
+    return false;
+  }
+}
+
+function extractTwitterFromUnavatar(value: string) {
+  try {
+    const parsed = new URL(value);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    // /x/{handle} or /twitter/{handle}
+    if (parts.length >= 2 && (parts[0] === 'x' || parts[0] === 'twitter')) {
+      return normalizeTwitterHandle(parts[1]);
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 export function buildUserAvatar(handle: string, twitter?: string, avatar?: string) {
   const normalizedTwitter = normalizeTwitterHandle(twitter);
-
-  if (normalizedTwitter) {
-    const params = new URLSearchParams({
-      handle: handle.trim(),
-      twitter: normalizedTwitter,
-      v: buildAvatarVersionSeed(handle, twitter, avatar),
-    });
-
-    return `/api/avatar?${params.toString()}`;
+  if (!normalizedTwitter) {
+    return buildFallbackAvatar(handle);
   }
 
-  return buildFallbackAvatar(handle);
+  const params = new URLSearchParams({
+    handle: handle.trim() || normalizedTwitter,
+    twitter: normalizedTwitter,
+    v: buildAvatarVersionSeed(handle, twitter, avatar),
+  });
+  const preferred = (avatar || '').trim();
+  // 服务端优先用已缓存的 pbs/unavatar URL（走本机代理），失败再 unavatar 兜底
+  if (preferred && (isTwitterHostedAvatar(preferred) || isUnavatarUrl(preferred))) {
+    params.set('url', preferred);
+  }
+
+  return `/api/avatar?${params.toString()}`;
 }
 
 export function getUserAvatar(user: Pick<User, 'handle' | 'twitter' | 'avatar' | 'twitterAvatarUrl'>) {
   const avatar = typeof user.avatar === 'string' ? user.avatar.trim() : '';
   const twitterAvatarUrl =
     'twitterAvatarUrl' in user && typeof user.twitterAvatarUrl === 'string' ? user.twitterAvatarUrl.trim() : '';
+  const twitter =
+    normalizeTwitterHandle(user.twitter) ||
+    extractTwitterFromUnavatar(avatar) ||
+    extractTwitterFromUnavatar(twitterAvatarUrl);
 
-  if (user.twitter && (isTwitterHostedAvatar(avatar) || isTwitterHostedAvatar(twitterAvatarUrl))) {
-    return buildUserAvatar(user.handle, user.twitter, avatar || twitterAvatarUrl);
+  // 有推特身份：一律走 /api/avatar（浏览器直连 pbs/unavatar 会空）
+  if (twitter) {
+    const preferred = isTwitterHostedAvatar(twitterAvatarUrl)
+      ? twitterAvatarUrl
+      : isTwitterHostedAvatar(avatar)
+        ? avatar
+        : twitterAvatarUrl || avatar;
+    return buildUserAvatar(user.handle, twitter, preferred);
   }
 
-  if (avatar) {
+  if (avatar && !isUnavatarUrl(avatar) && !isTwitterHostedAvatar(avatar)) {
     return avatar;
   }
 
-  if (twitterAvatarUrl) {
+  if (twitterAvatarUrl && !isUnavatarUrl(twitterAvatarUrl) && !isTwitterHostedAvatar(twitterAvatarUrl)) {
     return twitterAvatarUrl;
-  }
-
-  if (user.twitter) {
-    return buildUserAvatar(user.handle, user.twitter, avatar);
   }
 
   return buildFallbackAvatar(user.handle);

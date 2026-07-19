@@ -48,6 +48,17 @@ function run() {
     'non-twitter users should keep explicit custom avatar URLs'
   );
 
+  const unavatarOnly = makeUser({
+    twitter: undefined,
+    avatar: 'https://unavatar.io/x/traderpow',
+    twitterAvatarUrl: undefined,
+  });
+  assert.match(
+    getUserAvatar(unavatarOnly),
+    /^\/api\/avatar\?/,
+    'unavatar-only avatar fields should still proxy via /api/avatar'
+  );
+
   console.log('user profile avatar tests: ok');
 }
 
