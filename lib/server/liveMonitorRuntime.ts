@@ -22,6 +22,7 @@ import {
 } from '@/lib/server/alchemyWatchlist';
 import {
   fetchGmgnWalletActivity,
+  fetchGmgnWalletActivityAsync,
   inferChainsForAddress,
   normalizeGmgnActivityItems,
   type NormalizedLiveTrade,
@@ -84,7 +85,14 @@ function collectWatchedAddresses(users: User[]): {
   return { addresses: [...byLower.values()].map((v) => v.address), byLower };
 }
 
-export interface LiveMonitorCycleResult {
+type LiveScanResult = {
+  key: string;
+  user: User;
+  trades: NormalizedLiveTrade[];
+  error: string | null;
+};
+
+export type LiveMonitorCycleResult = {
   sleepMs: number;
   status: 'idle' | 'busy' | 'partial' | 'error' | 'disabled';
   lastError: string | null;
@@ -105,7 +113,9 @@ export type LiveMonitorDeps = {
   listUsers?: () => User[];
   pullInbox?: typeof pullAlchemyInbox;
   syncWatchlist?: typeof syncAlchemyWatchlist;
-  fetchActivity?: typeof fetchGmgnWalletActivity;
+  fetchActivity?: (
+    options: Parameters<typeof fetchGmgnWalletActivity>[0]
+  ) => ReturnType<typeof fetchGmgnWalletActivity> | ReturnType<typeof fetchGmgnWalletActivityAsync>;
   upsertTrades?: typeof upsertLiveMonitorTrades;
   now?: () => number;
   env?: EnvMap;
@@ -150,7 +160,7 @@ export async function runLiveMonitorCycle(
   const listUsers = deps.listUsers ?? listMonitoredUsers;
   const pullInbox = deps.pullInbox ?? pullAlchemyInbox;
   const syncWatchlistFn = deps.syncWatchlist ?? syncAlchemyWatchlist;
-  const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivity;
+  const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivityAsync;
   const upsertTrades = deps.upsertTrades ?? upsertLiveMonitorTrades;
 
   const users = listUsers();
@@ -206,37 +216,69 @@ export async function runLiveMonitorCycle(
       (Number.isFinite(lookbackSec) && lookbackSec > 0 ? lookbackSec : DEFAULT_LOOKBACK_SEC);
     const minCost = Number(env.PILI_LIVE_MIN_COST_USD || 0);
 
-    // If inbox quiet, still idle; only GMGN wallets that rang the doorbell.
-    const walletsToScan = pulled.wallets.length > 0 ? pulled.wallets : [];
-
-    for (const wallet of walletsToScan) {
+    // If inbox quiet, stay idle; otherwise scan only wallets that rang the doorbell.
+    const maxConcurrentScansRaw = Number(env.PILI_LIVE_MAX_CONCURRENCY || 3);
+    const maxConcurrentScans = Number.isFinite(maxConcurrentScansRaw)
+      ? Math.max(1, Math.min(3, Math.floor(maxConcurrentScansRaw)))
+      : 3;
+    const scanTasks = pulled.wallets.flatMap((wallet) => {
       const owner = byLower.get(wallet.toLowerCase());
-      if (!owner) continue;
-      const chains = inferChainsForAddress(wallet);
-      const allTrades: NormalizedLiveTrade[] = [];
-      for (const chain of chains) {
+      if (!owner) return [];
+      return inferChainsForAddress(wallet).map((chain) => async () => {
         try {
-          const { items } = fetchActivity({
+          const response = await fetchActivity({
             chain,
             wallet: owner.address,
             limit: 30,
             type: ['buy', 'sell'],
           });
-          walletsScanned += 1;
-          const trades = normalizeGmgnActivityItems(items, {
-            wallet: owner.address,
-            chain,
-            min_cost_usd: Number.isFinite(minCost) ? minCost : 0,
-            after_ts: afterTs,
-          });
-          allTrades.push(...trades);
+          const { items } = await response;
+          return {
+            key: `${owner.user.id}:${owner.address.toLowerCase()}`,
+            user: owner.user,
+            trades: normalizeGmgnActivityItems(items, {
+              wallet: owner.address,
+              chain,
+              min_cost_usd: Number.isFinite(minCost) ? minCost : 0,
+              after_ts: afterTs,
+            }),
+            error: null,
+          };
         } catch (error) {
-          gmgnErrors += 1;
-          lastError = error instanceof Error ? error.message : String(error);
+          return {
+            key: `${owner.user.id}:${owner.address.toLowerCase()}`,
+            user: owner.user,
+            trades: [],
+            error: error instanceof Error ? error.message : String(error),
+          };
         }
+      });
+    });
+
+    const scanResults: LiveScanResult[] = [];
+    let nextScan = 0;
+    const workers = Array.from({ length: Math.min(maxConcurrentScans, scanTasks.length) }, async () => {
+      while (nextScan < scanTasks.length) {
+        const index = nextScan++;
+        scanResults.push(await scanTasks[index]!());
       }
-      if (allTrades.length > 0) {
-        const result = upsertTrades({ user: owner.user, trades: allTrades });
+    });
+    await Promise.all(workers);
+    walletsScanned = scanTasks.length;
+    const tradesByOwner = new Map<string, { user: User; trades: NormalizedLiveTrade[] }>();
+    for (const result of scanResults) {
+      if (result.error) {
+        gmgnErrors += 1;
+        lastError = result.error;
+      }
+      const current = tradesByOwner.get(result.key) || { user: result.user, trades: [] };
+      current.trades.push(...result.trades);
+      tradesByOwner.set(result.key, current);
+    }
+    for (const { user, trades } of tradesByOwner.values()) {
+      if (trades.length > 0) {
+        trades.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
+        const result = upsertTrades({ user, trades });
         tradesUpserted += result.upserted;
       }
     }

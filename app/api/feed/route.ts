@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
 import { requireAdmin } from '@/lib/server/apiGuard';
-import { readEventsFeed, readLatestActivityAtByUser } from '@/lib/server/eventsRepo';
+import { readEventsFeed, readEventsRevision, readLatestActivityAtByUser } from '@/lib/server/eventsRepo';
 import { countQualifiedActivitiesByUser, readFeedBackfillWindowState } from '@/lib/server/feedSnapshotRepo';
 import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
 import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
@@ -75,8 +75,12 @@ function parsePagination(request: NextRequest) {
   };
 }
 
+function getFeedMode(request: NextRequest) {
+  return request.nextUrl.searchParams.get('mode')?.trim().toLowerCase() || '';
+}
+
 function shouldUseTelegramMonitorFeed(request: NextRequest) {
-  const mode = request.nextUrl.searchParams.get('mode')?.trim().toLowerCase();
+  const mode = getFeedMode(request);
   if (mode === 'poll') return false;
   if (mode === 'telegram') return true;
 
@@ -307,6 +311,11 @@ export async function GET(request: NextRequest) {
   try {
     const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
     const prewarm = readPrewarmProgressSnapshot();
+    const mode = getFeedMode(request);
+    const revision = readEventsRevision();
+    if (mode === 'poll' && request.nextUrl.searchParams.get('revision') === revision) {
+      return NextResponse.json({ ok: true, unchanged: true, revision });
+    }
 
     if (shouldUseTelegramMonitorFeed(request)) {
       void Promise.resolve().then(() => {
@@ -327,6 +336,7 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         ok: true,
+        revision,
         prewarm,
         feed: paged,
         total: filteredByUser.length,
@@ -364,7 +374,10 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json(buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs));
+    return NextResponse.json({
+      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs),
+      revision,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : '读取快照失败';
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
@@ -405,6 +418,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs),
+      revision: readEventsRevision(),
       syncTrigger: sync,
       sourceSyncs,
     });

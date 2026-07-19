@@ -84,6 +84,9 @@ interface FetchActivitiesOptions {
   searchQuery?: string;
   source?: Activity['source'] | null;
   replace?: boolean;
+  silent?: boolean;
+  poll?: boolean;
+  revision?: string;
   syncStrategy?: FeedSyncStrategy;
   backfillScope?: 'global' | 'user';
 }
@@ -110,6 +113,8 @@ async function collectRequestedActivityFeed(params: {
   backfillScope: 'global' | 'user';
   fullDatabaseSearch: boolean;
   effectiveSearchFilters: FeedSearchFilters;
+  poll?: boolean;
+  revision?: string;
 }) {
   let pageIndex = 0;
   let firstPageResult: ActivityFeedResponse | null = null;
@@ -124,6 +129,8 @@ async function collectRequestedActivityFeed(params: {
     backfillScope,
     fullDatabaseSearch,
     effectiveSearchFilters,
+    poll,
+    revision,
   } = params;
 
   const collected = await collectItemsUntilCount<{ user: User; activity: Activity }>({
@@ -144,6 +151,8 @@ async function collectRequestedActivityFeed(params: {
         backfillUserId: pageIndex === 0 ? selectedUserId : null,
         signal: ticketSignal,
         reason: buildFeedFetchReason({ syncStrategy, selectedUserId }),
+        poll: pageIndex === 0 ? poll : false,
+        revision: pageIndex === 0 ? revision : undefined,
       });
       pageIndex += 1;
       if (!firstPageResult) {
@@ -197,6 +206,7 @@ export function useActivityPolling(
   const arbiterRef = useRef(new FeedRequestArbiter());
   const hydratedFromCacheRef = useRef(false);
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
+  const feedRevisionRef = useRef<string | undefined>(undefined);
   const usersRef = useRef(users);
   const {
     selectedUserIdRef: activeSelectedUserIdRef,
@@ -266,9 +276,7 @@ export function useActivityPolling(
   const applyNewStatusForActivities = useCallback(
     (activitiesByUser: Map<string, Activity[]>) => {
       activitiesByUser.forEach((activities, userId) => {
-        const sorted = [...activities].sort((a, b) => b.timestamp - a.timestamp);
-        const latestTime = sorted[0]?.timestamp || 0;
-        checkAndUpdateNewStatus(userId, latestTime);
+        checkAndUpdateNewStatus(userId, activities[0]?.timestamp || 0);
       });
     },
     [checkAndUpdateNewStatus]
@@ -296,6 +304,8 @@ export function useActivityPolling(
     hasMore?: boolean;
     historyComplete?: boolean | null;
     localQualifiedCount?: number;
+    revision?: string;
+    unchanged?: boolean;
   }> => {
     const targetCount = options?.targetCount;
     const hasSelectedUserOption =
@@ -364,7 +374,7 @@ export function useActivityPolling(
     }
 
     try {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && !options?.silent) {
         setLoading(true);
       }
 
@@ -431,7 +441,26 @@ export function useActivityPolling(
         backfillScope,
         fullDatabaseSearch,
         effectiveSearchFilters,
+        poll: options?.poll,
+        revision: options?.revision,
       });
+      const pageResponse = firstPageResult as ActivityFeedResponse | null;
+      if (pageResponse?.revision) {
+        feedRevisionRef.current = pageResponse.revision;
+      }
+      if (pageResponse?.unchanged) {
+        return {
+          feedLength: feedRef.current.length,
+          selectedFeedLength: currentSelectedFeedLength,
+          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          success: true,
+          partialSyncWarning: false,
+          autoBackfillRounds: 0,
+          hasMore,
+          historyComplete,
+          localQualifiedCount,
+        };
+      }
       const result = buildCollectedActivityFeedResult({
         firstPageResult,
         collectedFeed: collected.items,
@@ -609,7 +638,7 @@ export function useActivityPolling(
         localQualifiedCount: 0,
       };
     } finally {
-      if (isMountedRef.current && requestId === requestIdRef.current) {
+      if (isMountedRef.current && requestId === requestIdRef.current && !options?.silent) {
         setLoading(false);
       }
 
@@ -705,6 +734,9 @@ export function useActivityPolling(
 
   useFeedSnapshotPolling(() =>
     fetchActivities({
+      silent: true,
+      poll: true,
+      revision: feedRevisionRef.current,
       syncStrategy: 'local',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
@@ -715,6 +747,7 @@ export function useActivityPolling(
   // 低频后台刷新触发：维持原有周期性全量同步能力。
   useFeedRefreshScheduler(() =>
     fetchActivities({
+      silent: true,
       syncStrategy: 'refresh',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,

@@ -10,10 +10,14 @@ export interface FeedItem {
 
 export function buildActivitiesByUser(feed: FeedItem[]) {
   const activitiesByUser = new Map<string, Activity[]>();
-  feed.forEach(({ user, activity }) => {
-    const existing = activitiesByUser.get(user.id) || [];
-    activitiesByUser.set(user.id, [...existing, activity]);
-  });
+  for (const { user, activity } of feed) {
+    const activities = activitiesByUser.get(user.id);
+    if (activities) {
+      activities.push(activity);
+    } else {
+      activitiesByUser.set(user.id, [activity]);
+    }
+  }
   return activitiesByUser;
 }
 

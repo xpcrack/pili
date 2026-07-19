@@ -952,6 +952,21 @@ export function readEventsFeed(query: EventFeedQuery) {
   };
 }
 
+export function readEventsRevision() {
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT
+       (SELECT MAX(updated_at) FROM events) AS events_revision,
+       (SELECT MAX(updated_at) FROM tracked_users) AS users_revision,
+       (SELECT MAX(updated_at) FROM tracked_addresses) AS addresses_revision`
+  ).get() as {
+    events_revision: number | null;
+    users_revision: number | null;
+    addresses_revision: number | null;
+  } | undefined;
+  return `${row?.events_revision || 0}:${row?.users_revision || 0}:${row?.addresses_revision || 0}`;
+}
+
 export function readEventStats() {
   const db = getDb();
   const total = (db.prepare('SELECT COUNT(1) AS count FROM events').get() as { count: number } | undefined)?.count || 0;

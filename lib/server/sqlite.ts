@@ -961,6 +961,9 @@ CREATE TABLE IF NOT EXISTS events (
   updated_at INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_events_updated_at
+ON events(updated_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_events_timestamp
 ON events(timestamp DESC, event_id DESC);
 

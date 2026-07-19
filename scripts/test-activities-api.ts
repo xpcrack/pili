@@ -84,8 +84,22 @@ async function run() {
       'telegram',
       'activities API should forward remote source filters to the feed endpoint'
     );
+    assert.equal(firstCapturedUrl.searchParams.get('mode'), null);
 
     capturedUrl = null;
+    await fetchAllActivities([], {
+      pageSize: 25,
+      syncStrategy: 'local',
+      poll: true,
+      revision: '10:20:30',
+    } as never);
+    const pollCapturedUrl = capturedUrl as URL | null;
+    if (!pollCapturedUrl) {
+      throw new Error('poll fetch should be invoked');
+    }
+    assert.equal(pollCapturedUrl.searchParams.get('mode'), 'poll');
+    assert.equal(pollCapturedUrl.searchParams.get('revision'), '10:20:30');
+
     const paged = await fetchAllActivities([], {
       pageSize: 25,
       syncStrategy: 'local',
