@@ -119,9 +119,18 @@ export interface TelegramChannelSyncClient {
     endMs?: number | null;
     limit?: number;
   }): Promise<TelegramChannelHistoryPage>;
-  listBridgeChatMessages?(params: { chatId: string; limit: number }): Promise<import('../../scripts/telegram-bridge-core').TelegramMessageLike[]>;
+  listBridgeChatMessages?(params: {
+    chatId: string;
+    channelRef?: string | null;
+    channelUsername?: string | null;
+    accessHash?: string | null;
+    limit: number;
+  }): Promise<import('../../scripts/telegram-bridge-core').TelegramMessageLike[]>;
   listBridgeChatHistoryPage?(params: {
     chatId: string;
+    channelRef?: string | null;
+    channelUsername?: string | null;
+    accessHash?: string | null;
     beforeMessageId?: number | null;
     startMs?: number | null;
     endMs?: number | null;

@@ -23,8 +23,11 @@ function readPm2Processes() {
     cwd: repoRoot,
     encoding: 'utf8',
   });
+  const cleanOutput = output.replace(/\[[0-9;]*m/g, '');
+  const jsonStart = cleanOutput.indexOf('[{');
+  const jsonText = jsonStart >= 0 ? cleanOutput.slice(jsonStart) : cleanOutput;
 
-  return JSON.parse(output) as Pm2Process[];
+  return JSON.parse(jsonText) as Pm2Process[];
 }
 
 function hasPm2Process(processName: string) {

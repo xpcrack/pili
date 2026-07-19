@@ -1,5 +1,13 @@
 import 'server-only';
 
+/**
+ * FROZEN_COMPAT_ONLY
+ *
+ * This Telegram agent approval bot is retained for compatibility. Only
+ * compilation or data-compatibility fixes are allowed; do not extend its
+ * commands, authorization behavior, persistence model, or runtime scope.
+ */
+
 import { isTelegramApprovalAdmin } from '@/lib/server/telegramApprovalAdmin';
 import {
   cancelPendingTelegramAgentGrantForUser,
