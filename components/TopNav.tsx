@@ -72,7 +72,7 @@ export function TopNav({ active, rightSlot }: TopNavProps) {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
             <Zap className="h-4 w-4 text-white" />
           </div>
-          <h1 className="truncate text-lg font-semibold text-zinc-100">Web3玩家动态</h1>
+          <h1 className="truncate text-lg font-semibold text-zinc-100">PiliPili</h1>
         </div>
 
         <div className="flex items-center justify-center gap-2">

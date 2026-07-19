@@ -4,6 +4,9 @@
  *
  * Policy A: disabled still searchable in history; default Feed + collectors
  * only follow monitoring_enabled=1.
+ *
+ * Self wallets (newone wallets.is_self=1, fallback sources label=self) are
+ * always forced monitoring_enabled=1 even when sources.disabled=1.
  */
 import 'server-only';
 
@@ -19,11 +22,18 @@ export type FeishuEnablementSyncResult = {
   ok: boolean;
   newonePath: string;
   enabledAddressCount: number;
+  selfAddressCount: number;
+  selfForcedEnabled: number;
   addressesEnabled: number;
   addressesDisabled: number;
   usersEnabled: number;
   usersDisabled: number;
   error?: string;
+};
+
+type NewoneSqlite = {
+  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  close(): void;
 };
 
 function resolveNewoneDbPath() {
@@ -36,50 +46,31 @@ function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }
 
-function readEnabledWalletLowers(newonePath: string): Set<string> {
-  if (!existsSync(newonePath)) {
-    throw new Error(`newone db not found: ${newonePath}`);
-  }
-
-  type Row = { external_id: string };
-  let rows: Row[] = [];
-
+function openNewoneReadonly(newonePath: string): NewoneSqlite {
   if (isBunRuntime()) {
     const { Database } = require('bun:sqlite') as {
-      Database: new (filename: string, opts?: { readonly?: boolean }) => {
-        prepare(sql: string): { all(...params: unknown[]): unknown[] };
-        close(): void;
-      };
+      Database: new (filename: string, opts?: { readonly?: boolean }) => NewoneSqlite;
     };
-    const db = new Database(newonePath, { readonly: true });
-    try {
-      rows = db
-        .prepare(`SELECT external_id FROM sources WHERE kind = 'wallet' AND disabled = 0`)
-        .all() as Row[];
-    } finally {
-      db.close();
-    }
-  } else {
-    const BetterSqlite3 = require('better-sqlite3') as new (
-      filename: string,
-      opts?: { readonly?: boolean }
-    ) => {
-      prepare(sql: string): { all(...params: unknown[]): unknown[] };
-      close(): void;
-    };
-    const db = new BetterSqlite3(newonePath, { readonly: true });
-    try {
-      rows = db
-        .prepare(`SELECT external_id FROM sources WHERE kind = 'wallet' AND disabled = 0`)
-        .all() as Row[];
-    } finally {
-      db.close();
-    }
+    return new Database(newonePath, { readonly: true });
   }
+  const BetterSqlite3 = require('better-sqlite3') as new (
+    filename: string,
+    opts?: { readonly?: boolean }
+  ) => NewoneSqlite;
+  return new BetterSqlite3(newonePath, { readonly: true });
+}
 
+function tableExists(db: NewoneSqlite, name: string) {
+  const rows = db
+    .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`)
+    .all(name) as Array<{ ok?: number }>;
+  return Boolean(rows[0]?.ok);
+}
+
+function collectLowerAddresses(rows: Array<{ address?: string; external_id?: string }>) {
   const set = new Set<string>();
   for (const row of rows) {
-    const lower = String(row.external_id || '')
+    const lower = String(row.address || row.external_id || '')
       .trim()
       .toLowerCase();
     if (lower) set.add(lower);
@@ -87,30 +78,93 @@ function readEnabledWalletLowers(newonePath: string): Set<string> {
   return set;
 }
 
+function readEnabledWalletLowers(db: NewoneSqlite): Set<string> {
+  const rows = db
+    .prepare(`SELECT external_id FROM sources WHERE kind = 'wallet' AND disabled = 0`)
+    .all() as Array<{ external_id: string }>;
+  return collectLowerAddresses(rows);
+}
+
+/**
+ * Self wallets always stay monitored in pili.
+ * Prefer wallets.is_self=1; fall back to sources label='self' when wallets is absent.
+ */
+function readSelfWalletLowers(db: NewoneSqlite): Set<string> {
+  if (tableExists(db, 'wallets')) {
+    try {
+      const rows = db
+        .prepare(`SELECT DISTINCT address FROM wallets WHERE is_self = 1`)
+        .all() as Array<{ address: string }>;
+      const fromWallets = collectLowerAddresses(rows);
+      if (fromWallets.size > 0) return fromWallets;
+    } catch {
+      // fall through to sources label fallback
+    }
+  }
+
+  if (!tableExists(db, 'sources')) {
+    return new Set();
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT external_id FROM sources
+       WHERE kind = 'wallet' AND lower(coalesce(label, '')) = 'self'`
+    )
+    .all() as Array<{ external_id: string }>;
+  return collectLowerAddresses(rows);
+}
+
+function emptyResult(
+  newonePath: string,
+  error: string
+): FeishuEnablementSyncResult {
+  return {
+    ok: false,
+    newonePath,
+    enabledAddressCount: 0,
+    selfAddressCount: 0,
+    selfForcedEnabled: 0,
+    addressesEnabled: 0,
+    addressesDisabled: 0,
+    usersEnabled: 0,
+    usersDisabled: 0,
+    error,
+  };
+}
+
 /**
  * Apply enablement from newone → pili.
- * - address.monitoring_enabled = 1 iff lower(address) ∈ newone enabled wallets
+ * - address.monitoring_enabled = 1 iff lower(address) ∈ enabled ∪ self
  * - user.monitoring_enabled = 1 iff any of their addresses is enabled
  *
  * When newone has zero enabled wallets, refuse to mass-disable (safety).
+ * Self wallets remain forced on even if their sources row is disabled.
  */
 export function syncFeishuEnablementFromNewone(opts?: {
   newonePath?: string;
 }): FeishuEnablementSyncResult {
   const newonePath = opts?.newonePath || resolveNewoneDbPath();
   try {
-    const enabled = readEnabledWalletLowers(newonePath);
+    if (!existsSync(newonePath)) {
+      return emptyResult(newonePath, `newone db not found: ${newonePath}`);
+    }
+
+    const newone = openNewoneReadonly(newonePath);
+    let enabled: Set<string>;
+    let selfWallets: Set<string>;
+    try {
+      enabled = readEnabledWalletLowers(newone);
+      selfWallets = readSelfWalletLowers(newone);
+    } finally {
+      newone.close();
+    }
+
     if (enabled.size === 0) {
-      return {
-        ok: false,
+      return emptyResult(
         newonePath,
-        enabledAddressCount: 0,
-        addressesEnabled: 0,
-        addressesDisabled: 0,
-        usersEnabled: 0,
-        usersDisabled: 0,
-        error: 'newone returned 0 enabled wallets — refusing to mass-disable pili',
-      };
+        'newone returned 0 enabled wallets — refusing to mass-disable pili'
+      );
     }
 
     const db = getDb();
@@ -126,9 +180,15 @@ export function syncFeishuEnablementFromNewone(opts?: {
 
     let addressesEnabled = 0;
     let addressesDisabled = 0;
+    let selfForcedEnabled = 0;
     for (const row of addrRows) {
-      const want = enabled.has(String(row.address_lower || '').toLowerCase()) ? 1 : 0;
+      const lower = String(row.address_lower || '').toLowerCase();
+      const isSelf = selfWallets.has(lower);
+      const want = enabled.has(lower) || isSelf ? 1 : 0;
       const cur = row.monitoring_enabled == null ? 1 : row.monitoring_enabled ? 1 : 0;
+      if (isSelf && want === 1 && !enabled.has(lower)) {
+        selfForcedEnabled += 1;
+      }
       if (cur !== want) {
         setAddr.run(want, now, row.id);
         if (want) addressesEnabled += 1;
@@ -174,6 +234,8 @@ export function syncFeishuEnablementFromNewone(opts?: {
         at: now,
         newonePath,
         enabledAddressCount: enabled.size,
+        selfAddressCount: selfWallets.size,
+        selfForcedEnabled,
         addressesEnabled,
         addressesDisabled,
         usersEnabled,
@@ -186,21 +248,17 @@ export function syncFeishuEnablementFromNewone(opts?: {
       ok: true,
       newonePath,
       enabledAddressCount: enabled.size,
+      selfAddressCount: selfWallets.size,
+      selfForcedEnabled,
       addressesEnabled,
       addressesDisabled,
       usersEnabled,
       usersDisabled,
     };
   } catch (error) {
-    return {
-      ok: false,
+    return emptyResult(
       newonePath,
-      enabledAddressCount: 0,
-      addressesEnabled: 0,
-      addressesDisabled: 0,
-      usersEnabled: 0,
-      usersDisabled: 0,
-      error: error instanceof Error ? error.message : String(error),
-    };
+      error instanceof Error ? error.message : String(error)
+    );
   }
 }
