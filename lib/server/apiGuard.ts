@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { timingSafeEqual } from 'node:crypto';
 
 import { readAdminTokenFromRequest, verifyAdminRequest } from '@/lib/server/adminAuth';

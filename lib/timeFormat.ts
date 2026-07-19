@@ -70,3 +70,45 @@ export function formatAbsoluteTimeCompact(timestamp: number) {
   const minute = parts.find((part) => part.type === 'minute')?.value ?? '00';
   return `${month}-${day} ${hour}:${minute}`;
 }
+
+const exactTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
+/** "3 分钟前" style relative label for timeline detail views. */
+export function formatRelativeTimeAgo(timestamp: number, now = Date.now()) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '暂无动态';
+  }
+
+  const diffMs = Math.max(0, now - timestamp);
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+
+  if (diffMs < minuteMs) return '刚刚';
+  if (diffMs < hourMs) return `${Math.floor(diffMs / minuteMs)} 分钟前`;
+  if (diffMs < dayMs) return `${Math.floor(diffMs / hourMs)} 小时前`;
+  return `${Math.floor(diffMs / dayMs)} 天前`;
+}
+
+export function formatExactDateTime(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '—';
+  }
+
+  const parts = exactTimeFormatter.formatToParts(new Date(timestamp));
+  const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
+  const month = parts.find((part) => part.type === 'month')?.value ?? '00';
+  const day = parts.find((part) => part.type === 'day')?.value ?? '00';
+  const hour = parts.find((part) => part.type === 'hour')?.value ?? '00';
+  const minute = parts.find((part) => part.type === 'minute')?.value ?? '00';
+  const second = parts.find((part) => part.type === 'second')?.value ?? '00';
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}

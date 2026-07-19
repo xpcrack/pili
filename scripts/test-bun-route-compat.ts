@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { Hono } from 'hono';
-import { NextRequest } from 'next/server';
+import { NextRequest } from '@/lib/server/httpCompat';
 
 import {
   _resetInternalBidAuthCacheForTest,

@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from '@/lib/server/httpCompat';
 import { getOkxConfigStatus } from '@/lib/okx';
 
 export const dynamic = 'force-dynamic';

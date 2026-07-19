@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from '@/lib/server/httpCompat';
 import { listTrackedUsers, markAddressesSynced } from '@/lib/server/trackedUsersRepo';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';

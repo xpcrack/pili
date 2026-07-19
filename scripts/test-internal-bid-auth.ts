@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { NextRequest } from 'next/server';
+import { NextRequest } from '@/lib/server/httpCompat';
 
 import './server-only-shim.cjs';
 

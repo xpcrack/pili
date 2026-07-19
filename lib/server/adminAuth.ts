@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { NextRequest } from 'next/server';
+import { NextRequest } from '@/lib/server/httpCompat';
 import { timingSafeEqual } from 'node:crypto';
 
 function normalizeEnvValue(value: string | undefined | null) {

@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest } from '@/lib/server/httpCompat';
 
 import { requireAdmin } from '@/lib/server/apiGuard';
 import { apiError, apiOk } from '@/lib/server/apiResponse';

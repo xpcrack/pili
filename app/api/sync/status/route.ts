@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from '@/lib/server/httpCompat';
 
 import { getSyncStatus } from '@/lib/server/syncService';
 
