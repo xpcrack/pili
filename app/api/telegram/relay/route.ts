@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
 import { enforceAdminRateLimit, requireAdmin } from '@/lib/server/apiGuard';
 import { resolveTelegramBotToken } from '@/lib/server/telegramBotToken';

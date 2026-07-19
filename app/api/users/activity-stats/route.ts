@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from '@/lib/server/httpCompat';
 
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { getDb } from '@/lib/server/sqlite';

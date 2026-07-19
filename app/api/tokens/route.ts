@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { listTokens, addToken, deleteTokens, bulkImportTokens, type TokenChain } from '@/lib/server/tokensRepo';
 import { getBatchTokenPrices } from '@/lib/server/priceService';
 import { readLatestBuyAtByToken } from '@/lib/server/eventsRepo';

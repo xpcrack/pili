@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
 import { readBidTradeExport } from '@/lib/server/bidTradeExport';
 import { requireInternalBidAuth } from '@/lib/server/internalBidAuth';

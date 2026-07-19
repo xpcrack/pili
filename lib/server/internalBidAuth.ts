@@ -3,7 +3,7 @@ import 'server-only';
 import { BlockList, isIPv4, isIPv6 } from 'node:net';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
 export interface InternalBidTokenPayload {
   iat: number;

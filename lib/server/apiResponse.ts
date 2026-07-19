@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { NextResponse } from 'next/server';
+import { NextResponse } from '@/lib/server/httpCompat';
 
 /**
  * Shared response helpers for app/api/* routes.

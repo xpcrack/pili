@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from '@/types';
 import { UserBar } from '@/components/UserBar';
 import { ActivityCard } from '@/components/ActivityCard';
-import { FeedDebugPanel } from '@/components/FeedDebugPanel';
 import {
   SelectedUserDetailsPanel,
   type SelectedUserDetailsPanelProps,
@@ -714,11 +713,6 @@ export default function Home() {
           </main>
         </div>
       </div>
-      <FeedDebugPanel
-        totalInDatabase={summary?.transactionCount || 0}
-        apiFeedLength={feed.length}
-        lastUpdate={lastUpdate}
-      />
     </div>
   );
 }

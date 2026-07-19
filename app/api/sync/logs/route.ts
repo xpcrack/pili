@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest } from '@/lib/server/httpCompat';
 
 import { apiError, apiOk } from '@/lib/server/apiResponse';
 import { readSyncLogs, type SyncRunKind } from '@/lib/server/syncLogRepo';

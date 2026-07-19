@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { bulkImportTokens, type TokenChain } from '@/lib/server/tokensRepo';
 
 export const dynamic = 'force-dynamic';

@@ -13,13 +13,12 @@ import {
   Copy,
   Clock
 } from 'lucide-react';
-import { format, formatDistanceToNow } from 'date-fns';
-import { zhCN } from 'date-fns/locale';
 import { useUserStore } from '@/store/userStore';
 import { useEffect } from 'react';
 import { getUserAvatar } from '@/lib/userProfile';
 import { formatTokenAmount } from '@/lib/assetFormat';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
+import { formatExactDateTime, formatRelativeTimeAgo } from '@/lib/timeFormat';
 
 interface TimelineModalProps {
   user: User | null;
@@ -154,11 +153,8 @@ function TimelineItem({
   activity: Activity; 
   isLast: boolean;
 }) {
-  const timeStr = formatDistanceToNow(activity.timestamp, { 
-    addSuffix: true,
-    locale: zhCN 
-  });
-  const exactTime = format(activity.timestamp, 'yyyy-MM-dd HH:mm:ss', { locale: zhCN });
+  const timeStr = formatRelativeTimeAgo(activity.timestamp);
+  const exactTime = formatExactDateTime(activity.timestamp);
   const formattedTokenAmount = formatTokenAmount(activity.metadata.value);
   const contentText =
     activity.source === 'blockchain' && activity.type === 'transfer'

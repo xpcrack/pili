@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { fetchTokenLogo } from '@/lib/tokenLogo';
 
 export const dynamic = 'force-dynamic';
