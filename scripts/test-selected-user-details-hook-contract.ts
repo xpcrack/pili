@@ -101,6 +101,21 @@ async function run() {
     /setRefreshing\(Boolean\(cached\)\)/,
     'hook should only enter refreshing mode when cached details already exist'
   );
+  assert.match(
+    source,
+    /SELECTED_USER_DETAILS_POLL_MS/,
+    'hook should soft-poll selected user details so trade-triggered holdings show up'
+  );
+  assert.match(
+    source,
+    /setInterval/,
+    'hook should schedule a poll interval while a user is selected'
+  );
+  assert.match(
+    source,
+    /loadUser\([^)]*,\s*'poll'\)/,
+    'hook should soft-poll via loadUser(..., \'poll\')'
+  );
 
   console.log('selected user details hook contract tests: ok');
 }

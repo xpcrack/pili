@@ -32,6 +32,9 @@ async function run() {
       '@/lib/server/holdingsRefreshRuntime'
     );
 
+    // Offline: never hit real DexScreener during holdings writes.
+    const batchFetchLiquidity = async () => new Map();
+
     createTrackedUser({
       name: 'Holdings Bun',
       handle: 'holdings-bun',
@@ -53,8 +56,15 @@ async function run() {
       telegram: undefined,
     });
 
+    const holdingsBunUserId = (
+      getDb().prepare(`SELECT id FROM tracked_users WHERE handle = ?`).get('holdings-bun') as {
+        id: string;
+      }
+    ).id;
+
     const result = await refreshCurrentHoldings({
       now: () => 1_717_000_000_000,
+      batchFetchLiquidity,
       fetchTokenLiquidity: async () => ({ liquidityUsd: 10_000_000 }),
       fetchAddressAssetDetails: async (address, chain) => {
         assert.equal(address, trackedAddress);
@@ -178,6 +188,7 @@ async function run() {
     let robinhoodCalls = 0;
     const rhResult = await refreshCurrentHoldings({
       now: () => 1_717_000_000_100,
+      batchFetchLiquidity,
       fetchAddressAssetDetails: async (address, chain) => {
         if (address === trackedAddress) {
           return {
@@ -294,6 +305,7 @@ async function run() {
     // Failure preserves previous Robinhood cache
     const failed = await refreshCurrentHoldings({
       now: () => 1_717_000_000_200,
+      batchFetchLiquidity,
       fetchAddressAssetDetails: async (address, chain) => ({
         ok: true,
         configured: true,
@@ -378,6 +390,7 @@ async function run() {
 
     await refreshCurrentHoldings({
       now: () => 1_717_000_000_300,
+      batchFetchLiquidity,
       fetchTokenLiquidity: async () => ({ liquidityUsd: 10_000_000 }),
       fetchAddressAssetDetails: async (address, chain) => {
         if (address === partialSol) {
@@ -447,6 +460,154 @@ async function run() {
     assert.equal(partialPeak.historical_max_asset_usd, 100, 'partial refresh must not raise peak');
 
     ensureCurrentHoldingsTable(db);
+
+    // --- Single-wallet partial refresh (trade-triggered path) ---
+    const { refreshWalletHoldings } = await import('@/lib/server/holdingsRefreshRuntime');
+
+    // Seed a second wallet row that must survive partial refresh of wallet A.
+    // Valid base58 Solana address (not the same as trackedAddress).
+    const otherSol = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+    const otherUser = createTrackedUser({
+      name: 'Other Bag',
+      handle: 'other-bag',
+      avatar: 'other.png',
+      tags: [],
+      addresses: [
+        {
+          address: otherSol,
+          name: '#1',
+          chain: 'solana',
+          totalAssetUsd: 50,
+          assetUpdatedAt: 100,
+        },
+      ],
+      totalAssetUsd: 50,
+      historicalMaxAssetUsd: 50,
+      assetUpdatedAt: 100,
+      twitter: undefined,
+      telegram: undefined,
+    });
+    db.prepare(
+      `INSERT INTO current_holdings
+        (tracked_address, tracked_address_lower, user_id, chain, token_address, token_address_lower,
+         symbol, name, balance, price_usd, value_usd, liquidity_usd, refreshed_at)
+       VALUES (?, ?, ?, 'solana', 'SoKeep', 'SoKeep', 'KEEP', null, 1, 50, 50, 10000, 1)`
+    ).run(otherSol, otherSol.toLowerCase(), otherUser.id);
+
+    // Reuse holdings-bun's wallet (already owned) instead of creating a conflicting user.
+    db.prepare(
+      `INSERT INTO current_holdings
+        (tracked_address, tracked_address_lower, user_id, chain, token_address, token_address_lower,
+         symbol, name, balance, price_usd, value_usd, liquidity_usd, refreshed_at)
+       VALUES (?, ?, ?, 'solana', 'OldToken', 'OldToken', 'OLD', null, 1, 9, 9, 10000, 1)`
+    ).run(trackedAddress, trackedAddress.toLowerCase(), holdingsBunUserId);
+
+    const beforeOther = (
+      db.prepare(`SELECT COUNT(*) as c FROM current_holdings WHERE tracked_address_lower = ?`).get(
+        otherSol.toLowerCase()
+      ) as { c: number }
+    ).c;
+    assert.equal(beforeOther, 1);
+
+    let walletFetchCalls = 0;
+    const walletResult = await refreshWalletHoldings({
+      address: trackedAddress,
+      chain: 'solana',
+      userId: holdingsBunUserId,
+      now: () => 1_717_000_000_400,
+      fetchTokenLiquidity: false,
+      fetchAddressAssetDetails: async (address, chain) => {
+        walletFetchCalls += 1;
+        assert.equal(address, trackedAddress);
+        assert.equal(chain, 'solana');
+        return {
+          ok: true,
+          configured: true,
+          totalAssetUsd: 2_200,
+          assets: [
+            {
+              address,
+              chain,
+              assetKey: `${chain}:usdc`,
+              tokenAddress: 'So11111111111111111111111111111111111111112',
+              symbol: 'USDC',
+              name: 'USD Coin',
+              balance: 2_200,
+              priceUsd: 1,
+              valueUsd: 2_200,
+            },
+            {
+              address,
+              chain,
+              assetKey: `${chain}:dust`,
+              tokenAddress: 'Dust111111111111111111111111111111111111111',
+              symbol: 'DUST',
+              name: 'Dust',
+              balance: 2,
+              priceUsd: 1,
+              valueUsd: 2,
+            },
+          ],
+          error: null,
+        };
+      },
+    });
+
+    assert.equal(walletResult.status, 'idle');
+    assert.equal(walletFetchCalls, 1);
+    assert.equal(walletResult.holdingsRowCount, 1);
+    assert.equal(walletResult.totalAssetUsd, 2_202);
+
+    const walletRows = db
+      .prepare(
+        `SELECT symbol, value_usd, refreshed_at FROM current_holdings
+         WHERE tracked_address_lower = ? AND chain = 'solana'
+         ORDER BY value_usd DESC`
+      )
+      .all(trackedAddress.toLowerCase()) as Array<{
+      symbol: string;
+      value_usd: number;
+      refreshed_at: number;
+    }>;
+    assert.equal(walletRows.length, 1, 'old bag replaced; dust filtered');
+    assert.equal(walletRows[0]?.symbol, 'USDC');
+    assert.equal(walletRows[0]?.value_usd, 2_200);
+    assert.equal(walletRows[0]?.refreshed_at, 1_717_000_000_400);
+
+    const afterOther = (
+      db.prepare(`SELECT COUNT(*) as c FROM current_holdings WHERE tracked_address_lower = ?`).get(
+        otherSol.toLowerCase()
+      ) as { c: number }
+    ).c;
+    assert.equal(afterOther, 1, 'partial refresh must not erase other wallets');
+
+    const walletUserTotals = db
+      .prepare(`SELECT total_asset_usd FROM tracked_users WHERE id = ?`)
+      .get(holdingsBunUserId) as { total_asset_usd: number };
+    assert.equal(walletUserTotals.total_asset_usd, 2_202);
+
+    // Failure must not wipe last-good bags
+    const failResult = await refreshWalletHoldings({
+      address: trackedAddress,
+      chain: 'solana',
+      userId: holdingsBunUserId,
+      now: () => 1_717_000_000_500,
+      fetchTokenLiquidity: false,
+      fetchAddressAssetDetails: async () => ({
+        ok: false,
+        configured: true,
+        totalAssetUsd: null,
+        assets: [],
+        error: 'timeout',
+      }),
+    });
+    assert.equal(failResult.status, 'error');
+    const stillThere = (
+      db.prepare(
+        `SELECT COUNT(*) as c FROM current_holdings WHERE tracked_address_lower = ? AND chain = 'solana'`
+      ).get(trackedAddress.toLowerCase()) as { c: number }
+    ).c;
+    assert.equal(stillThere, 1, 'failed refresh preserves previous bags');
 
     console.log('bun holdings refresh tests: ok');
   } finally {

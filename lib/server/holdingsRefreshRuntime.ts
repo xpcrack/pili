@@ -8,7 +8,10 @@ import { batchFetchFromDexScreener } from '@/lib/server/dexscreener';
 import {
   validateAndPersistPeakAssetSnapshots,
 } from '@/lib/server/assetPeakValidation';
-import { listMonitoredUsers, listTrackedUsers } from '@/lib/server/trackedUsersRepo';
+import {
+  listMonitoredUsers,
+  updateAssetSnapshots,
+} from '@/lib/server/trackedUsersRepo';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 
 const MIN_HOLDING_USD = 5;
@@ -116,6 +119,8 @@ interface RunHoldingsRefreshOptions {
   fetchRobinhoodHoldings?: (address: string, signal?: AbortSignal) => Promise<RobinhoodHoldingsResult>;
   persistAssetSnapshots?: typeof validateAndPersistPeakAssetSnapshots;
   fetchTokenLiquidity?: Parameters<typeof validateAndPersistPeakAssetSnapshots>[0]['fetchTokenLiquidity'];
+  /** Inject DexScreener batch (tests / offline). Default: real batchFetchFromDexScreener. */
+  batchFetchLiquidity?: typeof batchFetchFromDexScreener;
 }
 
 function getDbOrDefault(db?: DbHandle) {
@@ -447,6 +452,51 @@ function readPreviousRobinhoodHoldings(db: DbHandle, addressLower: string): Curr
   return readPreviousHoldings(db, addressLower, ROBINHOOD_CHAIN);
 }
 
+function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO current_holdings
+    (tracked_address, tracked_address_lower, user_id, chain,
+     token_address, token_address_lower, symbol, name,
+      balance, price_usd, value_usd, liquidity_usd, refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const holding of holdings) {
+    insert.run(
+      holding.tracked_address,
+      holding.tracked_address_lower,
+      holding.user_id,
+      holding.chain,
+      holding.token_address,
+      holding.token_address_lower,
+      holding.symbol,
+      holding.name,
+      holding.balance,
+      holding.price_usd,
+      holding.value_usd,
+      holding.liquidity_usd,
+      holding.refreshed_at
+    );
+  }
+}
+
+function insertWalletStatusRows(db: DbHandle, walletStatuses: CurrentHoldingWalletStatusRecord[]) {
+  const insertStatus = db.prepare(`
+    INSERT OR REPLACE INTO current_holdings_wallet_status
+    (tracked_address, tracked_address_lower, user_id, chain, status, refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const status of walletStatuses) {
+    insertStatus.run(
+      status.tracked_address,
+      status.tracked_address_lower,
+      status.user_id,
+      status.chain,
+      status.status,
+      status.refreshed_at
+    );
+  }
+}
+
 function replaceCurrentHoldings(
   db: DbHandle,
   holdings: CurrentHoldingRecord[],
@@ -455,51 +505,294 @@ function replaceCurrentHoldings(
   const write = db.transaction(() => {
     db.prepare('DELETE FROM current_holdings').run();
     db.prepare('DELETE FROM current_holdings_wallet_status').run();
-
-    const insert = db.prepare(`
-      INSERT OR REPLACE INTO current_holdings
-      (tracked_address, tracked_address_lower, user_id, chain,
-       token_address, token_address_lower, symbol, name,
-        balance, price_usd, value_usd, liquidity_usd, refreshed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertStatus = db.prepare(`
-      INSERT OR REPLACE INTO current_holdings_wallet_status
-      (tracked_address, tracked_address_lower, user_id, chain, status, refreshed_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const holding of holdings) {
-      insert.run(
-        holding.tracked_address,
-        holding.tracked_address_lower,
-        holding.user_id,
-        holding.chain,
-        holding.token_address,
-        holding.token_address_lower,
-        holding.symbol,
-        holding.name,
-        holding.balance,
-        holding.price_usd,
-        holding.value_usd,
-        holding.liquidity_usd,
-        holding.refreshed_at
-      );
-    }
-
-    for (const status of walletStatuses) {
-      insertStatus.run(
-        status.tracked_address,
-        status.tracked_address_lower,
-        status.user_id,
-        status.chain,
-        status.status,
-        status.refreshed_at
-      );
-    }
+    insertHoldingsRows(db, holdings);
+    insertWalletStatusRows(db, walletStatuses);
   });
 
   write();
+}
+
+/** Partial write: only replace bags for one wallet×chain. Never touches other wallets. */
+function replaceWalletHoldings(
+  db: DbHandle,
+  addressLower: string,
+  chain: HoldingsChain,
+  holdings: CurrentHoldingRecord[],
+  walletStatus: CurrentHoldingWalletStatusRecord
+) {
+  const write = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM current_holdings WHERE tracked_address_lower = ? AND chain = ?`
+    ).run(addressLower, chain);
+    insertHoldingsRows(db, holdings);
+    insertWalletStatusRows(db, [walletStatus]);
+  });
+
+  write();
+}
+
+function normalizeHoldingsChain(chain: string): HoldingsChain | null {
+  const normalized = chain.trim().toLowerCase();
+  if (normalized === 'sol' || normalized === 'solana') return 'solana';
+  if (normalized === 'eth' || normalized === 'ethereum') return 'ethereum';
+  if (normalized === 'bsc') return 'bsc';
+  if (normalized === 'base') return 'base';
+  if (normalized === 'robinhood') return ROBINHOOD_CHAIN;
+  return null;
+}
+
+export interface RefreshWalletHoldingsParams {
+  address: string;
+  chain: string;
+  userId: string;
+  db?: DbHandle;
+  signal?: AbortSignal;
+  now?: () => number;
+  fetchAddressAssetDetails?: typeof fetchOkxAddressAssetDetails;
+  fetchRobinhoodHoldings?: (address: string, signal?: AbortSignal) => Promise<RobinhoodHoldingsResult>;
+  /** When false, skip tracked_addresses / tracked_users total updates. Default true. */
+  updateTotals?: boolean;
+  /** When false, skip DexScreener liquidity enrichment. Default true. */
+  fetchTokenLiquidity?: boolean;
+  batchFetchLiquidity?: typeof batchFetchFromDexScreener;
+}
+
+export interface RefreshWalletHoldingsResult {
+  status: 'idle' | 'error' | 'missing-credentials' | 'unsupported-chain';
+  chain: HoldingsChain | null;
+  holdingsRowCount: number;
+  filteredOutHoldingCount: number;
+  totalAssetUsd: number | null;
+  lastError: string | null;
+}
+
+/**
+ * Trade-triggered single wallet×chain holdings refresh.
+ * Writes only that wallet's rows; preserves last-good bags on fetch failure.
+ */
+export async function refreshWalletHoldings(
+  params: RefreshWalletHoldingsParams
+): Promise<RefreshWalletHoldingsResult> {
+  const db = getDbOrDefault(params.db);
+  const fetchAddressAssetDetails = params.fetchAddressAssetDetails ?? fetchOkxAddressAssetDetails;
+  const fetchRobinhoodHoldings = params.fetchRobinhoodHoldings ?? fetchRobinhoodHoldingsWithCli;
+  const nowMs = params.now ? params.now() : Date.now();
+  const updateTotals = params.updateTotals !== false;
+  const shouldFetchLiquidity = params.fetchTokenLiquidity !== false;
+
+  const address = params.address.trim();
+  const addressLower = address.toLowerCase();
+  const chain = normalizeHoldingsChain(params.chain);
+  const userId = params.userId;
+
+  if (!address || !chain) {
+    return {
+      status: 'unsupported-chain',
+      chain: null,
+      holdingsRowCount: 0,
+      filteredOutHoldingCount: 0,
+      totalAssetUsd: null,
+      lastError: `Unsupported chain: ${params.chain}`,
+    };
+  }
+
+  ensureCurrentHoldingsTable(db);
+  ensureNotAborted(params.signal);
+
+  let filteredOutHoldingCount = 0;
+  let holdings: CurrentHoldingRecord[] = [];
+  let totalAssetUsd: number | null = null;
+  let lastError: string | null = null;
+  let success = false;
+
+  if (chain === ROBINHOOD_CHAIN) {
+    const result = await fetchRobinhoodHoldings(address, params.signal);
+    if (!result.ok) {
+      lastError = result.error;
+      // Preserve last-good bags: only mark status failed.
+      const failedStatus: CurrentHoldingWalletStatusRecord = {
+        tracked_address: address,
+        tracked_address_lower: addressLower,
+        user_id: userId,
+        chain,
+        status: 'failed',
+        refreshed_at: nowMs,
+      };
+      insertWalletStatusRows(db, [failedStatus]);
+      return {
+        status: 'error',
+        chain,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: null,
+        lastError,
+      };
+    }
+
+    success = true;
+    totalAssetUsd = result.assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
+    for (const asset of result.assets) {
+      if (asset.valueUsd < MIN_HOLDING_USD) {
+        filteredOutHoldingCount += 1;
+        continue;
+      }
+      holdings.push({
+        tracked_address: address,
+        tracked_address_lower: addressLower,
+        user_id: userId,
+        chain,
+        token_address: asset.tokenAddress,
+        token_address_lower: asset.tokenAddress.toLowerCase(),
+        symbol: asset.symbol,
+        name: asset.name,
+        balance: asset.balance,
+        price_usd: asset.priceUsd,
+        value_usd: asset.valueUsd,
+        liquidity_usd: asset.liquidityUsd,
+        refreshed_at: nowMs,
+      });
+    }
+  } else {
+    if (!isSupportedOkxChain(chain)) {
+      return {
+        status: 'unsupported-chain',
+        chain,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: null,
+        lastError: `Unsupported OKX chain: ${chain}`,
+      };
+    }
+    if (!hasOkxCredentials() && !params.fetchAddressAssetDetails) {
+      return {
+        status: 'missing-credentials',
+        chain,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: null,
+        lastError: 'Missing OKX API credentials',
+      };
+    }
+
+    const result = await fetchAddressAssetDetails(address, chain);
+    if (!result.ok) {
+      lastError = result.error;
+      const failedStatus: CurrentHoldingWalletStatusRecord = {
+        tracked_address: address,
+        tracked_address_lower: addressLower,
+        user_id: userId,
+        chain,
+        status: 'failed',
+        refreshed_at: nowMs,
+      };
+      insertWalletStatusRows(db, [failedStatus]);
+      return {
+        status: result.configured === false ? 'missing-credentials' : 'error',
+        chain,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: null,
+        lastError,
+      };
+    }
+
+    success = true;
+    totalAssetUsd = result.assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
+    for (const asset of result.assets) {
+      if (asset.valueUsd < MIN_HOLDING_USD) {
+        filteredOutHoldingCount += 1;
+        continue;
+      }
+      holdings.push({
+        tracked_address: address,
+        tracked_address_lower: addressLower,
+        user_id: userId,
+        chain,
+        token_address: asset.tokenAddress,
+        token_address_lower: chain === 'solana' ? asset.tokenAddress : asset.tokenAddress.toLowerCase(),
+        symbol: asset.symbol,
+        name: asset.name,
+        balance: asset.balance,
+        price_usd: asset.priceUsd,
+        value_usd: asset.valueUsd,
+        liquidity_usd: null,
+        refreshed_at: nowMs,
+      });
+    }
+
+    if (shouldFetchLiquidity && holdings.length > 0) {
+      try {
+        const uniqueTokens = holdings.map((h) => ({
+          contractAddress: h.token_address,
+          chain: h.chain,
+        }));
+        const fetchLiquidity = params.batchFetchLiquidity ?? batchFetchFromDexScreener;
+        const liquidityData = await fetchLiquidity(uniqueTokens);
+        for (const h of holdings) {
+          const liquidityKey = h.chain === 'solana' ? h.token_address : h.token_address_lower;
+          const data = liquidityData.get(liquidityKey);
+          if (data) {
+            h.liquidity_usd = data.liquidity;
+          }
+        }
+      } catch (err) {
+        console.error('[holdingsRefresh] wallet DexScreener liquidity fetch failed:', err);
+      }
+    }
+  }
+
+  if (!success) {
+    return {
+      status: 'error',
+      chain,
+      holdingsRowCount: 0,
+      filteredOutHoldingCount,
+      totalAssetUsd: null,
+      lastError: lastError ?? 'Wallet holdings refresh failed',
+    };
+  }
+
+  const walletStatus: CurrentHoldingWalletStatusRecord = {
+    tracked_address: address,
+    tracked_address_lower: addressLower,
+    user_id: userId,
+    chain,
+    status: 'success',
+    refreshed_at: nowMs,
+  };
+  replaceWalletHoldings(db, addressLower, chain, holdings, walletStatus);
+
+  // Robinhood is not a tracked_addresses chain — only update totals for OKX chains.
+  if (updateTotals && chain !== ROBINHOOD_CHAIN && totalAssetUsd != null) {
+    updateAssetSnapshots(
+      [
+        {
+          userId,
+          address,
+          chain,
+          totalAssetUsd,
+          updatedAt: nowMs,
+        },
+      ],
+      [
+        {
+          userId,
+          totalValueUsd: totalAssetUsd,
+          totalAssetUsd,
+          updatedAt: nowMs,
+        },
+      ]
+    );
+  }
+
+  return {
+    status: 'idle',
+    chain,
+    holdingsRowCount: holdings.length,
+    filteredOutHoldingCount,
+    totalAssetUsd,
+    lastError: null,
+  };
 }
 
 export function readCurrentHoldingsStats(db?: DbHandle): CurrentHoldingsStats {
@@ -761,7 +1054,8 @@ export async function refreshCurrentHoldings(
   }
 
   try {
-    const liquidityData = await batchFetchFromDexScreener(Array.from(uniqueTokens.values()));
+    const fetchLiquidity = options.batchFetchLiquidity ?? batchFetchFromDexScreener;
+    const liquidityData = await fetchLiquidity(Array.from(uniqueTokens.values()));
     for (const h of holdings) {
       if (h.chain === ROBINHOOD_CHAIN) continue;
       const liquidityKey = h.chain === 'solana' ? h.token_address : h.token_address_lower;
