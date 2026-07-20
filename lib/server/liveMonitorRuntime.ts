@@ -32,6 +32,7 @@ import {
   type EnvMap,
   type LiveSourceMode,
 } from '@/lib/server/liveMonitorConfig';
+import { enqueueHoldingsRefresh } from '@/lib/server/holdingsRefreshQueue';
 import { upsertLiveMonitorTrades } from '@/lib/server/liveMonitorIngest';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import type { User } from '@/types';
@@ -117,6 +118,8 @@ export type LiveMonitorDeps = {
     options: Parameters<typeof fetchGmgnWalletActivity>[0]
   ) => ReturnType<typeof fetchGmgnWalletActivity> | ReturnType<typeof fetchGmgnWalletActivityAsync>;
   upsertTrades?: typeof upsertLiveMonitorTrades;
+  /** Trade-triggered per-wallet holdings refresh (debounced). */
+  enqueueHoldingsRefresh?: typeof enqueueHoldingsRefresh;
   now?: () => number;
   env?: EnvMap;
 };
@@ -275,11 +278,28 @@ export async function runLiveMonitorCycle(
       current.trades.push(...result.trades);
       tradesByOwner.set(result.key, current);
     }
+    const enqueueRefresh = deps.enqueueHoldingsRefresh ?? enqueueHoldingsRefresh;
     for (const { user, trades } of tradesByOwner.values()) {
       if (trades.length > 0) {
         trades.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
         const result = upsertTrades({ user, trades });
         tradesUpserted += result.upserted;
+        if (result.upserted > 0) {
+          const seenWalletChains = new Set<string>();
+          for (const trade of trades) {
+            const wallet = (trade.wallet || '').trim();
+            const chain = (trade.chain || '').trim();
+            if (!wallet || !chain) continue;
+            const key = `${chain.toLowerCase()}:${wallet.toLowerCase()}`;
+            if (seenWalletChains.has(key)) continue;
+            seenWalletChains.add(key);
+            enqueueRefresh({
+              address: wallet,
+              chain,
+              userId: user.id,
+            });
+          }
+        }
       }
     }
   } catch (error) {

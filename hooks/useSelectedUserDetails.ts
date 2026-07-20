@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { UserDetailsSuccessPayload } from '@/lib/userDetails';
 import { fetchUserDetails } from '@/lib/userDetailsApi';
+
+/** Poll interval while a user is selected so trade-triggered holdings updates show up. */
+export const SELECTED_USER_DETAILS_POLL_MS = 20_000;
 
 interface UseSelectedUserDetailsResult {
   details: UserDetailsSuccessPayload | null;
@@ -70,6 +73,51 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const selectedUserIdRef = useRef(selectedUserId);
+  selectedUserIdRef.current = selectedUserId;
+
+  const loadUser = useCallback(async (userId: string, mode: 'initial' | 'poll') => {
+    const cached = cacheRef.current.get(userId) ?? null;
+
+    if (mode === 'initial') {
+      const pendingState = createSelectedUserDetailsPendingState(cached);
+      setDetails(pendingState.details);
+      setLoading(pendingState.loading);
+      setRefreshing(Boolean(cached));
+      setError(pendingState.error);
+    } else {
+      // Soft poll: keep showing cache, mark refreshing, don't flash empty.
+      setRefreshing(true);
+    }
+
+    try {
+      const payload = await fetchUserDetails(userId);
+      if (selectedUserIdRef.current !== userId) {
+        return;
+      }
+      cacheRef.current.set(userId, payload);
+      const successState = createSelectedUserDetailsSuccessState(payload);
+      setDetails(successState.details);
+      setLoading(successState.loading);
+      setRefreshing(successState.refreshing);
+      setError(successState.error);
+    } catch (caughtError) {
+      if (selectedUserIdRef.current !== userId) {
+        return;
+      }
+      const errorState = createSelectedUserDetailsErrorState(
+        cached,
+        caughtError instanceof Error ? caughtError.message : '读取用户详情失败'
+      );
+      setDetails(errorState.details);
+      setLoading(errorState.loading);
+      setRefreshing(errorState.refreshing);
+      // Soft-poll failures should not clobber a good cache with a sticky error banner.
+      if (mode === 'initial' || !cached) {
+        setError(errorState.error);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (selectedUserId === null) {
@@ -81,50 +129,24 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
       return;
     }
 
+    void loadUser(selectedUserId, 'initial');
+  }, [selectedUserId, retryCount, loadUser]);
+
+  // Soft-poll while selected so trade-triggered holdings land without re-select.
+  useEffect(() => {
+    if (selectedUserId === null) {
+      return;
+    }
+
     const userId = selectedUserId;
-    const cached = cacheRef.current.get(userId);
-    let cancelled = false;
-
-    const pendingState = createSelectedUserDetailsPendingState(cached ?? null);
-    setDetails(pendingState.details);
-    setLoading(pendingState.loading);
-    setRefreshing(Boolean(cached));
-    setError(pendingState.error);
-
-    void (async () => {
-      try {
-        const payload = await fetchUserDetails(userId);
-
-        if (cancelled) {
-          return;
-        }
-
-        cacheRef.current.set(userId, payload);
-        const successState = createSelectedUserDetailsSuccessState(payload);
-        setDetails(successState.details);
-        setLoading(successState.loading);
-        setRefreshing(successState.refreshing);
-        setError(successState.error);
-      } catch (caughtError) {
-        if (cancelled) {
-          return;
-        }
-
-        const errorState = createSelectedUserDetailsErrorState(
-          cached ?? null,
-          caughtError instanceof Error ? caughtError.message : '读取用户详情失败'
-        );
-        setDetails(errorState.details);
-        setLoading(errorState.loading);
-        setRefreshing(errorState.refreshing);
-        setError(errorState.error);
-      }
-    })();
+    const timer = setInterval(() => {
+      void loadUser(userId, 'poll');
+    }, SELECTED_USER_DETAILS_POLL_MS);
 
     return () => {
-      cancelled = true;
+      clearInterval(timer);
     };
-  }, [selectedUserId, retryCount]);
+  }, [selectedUserId, loadUser]);
 
   function retry() {
     setRetryCount((count) => count + 1);
