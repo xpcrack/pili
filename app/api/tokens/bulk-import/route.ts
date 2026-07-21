@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
+import { requireAdmin } from '@/lib/server/apiGuard';
 import { bulkImportTokens, type TokenChain } from '@/lib/server/tokensRepo';
 
 export const dynamic = 'force-dynamic';
@@ -7,6 +8,11 @@ const VALID_CHAINS: TokenChain[] = ['solana', 'ethereum', 'bsc', 'base', 'hypere
 
 /** POST /api/tokens/bulk-import - Bulk import tokens from text */
 export async function POST(req: NextRequest) {
+  const unauthorizedResponse = requireAdmin(req);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await req.json();
     const { text, chain } = body;

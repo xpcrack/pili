@@ -57,7 +57,7 @@ function parsePagination(request: NextRequest) {
   const from = request.nextUrl.searchParams.get('from');
   const to = request.nextUrl.searchParams.get('to');
   const normalizedPage = Number.isFinite(page) && page > 0 ? page : 1;
-  const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(200, pageSize) : 50;
+  const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(400, pageSize) : 50;
 
   const fromMs = from && Number.isFinite(Number(from)) ? Number(from) : null;
   const toMs = to && Number.isFinite(Number(to)) ? Number(to) : null;
@@ -98,7 +98,6 @@ function buildFeedPayload(
   fromMs?: number | null,
   toMs?: number | null
 ) {
-  const prewarm = readPrewarmProgressSnapshot();
   const snapshot = readEventsFeed({
     limit: pageSize,
     userId,
@@ -110,6 +109,47 @@ function buildFeedPayload(
     toMs,
   });
 
+  // cursor 页（load-more）只回 feed + 分页字段，省掉 users/diagnostics/资产等 ~450KB 重复 payload
+  if (cursor) {
+    return {
+      ok: true,
+      feed: snapshot.feed,
+      total: snapshot.total,
+      page: 1,
+      pageSize,
+      hasMore: snapshot.hasMore,
+      nextCursor: snapshot.nextCursor,
+      historyComplete: null,
+      localQualifiedCount: snapshot.feed.length,
+      activityBreakdown: null,
+      completenessWindow: null,
+      latestActivityAtByUser: {},
+      summary: {
+        userCount: 0,
+        addressCount: 0,
+        transactionCount: snapshot.total,
+        successfulAddressCount: 0,
+        failedAddressCount: 0,
+        emptyAddressCount: 0,
+        completedAt: 0,
+      },
+      diagnostics: [],
+      addressAssets: [],
+      userAssets: [],
+      users: [],
+      sync: {
+        running: false,
+        stale: false,
+        activeRunId: null,
+        lastSuccessAt: null,
+        lastError: null,
+        lastFailureAt: null,
+        latestRun: null,
+      },
+    };
+  }
+
+  const prewarm = readPrewarmProgressSnapshot();
   const syncStatus = getSyncStatus();
   const users = listTrackedUsers();
   const liveAddressCount = users.reduce((sum, user) => sum + user.addresses.length, 0);

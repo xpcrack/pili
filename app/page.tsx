@@ -25,7 +25,7 @@ import {
   getRemoteFeedSource,
 } from '@/lib/smartSearch';
 import { buildAddressAliasMap, selectFeedPageState } from '@/lib/feed/feedPageState';
-import { FEED_PAGE_BATCH_SIZE } from '@/lib/feed/feedQueryMode';
+import { FEED_LOAD_MORE_BATCH_SIZE, FEED_PAGE_BATCH_SIZE } from '@/lib/feed/feedQueryMode';
 import {
   normalizeTradeValueDisplayMode,
   type TradeValueDisplayMode,
@@ -324,8 +324,8 @@ export default function Home() {
 
     const isSelectedMode = Boolean(selectedUserId);
     const nextVisibleCount = isSelectedMode
-      ? selectedUserVisibleCount + FEED_PAGE_BATCH_SIZE
-      : globalVisibleCount + FEED_PAGE_BATCH_SIZE;
+      ? selectedUserVisibleCount + FEED_LOAD_MORE_BATCH_SIZE
+      : globalVisibleCount + FEED_LOAD_MORE_BATCH_SIZE;
 
     if (isSelectedMode) {
       setSelectedUserVisibleCount(nextVisibleCount);
@@ -347,10 +347,16 @@ export default function Home() {
       targetCount: nextVisibleCount,
       selectedUserId,
       syncStrategy: 'local',
+      append: true,
     });
     setIsExpanding(false);
 
     if (!result.success) {
+      if (result.error === '请求进行中') {
+        // 与选人路径一致：排队不算硬失败；pending 会带上更大的 targetCount
+        setExpandFeedback('请求排队中，完成后会自动继续加载');
+        return;
+      }
       setExpandFeedback(result.error ? `读取失败：${result.error}` : '读取失败');
       return;
     }

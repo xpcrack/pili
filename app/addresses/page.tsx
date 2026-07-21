@@ -7,6 +7,7 @@ import { useMainPageSession } from '@/components/MainPageSessionProvider';
 import { TopNav } from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
 import type { AddressManagementRow } from '@/lib/addressManagement';
+import { adminHeaders } from '@/lib/adminClient';
 import { formatUsdCompact } from '@/lib/assetFormat';
 import { formatRelativeTimeCompact } from '@/lib/timeFormat';
 import { useUsersDataStore } from '@/store/usersDataStore';
@@ -109,9 +110,9 @@ export default function AddressesPage() {
     try {
       const response = await fetch(`/api/users/${row.userId}/addresses`, {
         method: 'DELETE',
-        headers: {
+        headers: adminHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({ address: row.address }),
       });
       const payload = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;

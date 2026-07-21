@@ -7,8 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { TopNav } from '@/components/TopNav';
-
-const ADMIN_TOKEN_STORAGE_KEY = 'pilipili_admin_api_token';
+import { ADMIN_TOKEN_STORAGE_KEY } from '@/lib/adminClient';
 
 type StatusType = 'idle' | 'saving' | 'saved' | 'error';
 

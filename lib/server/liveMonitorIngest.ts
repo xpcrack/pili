@@ -6,6 +6,7 @@ import 'server-only';
 
 import { buildActivityFromSnapshotSync } from '@/lib/server/telegramMonitorActivity';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { getDb, withTransaction } from '@/lib/server/sqlite';
 import type { NormalizedLiveTrade } from '@/lib/server/gmgnWalletActivity';
 import type { Activity, User } from '@/types';
 
@@ -22,10 +23,14 @@ export function buildLiveMonitorActivityId(params: {
   const chain = params.chain.trim().toLowerCase();
   const wallet = params.trackedAddress.trim().toLowerCase();
   const tx = (params.txHash || '').trim().toLowerCase();
+  const token = params.tokenAddress.trim().toLowerCase();
+  // Include token so multi-leg swaps (same tx, different tokens) do not overwrite each other.
+  if (chain && wallet && tx && token) {
+    return `${LIVE_MONITOR_ID_PREFIX}${chain}:${wallet}:${tx}:${token}`;
+  }
   if (chain && wallet && tx) {
     return `${LIVE_MONITOR_ID_PREFIX}${chain}:${wallet}:${tx}`;
   }
-  const token = params.tokenAddress.trim().toLowerCase();
   return `${LIVE_MONITOR_ID_PREFIX}${chain}:${wallet || 'unknown'}:${token || 'token'}:${params.eventTimeMs}`;
 }
 
@@ -54,9 +59,20 @@ function sideToAction(side: 'buy' | 'sell') {
   };
 }
 
+/** Lightweight stub so bulk backfill skips scoreFeedRowsAgainstDatabase (per-row COUNT on 2GB DB). */
+const BACKFILL_IMPORTANCE_STUB = {
+  version: 2,
+  score: 0,
+  formulaVersion: 'backfill-skip',
+  factors: {},
+  components: {},
+} as const;
+
 export function buildLiveMonitorActivity(params: {
   user: User;
   trade: NormalizedLiveTrade;
+  /** When true, attach stub importance so eventsRepo skips DB history scoring. */
+  skipImportanceScore?: boolean;
 }): Activity {
   const { user, trade } = params;
   const { action, actionLabel, actionVariant } = sideToAction(trade.side);
@@ -104,6 +120,7 @@ export function buildLiveMonitorActivity(params: {
       // do not claim telegram-monitor-exact MC
       marketCapAtTxSource: undefined,
       tradeAmountUsdAtTx: quoteAmount ?? base.metadata.tradeAmountUsdAtTx,
+      ...(params.skipImportanceScore ? { importance: { ...BACKFILL_IMPORTANCE_STUB } } : {}),
     },
   };
 }
@@ -111,14 +128,122 @@ export function buildLiveMonitorActivity(params: {
 export function upsertLiveMonitorTrades(params: {
   user: User;
   trades: NormalizedLiveTrade[];
+  /** Bulk history backfill: skip per-row importance DB scans. */
+  skipImportanceScore?: boolean;
+  /**
+   * Fast path for history backfill: plain INSERT OR REPLACE into events.
+   * Skips conflict detection / logical rekey / telegram payload enrichment.
+   * Safe for filling missing live-monitor rows; live realtime should use default path.
+   */
+  fastBulk?: boolean;
 }) {
   if (params.trades.length === 0) {
     return { upserted: 0 };
   }
+  if (params.fastBulk) {
+    return upsertLiveMonitorTradesFast({
+      user: params.user,
+      trades: params.trades,
+    });
+  }
   const rows = params.trades.map((trade) => ({
     user: params.user,
-    activity: buildLiveMonitorActivity({ user: params.user, trade }),
+    activity: buildLiveMonitorActivity({
+      user: params.user,
+      trade,
+      skipImportanceScore: params.skipImportanceScore,
+    }),
   }));
   upsertEventsFromFeedRows(rows, LIVE_MONITOR_INGEST_SOURCE);
   return { upserted: rows.length };
+}
+
+/**
+ * Minimal bulk writer for GMGN history backfill.
+ * ~100x faster than upsertEventsFromFeedRows on a large events table.
+ */
+export function upsertLiveMonitorTradesFast(params: {
+  user: User;
+  trades: NormalizedLiveTrade[];
+}) {
+  if (params.trades.length === 0) return { upserted: 0 };
+  const now = Date.now();
+  const userJson = JSON.stringify(params.user);
+
+  withTransaction(() => {
+    const db = getDb();
+    const stmt = db.prepare(
+      `INSERT INTO events (
+         event_id, source, kind, timestamp, user_id, user_name,
+         chain, address, content, url, action, token, tweet_id, tx_hash,
+         ingest_source, dedup_key, metadata_json, payload_json,
+         user_json, activity_json, indexed_at, created_at, updated_at
+       ) VALUES (
+         ?, 'blockchain', 'transfer', ?, ?, ?,
+         ?, ?, ?, NULL, ?, ?, NULL, ?,
+         ?, ?, ?, ?,
+         ?, ?, ?, ?, ?
+       )
+       ON CONFLICT(event_id) DO UPDATE SET
+         timestamp = excluded.timestamp,
+         content = excluded.content,
+         action = excluded.action,
+         token = excluded.token,
+         tx_hash = excluded.tx_hash,
+         ingest_source = excluded.ingest_source,
+         metadata_json = excluded.metadata_json,
+         payload_json = excluded.payload_json,
+         user_json = excluded.user_json,
+         activity_json = excluded.activity_json,
+         indexed_at = excluded.indexed_at,
+         updated_at = excluded.updated_at`
+    );
+
+    for (const trade of params.trades) {
+      const activity = buildLiveMonitorActivity({
+        user: params.user,
+        trade,
+        skipImportanceScore: true,
+      });
+      const eventId = activity.id;
+      const chain = trade.chain;
+      const address = trade.wallet;
+      const action = trade.side;
+      const token = trade.tokenSymbol || null;
+      const txHash = trade.txHash;
+      const content = activity.content || '';
+      const activityJson = JSON.stringify(activity);
+      const metadataJson = JSON.stringify(activity.metadata || {});
+      const payloadJson = JSON.stringify({
+        schemaVersion: 1,
+        ingestSource: LIVE_MONITOR_INGEST_SOURCE,
+        originalType: 'gmgn-wallet-activity-backfill',
+        trade,
+      });
+
+      stmt.run(
+        eventId,
+        trade.eventTimeMs,
+        params.user.id,
+        params.user.name || null,
+        chain,
+        address,
+        content,
+        action,
+        token,
+        txHash,
+        LIVE_MONITOR_INGEST_SOURCE,
+        eventId,
+        metadataJson,
+        payloadJson,
+        userJson,
+        activityJson,
+        now,
+        now,
+        now
+      );
+    }
+  });
+
+  return { upserted: params.trades.length };
 }

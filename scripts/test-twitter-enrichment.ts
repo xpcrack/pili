@@ -85,6 +85,45 @@ function testExtractTweetTokenMentions() {
       { tokenSymbol: 'XYZ', tokenAddress: null, matchSource: 'ticker' },
     ]
   );
+
+  // Chinese $ticker + #hashtag (pool 社媒提及 depends on these).
+  // #a too short; $Sundog带头 must NOT swallow trailing CJK.
+  const cn = extractTweetTokenMentions('meme是个轮回 #熊猫头 and $熊猫头 again #a #FOO $Sundog带头');
+  assert.deepEqual(
+    cn.map((item) => ({
+      tokenSymbol: item.tokenSymbol,
+      tokenAddress: item.tokenAddress,
+      matchSource: item.matchSource,
+    })),
+    [
+      { tokenSymbol: '熊猫头', tokenAddress: null, matchSource: 'ticker' },
+      { tokenSymbol: 'FOO', tokenAddress: null, matchSource: 'ticker' },
+      { tokenSymbol: 'SUNDOG', tokenAddress: null, matchSource: 'ticker' },
+    ]
+  );
+
+  // #a too short; bare Chinese name without $/# not extracted
+  const bare = extractTweetTokenMentions('我看好熊猫头 没有标签');
+  assert.equal(bare.length, 0);
+
+  // hashtag + following CA binds like $TICKER CA
+  const hashCa = extractTweetTokenMentions(
+    '#熊猫头 0x1234567890abcdef1234567890abcdef12345678'
+  );
+  assert.deepEqual(
+    hashCa.map((item) => ({
+      tokenSymbol: item.tokenSymbol,
+      tokenAddress: item.tokenAddress,
+      matchSource: item.matchSource,
+    })),
+    [
+      {
+        tokenSymbol: '熊猫头',
+        tokenAddress: '0x1234567890abcdef1234567890abcdef12345678',
+        matchSource: 'both',
+      },
+    ]
+  );
 }
 
 async function testEnrichmentProjectionMetadata() {

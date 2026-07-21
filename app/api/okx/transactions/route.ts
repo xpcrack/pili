@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
+import { requireAdmin } from '@/lib/server/apiGuard';
 import { fetchOkxTransactionsByAddress, isSupportedOkxChain } from '@/lib/okx';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   const address = request.nextUrl.searchParams.get('address')?.trim();
   const chain = request.nextUrl.searchParams.get('chain')?.trim();
 

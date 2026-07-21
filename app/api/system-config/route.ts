@@ -36,7 +36,11 @@ function pickNumericOrEmpty(value: unknown): number | string | undefined {
   return typeof value === 'number' || typeof value === 'string' ? value : undefined;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
   return apiOk({ config: readSystemConfig() });
 }
 

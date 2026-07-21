@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { TopNav } from '@/components/TopNav';
 import { AppLink } from '@/lib/appNavigation';
+import { adminHeaders } from '@/lib/adminClient';
 import { buildUserAvatar, getUserAvatar, normalizeTwitterHandle } from '@/lib/userProfile';
 import { formatUsdCompact } from '@/lib/assetFormat';
 import {
@@ -399,9 +400,9 @@ export default function ManagePage() {
 
     void fetch('/api/users/import', {
       method: 'POST',
-      headers: {
+      headers: adminHeaders({
         'Content-Type': 'application/json',
-      },
+      }),
       body: JSON.stringify({
         users: usersWithAddresses,
         replaceExisting: false,
@@ -477,6 +478,7 @@ export default function ManagePage() {
     try {
       const response = await fetch(`/api/users/${userId}`, {
         method: 'DELETE',
+        headers: adminHeaders(),
       });
       const payload = await response.json().catch(() => null);
 
@@ -566,9 +568,9 @@ export default function ManagePage() {
     try {
       const response = await fetch(`/api/users/${user.id}/addresses`, {
         method: 'POST',
-        headers: {
+        headers: adminHeaders({
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           addresses: expandTrackedAddresses(newAddresses),
         }),
@@ -600,7 +602,7 @@ export default function ManagePage() {
       ];
       const response = await fetch(`/api/users/${user.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: adminHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           name: editingProfileData.name.trim(),
           handle: editingProfileData.handle.trim(),

@@ -1,4 +1,5 @@
-import { NextResponse } from '@/lib/server/httpCompat';
+import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
+import { requireAdmin } from '@/lib/server/apiGuard';
 import { listTrackedUsers, markAddressesSynced } from '@/lib/server/trackedUsersRepo';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
@@ -8,7 +9,12 @@ export const dynamic = 'force-dynamic';
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     console.log('开始补充所有地址近14天的交易动态...');
 

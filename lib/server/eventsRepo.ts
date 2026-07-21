@@ -818,7 +818,8 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
 export function readEventsFeed(query: EventFeedQuery) {
   const db = getDb();
   const currentUsersById = new Map(listTrackedUsers().map((user) => [user.id, user] as const));
-  const safeLimit = Math.max(1, Math.min(200, Math.floor(query.limit || 50)));
+  // load-more 会要 400；上限别太大，单页 JSON 仍要可解析
+  const safeLimit = Math.max(1, Math.min(400, Math.floor(query.limit || 50)));
   const cursor = decodeCursor(query.cursor || null);
   const q = (query.q || '').trim();
   const source = normalize(query.source);
@@ -880,15 +881,23 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
+  // 默认时间序列表强制走 idx_events_timestamp。
+  // 带 cursor 时 planner 会误选 idx_events_user_timestamp + TEMP B-TREE，page2 从 ~20ms 劣化到 6s+。
+  // FTS join / 动作词 LIKE 路径不要 INDEXED BY，避免绑死错误索引。
+  const forceTimestampIndex = !joinSql && !actionTerm;
+  const fromSql = forceTimestampIndex
+    ? 'FROM events e INDEXED BY idx_events_timestamp'
+    : 'FROM events e';
+
   const baseSql = `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
-       FROM events e
+       ${fromSql}
        ${joinSql}
        ${whereSql}
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`;
 
   const countSql = `SELECT COUNT(1) AS count
-       FROM events e
+       ${fromSql}
        ${joinSql}
        ${whereSql}`;
 
@@ -938,11 +947,12 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   repairTelegramMonitorFeedRows(feed);
 
-  // 动作词分支用 LIKE OR 命中 activity_json/content，全表 COUNT 在 27k+ 行上约 200ms。
-  // 客户端 (activitiesApi.ts) 缺失 total 时已回退到 feed.length，跳过 COUNT 直接省这次扫描。
-  const totalRow = actionTerm
-    ? null
-    : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
+  // 动作词 LIKE 全表 COUNT 很贵；cursor 页的 COUNT 也会扫大段索引（实测 ~5s）。
+  // 分页只依赖 hasMore=limit+1；客户端缺失 total 时已回退到 feed.length。
+  const totalRow =
+    actionTerm || cursor
+      ? null
+      : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
 
   return {
     feed,

@@ -58,6 +58,26 @@ async function run() {
   assert.equal(unfiltered.items.length, FEED_PAGE_BATCH_SIZE * 2);
   assert.equal(unfiltered.pageCount, 2);
   assert.equal(unfiltered.hasMore, true, 'exactly filling the requested window should still report more pages');
+  assert.equal(unfiltered.nextCursor, 'cursor-2', 'collector should expose the last page nextCursor');
+
+  // append-style: start from an existing cursor and only take one more page
+  let appendCalls = 0;
+  const appended = await collectItemsUntilCount({
+    desiredCount: FEED_PAGE_BATCH_SIZE,
+    startCursor: 'cursor-1',
+    fetchPage: async (cursor) => {
+      assert.equal(cursor, appendCalls === 0 ? 'cursor-1' : 'cursor-2');
+      appendCalls += 1;
+      return {
+        items: Array.from({ length: FEED_PAGE_BATCH_SIZE }, (_, index) => `page-append-${index}`),
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      };
+    },
+  });
+  assert.equal(appended.pageCount, 1);
+  assert.equal(appended.items[0], 'page-append-0');
+  assert.equal(appended.nextCursor, 'cursor-2');
 
   const filteredPages = [
     {

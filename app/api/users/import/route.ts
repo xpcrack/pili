@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
+import { requireAdmin } from '@/lib/server/apiGuard';
 import {
   importTrackedUsers,
   listTrackedUsers,
@@ -17,6 +18,11 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await request.json().catch(() => null);
     const users = sanitizeUsersPayload(body?.users);
