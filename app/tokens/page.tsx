@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { TopNav } from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { adminHeaders } from '@/lib/adminClient';
 import { formatRelativeTimeCompact } from '@/lib/timeFormat';
 import { RefreshCw, Trash2, Plus, Download, Upload } from 'lucide-react';
 
@@ -63,7 +64,7 @@ export default function TokensPage() {
     try {
       const res = await fetch('/api/tokens', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: adminHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           chain: newChain,
           contractAddress: newAddress.trim(),
@@ -87,7 +88,7 @@ export default function TokensPage() {
     try {
       const res = await fetch('/api/tokens/bulk-import', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: adminHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ text: importText, chain: importChain }),
       });
 
@@ -109,7 +110,7 @@ export default function TokensPage() {
     try {
       const res = await fetch('/api/tokens', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: adminHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ ids }),
       });
 

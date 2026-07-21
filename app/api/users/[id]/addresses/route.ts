@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
+import { requireAdmin } from '@/lib/server/apiGuard';
 import {
   addTrackedAddresses,
   removeTrackedAddress,
@@ -21,6 +22,11 @@ function parseChain(value: unknown): ChainType | undefined {
 }
 
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
@@ -67,6 +73,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 }
 
 export async function DELETE(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const { id } = await context.params;
     const body = await request.json().catch(() => null);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
+import { requireAdmin } from '@/lib/server/apiGuard';
 import {
   createTrackedUser,
   listTrackedUsers,
@@ -55,6 +56,11 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await request.json().catch(() => null);
     const candidate = body?.user ?? body;

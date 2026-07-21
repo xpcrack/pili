@@ -189,7 +189,24 @@ function testLiveActivityShape() {
     tokenAddress: '0xt',
     eventTimeMs: 1,
   });
-  assert.equal(id, 'live-monitor:robinhood:0xabc:0xdef');
+  assert.equal(id, 'live-monitor:robinhood:0xabc:0xdef:0xt');
+
+  const idA = buildLiveMonitorActivityId({
+    chain: 'base',
+    trackedAddress: '0xwallet',
+    txHash: '0xsame',
+    tokenAddress: '0xtokenA',
+    eventTimeMs: 1,
+  });
+  const idB = buildLiveMonitorActivityId({
+    chain: 'base',
+    trackedAddress: '0xwallet',
+    txHash: '0xsame',
+    tokenAddress: '0xtokenB',
+    eventTimeMs: 1,
+  });
+  assert.notEqual(idA, idB, 'same tx different tokens must not share event id');
+  assert.equal(activity.id, 'live-monitor:base:0xwallet:0xtxhash:0xtoken');
   console.log('PASS live activity shape');
 }
 

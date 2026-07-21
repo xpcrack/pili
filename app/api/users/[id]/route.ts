@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
+import { requireAdmin } from '@/lib/server/apiGuard';
 import {
   deleteTrackedUser,
   listTrackedUsers,
@@ -160,6 +161,11 @@ export function createGetUserDetailsHandler(deps: GetUserDetailsHandlerDependenc
 export const GET = createGetUserDetailsHandler();
 
 export async function PATCH(request: NextRequest, context: UserRouteContext) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
@@ -220,7 +226,12 @@ export async function PATCH(request: NextRequest, context: UserRouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, context: UserRouteContext) {
+export async function DELETE(request: NextRequest, context: UserRouteContext) {
+  const unauthorizedResponse = requireAdmin(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const { id } = await context.params;
     const deleted = deleteTrackedUser(id);

@@ -219,7 +219,8 @@ export async function fetchFromDexScreener(
       ticker: pair.baseToken.symbol,
       name: pair.baseToken.name,
       price: parseUsdNumber(pair.priceUsd),
-      marketCap: pair.fdv || pair.marketCap || 0,
+      // Prefer circulating marketCap; FDV often overstates meme MC.
+      marketCap: pair.marketCap || pair.fdv || 0,
       liquidity: pair.liquidity?.usd || 0,
       priceChange24h: pair.priceChange?.h24 || 0,
       volume24h: pair.volume?.h24 || 0,
@@ -302,7 +303,7 @@ export async function batchFetchFromDexScreener(
             ticker: pair.baseToken.symbol,
             name: pair.baseToken.name,
             price: parseUsdNumber(pair.priceUsd),
-            marketCap: pair.fdv || pair.marketCap || 0,
+            marketCap: pair.marketCap || pair.fdv || 0,
             liquidity: pair.liquidity?.usd || 0,
             priceChange24h: pair.priceChange?.h24 || 0,
             volume24h: pair.volume?.h24 || 0,

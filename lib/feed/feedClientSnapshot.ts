@@ -58,6 +58,8 @@ export function buildCollectedActivityFeedResult(params: {
     page: firstPageResult.page,
     pageSize: firstPageResult.pageSize,
     hasMore,
+    // 多页收集时以调用方传入的 hasMore 为准；nextCursor 仍回落 first page
+    // （实际游标由 collectItemsUntilCount.nextCursor 写入 feedNextCursorRef）
     nextCursor: firstPageResult.nextCursor ?? null,
     historyComplete: fullDatabaseSearch ? null : firstPageResult.historyComplete,
     localQualifiedCount: collectedFeed.length,
@@ -86,8 +88,11 @@ export function applyServerFeedSnapshot(params: {
   replace: boolean;
   resultFeed: FeedItem[];
   effectiveUsers: User[];
+  previousFeed?: FeedItem[];
 }) {
-  const { replace, resultFeed, effectiveUsers } = params;
-  const serverSnapshot = replace ? resultFeed : mergeFeedItems([], resultFeed);
+  const { replace, resultFeed, effectiveUsers, previousFeed } = params;
+  const serverSnapshot = replace
+    ? resultFeed
+    : mergeFeedItems(previousFeed ?? [], resultFeed);
   return filterFeedByExistingUsers(serverSnapshot, effectiveUsers);
 }

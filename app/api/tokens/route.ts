@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
+import { requireAdmin } from '@/lib/server/apiGuard';
 import { listTokens, addToken, deleteTokens, bulkImportTokens, type TokenChain } from '@/lib/server/tokensRepo';
 import { getBatchTokenPrices } from '@/lib/server/priceService';
 import { readLatestBuyAtByToken } from '@/lib/server/eventsRepo';
@@ -46,6 +47,11 @@ export async function GET(req: NextRequest) {
 
 /** POST /api/tokens - Add a token */
 export async function POST(req: NextRequest) {
+  const unauthorizedResponse = requireAdmin(req);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await req.json();
     const { chain, contractAddress, tags } = body;
@@ -68,6 +74,11 @@ export async function POST(req: NextRequest) {
 
 /** DELETE /api/tokens - Delete multiple tokens */
 export async function DELETE(req: NextRequest) {
+  const unauthorizedResponse = requireAdmin(req);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   try {
     const body = await req.json();
     const { ids } = body;

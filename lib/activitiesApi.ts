@@ -6,6 +6,7 @@ import {
   type AddressAssetSnapshot,
   type AddressDiagnostic,
 } from '@/lib/activityFeed';
+import { adminHeaders } from '@/lib/adminClient';
 import { sleep } from '@/lib/timing';
 
 interface UserAssetSnapshot {
@@ -314,9 +315,9 @@ export async function fetchAllActivities(
         method,
         headers:
           method === 'POST'
-            ? {
+            ? adminHeaders({
                 'Content-Type': 'application/json',
-              }
+              })
             : undefined,
         body: method === 'POST' ? JSON.stringify(bodyPayload) : undefined,
         cache: 'no-store',

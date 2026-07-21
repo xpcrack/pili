@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+import { adminHeaders } from '@/lib/adminClient';
 import { canonicalUsersToLegacy } from '@/lib/canonical';
 import { mergeManageUsersWithServer } from '@/lib/manageUsers';
 import { repairMalformedTrackedAddress } from '@/lib/trackedAddressValidation';
@@ -373,7 +374,7 @@ export const useUsersDataStore = create<UsersDataState>()(
           try {
             const response = await fetch('/api/users', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: adminHeaders({ 'Content-Type': 'application/json' }),
               body: JSON.stringify({ user: userData }),
             });
             const payload = await response.json().catch(() => null);
@@ -395,7 +396,7 @@ export const useUsersDataStore = create<UsersDataState>()(
         try {
           const response = await fetch('/api/users', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: adminHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ user: userData }),
           });
           const payload = await response.json().catch(() => null);

@@ -31,7 +31,12 @@ import {
 import {
   filterPoisonFromFeed,
 } from '@/lib/feed/feedPoisonFilter';
-import { FEED_PAGE_BATCH_SIZE, collectItemsUntilCount, shouldSearchEntireFeed } from '@/lib/feed/feedQueryMode';
+import {
+  FEED_LOAD_MORE_BATCH_SIZE,
+  FEED_PAGE_BATCH_SIZE,
+  collectItemsUntilCount,
+  shouldSearchEntireFeed,
+} from '@/lib/feed/feedQueryMode';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { useFeedDebugBridge } from './useFeedDebugBridge';
@@ -60,6 +65,7 @@ interface UseActivityPollingReturn {
     searchQuery?: string;
     syncStrategy?: FeedSyncStrategy;
     backfillScope?: 'global' | 'user';
+    append?: boolean;
   }) => Promise<{
     feedLength: number;
     selectedFeedLength: number;
@@ -84,6 +90,8 @@ interface FetchActivitiesOptions {
   searchQuery?: string;
   source?: Activity['source'] | null;
   replace?: boolean;
+  /** 从 feedNextCursor 追加一页，而不是从顶部重拉 */
+  append?: boolean;
   silent?: boolean;
   poll?: boolean;
   revision?: string;
@@ -115,6 +123,7 @@ async function collectRequestedActivityFeed(params: {
   effectiveSearchFilters: FeedSearchFilters;
   poll?: boolean;
   revision?: string;
+  startCursor?: string | null;
 }) {
   let pageIndex = 0;
   let firstPageResult: ActivityFeedResponse | null = null;
@@ -131,17 +140,19 @@ async function collectRequestedActivityFeed(params: {
     effectiveSearchFilters,
     poll,
     revision,
+    startCursor,
   } = params;
 
   const collected = await collectItemsUntilCount<{ user: User; activity: Activity }>({
     desiredCount: requestLimit,
+    startCursor: startCursor ?? null,
     matcher: fullDatabaseSearch
       ? (item) => matchesFeedSearchFilters(item, effectiveSearchFilters)
       : undefined,
     fetchPage: async (cursor) => {
       const pageResult = await fetchAllActivities(currentUsers, {
         page: 1,
-        pageSize: FEED_PAGE_BATCH_SIZE,
+        pageSize: requestLimit,
         cursor,
         userId: selectedUserId,
         search: searchQuery,
@@ -207,6 +218,8 @@ export function useActivityPolling(
   const hydratedFromCacheRef = useRef(false);
   const feedRef = useRef<{ user: User; activity: Activity }[]>([]);
   const feedRevisionRef = useRef<string | undefined>(undefined);
+  /** 已加载窗口末端 cursor，load-more append 用 */
+  const feedNextCursorRef = useRef<string | null>(null);
   const usersRef = useRef(users);
   const {
     selectedUserIdRef: activeSelectedUserIdRef,
@@ -320,23 +333,42 @@ export function useActivityPolling(
         ? options.source ?? null
         : activeSourceRef.current;
     const replace = options?.replace === true;
+    const append = options?.append === true && !replace;
     const syncStrategy = resolveFeedSyncStrategy(options?.syncStrategy);
     const backfillScope = options?.backfillScope ?? (selectedUserId ? 'user' : 'global');
-    const priority = syncStrategy === 'local' ? 'foreground' : 'background';
+    // silent poll / 后台刷新不抢 load-more、选人、搜索
+    const priority =
+      options?.silent || options?.poll
+        ? 'background'
+        : syncStrategy === 'local'
+          ? 'foreground'
+          : 'background';
     const currentSelectedFeedLength = selectedUserId
       ? feedRef.current.filter((item) => item.user.id === selectedUserId).length
       : feedRef.current.length;
     const ticket = arbiterRef.current.start(priority);
     if (!ticket.accepted) {
       if (ticket.reason === 'foreground_inflight' && priority === 'foreground') {
-        pendingRefetchRef.current = true;
-        pendingRefetchOptionsRef.current = options
+        const nextOptions: FetchActivitiesOptions = options
           ? { ...options }
           : {
               selectedUserId: activeSelectedUserIdRef.current,
               searchQuery: activeSearchQueryRef.current,
               syncStrategy: 'local',
             };
+        const prevOptions = pendingRefetchOptionsRef.current;
+        // silent/poll 不覆盖已排队的用户操作（load-more / 选人）
+        if (!(pendingRefetchRef.current && (nextOptions.silent || nextOptions.poll))) {
+          if (prevOptions?.targetCount != null || nextOptions.targetCount != null) {
+            nextOptions.targetCount = Math.max(
+              prevOptions?.targetCount ?? 0,
+              nextOptions.targetCount ?? 0,
+              FEED_PAGE_BATCH_SIZE
+            );
+          }
+          pendingRefetchRef.current = true;
+          pendingRefetchOptionsRef.current = nextOptions;
+        }
       }
 
       return {
@@ -392,6 +424,7 @@ export function useActivityPolling(
         }
 
         feedRef.current = [];
+        feedNextCursorRef.current = null;
         setFeed([]);
         setUserActivities(new Map());
         setLatestActivityAtByUser(new Map());
@@ -424,7 +457,28 @@ export function useActivityPolling(
         };
       }
 
-      const requestLimit = Math.max(targetCount ?? FEED_PAGE_BATCH_SIZE, FEED_PAGE_BATCH_SIZE);
+      // append：再拉一页（400）；silent：保住当前窗口；其余：从顶攒到 targetCount
+      const requestLimit = append
+        ? FEED_LOAD_MORE_BATCH_SIZE
+        : Math.max(
+            targetCount ?? (options?.silent ? feedRef.current.length : 0),
+            FEED_PAGE_BATCH_SIZE
+          );
+      const startCursor = append ? feedNextCursorRef.current : null;
+      if (append && !startCursor) {
+        // 没有下一页 cursor 就不要空转
+        return {
+          feedLength: feedRef.current.length,
+          selectedFeedLength: currentSelectedFeedLength,
+          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          success: true,
+          partialSyncWarning: false,
+          autoBackfillRounds: 0,
+          hasMore: false,
+          historyComplete,
+          localQualifiedCount,
+        };
+      }
       const effectiveSearchFilters = activeSearchFiltersRef.current || DEFAULT_FEED_SEARCH_FILTERS;
       const fullDatabaseSearch = shouldSearchEntireFeed({
         selectedUserId,
@@ -443,6 +497,7 @@ export function useActivityPolling(
         effectiveSearchFilters,
         poll: options?.poll,
         revision: options?.revision,
+        startCursor,
       });
       const pageResponse = firstPageResult as ActivityFeedResponse | null;
       if (pageResponse?.revision) {
@@ -471,7 +526,8 @@ export function useActivityPolling(
       const autoBackfillRounds = 0;
       const effectiveUsers = resolveFeedUsers(currentUsers, result.users);
       const mergedFeed = applyServerFeedSnapshot({
-        replace,
+        replace: replace || !append,
+        previousFeed: append ? feedRef.current : undefined,
         resultFeed: result.feed,
         effectiveUsers,
       });
@@ -494,14 +550,18 @@ export function useActivityPolling(
       usersRef.current = effectiveUsers;
       mergeUsersFromServer(result.users ?? effectiveUsers);
       feedRef.current = mergedFeed;
+      // 记住下一页起点：append 用 collected.nextCursor；全量重拉也用 collected.nextCursor
+      feedNextCursorRef.current = collected.nextCursor ?? result.nextCursor ?? null;
       setFeed(mergedFeed);
-      setSummary(result.summary);
-      setDiagnostics(result.diagnostics);
+      if (!append) {
+        setSummary(result.summary);
+        setDiagnostics(result.diagnostics);
+        setHistoryComplete(result.historyComplete);
+        setActivityBreakdown(result.activityBreakdown);
+        setCompletenessWindow(result.completenessWindow);
+      }
       setHasMore(result.hasMore);
-      setHistoryComplete(result.historyComplete);
-      setLocalQualifiedCount(result.localQualifiedCount);
-      setActivityBreakdown(result.activityBreakdown);
-      setCompletenessWindow(result.completenessWindow);
+      setLocalQualifiedCount(append ? mergedFeed.length : result.localQualifiedCount);
 
       // Debug: Check if feed is being filtered by client-side poison detection
       const poisonFilteredFeed = filterPoisonFromFeed(mergedFeed);
@@ -529,15 +589,17 @@ export function useActivityPolling(
       // 聚合每个用户的活动
       const activitiesByUser = buildActivitiesByUser(mergedFeed);
       setUserActivities(activitiesByUser);
-      const latestMap = new Map<string, number>();
-      if (result.latestActivityAtByUser) {
-        Object.entries(result.latestActivityAtByUser).forEach(([userId, ts]) => {
-          if (typeof ts === 'number' && Number.isFinite(ts) && ts > 0) {
-            latestMap.set(userId, ts);
-          }
-        });
+      if (!append) {
+        const latestMap = new Map<string, number>();
+        if (result.latestActivityAtByUser) {
+          Object.entries(result.latestActivityAtByUser).forEach(([userId, ts]) => {
+            if (typeof ts === 'number' && Number.isFinite(ts) && ts > 0) {
+              latestMap.set(userId, ts);
+            }
+          });
+        }
+        setLatestActivityAtByUser(latestMap);
       }
-      setLatestActivityAtByUser(latestMap);
 
       // 更新每个用户的红点状态
       applyNewStatusForActivities(activitiesByUser);
@@ -545,11 +607,13 @@ export function useActivityPolling(
       const now = new Date();
       setLastUpdate(now);
       setError(null);
-      setPrewarmLabel(
-        typeof result.prewarm?.label === 'string' && result.prewarm.label.trim()
-          ? result.prewarm.label
-          : null
-      );
+      if (!append) {
+        setPrewarmLabel(
+          typeof result.prewarm?.label === 'string' && result.prewarm.label.trim()
+            ? result.prewarm.label
+            : null
+        );
+      }
       const mergedSelectedFeedLength = selectedUserId
         ? mergedFeed.filter((item) => item.user.id === selectedUserId).length
         : mergedFeed.length;
@@ -614,17 +678,9 @@ export function useActivityPolling(
       }
 
       const message = err instanceof Error ? err.message : '获取数据失败';
+      // Keep last-good feed on transient failures so the trading UI does not blank out.
       setError(message);
-      feedRef.current = [];
-      setFeed([]);
-      setUserActivities(new Map());
-      setLatestActivityAtByUser(new Map());
-      setSummary(null);
-      setDiagnostics([]);
-      setHasMore(false);
-      setHistoryComplete(null);
-      setLocalQualifiedCount(0);
-      console.warn('拉取失败（严格模式，未兜底）:', err);
+      console.warn('拉取失败（保留上次成功数据）:', err);
       return {
         feedLength: feedRef.current.length,
         selectedFeedLength: currentSelectedFeedLength,
@@ -633,9 +689,9 @@ export function useActivityPolling(
         error: message,
         partialSyncWarning: false,
         autoBackfillRounds: 0,
-        hasMore: false,
-        historyComplete: null,
-        localQualifiedCount: 0,
+        hasMore,
+        historyComplete,
+        localQualifiedCount,
       };
     } finally {
       if (isMountedRef.current && requestId === requestIdRef.current && !options?.silent) {
@@ -737,6 +793,7 @@ export function useActivityPolling(
       silent: true,
       poll: true,
       revision: feedRevisionRef.current,
+      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
       syncStrategy: 'local',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
@@ -748,6 +805,7 @@ export function useActivityPolling(
   useFeedRefreshScheduler(() =>
     fetchActivities({
       silent: true,
+      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
       syncStrategy: 'refresh',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
@@ -759,6 +817,8 @@ export function useActivityPolling(
 
   useFeedJudgmentStream(() =>
     fetchActivities({
+      silent: true,
+      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
       source: activeSourceRef.current,
@@ -783,7 +843,11 @@ export function useActivityPolling(
       searchQuery?: string;
       syncStrategy?: FeedSyncStrategy;
       backfillScope?: 'global' | 'user';
+      append?: boolean;
     }) => {
+      if (options?.append) {
+        return fetchActivities({ ...options, append: true, replace: false });
+      }
       return fetchActivities({ ...options, replace: true });
     },
     lastUpdate,

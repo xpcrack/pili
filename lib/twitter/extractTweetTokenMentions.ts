@@ -8,10 +8,31 @@ export interface ExtractedTweetTokenMention {
 const EVM_CA_PATTERN = /\b0x[a-fA-F0-9]{40}\b/g;
 const SOL_CA_PATTERN = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 const SOL_CA_EXACT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-const TICKER_PATTERN = /\$([A-Za-z][A-Za-z0-9]{1,14})\b/g;
+
+/** Legacy ASCII $TICKER (2–15 chars). Stops before non-ASCII so `$Sundog带头` → Sundog only. */
+const DOLLAR_ASCII_PATTERN = /\$([A-Za-z][A-Za-z0-9]{1,14})(?![A-Za-z0-9])/g;
+
+/** Chinese (CJK) $ticker — pure Han, 2–20 chars. */
+const DOLLAR_CJK_PATTERN = /\$([一-鿿]{2,20})/g;
+
+/** ASCII #tag (2–20 chars). */
+const HASH_ASCII_PATTERN = /#([A-Za-z][A-Za-z0-9_]{1,19})(?![A-Za-z0-9_])/g;
+
+/** Chinese (CJK) #tag — pure Han, 2–20 chars (e.g. #熊猫头). */
+const HASH_CJK_PATTERN = /#([一-鿿]{2,20})/g;
 
 function normalizeText(text: string) {
   return text || '';
+}
+
+/** ASCII tickers stay UPPERCASE (legacy); CJK kept as-is. */
+function normalizeTickerSymbol(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  if (/^[A-Za-z][A-Za-z0-9_]*$/.test(s)) {
+    return s.toUpperCase();
+  }
+  return s;
 }
 
 function isLikelySolAddress(value: string) {
@@ -46,17 +67,44 @@ function findCaCandidates(text: string) {
   return result.sort((a, b) => a.index - b.index);
 }
 
+function findTickerCandidates(text: string) {
+  const result: Array<{ tokenSymbol: string; index: number }> = [];
+  const seenAt = new Set<string>();
+
+  const push = (raw: string, index: number) => {
+    const tokenSymbol = normalizeTickerSymbol(raw);
+    if (!tokenSymbol) return;
+    const key = `${tokenSymbol.toLowerCase()}@${index}`;
+    if (seenAt.has(key)) return;
+    seenAt.add(key);
+    result.push({ tokenSymbol, index });
+  };
+
+  for (const match of text.matchAll(DOLLAR_ASCII_PATTERN)) {
+    push(match[1] || '', match.index ?? 0);
+  }
+  for (const match of text.matchAll(DOLLAR_CJK_PATTERN)) {
+    push(match[1] || '', match.index ?? 0);
+  }
+  for (const match of text.matchAll(HASH_ASCII_PATTERN)) {
+    push(match[1] || '', match.index ?? 0);
+  }
+  for (const match of text.matchAll(HASH_CJK_PATTERN)) {
+    push(match[1] || '', match.index ?? 0);
+  }
+
+  return result.sort((a, b) => a.index - b.index);
+}
+
 export function extractTweetTokenMentions(text: string): ExtractedTweetTokenMention[] {
   const normalized = normalizeText(text);
   const results: ExtractedTweetTokenMention[] = [];
   const bySymbol = new Map<string, ExtractedTweetTokenMention>();
-  const tickerMatches = Array.from(normalized.matchAll(TICKER_PATTERN))
-    .map((match) => ({
-      type: 'ticker' as const,
-      index: match.index ?? 0,
-      tokenSymbol: (match[1] || '').toUpperCase(),
-    }))
-    .filter((match) => Boolean(match.tokenSymbol));
+  const tickerMatches = findTickerCandidates(normalized).map((match) => ({
+    type: 'ticker' as const,
+    index: match.index,
+    tokenSymbol: match.tokenSymbol,
+  }));
   const caMatches = findCaCandidates(normalized).map((match) => ({
     type: 'ca' as const,
     index: match.index,
@@ -67,7 +115,8 @@ export function extractTweetTokenMentions(text: string): ExtractedTweetTokenMent
 
   for (const match of orderedMatches) {
     if (match.type === 'ticker') {
-      if (bySymbol.has(match.tokenSymbol)) {
+      const symbolKey = match.tokenSymbol.toLowerCase();
+      if (bySymbol.has(symbolKey)) {
         continue;
       }
       rank += 1;
@@ -77,7 +126,7 @@ export function extractTweetTokenMentions(text: string): ExtractedTweetTokenMent
         matchSource: 'ticker',
         rankInTweet: rank,
       };
-      bySymbol.set(match.tokenSymbol, mention);
+      bySymbol.set(symbolKey, mention);
       results.push(mention);
       continue;
     }
