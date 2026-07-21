@@ -94,8 +94,6 @@ export default function Home() {
   // null 表示全部动态，有值表示特定用户
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [sidebarSortMode, setSidebarSortMode] = useState<'recent' | 'asset'>('asset');
-  const [hoveredTokenCa, setHoveredTokenCa] = useState<string | null>(null);
-  const [hoveredAddress, setHoveredAddress] = useState<string | null>(null);
   const [globalVisibleCount, setGlobalVisibleCount] = useState(MAX_GLOBAL_FEED_ITEMS);
   const [selectedUserVisibleCount, setSelectedUserVisibleCount] = useState(MIN_SELECTED_USER_FEED_ITEMS);
   const [isExpanding, setIsExpanding] = useState(false);
@@ -667,7 +665,7 @@ export default function Home() {
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
-                  <div className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
+                  <div id="feed-list" className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
                     <div className="divide-y divide-zinc-800/70">
                       {filteredFeed.map(({ user, activity }) => (
                         <div
@@ -683,10 +681,6 @@ export default function Home() {
                             user={user}
                             timeDisplayMode={timeDisplayMode}
                             tradeValueDisplayMode={tradeValueDisplayMode}
-                            activeTokenCa={hoveredTokenCa}
-                            onTokenCaHover={setHoveredTokenCa}
-                            activeAddress={hoveredAddress}
-                            onAddressHover={setHoveredAddress}
                             addressAliasMap={addressAliasMap}
                           />
                         </div>

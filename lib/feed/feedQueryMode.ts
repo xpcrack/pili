@@ -5,6 +5,8 @@ import { hasActiveFeedLocalFilters } from '@/lib/feed/feedPageState';
 export const FEED_PAGE_BATCH_SIZE = 200;
 /** 滚到底追加量（服务端 pageSize 上限 400） */
 export const FEED_LOAD_MORE_BATCH_SIZE = 400;
+/** silent poll 只重拉顶窗，避免随 scrolled depth 线性放大 */
+export const FEED_POLL_MAX_TARGET = FEED_PAGE_BATCH_SIZE;
 
 export function shouldSearchEntireFeed(params: {
   selectedUserId: string | null;
