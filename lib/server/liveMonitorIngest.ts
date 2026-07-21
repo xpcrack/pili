@@ -79,13 +79,18 @@ export function buildLiveMonitorActivity(params: {
   const quoteAmount =
     typeof trade.costUsd === 'number' && Number.isFinite(trade.costUsd) ? trade.costUsd : null;
 
+  const marketCapUsd =
+    typeof trade.marketCapUsd === 'number' && Number.isFinite(trade.marketCapUsd) && trade.marketCapUsd > 0
+      ? trade.marketCapUsd
+      : null;
+
   const base = buildActivityFromSnapshotSync({
     user,
     chain: trade.chain,
     tokenAddress: trade.tokenAddress,
     tokenSymbol: trade.tokenSymbol,
     txHash: trade.txHash,
-    marketCapUsd: null,
+    marketCapUsd,
     quoteAmount,
     quoteSymbol: quoteAmount != null ? 'USD' : null,
     tokenAmount: trade.tokenAmount,
@@ -117,8 +122,8 @@ export function buildLiveMonitorActivity(params: {
       ...base.metadata,
       liveSource: 'alchemy-gmgn',
       monitorTxAggregateKey: liveId,
-      // do not claim telegram-monitor-exact MC
-      marketCapAtTxSource: undefined,
+      // Prefer GMGN MC when present; never claim telegram-monitor-exact.
+      marketCapAtTxSource: marketCapUsd != null ? 'gmgn-activity' : undefined,
       tradeAmountUsdAtTx: quoteAmount ?? base.metadata.tradeAmountUsdAtTx,
       ...(params.skipImportanceScore ? { importance: { ...BACKFILL_IMPORTANCE_STUB } } : {}),
     },

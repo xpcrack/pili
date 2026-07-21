@@ -131,6 +131,26 @@
   }
 }
 
+/* Feed hover highlight via DOM classes (no React re-render). */
+#feed-list [data-token-ca].feed-ca-active {
+  background-color: rgb(250 204 21 / 0.25);
+  color: rgb(254 249 195);
+  box-shadow: 0 0 0 1px rgb(253 224 71 / 0.8), 0 0 16px rgb(250 204 21 / 0.55);
+}
+#feed-list [data-feed-card].feed-card-ca-active {
+  position: relative;
+  z-index: 10;
+  background-color: rgb(16 185 129 / 0.08);
+  box-shadow:
+    0 0 0 1px rgb(74 222 128 / 0.6),
+    0 0 18px rgb(16 185 129 / 0.35);
+}
+#feed-list [data-address].feed-addr-active {
+  background-color: rgb(34 211 238 / 0.2);
+  color: rgb(207 250 254);
+  box-shadow: 0 0 0 1px rgb(103 232 249 / 0.7), 0 0 16px rgb(34 211 238 / 0.35);
+}
+
 /* 自定义动画 */
 @keyframes pulse-red {
   0%, 100% {

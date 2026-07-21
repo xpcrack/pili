@@ -23,6 +23,7 @@ import {
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
 import { formatCompactMarketCap, type TradeValueDisplayMode } from '@/lib/tradeDisplay';
+import { setFeedAddressHover, setFeedTokenHover } from '@/lib/feed/feedHoverHighlight';
 
 interface ActivityCardProps {
   activity: Activity;
@@ -321,15 +322,12 @@ export const ActivityCard = memo(function ActivityCard({
   }, [activity.metadata.chain, activity.timestamp, isTransfer, tokenAvatarKey, tokenCa, tokenInfoKey, tokenSymbolUpper, txHash]);
 
   return (
-    <Card 
+    <Card
+      data-feed-card
       className={`group relative cursor-pointer gap-0 rounded-none py-0 shadow-none ring-0 transition-all ${
         isMergedTradeCard
           ? 'border-y border-sky-500/20 bg-gradient-to-r from-sky-500/8 via-cyan-500/6 to-transparent hover:bg-sky-500/10'
           : 'border-0 bg-transparent hover:bg-zinc-900/60'
-      } ${
-        isSameCaHighlighted
-          ? 'relative z-10 bg-emerald-500/8 ring-1 ring-emerald-400/60 shadow-[0_0_0_1px_rgba(74,222,128,0.35),0_0_18px_rgba(16,185,129,0.35)]'
-          : ''
       }`}
       onClick={onClick}
     >
@@ -593,14 +591,17 @@ export const ActivityCard = memo(function ActivityCard({
                               event.stopPropagation();
                               void copyText(tokenCa);
                             }}
-                            className={`rounded-md transition-all hover:bg-yellow-500/10 ${
-                              isSameCaHighlighted
-                                ? 'bg-yellow-400/25 text-yellow-100 ring-1 ring-yellow-300/80 shadow-[0_0_16px_rgba(250,204,21,0.55)] animate-pulse'
-                                : ''
-                            }`}
+                            data-token-ca={tokenCa.toLowerCase()}
+                            className="rounded-md transition-all hover:bg-yellow-500/10"
                             title={`复制 ${displayTokenSymbol} CA: ${tokenCa}`}
-                            onMouseEnter={() => onTokenCaHover?.(tokenCa)}
-                            onMouseLeave={() => onTokenCaHover?.(null)}
+                            onMouseEnter={() => {
+                              setFeedTokenHover(tokenCa);
+                              onTokenCaHover?.(tokenCa);
+                            }}
+                            onMouseLeave={() => {
+                              setFeedTokenHover(null);
+                              onTokenCaHover?.(null);
+                            }}
                             onContextMenu={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -630,18 +631,21 @@ export const ActivityCard = memo(function ActivityCard({
                             {canCopyTokenCa ? (
                               <button
                                 type="button"
-                                className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10 ${
-                                  isSameCaHighlighted
-                                    ? 'bg-yellow-400/25 text-yellow-100 ring-1 ring-yellow-300/80 shadow-[0_0_16px_rgba(250,204,21,0.55)] animate-pulse'
-                                    : ''
-                                }`}
+                                data-token-ca={tokenCa.toLowerCase()}
+                                className="min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10"
                                 title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void copyText(tokenCa);
                                 }}
-                                onMouseEnter={() => onTokenCaHover?.(tokenCa)}
-                                onMouseLeave={() => onTokenCaHover?.(null)}
+                                onMouseEnter={() => {
+                                  setFeedTokenHover(tokenCa);
+                                  onTokenCaHover?.(tokenCa);
+                                }}
+                                onMouseLeave={() => {
+                                  setFeedTokenHover(null);
+                                  onTokenCaHover?.(null);
+                                }}
                                 onContextMenu={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -658,18 +662,21 @@ export const ActivityCard = memo(function ActivityCard({
                             {trackedAddress ? (
                               <button
                                 type="button"
-                                className={`min-w-0 flex-1 truncate rounded px-1 py-0 text-right font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10 ${
-                                  isTrackedAddressHighlighted
-                                    ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
-                                    : ''
-                                }`}
+                                data-address={trackedAddress.toLowerCase()}
+                                className="min-w-0 flex-1 truncate rounded px-1 py-0 text-right font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10"
                                 title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void copyText(trackedAddress);
                                 }}
-                                onMouseEnter={() => onAddressHover?.(trackedAddress)}
-                                onMouseLeave={() => onAddressHover?.(null)}
+                                onMouseEnter={() => {
+                                  setFeedAddressHover(trackedAddress);
+                                  onAddressHover?.(trackedAddress);
+                                }}
+                                onMouseLeave={() => {
+                                  setFeedAddressHover(null);
+                                  onAddressHover?.(null);
+                                }}
                                 onContextMenu={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -700,18 +707,21 @@ export const ActivityCard = memo(function ActivityCard({
                             {displayMarketCapText && isSendReceiveTransfer && counterpartyAddress ? (
                               <button
                                 type="button"
-                                className={`ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10 ${
-                                  isCounterpartyAddressHighlighted
-                                    ? 'bg-cyan-400/20 text-cyan-100 ring-1 ring-cyan-300/70 shadow-[0_0_16px_rgba(34,211,238,0.35)]'
-                                    : ''
-                                }`}
+                                data-address={counterpartyAddress.toLowerCase()}
+                                className="ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10"
                                 title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void copyText(counterpartyAddress);
                                 }}
-                                onMouseEnter={() => onAddressHover?.(counterpartyAddress)}
-                                onMouseLeave={() => onAddressHover?.(null)}
+                                onMouseEnter={() => {
+                                  setFeedAddressHover(counterpartyAddress);
+                                  onAddressHover?.(counterpartyAddress);
+                                }}
+                                onMouseLeave={() => {
+                                  setFeedAddressHover(null);
+                                  onAddressHover?.(null);
+                                }}
                                 onContextMenu={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();

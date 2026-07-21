@@ -170,6 +170,7 @@ function testLiveActivityShape() {
       tokenAmount: 10,
       costUsd: 25,
       priceUsd: 2.5,
+      marketCapUsd: 1_200_000,
       eventTimeMs: 1_700_000_000_000,
     },
   });
@@ -181,6 +182,8 @@ function testLiveActivityShape() {
   assert.equal(activity.metadata.txAction, 'buy');
   assert.equal(activity.metadata.txActionVariant, 'add');
   assert.equal(activity.metadata.chain, 'base');
+  assert.equal(activity.metadata.marketCapAtTxUsd, 1_200_000);
+  assert.equal(activity.metadata.marketCapAtTxSource, 'gmgn-activity');
 
   const id = buildLiveMonitorActivityId({
     chain: 'robinhood',

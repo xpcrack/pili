@@ -34,6 +34,7 @@ import {
 import {
   FEED_LOAD_MORE_BATCH_SIZE,
   FEED_PAGE_BATCH_SIZE,
+  FEED_POLL_MAX_TARGET,
   collectItemsUntilCount,
   shouldSearchEntireFeed,
 } from '@/lib/feed/feedQueryMode';
@@ -457,13 +458,13 @@ export function useActivityPolling(
         };
       }
 
-      // append：再拉一页（400）；silent：保住当前窗口；其余：从顶攒到 targetCount
+      // append：再拉一页（400）；silent/poll：只重拉顶窗；其余：从顶攒到 targetCount
+      const isBackgroundRefresh = Boolean(options?.silent || options?.poll) && !replace && !append;
       const requestLimit = append
         ? FEED_LOAD_MORE_BATCH_SIZE
-        : Math.max(
-            targetCount ?? (options?.silent ? feedRef.current.length : 0),
-            FEED_PAGE_BATCH_SIZE
-          );
+        : isBackgroundRefresh
+          ? FEED_POLL_MAX_TARGET
+          : Math.max(targetCount ?? 0, FEED_PAGE_BATCH_SIZE);
       const startCursor = append ? feedNextCursorRef.current : null;
       if (append && !startCursor) {
         // 没有下一页 cursor 就不要空转
@@ -526,8 +527,9 @@ export function useActivityPolling(
       const autoBackfillRounds = 0;
       const effectiveUsers = resolveFeedUsers(currentUsers, result.users);
       const mergedFeed = applyServerFeedSnapshot({
-        replace: replace || !append,
-        previousFeed: append ? feedRef.current : undefined,
+        // append / silent poll: merge into existing window; normal top load: replace
+        replace: !append && !isBackgroundRefresh,
+        previousFeed: append || isBackgroundRefresh ? feedRef.current : undefined,
         resultFeed: result.feed,
         effectiveUsers,
       });
@@ -793,7 +795,7 @@ export function useActivityPolling(
       silent: true,
       poll: true,
       revision: feedRevisionRef.current,
-      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
+      targetCount: FEED_POLL_MAX_TARGET,
       syncStrategy: 'local',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
@@ -805,7 +807,7 @@ export function useActivityPolling(
   useFeedRefreshScheduler(() =>
     fetchActivities({
       silent: true,
-      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
+      targetCount: FEED_POLL_MAX_TARGET,
       syncStrategy: 'refresh',
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
@@ -818,7 +820,7 @@ export function useActivityPolling(
   useFeedJudgmentStream(() =>
     fetchActivities({
       silent: true,
-      targetCount: Math.max(feedRef.current.length, FEED_PAGE_BATCH_SIZE),
+      targetCount: FEED_POLL_MAX_TARGET,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
       source: activeSourceRef.current,

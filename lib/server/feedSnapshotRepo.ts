@@ -746,8 +746,9 @@ export function countQualifiedActivitiesByUser(userId: string) {
   }
 
   const db = getDb();
+  // Canonical feed store is `events` (activity_feed is legacy snapshot path).
   const row = db
-    .prepare('SELECT COUNT(1) AS count FROM activity_feed WHERE user_id = ?')
+    .prepare('SELECT COUNT(1) AS count FROM events WHERE user_id = ?')
     .get(normalizedUserId) as { count: number } | undefined;
   return row?.count ?? 0;
 }
@@ -757,7 +758,7 @@ export function getQualifiedActivityCountsByUser() {
   const rows = db
     .prepare(
       `SELECT user_id AS userId, COUNT(1) AS count
-       FROM activity_feed
+       FROM events
        GROUP BY user_id`
     )
     .all() as Array<{ userId: string; count: number }>;

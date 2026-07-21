@@ -234,8 +234,29 @@ export type NormalizedLiveTrade = {
   tokenAmount: number | null;
   costUsd: number | null;
   priceUsd: number | null;
+  /** Circulating MC at trade time when GMGN provides it (optional). */
+  marketCapUsd: number | null;
   eventTimeMs: number;
 };
+
+function extractMarketCapUsd(item: GmgnActivityItem): number | null {
+  const token = item.token && typeof item.token === 'object' ? (item.token as Record<string, unknown>) : null;
+  const candidates = [
+    item.market_cap,
+    item.mcap,
+    item.marketCap,
+    token?.market_cap,
+    token?.mcap,
+    token?.marketCap,
+  ];
+  for (const candidate of candidates) {
+    const value = num(candidate as string | number | null | undefined);
+    if (value != null && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
 
 export function normalizeGmgnActivityItems(
   items: GmgnActivityItem[],
@@ -275,6 +296,7 @@ export function normalizeGmgnActivityItems(
       tokenAmount: num(it.token_amount),
       costUsd: cost,
       priceUsd: num(it.price_usd),
+      marketCapUsd: extractMarketCapUsd(it),
       eventTimeMs: ts * 1000,
     });
   }
