@@ -3,7 +3,11 @@ import 'server-only';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
 import { upsertEventTweetRefAndFetchMissing } from '@/lib/server/twitterLinkRefs';
-import { projectTelegramChannelPostToFeed, enrichTelegramChannelPost } from '@/lib/server/telegramChannelProjector';
+import {
+  projectTelegramChannelPostToFeed,
+  enrichTelegramChannelPost,
+  telegramChannelEnrichmentHasUpdates,
+} from '@/lib/server/telegramChannelProjector';
 import type { UpsertTwitterTweetInput } from '@/lib/server/twitterRepo';
 
 export async function ingestTelegramChannelPost(params: {
@@ -30,11 +34,16 @@ export async function ingestTelegramChannelPost(params: {
     });
   }
 
-  // Fire-and-forget async enrichment (translation + sentiment)
-  // Re-persist on success so the feed picks up translationZh and updated sentiments
+  // Fire-and-forget async enrichment (market data + optional translation/sentiment)
+  // Re-persist when ticker/MC or translation actually improves the stored activity
   void enrichTelegramChannelPost(projected.activity)
     .then((enrichedActivity) => {
-      if (enrichedActivity.metadata.translationZh) {
+      if (
+        telegramChannelEnrichmentHasUpdates({
+          before: projected.activity,
+          after: enrichedActivity,
+        })
+      ) {
         const enrichedResult = { user: projected.user, activity: enrichedActivity };
         upsertEventsFromFeedRows([enrichedResult], 'telegram-channel-enrichment');
       }

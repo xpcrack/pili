@@ -532,21 +532,47 @@ export const ActivityCard = memo(function ActivityCard({
                             </p>
                             {telegramSentimentChips.length > 0 ? (
                               <div className="flex flex-wrap gap-1.5 pt-1">
-                                {telegramSentimentChips.map((chip, index) => (
-                                  <span
-                                    key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                                    className={
-                                      chip.sentiment === 'positive'
-                                        ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                        : chip.sentiment === 'negative'
-                                          ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                          : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                                    }
-                                  >
-                                    {(chip.tokenSymbol || chip.tokenAddress || 'TOKEN').toUpperCase()}{' '}
-                                    {chip.sentiment === 'positive' ? '正面' : chip.sentiment === 'negative' ? '负面' : '中性'}
-                                  </span>
-                                ))}
+                                {telegramSentimentChips.map((chip, index) => {
+                                  const symbol = chip.tokenSymbol
+                                    ? chip.tokenSymbol.toUpperCase()
+                                    : chip.tokenAddress
+                                      ? chip.tokenAddress.length > 12
+                                        ? `${chip.tokenAddress.slice(0, 4)}…${chip.tokenAddress.slice(-4)}`
+                                        : chip.tokenAddress
+                                      : 'TOKEN';
+                                  const mcLabel = formatCompactMarketCap(chip.marketCapAtPostUsd);
+                                  const sentimentLabel =
+                                    chip.sentiment === 'positive'
+                                      ? '正面'
+                                      : chip.sentiment === 'negative'
+                                        ? '负面'
+                                        : '中性';
+                                  const currentMc = formatCompactMarketCap(chip.marketCapUsd);
+                                  const titleParts = [
+                                    chip.tokenAddress || null,
+                                    mcLabel
+                                      ? `发帖时市值 ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}`
+                                      : null,
+                                    currentMc ? `当前市值 ${currentMc}` : null,
+                                  ].filter(Boolean);
+                                  return (
+                                    <span
+                                      key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                                      title={titleParts.join(' · ') || undefined}
+                                      className={
+                                        chip.sentiment === 'positive'
+                                          ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
+                                          : chip.sentiment === 'negative'
+                                            ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
+                                            : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
+                                      }
+                                    >
+                                      {symbol}
+                                      {mcLabel ? ` · ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}` : ''}
+                                      {` · ${sentimentLabel}`}
+                                    </span>
+                                  );
+                                })}
                               </div>
                             ) : null}
                           </>
