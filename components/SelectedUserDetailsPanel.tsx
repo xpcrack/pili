@@ -195,6 +195,44 @@ function formatUpdatedAt(timestamp: number) {
   return new Date(timestamp).toLocaleString('zh-CN');
 }
 
+function getHoldingsAgeState(updatedAt: number | null | undefined) {
+  if (updatedAt == null || !Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return {
+      level: 'unknown' as const,
+      label: '持仓从未刷新',
+      className: 'text-amber-300',
+    };
+  }
+
+  const ageMin = (Date.now() - updatedAt) / 60_000;
+  if (ageMin > 60) {
+    return {
+      level: 'stale' as const,
+      label: `持仓 ${Math.floor(ageMin)} 分钟前 · 可能过时`,
+      className: 'text-red-300',
+    };
+  }
+  if (ageMin > 15) {
+    return {
+      level: 'aging' as const,
+      label: `持仓 ${Math.floor(ageMin)} 分钟前`,
+      className: 'text-amber-300',
+    };
+  }
+  if (ageMin < 1) {
+    return {
+      level: 'fresh' as const,
+      label: '持仓刚刚更新',
+      className: 'text-emerald-300/90',
+    };
+  }
+  return {
+    level: 'fresh' as const,
+    label: `持仓 ${Math.floor(ageMin)} 分钟前`,
+    className: 'text-zinc-400',
+  };
+}
+
 export function SelectedUserDetailsPanel({
   selectedUser,
   onBack,
@@ -243,6 +281,7 @@ export function SelectedUserDetailsPanel({
   const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
   const totalAssetUsd = details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd;
   const historicalMaxAssetUsd = details?.user.historicalMaxAssetUsd ?? selectedUser.historicalMaxAssetUsd;
+  const holdingsAge = getHoldingsAgeState(details?.holdingsUpdatedAt);
 
   const handleCopyCa = useCallback((tokenAddress: string, key: string) => {
     navigator.clipboard.writeText(tokenAddress).then(() => {
@@ -280,6 +319,7 @@ export function SelectedUserDetailsPanel({
         <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
           <div className="text-zinc-500">总资产</div>
           <div className="text-sm font-medium text-zinc-100">{formatUsdCompact(totalAssetUsd)}</div>
+          <div className={`mt-0.5 text-[11px] ${holdingsAge.className}`}>{holdingsAge.label}</div>
         </div>
 
         <div className="rounded-lg border border-zinc-800/70 bg-zinc-950/50 px-3 py-1.5 text-xs text-zinc-300">
@@ -320,6 +360,7 @@ export function SelectedUserDetailsPanel({
             <p className="mt-1 text-xs text-zinc-500">已隐藏 &lt; {holdingsThresholdUsd} USD 持仓</p>
           </div>
           <div className="space-y-1 text-xs text-zinc-500 sm:text-right">
+            <div className={holdingsAge.className}>{holdingsAge.label}</div>
             {details?.holdingsUpdatedAt ? <div>更新于 {formatUpdatedAt(details.holdingsUpdatedAt)}</div> : null}
             {detailsRefreshing ? <div className="text-zinc-400">正在后台刷新持仓明细...</div> : null}
             {hasPendingLiquidityLookups ? <div className="text-zinc-400">正在加载流动性数据...</div> : null}

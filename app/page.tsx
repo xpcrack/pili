@@ -670,22 +670,26 @@ export default function Home() {
                   <div className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
                     <div className="divide-y divide-zinc-800/70">
                       {filteredFeed.map(({ user, activity }) => (
-                        <ActivityCard
+                        <div
                           key={getActivityRenderKey(
                             user.id,
                             activity.id,
                             buildActivityScopedDedupKey(activity, user.id)
                           )}
-                          activity={activity}
-                          user={user}
-                          timeDisplayMode={timeDisplayMode}
-                          tradeValueDisplayMode={tradeValueDisplayMode}
-                          activeTokenCa={hoveredTokenCa}
-                          onTokenCaHover={setHoveredTokenCa}
-                          activeAddress={hoveredAddress}
-                          onAddressHover={setHoveredAddress}
-                          addressAliasMap={addressAliasMap}
-                        />
+                          className="[content-visibility:auto] [contain-intrinsic-size:auto_140px]"
+                        >
+                          <ActivityCard
+                            activity={activity}
+                            user={user}
+                            timeDisplayMode={timeDisplayMode}
+                            tradeValueDisplayMode={tradeValueDisplayMode}
+                            activeTokenCa={hoveredTokenCa}
+                            onTokenCaHover={setHoveredTokenCa}
+                            activeAddress={hoveredAddress}
+                            onAddressHover={setHoveredAddress}
+                            addressAliasMap={addressAliasMap}
+                          />
+                        </div>
                       ))}
                     </div>
                   </div>
