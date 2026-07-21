@@ -33,6 +33,19 @@ import { loadEnvFile } from '../telegram-bridge-core';
 /** Loads `.env.local` from the current working directory into `process.env`. */
 export function loadWorkerEnv(): void {
   loadEnvFile(path.join(process.cwd(), '.env.local'));
+  // DexScreener / external HTTP via Node fetch needs env proxy (Node 24+ NODE_USE_ENV_PROXY).
+  // TG MTPROTO uses TELEGRAM_PROXY separately; outbound HTTPS often still needs these.
+  if (!process.env.HTTP_PROXY && !process.env.HTTPS_PROXY && !process.env.ALL_PROXY) {
+    process.env.HTTP_PROXY = 'http://127.0.0.1:7897';
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:7897';
+    process.env.ALL_PROXY = 'http://127.0.0.1:7897';
+  }
+  if (!process.env.NODE_USE_ENV_PROXY) {
+    process.env.NODE_USE_ENV_PROXY = '1';
+  }
+  if (!process.env.NO_PROXY) {
+    process.env.NO_PROXY = '127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12';
+  }
 }
 
 // --------------------------------------------------------------------------

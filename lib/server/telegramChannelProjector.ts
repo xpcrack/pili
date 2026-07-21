@@ -4,6 +4,7 @@ import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
 import { extractTweetTokenMentions } from '@/lib/twitter/extractTweetTokenMentions';
 import { isLikelyEnglish } from '@/lib/server/nvidiaEnrichmentModel';
+import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
 import type { Activity, User } from '@/types';
 
 function buildTelegramPostUrl(params: {
@@ -91,10 +92,107 @@ export function projectTelegramChannelPostToFeed(params: {
   };
 }
 
+function hasMarketEnrichmentGain(
+  before: Activity['metadata']['tokenSentiments'] | undefined,
+  after: Activity['metadata']['tokenSentiments'] | undefined
+) {
+  const prev = before || [];
+  const next = after || [];
+  if (next.length === 0) return false;
+  return next.some((item, index) => {
+    const original = prev[index];
+    if (!original) return Boolean(item.tokenSymbol || item.marketCapUsd || item.marketCapAtPostUsd);
+    return (
+      (!original.tokenSymbol && Boolean(item.tokenSymbol)) ||
+      (!original.marketCapUsd && typeof item.marketCapUsd === 'number') ||
+      (!original.marketCapAtPostUsd && typeof item.marketCapAtPostUsd === 'number') ||
+      (!original.chain && Boolean(item.chain))
+    );
+  });
+}
+
+export function telegramChannelEnrichmentHasUpdates(params: {
+  before: Activity;
+  after: Activity;
+}) {
+  if (params.after.metadata.translationZh && params.after.metadata.translationZh !== params.before.metadata.translationZh) {
+    return true;
+  }
+  return hasMarketEnrichmentGain(params.before.metadata.tokenSentiments, params.after.metadata.tokenSentiments);
+}
+
 export async function enrichTelegramChannelPost(activity: Activity): Promise<Activity> {
   const text = activity.content.trim();
+  let updatedMetadata: Activity['metadata'] = { ...activity.metadata };
+
+  // 1) Market/ticker enrichment — always run when CA mentions exist (independent of language)
+  const baseSentiments = activity.metadata.tokenSentiments || [];
+  const addressMentions = baseSentiments.filter((item) => Boolean((item.tokenAddress || '').trim()));
+  if (addressMentions.length > 0) {
+    try {
+      const enrichedMentions = await enrichMentionsMarketData({
+        mentions: addressMentions.map((item, index) => ({
+          tokenAddress: item.tokenAddress || null,
+          tokenSymbol: item.tokenSymbol || null,
+          chain: item.chain || null,
+          matchSource: item.matchSource || 'ca',
+          sentiment: item.sentiment || 'neutral',
+          confidence: null,
+          rankInTweet: index,
+          origin: 'text' as const,
+        })),
+        tweetCreatedAtMs: activity.timestamp,
+        concurrency: 3,
+      });
+
+      const enrichedByAddress = new Map(
+        enrichedMentions
+          .filter((item) => item.tokenAddress)
+          .map((item) => [item.tokenAddress!.toLowerCase(), item] as const)
+      );
+
+      const nextSentiments = baseSentiments.map((item) => {
+        const key = (item.tokenAddress || '').toLowerCase();
+        const enriched = key ? enrichedByAddress.get(key) : undefined;
+        if (!enriched) return item;
+        return {
+          tokenSymbol: enriched.tokenSymbol || item.tokenSymbol || undefined,
+          tokenAddress: item.tokenAddress || enriched.tokenAddress || undefined,
+          chain: enriched.chain || item.chain || undefined,
+          sentiment: item.sentiment,
+          matchSource: enriched.matchSource || item.matchSource,
+          marketCapUsd: enriched.marketCapUsd ?? undefined,
+          marketCapAtPostUsd: enriched.marketCapAtPostUsd ?? undefined,
+          marketCapAtPostEstimated: enriched.marketCapAtPostEstimated || undefined,
+          marketCapSource: enriched.marketCapSource || undefined,
+        };
+      });
+      const finalTickers = [
+        ...new Set(
+          nextSentiments
+            .map((item) => (item.tokenSymbol || '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      updatedMetadata = {
+        ...updatedMetadata,
+        tokenSentiments: nextSentiments,
+        mentionedTickers: finalTickers.length > 0 ? finalTickers : updatedMetadata.mentionedTickers,
+      };
+    } catch (error) {
+      console.warn(
+        '[telegram-enrichment] market data failed:',
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  // 2) Translation + sentiment — English only, requires API key
   if (!text || !isLikelyEnglish(text)) {
-    return activity;
+    return {
+      ...activity,
+      metadata: updatedMetadata,
+    };
   }
 
   try {
@@ -115,7 +213,10 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
     };
     const apiKey = resolveEnrichmentApiKey();
     if (!apiKey) {
-      return activity;
+      return {
+        ...activity,
+        metadata: updatedMetadata,
+      };
     }
     const model = new NvidaQwenEnrichmentModel({
       apiKey,
@@ -123,7 +224,7 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
       baseUrl: resolveEnrichmentBaseUrl(),
     });
 
-    const mentions = (activity.metadata.tokenSentiments || []).map(s => ({
+    const mentions = (updatedMetadata.tokenSentiments || []).map(s => ({
       tokenSymbol: s.tokenSymbol || null,
       tokenAddress: s.tokenAddress || null,
       matchSource: s.matchSource || 'ticker' as const,
@@ -135,26 +236,30 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
       mentions,
     });
 
-    const updatedMetadata = {
-      ...activity.metadata,
+    updatedMetadata = {
+      ...updatedMetadata,
       translationZh: result.translationZh || undefined,
       translationStatus: result.translationZh ? 'succeeded' as const : 'failed' as const,
     };
 
     if (result.sentiments.length > 0) {
-      // Preserve original matchSource from pre-enrichment metadata
-      const originalSentiments = activity.metadata.tokenSentiments || [];
+      // Preserve market fields + matchSource from market enrichment above
+      const originalSentiments = updatedMetadata.tokenSentiments || [];
       updatedMetadata.tokenSentiments = result.sentiments.map(s => {
         const original = originalSentiments.find(o =>
           (o.tokenSymbol || '').toLowerCase() === (s.tokenSymbol || '').toLowerCase()
           && (o.tokenAddress || '').toLowerCase() === (s.tokenAddress || '').toLowerCase()
         );
         return {
-          tokenSymbol: s.tokenSymbol,
-          tokenAddress: s.tokenAddress,
-          chain: undefined as string | undefined,
+          tokenSymbol: s.tokenSymbol || original?.tokenSymbol,
+          tokenAddress: s.tokenAddress || original?.tokenAddress,
+          chain: original?.chain,
           sentiment: s.sentiment,
           matchSource: original?.matchSource || 'both' as const,
+          marketCapUsd: original?.marketCapUsd,
+          marketCapAtPostUsd: original?.marketCapAtPostUsd,
+          marketCapAtPostEstimated: original?.marketCapAtPostEstimated,
+          marketCapSource: original?.marketCapSource,
         };
       });
     }
@@ -165,6 +270,9 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
     };
   } catch (error) {
     console.warn('[telegram-enrichment] failed:', error instanceof Error ? error.message : error);
-    return activity;
+    return {
+      ...activity,
+      metadata: updatedMetadata,
+    };
   }
 }
