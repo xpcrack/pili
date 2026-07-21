@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { TopNav } from '@/components/TopNav';
-import { ADMIN_TOKEN_STORAGE_KEY } from '@/lib/adminClient';
+import { readAdminTokenFromSession, writeAdminTokenToStorage } from '@/lib/adminClient';
 
 type StatusType = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -139,7 +139,7 @@ export default function SystemPage() {
     if (typeof window === 'undefined') {
       return '';
     }
-    return (window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '').trim();
+    return readAdminTokenFromSession();
   });
   const [alertChatId, setAlertChatId] = useState('');
   const [tradeMonitorChatId, setTradeMonitorChatId] = useState('');
@@ -196,7 +196,10 @@ export default function SystemPage() {
   };
 
   useEffect(() => {
-    void fetch('/api/system-config', { cache: 'no-store' })
+    void fetch('/api/system-config', {
+      cache: 'no-store',
+      headers: buildAdminHeaders(),
+    })
       .then((res) => res.json())
       .then((payload) => {
         if (!payload?.ok) return;
@@ -221,15 +224,10 @@ export default function SystemPage() {
         setEventStats(payload.stats as EventStatsPayload);
       })
       .catch(() => undefined);
-  }, []);
+  }, [adminToken]);
 
   useEffect(() => {
-    const normalized = adminToken.trim();
-    if (normalized) {
-      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, normalized);
-    } else {
-      window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-    }
+    writeAdminTokenToStorage(adminToken);
   }, [adminToken]);
 
   useEffect(() => {
@@ -457,12 +455,12 @@ export default function SystemPage() {
           <h2 className="mb-3 text-sm font-medium">管理访问令牌</h2>
           <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
             <div>
-              <Label className="text-zinc-400">ADMIN_API_TOKEN（仅保存在当前浏览器会话）</Label>
+              <Label className="text-zinc-400">ADMIN_API_TOKEN（保存在本机浏览器，关闭后仍记住）</Label>
               <Input
                 type="password"
                 value={adminToken}
                 onChange={(e) => setAdminToken(e.target.value)}
-                placeholder="输入后才可执行配置保存/测试通知/手动同步"
+                placeholder="填一次即可；改名单/配置时需要"
                 className="border-zinc-800 bg-zinc-950"
               />
             </div>
