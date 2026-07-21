@@ -42,7 +42,7 @@ interface TokenInfoSnapshot {
   marketCapUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
-  source?: 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
+  source?: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
 }
 
 const tokenAvatarCache = new Map<string, string | null>();
@@ -284,7 +284,7 @@ export const ActivityCard = memo(function ActivityCard({
           marketCapUsd?: number | null;
           marketCapAtTxUsd?: number | null;
           marketCapAtTxEstimated?: boolean;
-          source?: 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
+          source?: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
         };
         return {
           logoUrl: typeof payload.logoUrl === 'string' && payload.logoUrl.trim() ? payload.logoUrl : null,

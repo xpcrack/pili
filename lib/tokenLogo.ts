@@ -4,13 +4,14 @@ import {
   selectPreferredDexScreenerPair,
   type DexScreenerPair,
 } from '@/lib/server/dexscreener';
+import { fetchGmgnTokenInfo } from '@/lib/server/gmgnTokenInfo';
 import { findTelegramMonitorMarketCapAtTx } from '@/lib/server/telegramMonitorRepo';
 
 const DEXSCREENER_API_BASE = 'https://api.dexscreener.com';
 const DEXSCREENER_TIMEOUT_MS = 6000;
 
-type CurrentValuationSource = 'dexscreener';
-type LogoSource = 'dexscreener' | 'okx' | 'telegram-monitor' | null;
+type CurrentValuationSource = 'dexscreener' | 'gmgn';
+type LogoSource = 'dexscreener' | 'okx' | 'gmgn' | 'telegram-monitor' | null;
 
 interface CurrentValuationSnapshot {
   source: CurrentValuationSource;
@@ -239,6 +240,29 @@ export async function fetchTokenLogo(
       ? Math.floor(options.txTimestampMs)
       : null;
   const txHash = typeof options?.txHash === 'string' ? options.txHash.trim() : '';
+  const normalizedChain = chain.trim().toLowerCase();
+  const isRobinhood = normalizedChain === 'robinhood' || normalizedChain === 'rh';
+
+  // Robinhood has no DexScreener / OKX logo coverage — go straight to GMGN.
+  if (isRobinhood) {
+    const marketCapResolution = await resolveTransactionTimeMarketCap({
+      chain,
+      tokenAddress,
+      txHash: txHash || null,
+      txTimestampMs: txTimestampMs ?? null,
+    });
+    const fromGmgn = await fetchGmgnTokenInfo(chain, tokenAddress);
+    return {
+      logoUrl: fromGmgn?.logoUrl ?? null,
+      marketCapUsd: fromGmgn?.marketCapUsd ?? marketCapResolution.currentMarketCapUsd,
+      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
+      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
+      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      source: fromGmgn?.logoUrl ? 'gmgn' : marketCapResolution.marketCapAtTxSource === 'telegram-monitor-exact'
+        ? 'telegram-monitor'
+        : null,
+    };
+  }
 
   const [valuationData, marketCapResolution] = await Promise.all([
     resolveCurrentValuation(chain, tokenAddress),
@@ -287,9 +311,22 @@ export async function fetchTokenLogo(
     };
   }
 
+  // GMGN fills gaps when DexScreener/OKX have no image (and covers multi-chain).
+  const fromGmgn = await fetchGmgnTokenInfo(chain, tokenAddress);
+  if (fromGmgn?.logoUrl) {
+    return {
+      logoUrl: fromGmgn.logoUrl,
+      marketCapUsd: currentMarketCapUsd ?? fromGmgn.marketCapUsd,
+      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
+      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
+      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      source: preferredSource ?? 'gmgn',
+    };
+  }
+
   return {
     logoUrl: null,
-    marketCapUsd: currentMarketCapUsd,
+    marketCapUsd: currentMarketCapUsd ?? fromGmgn?.marketCapUsd ?? null,
     marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
     marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
     marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
