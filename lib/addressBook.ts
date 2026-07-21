@@ -135,10 +135,13 @@ export function formatUsersForAddressExport(users: readonly User[]) {
 }
 
 function toGmgnChainSegment(chain: string | null | undefined) {
-  if (chain === 'solana') return 'sol';
-  if (chain === 'bsc') return 'bsc';
-  if (chain === 'ethereum') return 'eth';
-  if (chain === 'base') return 'base';
+  const normalized = (chain || '').trim().toLowerCase();
+  if (normalized === 'solana' || normalized === 'sol') return 'sol';
+  if (normalized === 'bsc') return 'bsc';
+  if (normalized === 'ethereum' || normalized === 'eth') return 'eth';
+  if (normalized === 'base') return 'base';
+  // GMGN uses full "robinhood" segment: https://gmgn.ai/robinhood/token/<ca>
+  if (normalized === 'robinhood' || normalized === 'rh') return 'robinhood';
   return null;
 }
 

@@ -75,6 +75,51 @@ function run() {
   assert.equal(trade.displayMarketCapText, '$2.5M');
   assert.equal(trade.explorerTxUrl, 'https://web3.okx.com/explorer/solana/tx/SwapTx111');
   assert.equal(trade.tokenGmgnUrl, 'https://gmgn.ai/sol/token/OgreMint111');
+
+  const rhTrade = buildActivityCardViewModel({
+    activity: makeTransfer({
+      chain: 'robinhood',
+      txHash: '0xrhTx111',
+      token: 'TENDIES',
+      tokenAddress: '0x45242320dbb855eea8fd36804c6487e10e97fcf9',
+      value: '1000',
+      quoteToken: 'ETH',
+      quoteAmount: '1',
+      txActionVariant: 'add',
+      displayActionVariantLabel: '加仓',
+      trackedAddress: '0x50f27cdb650879a41fb07038bf2b818845c20e17',
+      fromAddress: '0x50f27cdb650879a41fb07038bf2b818845c20e17',
+      tradeAmountUsdAtTx: 200,
+    }),
+    user: {
+      ...user,
+      addresses: [
+        {
+          address: '0x50f27cdb650879a41fb07038bf2b818845c20e17',
+          name: 'main',
+          chain: 'base',
+          totalAssetUsd: null,
+          assetUpdatedAt: null,
+        },
+      ],
+    },
+    tradeValueDisplayMode: 'usd',
+    resolvedTokenInfo: { marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
+  });
+  assert.equal(
+    rhTrade.tokenGmgnUrl,
+    'https://gmgn.ai/robinhood/token/0x45242320dbb855eea8fd36804c6487e10e97fcf9',
+    'RH ticker right-click must open gmgn.ai/robinhood/token/...'
+  );
+  assert.equal(
+    rhTrade.trackedAddressGmgnUrl,
+    'https://gmgn.ai/robinhood/address/0x50f27cdb650879a41fb07038bf2b818845c20e17'
+  );
+  assert.equal(
+    rhTrade.explorerTxUrl,
+    'https://robinhoodchain.blockscout.com/tx/0xrhTx111'
+  );
+
   assert.equal(trade.importanceBadgeText, '88分');
   assert.equal(trade.importanceLevelLabel, '高重要');
   assert.match(trade.importanceTooltip || '', /同源稀缺分/);

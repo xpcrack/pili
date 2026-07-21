@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 
 const LOGO_CACHE_TTL_MS = 30 * 60 * 1000;
 const EMPTY_LOGO_CACHE_TTL_MS = 60 * 1000;
-const TOKEN_LOGO_CACHE_VERSION = 'v3';
+const TOKEN_LOGO_CACHE_VERSION = 'v4';
 const logoCache = new Map<
   string,
   {
@@ -14,7 +14,7 @@ const logoCache = new Map<
     marketCapAtTxUsd: number | null;
     marketCapAtTxEstimated: boolean;
     marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
-    source: 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
+    source: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
     expiresAt: number;
   }
 >();

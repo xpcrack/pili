@@ -22,7 +22,7 @@ export interface ActivityCardTokenInfoView {
   marketCapUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
-  source?: 'dexscreener' | 'okx' | 'xxyy' | 'telegram-monitor' | null;
+  source?: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
 }
 
 function formatAddressShort(address: string) {
@@ -71,6 +71,9 @@ function getExplorerTxUrl(chain: string | undefined, txHash: string) {
   }
   if (chain === 'base') {
     return `https://web3.okx.com/explorer/base/tx/${txHash}`;
+  }
+  if (chain === 'robinhood') {
+    return `https://robinhoodchain.blockscout.com/tx/${txHash}`;
   }
   return `https://web3.okx.com/explorer/solana/tx/${txHash}`;
 }
