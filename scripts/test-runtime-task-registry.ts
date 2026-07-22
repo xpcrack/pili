@@ -576,12 +576,58 @@ async function testAutoStartFailureDoesNotLeakUnhandledRejection() {
     assert.equal(status.status, 'error');
     assert.equal(status.lastReason, 'startup');
     assert.match(status.lastError || '', /boom/);
+    // Critical: throw must still schedule a retry (holdings-refresh used to die forever).
+    assert.equal(typeof status.nextRunAt, 'number');
+    assert.ok(
+      (status.nextRunAt as number) > Date.now(),
+      'error path should schedule nextRunAt in the future'
+    );
     assert.deepEqual(unhandled, []);
 
     await task.stop('shutdown');
   } finally {
     process.off('unhandledRejection', onUnhandledRejection);
   }
+}
+
+async function testCycleThrowReschedulesAndReruns() {
+  let cycleCount = 0;
+
+  const task = createLoopTask({
+    key: 'throw-then-ok',
+    label: 'Throw Then Ok',
+    cycle: async () => {
+      cycleCount += 1;
+      if (cycleCount === 1) {
+        throw new Error('transient-okx');
+      }
+      return { sleepMs: 60_000, status: 'idle' };
+    },
+  });
+
+  // autoStart (default): first cycle throws, must still set nextRunAt.
+  await task.start({ reason: 'startup' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const afterThrow = task.getStatus();
+  assert.equal(afterThrow.status, 'error');
+  assert.equal(afterThrow.runCount, 1);
+  assert.match(afterThrow.lastError || '', /transient-okx/);
+  assert.equal(typeof afterThrow.nextRunAt, 'number');
+  assert.ok(
+    afterThrow.nextRunAt !== null && afterThrow.nextRunAt > Date.now(),
+    'error path should schedule nextRunAt in the future'
+  );
+
+  // Force immediate re-run without waiting 60s backoff.
+  await task.runNow('manual-2');
+  const afterOk = task.getStatus();
+  assert.equal(cycleCount, 2);
+  assert.equal(afterOk.status, 'idle');
+  assert.equal(afterOk.lastError, null);
+  assert.equal(typeof afterOk.nextRunAt, 'number');
+
+  await task.stop('shutdown');
 }
 
 async function testCompatibilityImportPathExportsRuntimeTaskApi() {
@@ -606,6 +652,7 @@ async function run() {
   await testRegistryStopsTasksInRegistrationOrder();
   await testRuntimeSnapshotIncludesProcessMemory();
   await testAutoStartFailureDoesNotLeakUnhandledRejection();
+  await testCycleThrowReschedulesAndReruns();
   console.log('runtime task registry tests: ok');
 }
 

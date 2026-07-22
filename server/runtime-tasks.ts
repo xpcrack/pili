@@ -80,6 +80,9 @@ export function resolveDefaultRuntimeTaskOptions(input: {
 
 // --- loop task ---
 
+/** Backoff after a thrown cycle so one bad run does not kill the loop forever. */
+const LOOP_TASK_ERROR_RETRY_MS = 60_000;
+
 function truncateError(error: unknown) {
   const message = error instanceof Error ? error.stack || error.message : String(error);
   return message.slice(0, 2000);
@@ -197,6 +200,11 @@ export function createLoopTask(options: LoopTaskOptions): TaskDefinition {
           state.status = 'error';
           state.lastError = truncateError(error);
           state.lastFinishedAt = Date.now();
+          // Must reschedule: otherwise a single throw leaves nextRunAt=null forever
+          // (holdings-refresh died after OKX empty JSON and froze quiet-wallet bags).
+          if (options.autoStart !== false && !stopped && queuedRequests.length === 0) {
+            scheduleNext(request.reason, LOOP_TASK_ERROR_RETRY_MS, request.signal);
+          }
           request.reject(error);
         } finally {
           activeController = null;

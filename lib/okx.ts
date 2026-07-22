@@ -1088,7 +1088,29 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
     };
   }
 
-  const payload = (await response.json()) as OkxAddressAssetDetailsPayload;
+  // Soft-fail empty/invalid JSON so one bad wallet cannot kill holdings-refresh mid-loop.
+  let payload: OkxAddressAssetDetailsPayload;
+  try {
+    const text = await response.text();
+    if (!text.trim()) {
+      return {
+        ok: false,
+        configured: true,
+        totalAssetUsd: null as number | null,
+        assets: [] as OkxAddressAssetDetail[],
+        error: 'OKX API 空响应',
+      };
+    }
+    payload = JSON.parse(text) as OkxAddressAssetDetailsPayload;
+  } catch {
+    return {
+      ok: false,
+      configured: true,
+      totalAssetUsd: null as number | null,
+      assets: [] as OkxAddressAssetDetail[],
+      error: 'OKX API 响应不是合法 JSON',
+    };
+  }
   if (payload.code && payload.code !== '0') {
     return {
       ok: false,
