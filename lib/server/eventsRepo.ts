@@ -172,7 +172,8 @@ function buildTelegramMonitorLogicalTxKey(activity: Activity) {
   return buildTelegramMonitorTxStateLookupKey(
     activity.metadata.chain,
     activity.metadata.trackedAddress,
-    activity.metadata.txHash
+    activity.metadata.txHash,
+    activity.metadata.tokenAddress
   );
 }
 
@@ -225,6 +226,7 @@ export function persistHealedTelegramMonitorActivity(params: {
       chain,
       trackedWalletAddress,
       txHash,
+      tokenAddress: params.healedActivity.metadata.tokenAddress || null,
       activity: params.healedActivity,
     });
   }
@@ -250,6 +252,7 @@ function buildTelegramMonitorRepairLookup(activity: Activity) {
     chain,
     trackedWalletAddress,
     txHash,
+    tokenAddress: (activity.metadata.tokenAddress || '').trim() || null,
   };
 }
 
@@ -274,6 +277,7 @@ function repairTelegramMonitorFeedRows(rows: EventFeedRow[]) {
           chain: string;
           trackedWalletAddress: string;
           txHash: string;
+          tokenAddress: string | null;
         };
       } => Boolean(candidate)
     );
@@ -287,6 +291,7 @@ function repairTelegramMonitorFeedRows(rows: EventFeedRow[]) {
       chain: candidate.lookup.chain,
       trackedWalletAddress: candidate.lookup.trackedWalletAddress,
       txHash: candidate.lookup.txHash,
+      tokenAddress: candidate.lookup.tokenAddress,
     }))
   );
 
@@ -436,6 +441,8 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
     const db = getDb();
     const now = Date.now();
     const existingStmt = db.prepare(`SELECT event_id, activity_json FROM events WHERE event_id = ? LIMIT 1`);
+    // Only rekey legacy 3-part ids (no token suffix) or same-token rows onto the
+    // token-aware event_id. Never steal a sibling multi-token leg.
     const existingMonitorByLogicalTxStmt = db.prepare(
       `SELECT event_id, activity_json
        FROM events
@@ -447,6 +454,18 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
          AND (
            ingest_source LIKE 'telegram-monitor%'
            OR ingest_source LIKE 'live-monitor%'
+         )
+         AND (
+           ? = ''
+           OR LOWER(COALESCE(json_extract(activity_json, '$.metadata.tokenAddress'), '')) = ?
+           OR (
+             -- legacy 3-part xxyy-monitor:c:w:tx with no token segment
+             event_id = ('xxyy-monitor:' || ? || ':' || ? || ':' || ?)
+             AND (
+               json_extract(activity_json, '$.metadata.tokenAddress') IS NULL
+               OR LOWER(COALESCE(json_extract(activity_json, '$.metadata.tokenAddress'), '')) IN ('', ?)
+             )
+           )
          )
          AND event_id != ?
        ORDER BY updated_at DESC, rowid DESC
@@ -479,6 +498,7 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
            updated_at = ?
        WHERE event_key = ?`
     );
+    // Only drop legacy 3-part ids or same-token duplicates — never sibling multi-token legs.
     const deleteDuplicateMonitorEventsStmt = db.prepare(
       `DELETE FROM events
        WHERE user_id = ?
@@ -490,7 +510,14 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
            ingest_source LIKE 'telegram-monitor%'
            OR ingest_source LIKE 'live-monitor%'
          )
-         AND event_id != ?`
+         AND event_id != ?
+         AND (
+           event_id = ('xxyy-monitor:' || ? || ':' || ? || ':' || ?)
+           OR (
+             ? != ''
+             AND LOWER(COALESCE(json_extract(activity_json, '$.metadata.tokenAddress'), '')) = ?
+           )
+         )`
     );
     const rawTransactionStmt = db.prepare(
       `SELECT tracked_address, tx_time, payload_json
@@ -598,6 +625,10 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
       const { user, activity } = row;
       const eventId = buildEventId(user, activity);
       const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
+      const chainLower = normalize(activity.metadata.chain);
+      const txHashLowerForLookup = normalize(activity.metadata.txHash);
+      const trackedAddressLowerForLookup = normalize(activity.metadata.trackedAddress);
+      const tokenAddressLower = normalize(activity.metadata.tokenAddress);
       const exactExistingRow = existingStmt.get(eventId) as
         | { event_id: string; activity_json?: string }
         | undefined;
@@ -605,9 +636,15 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
         !exactExistingRow && monitorLogicalKey
           ? ((existingMonitorByLogicalTxStmt.get(
               user.id,
-              normalize(activity.metadata.chain),
-              normalize(activity.metadata.txHash),
-              normalize(activity.metadata.trackedAddress),
+              chainLower,
+              txHashLowerForLookup,
+              trackedAddressLowerForLookup,
+              tokenAddressLower,
+              tokenAddressLower,
+              chainLower,
+              trackedAddressLowerForLookup,
+              txHashLowerForLookup,
+              tokenAddressLower,
               eventId
             ) as { event_id: string; activity_json?: string } | undefined) ??
             undefined)
@@ -799,12 +836,21 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
       );
 
       if (monitorLogicalKey) {
+        const chainLowerForDelete = normalize(mergedActivity.metadata.chain);
+        const txHashLowerForDelete = normalize(mergedActivity.metadata.txHash);
+        const trackedLowerForDelete = normalize(mergedActivity.metadata.trackedAddress);
+        const tokenLowerForDelete = normalize(mergedActivity.metadata.tokenAddress);
         deleteDuplicateMonitorEventsStmt.run(
           user.id,
-          normalize(mergedActivity.metadata.chain),
-          normalize(mergedActivity.metadata.txHash),
-          normalize(mergedActivity.metadata.trackedAddress),
-          eventId
+          chainLowerForDelete,
+          txHashLowerForDelete,
+          trackedLowerForDelete,
+          eventId,
+          chainLowerForDelete,
+          trackedLowerForDelete,
+          txHashLowerForDelete,
+          tokenLowerForDelete,
+          tokenLowerForDelete
         );
       }
     }
@@ -932,9 +978,19 @@ export function readEventsFeed(query: EventFeedQuery) {
           chain: activity.metadata.chain || '',
           trackedWalletAddress: activity.metadata.trackedAddress || '',
           txHash: activity.metadata.txHash || '',
+          tokenAddress: activity.metadata.tokenAddress || null,
         };
       })
-      .filter((key): key is { chain: string; trackedWalletAddress: string; txHash: string } => Boolean(key))
+      .filter(
+        (
+          key
+        ): key is {
+          chain: string;
+          trackedWalletAddress: string;
+          txHash: string;
+          tokenAddress: string | null;
+        } => Boolean(key)
+      )
   );
   const feed: EventFeedRow[] = [];
   for (const { row, user, activity } of parsedRows) {

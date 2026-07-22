@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
-import { upsertEventsFromFeedRows, deleteTelegramMonitorEventsByTxHash } from '@/lib/server/eventsRepo';
+import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
@@ -18,7 +18,6 @@ import {
 import {
   setTelegramMonitorTxStateCanonicalActivity,
   upsertTelegramMonitorTxStateProvisional,
-  getTelegramMonitorTxState,
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
 import {
@@ -391,24 +390,7 @@ export async function ingestTelegramMonitorUpdate(
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
-  // Detect routing path: same tx hash, different token address
-  if (parsed.txHash && parsed.trackedWalletAddress && parsed.tokenAddress) {
-    const existingTxState = getTelegramMonitorTxState({
-      chain: parsed.chain,
-      trackedWalletAddress: parsed.trackedWalletAddress,
-      txHash: parsed.txHash,
-      tokenAddress: parsed.tokenAddress,
-    });
-    if (existingTxState?.tokenAddress &&
-        (existingTxState.tokenAddress || '').toLowerCase() !== (parsed.tokenAddress || '').toLowerCase()) {
-      deleteTelegramMonitorEventsByTxHash({
-        userId: trackedMatch.user.id,
-        chain: parsed.chain,
-        txHash: parsed.txHash,
-        oldTokenAddress: existingTxState.tokenAddress,
-      });
-    }
-  }
+  // Same-tx multi-token legs stay separate (token-aware aggregate key + summarize filter).
 
   const provisionalSummary =
     parsed.txHash && parsed.trackedWalletAddress

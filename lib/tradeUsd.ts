@@ -2,7 +2,7 @@ import { fetchOkxTokenHistoricalPriceBeforeTimestamp } from '@/lib/okx';
 
 const STABLE_SYMBOLS = new Set(['USDT', 'USDC', 'DAI']);
 
-const WRAPPED_NATIVE_BY_CHAIN: Record<string, { address: string; symbols: Set<string> }> = {
+const WRAPPED_NATIVE_BY_CHAIN: Record<string, { address: string; symbols: Set<string>; priceChain?: string }> = {
   bsc: {
     address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
     symbols: new Set(['BNB', 'WBNB']),
@@ -14,6 +14,12 @@ const WRAPPED_NATIVE_BY_CHAIN: Record<string, { address: string; symbols: Set<st
   base: {
     address: '0x4200000000000000000000000000000000000006',
     symbols: new Set(['ETH', 'WETH']),
+  },
+  // Robinhood chain quotes ETH; OKX historical candles live on ethereum WETH.
+  robinhood: {
+    address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+    symbols: new Set(['ETH', 'WETH']),
+    priceChain: 'ethereum',
   },
   solana: {
     address: 'So11111111111111111111111111111111111111112',
@@ -75,23 +81,22 @@ export async function resolveTradeAmountUsdAtTx(
     return roundUsd(tokenAmount);
   }
 
-  if (explicitPriceUsd !== null && tokenAmount !== null) {
-    return roundUsd(tokenAmount * explicitPriceUsd);
+  const nativeMeta = chain ? WRAPPED_NATIVE_BY_CHAIN[chain] : undefined;
+  const isNativeQuote = Boolean(nativeMeta && quoteTokenSymbol && nativeMeta.symbols.has(quoteTokenSymbol));
+
+  // Prefer native quote × historical price over token×explicitPrice (GMGN-aligned).
+  if (isNativeQuote && quoteAmount !== null && nativeMeta) {
+    const fetchHistoricalTokenPrice = deps.fetchHistoricalTokenPrice ?? fetchOkxTokenHistoricalPriceBeforeTimestamp;
+    const priceLookupChain = nativeMeta.priceChain || chain;
+    const pricePoint = await fetchHistoricalTokenPrice(priceLookupChain, nativeMeta.address, params.txTimestampMs);
+
+    if (typeof pricePoint?.priceUsd === 'number' && Number.isFinite(pricePoint.priceUsd) && pricePoint.priceUsd > 0) {
+      return roundUsd(quoteAmount * pricePoint.priceUsd);
+    }
   }
 
-  const wrappedNative = chain && quoteTokenSymbol ? WRAPPED_NATIVE_BY_CHAIN[chain]?.symbols.has(quoteTokenSymbol) : false;
-
-  if (chain && wrappedNative && quoteAmount !== null) {
-    const wrappedNativeAddress = WRAPPED_NATIVE_BY_CHAIN[chain]?.address;
-    const fetchHistoricalTokenPrice = deps.fetchHistoricalTokenPrice ?? fetchOkxTokenHistoricalPriceBeforeTimestamp;
-
-    if (wrappedNativeAddress) {
-      const pricePoint = await fetchHistoricalTokenPrice(chain, wrappedNativeAddress, params.txTimestampMs);
-
-      if (typeof pricePoint?.priceUsd === 'number' && Number.isFinite(pricePoint.priceUsd) && pricePoint.priceUsd > 0) {
-        return roundUsd(quoteAmount * pricePoint.priceUsd);
-      }
-    }
+  if (explicitPriceUsd !== null && tokenAmount !== null) {
+    return roundUsd(tokenAmount * explicitPriceUsd);
   }
 
   return null;

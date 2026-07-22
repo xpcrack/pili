@@ -193,7 +193,7 @@ function buildActivityFromSnapshotCore(params: MonitorActivitySnapshot, tradeAmo
     monitorReconciledSource,
   } = params;
 
-  const aggregateKey = buildTelegramMonitorTxAggregateKey(chain, trackedAddress, txHash);
+  const aggregateKey = buildTelegramMonitorTxAggregateKey(chain, trackedAddress, txHash, tokenAddress);
   const actionText =
     actionLabel || (action === 'sell' ? '减仓' : action === 'buy' ? '建仓' : action === 'send' ? '发送' : '交易');
   const quoteText =

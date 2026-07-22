@@ -90,6 +90,60 @@ async function run() {
     750
   );
 
+  // Native quote wins over token×explicitPrice when both are present.
+  assert.equal(
+    await resolveTradeAmountUsdAtTx(
+      {
+        chain: 'ethereum',
+        quoteToken: 'ETH',
+        quoteAmount: '0.1',
+        token: 'TEST',
+        value: 100,
+        explicitPriceUsd: 2,
+        txTimestampMs: 1_710_000_000_000,
+      },
+      {
+        fetchHistoricalTokenPrice: async () => ({
+          priceUsd: 1880,
+          candleTimestampMs: 1_710_000_000_000,
+          bar: '1m',
+        }),
+      }
+    ),
+    188
+  );
+
+  // Robinhood quotes ETH; historical price looks up ethereum WETH.
+  let robinhoodPriceChain: string | null = null;
+  let robinhoodPriceAddress: string | null = null;
+  assert.equal(
+    await resolveTradeAmountUsdAtTx(
+      {
+        chain: 'robinhood',
+        quoteToken: 'ETH',
+        quoteAmount: '0.0998',
+        token: 'AI',
+        value: 40470.07,
+        explicitPriceUsd: 0.0048,
+        txTimestampMs: 1_710_000_000_000,
+      },
+      {
+        fetchHistoricalTokenPrice: async (chain, address) => {
+          robinhoodPriceChain = chain;
+          robinhoodPriceAddress = address;
+          return {
+            priceUsd: 1885,
+            candleTimestampMs: 1_710_000_000_000,
+            bar: '1m',
+          };
+        },
+      }
+    ),
+    188.123
+  );
+  assert.equal(robinhoodPriceChain, 'ethereum');
+  assert.equal(robinhoodPriceAddress?.toLowerCase(), '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2');
+
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ code: '1', data: [] }), {
