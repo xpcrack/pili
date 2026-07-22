@@ -221,7 +221,21 @@ export function useActivityPolling(
   const feedRevisionRef = useRef<string | undefined>(undefined);
   /** 已加载窗口末端 cursor，load-more append 用 */
   const feedNextCursorRef = useRef<string | null>(null);
+  // Mirror pagination state for fetchActivities without putting it in useCallback deps
+  // (deps on hasMore etc. recreated the callback → remount effect → top-window replace loop).
+  const hasMoreRef = useRef(hasMore);
+  const historyCompleteRef = useRef(historyComplete);
+  const localQualifiedCountRef = useRef(localQualifiedCount);
+  const summaryTransactionCountRef = useRef(summary?.transactionCount ?? 0);
+  hasMoreRef.current = hasMore;
+  historyCompleteRef.current = historyComplete;
+  localQualifiedCountRef.current = localQualifiedCount;
+  summaryTransactionCountRef.current = summary?.transactionCount ?? 0;
   const usersRef = useRef(users);
+  // Stable invoker so mount/poll/query effects do not depend on fetchActivities identity.
+  const fetchActivitiesRef = useRef<(options?: FetchActivitiesOptions) => Promise<unknown>>(
+    async () => undefined
+  );
   const {
     selectedUserIdRef: activeSelectedUserIdRef,
     searchQueryRef: activeSearchQueryRef,
@@ -261,9 +275,9 @@ export function useActivityPolling(
     setFeedSnapshot({
       feed,
       latestActivityAtByUser: toLatestActivityAtByUserRecord(latestActivityAtByUser),
-      hasMore,
-      historyComplete,
-      localQualifiedCount,
+      hasMore: hasMoreRef.current,
+      historyComplete: historyCompleteRef.current,
+      localQualifiedCount: localQualifiedCountRef.current,
       activityBreakdown,
       completenessWindow,
       summary,
@@ -375,14 +389,14 @@ export function useActivityPolling(
       return {
         feedLength: feedRef.current.length,
         selectedFeedLength: currentSelectedFeedLength,
-        totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+        totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
         success: false,
         error: ticket.reason === 'foreground_inflight' ? '请求进行中' : '后台请求跳过',
         partialSyncWarning: false,
         autoBackfillRounds: 0,
-        hasMore,
-        historyComplete,
-        localQualifiedCount,
+        hasMore: hasMoreRef.current,
+        historyComplete: historyCompleteRef.current,
+        localQualifiedCount: localQualifiedCountRef.current,
       };
     }
 
@@ -395,14 +409,14 @@ export function useActivityPolling(
       return {
         feedLength: feedRef.current.length,
         selectedFeedLength: currentSelectedFeedLength,
-        totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+        totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
         success: false,
         error: '请求信号不可用',
         partialSyncWarning: false,
         autoBackfillRounds: 0,
-        hasMore,
-        historyComplete,
-        localQualifiedCount,
+        hasMore: hasMoreRef.current,
+        historyComplete: historyCompleteRef.current,
+        localQualifiedCount: localQualifiedCountRef.current,
       };
     }
 
@@ -416,7 +430,7 @@ export function useActivityPolling(
           return {
             feedLength: feedRef.current.length,
             selectedFeedLength: currentSelectedFeedLength,
-            totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+            totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
             success: false,
             error: '请求状态已过期',
             partialSyncWarning: false,
@@ -467,17 +481,18 @@ export function useActivityPolling(
           : Math.max(targetCount ?? 0, FEED_PAGE_BATCH_SIZE);
       const startCursor = append ? feedNextCursorRef.current : null;
       if (append && !startCursor) {
-        // 没有下一页 cursor 就不要空转
+        // 没有下一页 cursor 就不要空转；同步关掉 hasMore，避免 sentinel 死循环
+        setHasMore(false);
         return {
           feedLength: feedRef.current.length,
           selectedFeedLength: currentSelectedFeedLength,
-          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
           success: true,
           partialSyncWarning: false,
           autoBackfillRounds: 0,
           hasMore: false,
-          historyComplete,
-          localQualifiedCount,
+          historyComplete: historyCompleteRef.current,
+          localQualifiedCount: localQualifiedCountRef.current,
         };
       }
       const effectiveSearchFilters = activeSearchFiltersRef.current || DEFAULT_FEED_SEARCH_FILTERS;
@@ -508,13 +523,13 @@ export function useActivityPolling(
         return {
           feedLength: feedRef.current.length,
           selectedFeedLength: currentSelectedFeedLength,
-          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
           success: true,
           partialSyncWarning: false,
           autoBackfillRounds: 0,
-          hasMore,
-          historyComplete,
-          localQualifiedCount,
+          hasMore: hasMoreRef.current,
+          historyComplete: historyCompleteRef.current,
+          localQualifiedCount: localQualifiedCountRef.current,
         };
       }
       const result = buildCollectedActivityFeedResult({
@@ -538,32 +553,41 @@ export function useActivityPolling(
         return {
           feedLength: feedRef.current.length,
           selectedFeedLength: currentSelectedFeedLength,
-          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
           success: false,
           error: '请求状态已过期',
           partialSyncWarning: false,
           autoBackfillRounds: 0,
-          hasMore,
-          historyComplete,
-          localQualifiedCount,
+          hasMore: hasMoreRef.current,
+          historyComplete: historyCompleteRef.current,
+          localQualifiedCount: localQualifiedCountRef.current,
         };
       }
 
       usersRef.current = effectiveUsers;
       mergeUsersFromServer(result.users ?? effectiveUsers);
       feedRef.current = mergedFeed;
-      // 记住下一页起点：append 用 collected.nextCursor；全量重拉也用 collected.nextCursor
-      feedNextCursorRef.current = collected.nextCursor ?? result.nextCursor ?? null;
+      // Background poll only merges the top window — never rewind end-of-list pagination.
+      if (!isBackgroundRefresh) {
+        // 记住下一页起点：append 用 collected.nextCursor；全量重拉也用 collected.nextCursor
+        feedNextCursorRef.current = collected.nextCursor ?? result.nextCursor ?? null;
+        setHasMore(result.hasMore);
+        setLocalQualifiedCount(append ? mergedFeed.length : result.localQualifiedCount);
+      }
       setFeed(mergedFeed);
-      if (!append) {
+      if (!append && !isBackgroundRefresh) {
         setSummary(result.summary);
         setDiagnostics(result.diagnostics);
         setHistoryComplete(result.historyComplete);
         setActivityBreakdown(result.activityBreakdown);
         setCompletenessWindow(result.completenessWindow);
+      } else if (!append && isBackgroundRefresh) {
+        // Top-window poll may still refresh non-pagination meta.
+        setSummary(result.summary);
+        setDiagnostics(result.diagnostics);
+        setActivityBreakdown(result.activityBreakdown);
+        setCompletenessWindow(result.completenessWindow);
       }
-      setHasMore(result.hasMore);
-      setLocalQualifiedCount(append ? mergedFeed.length : result.localQualifiedCount);
 
       // Debug: Check if feed is being filtered by client-side poison detection
       const poisonFilteredFeed = filterPoisonFromFeed(mergedFeed);
@@ -668,14 +692,14 @@ export function useActivityPolling(
         return {
           feedLength: feedRef.current.length,
           selectedFeedLength: currentSelectedFeedLength,
-          totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+          totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
           success: false,
           error: '请求状态已过期',
           partialSyncWarning: false,
           autoBackfillRounds: 0,
-          hasMore,
-          historyComplete,
-          localQualifiedCount,
+          hasMore: hasMoreRef.current,
+          historyComplete: historyCompleteRef.current,
+          localQualifiedCount: localQualifiedCountRef.current,
         };
       }
 
@@ -686,14 +710,14 @@ export function useActivityPolling(
       return {
         feedLength: feedRef.current.length,
         selectedFeedLength: currentSelectedFeedLength,
-        totalAvailable: Math.max(feedRef.current.length, summary?.transactionCount ?? 0),
+        totalAvailable: Math.max(feedRef.current.length, summaryTransactionCountRef.current),
         success: false,
         error: message,
         partialSyncWarning: false,
         autoBackfillRounds: 0,
-        hasMore,
-        historyComplete,
-        localQualifiedCount,
+        hasMore: hasMoreRef.current,
+        historyComplete: historyCompleteRef.current,
+        localQualifiedCount: localQualifiedCountRef.current,
       };
     } finally {
       if (isMountedRef.current && requestId === requestIdRef.current && !options?.silent) {
@@ -717,17 +741,16 @@ export function useActivityPolling(
   }, [
     applyNewStatusForActivities,
     backfillLocalUsersToServer,
-    hasMore,
-    historyComplete,
     isServerBackfillAttempted,
-    localQualifiedCount,
     markServerBackfillAttempted,
     mergeUsersFromServer,
-    summary?.transactionCount,
     upsertUserAssetSnapshot,
   ]);
 
-  // 初始获取 - 先从缓存恢复，再发起请求
+  fetchActivitiesRef.current = fetchActivities;
+
+  // 初始获取：只在 mount 跑一次。后续查询/用户变化走下面的 fingerprint effects。
+  // 不要依赖 fetchActivities 身份，否则 load-more 更新 state → callback 重建 → 顶窗 replace 闪烁。
   useEffect(() => {
     isMountedRef.current = true;
 
@@ -738,7 +761,7 @@ export function useActivityPolling(
       .map((user) => `${user.id}:${user.addresses.length}`)
       .join('|');
     queryFingerprintRef.current = queryFingerprint;
-    void fetchActivities({
+    void fetchActivitiesRef.current({
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
       source: activeSourceRef.current,
@@ -749,7 +772,8 @@ export function useActivityPolling(
       isMountedRef.current = false;
       requestIdRef.current += 1;
     };
-  }, [fetchActivities, applyNewStatusForActivities, upsertUserAssetSnapshot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only init
+  }, []);
 
   useEffect(() => {
     if (!isMountedRef.current) {
@@ -762,14 +786,15 @@ export function useActivityPolling(
 
     usersFingerprintRef.current = usersFingerprint;
     resetServerBackfillAttempted();
-    void fetchActivities({
+    feedNextCursorRef.current = null;
+    void fetchActivitiesRef.current({
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
       source: activeSourceRef.current,
       syncStrategy: 'local',
     });
-  }, [usersFingerprint, fetchActivities, resetServerBackfillAttempted]);
+  }, [usersFingerprint, resetServerBackfillAttempted]);
 
   useEffect(() => {
     if (!isMountedRef.current) {
@@ -781,14 +806,15 @@ export function useActivityPolling(
     }
 
     queryFingerprintRef.current = queryFingerprint;
-    void fetchActivities({
+    feedNextCursorRef.current = null;
+    void fetchActivitiesRef.current({
       replace: true,
       selectedUserId: activeSelectedUserIdRef.current,
       searchQuery: activeSearchQueryRef.current,
       source: activeSourceRef.current,
       syncStrategy: 'local',
     });
-  }, [fetchActivities, queryFingerprint]);
+  }, [queryFingerprint]);
 
   useFeedSnapshotPolling(() =>
     fetchActivities({

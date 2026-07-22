@@ -127,6 +127,8 @@ export default function Home() {
   );
   const { dismissNewForUser } = useUserStore();
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreInFlightRef = useRef(false);
+  const handleLoadMoreRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -316,7 +318,7 @@ export default function Home() {
   });
 
   const handleLoadMore = useCallback(async () => {
-    if (isExpanding || loading || !hasMore) {
+    if (loadMoreInFlightRef.current || isExpanding || loading || !hasMore) {
       return;
     }
 
@@ -339,32 +341,37 @@ export default function Home() {
       }
     }
 
+    loadMoreInFlightRef.current = true;
     setIsExpanding(true);
     setExpandFeedback(hasAnyActiveFilter ? '正在检索更多结果...' : '正在加载更多动态...');
-    const result = await refetch({
-      targetCount: nextVisibleCount,
-      selectedUserId,
-      syncStrategy: 'local',
-      append: true,
-    });
-    setIsExpanding(false);
+    try {
+      const result = await refetch({
+        targetCount: nextVisibleCount,
+        selectedUserId,
+        syncStrategy: 'local',
+        append: true,
+      });
 
-    if (!result.success) {
-      if (result.error === '请求进行中') {
-        // 与选人路径一致：排队不算硬失败；pending 会带上更大的 targetCount
-        setExpandFeedback('请求排队中，完成后会自动继续加载');
+      if (!result.success) {
+        if (result.error === '请求进行中') {
+          // 与选人路径一致：排队不算硬失败；pending 会带上更大的 targetCount
+          setExpandFeedback('请求排队中，完成后会自动继续加载');
+          return;
+        }
+        setExpandFeedback(result.error ? `读取失败：${result.error}` : '读取失败');
         return;
       }
-      setExpandFeedback(result.error ? `读取失败：${result.error}` : '读取失败');
-      return;
+      const loadedCount = isSelectedMode ? result.selectedFeedLength : result.feedLength;
+      const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
+      setExpandFeedback(
+        result.hasMore
+          ? `已加载 ${loadedCount} 条动态${partialSuffix}`
+          : `已显示全部 ${loadedCount} 条动态${partialSuffix}`
+      );
+    } finally {
+      setIsExpanding(false);
+      loadMoreInFlightRef.current = false;
     }
-    const loadedCount = isSelectedMode ? result.selectedFeedLength : result.feedLength;
-    const partialSuffix = result.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
-    setExpandFeedback(
-      result.hasMore
-        ? `已加载 ${loadedCount} 条动态${partialSuffix}`
-        : `已显示全部 ${loadedCount} 条动态${partialSuffix}`
-    );
   }, [
     globalVisibleCount,
     hasAnyActiveFilter,
@@ -377,6 +384,10 @@ export default function Home() {
     selectedUserVisibleCount,
   ]);
 
+  handleLoadMoreRef.current = () => {
+    void handleLoadMore();
+  };
+
   useEffect(() => {
     const node = loadMoreSentinelRef.current;
     if (!node || !hasMore || isInitialLoading) {
@@ -386,7 +397,7 @@ export default function Home() {
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          void handleLoadMore();
+          handleLoadMoreRef.current();
         }
       },
       {
@@ -398,7 +409,7 @@ export default function Home() {
     return () => {
       observer.disconnect();
     };
-  }, [handleLoadMore, hasMore, isInitialLoading]);
+  }, [hasMore, isInitialLoading]);
 
   if (!isClient) {
     return (
