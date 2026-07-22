@@ -2,6 +2,9 @@
  * Mirror Feishu enablement (via newone sources.disabled) into pili
  * tracked_users / tracked_addresses.monitoring_enabled.
  *
+ * Also ensures roster: enabled wallets missing from pili are created
+ * (or merged by person name) so monitoring can actually follow them.
+ *
  * Policy A: disabled still searchable in history; default Feed + collectors
  * only follow monitoring_enabled=1.
  *
@@ -14,7 +17,15 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { expandTrackedAddresses, inferChainFromAddress } from '@/lib/addressBook';
 import { getDb } from '@/lib/server/sqlite';
+import {
+  addTrackedAddresses,
+  createTrackedUser,
+  TrackedAddressOwnershipConflictError,
+} from '@/lib/server/trackedUsersRepo';
+import { isValidTrackedAddress } from '@/lib/trackedAddressValidation';
+import type { AddressInfo, ChainType } from '@/types';
 
 const require = createRequire(import.meta.url);
 
@@ -28,12 +39,31 @@ export type FeishuEnablementSyncResult = {
   addressesDisabled: number;
   usersEnabled: number;
   usersDisabled: number;
+  usersCreated: number;
+  addressesAdded: number;
+  ownershipSkipped: number;
+  skippedNoPerson: number;
   error?: string;
 };
 
 type NewoneSqlite = {
   prepare(sql: string): { all(...params: unknown[]): unknown[] };
   close(): void;
+};
+
+type EnabledWalletRow = {
+  address: string;
+  addressLower: string;
+  personName: string;
+  personKey: string;
+  twitter: string;
+  walletAlias: string;
+};
+
+type PersonGroup = {
+  displayName: string;
+  twitter: string;
+  wallets: EnabledWalletRow[];
 };
 
 function resolveNewoneDbPath() {
@@ -78,11 +108,127 @@ function collectLowerAddresses(rows: Array<{ address?: string; external_id?: str
   return set;
 }
 
-function readEnabledWalletLowers(db: NewoneSqlite): Set<string> {
+function parseMetaJson(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function walletAliasFromNote(note: string): string {
+  const hashIdx = note.indexOf('#');
+  if (hashIdx >= 0) {
+    const after = note
+      .slice(hashIdx + 1)
+      .trim()
+      .split(/\s+/)[0];
+    if (after) return `#${after}`;
+  }
+  return '#1';
+}
+
+function isFormatValidAddress(address: string): boolean {
+  const trimmed = address.trim();
+  if (!trimmed) return false;
+  return isValidTrackedAddress(trimmed, 'bsc') || isValidTrackedAddress(trimmed, 'solana');
+}
+
+function buildHandle(base: string, usedHandles: Set<string>) {
+  const normalizedBase = base
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^-\p{L}\p{N}_]+/gu, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  const fallbackBase = normalizedBase || 'user';
+  let candidate = fallbackBase;
+  let index = 2;
+  while (usedHandles.has(candidate)) {
+    candidate = `${fallbackBase}-${index}`;
+    index += 1;
+  }
+  usedHandles.add(candidate);
+  return candidate;
+}
+
+function toAddressInfos(wallets: EnabledWalletRow[]): AddressInfo[] {
+  return expandTrackedAddresses(
+    wallets.map((w) => {
+      const chain: ChainType = inferChainFromAddress(w.address);
+      return {
+        address: w.address,
+        name: w.walletAlias,
+        chain,
+        totalAssetUsd: null,
+        assetUpdatedAt: null,
+      };
+    })
+  );
+}
+
+function columnExists(db: NewoneSqlite, table: string, column: string) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  return rows.some((r) => String(r.name || '') === column);
+}
+
+function readEnabledWallets(db: NewoneSqlite): {
+  enabledLowers: Set<string>;
+  wallets: EnabledWalletRow[];
+  skippedNoPerson: number;
+} {
+  const hasMeta = columnExists(db, 'sources', 'meta_json');
   const rows = db
-    .prepare(`SELECT external_id FROM sources WHERE kind = 'wallet' AND disabled = 0`)
-    .all() as Array<{ external_id: string }>;
-  return collectLowerAddresses(rows);
+    .prepare(
+      hasMeta
+        ? `SELECT external_id, label, meta_json FROM sources WHERE kind = 'wallet' AND disabled = 0`
+        : `SELECT external_id, label FROM sources WHERE kind = 'wallet' AND disabled = 0`
+    )
+    .all() as Array<{ external_id: string; label: string | null; meta_json?: string | null }>;
+
+  const enabledLowers = new Set<string>();
+  const wallets: EnabledWalletRow[] = [];
+  let skippedNoPerson = 0;
+
+  for (const row of rows) {
+    const address = String(row.external_id || '').trim();
+    const addressLower = address.toLowerCase();
+    if (!addressLower) continue;
+    enabledLowers.add(addressLower);
+
+    const meta = parseMetaJson(row.meta_json);
+    const metaPerson =
+      typeof meta.person_name === 'string' ? meta.person_name.trim() : '';
+    const label = String(row.label || '').trim();
+    const personName = metaPerson || label;
+    if (!personName) {
+      skippedNoPerson += 1;
+      continue;
+    }
+
+    const twitter =
+      typeof meta.twitter === 'string' && meta.twitter.trim()
+        ? meta.twitter.trim()
+        : '';
+    const note = typeof meta.note === 'string' ? meta.note : '';
+
+    wallets.push({
+      address,
+      addressLower,
+      personName,
+      personKey: personName.toLowerCase(),
+      twitter,
+      walletAlias: walletAliasFromNote(note),
+    });
+  }
+
+  return { enabledLowers, wallets, skippedNoPerson };
 }
 
 /**
@@ -115,10 +261,7 @@ function readSelfWalletLowers(db: NewoneSqlite): Set<string> {
   return collectLowerAddresses(rows);
 }
 
-function emptyResult(
-  newonePath: string,
-  error: string
-): FeishuEnablementSyncResult {
+function emptyResult(newonePath: string, error: string): FeishuEnablementSyncResult {
   return {
     ok: false,
     newonePath,
@@ -129,12 +272,162 @@ function emptyResult(
     addressesDisabled: 0,
     usersEnabled: 0,
     usersDisabled: 0,
+    usersCreated: 0,
+    addressesAdded: 0,
+    ownershipSkipped: 0,
+    skippedNoPerson: 0,
     error,
   };
 }
 
+function groupEnabledWallets(wallets: EnabledWalletRow[]): Map<string, PersonGroup> {
+  const groups = new Map<string, PersonGroup>();
+  for (const wallet of wallets) {
+    let group = groups.get(wallet.personKey);
+    if (!group) {
+      group = {
+        displayName: wallet.personName,
+        twitter: wallet.twitter,
+        wallets: [],
+      };
+      groups.set(wallet.personKey, group);
+    }
+    group.wallets.push(wallet);
+    if (!group.twitter && wallet.twitter) {
+      group.twitter = wallet.twitter;
+    }
+  }
+  return groups;
+}
+
+/**
+ * Create missing people / attach free addresses by person name.
+ * Never reassigns addresses already owned by someone else.
+ */
+function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
+  usersCreated: number;
+  addressesAdded: number;
+  ownershipSkipped: number;
+} {
+  let usersCreated = 0;
+  let addressesAdded = 0;
+  let ownershipSkipped = 0;
+
+  const db = getDb();
+  const userRows = db
+    .prepare(
+      `SELECT id, name, handle, created_at
+       FROM tracked_users
+       ORDER BY created_at ASC, id ASC`
+    )
+    .all() as Array<{ id: string; name: string; handle: string; created_at: number }>;
+
+  const userIdByNameKey = new Map<string, string>();
+  const usedHandles = new Set<string>();
+  for (const row of userRows) {
+    const key = String(row.name || '')
+      .trim()
+      .toLowerCase();
+    if (key && !userIdByNameKey.has(key)) {
+      userIdByNameKey.set(key, row.id);
+    }
+    const handle = String(row.handle || '')
+      .trim()
+      .toLowerCase();
+    if (handle) usedHandles.add(handle);
+  }
+
+  const ownerByLower = new Map<string, string>();
+  const addrRows = db
+    .prepare(`SELECT user_id, address_lower FROM tracked_addresses`)
+    .all() as Array<{ user_id: string; address_lower: string }>;
+  for (const row of addrRows) {
+    const lower = String(row.address_lower || '')
+      .trim()
+      .toLowerCase();
+    if (lower && !ownerByLower.has(lower)) {
+      ownerByLower.set(lower, row.user_id);
+    }
+  }
+
+  const groups = groupEnabledWallets(wallets);
+
+  for (const [personKey, group] of groups) {
+    const valid = group.wallets.filter((w) => isFormatValidAddress(w.address));
+    if (valid.length === 0) continue;
+
+    const nameOwner = userIdByNameKey.get(personKey);
+    const free: EnabledWalletRow[] = [];
+    for (const wallet of valid) {
+      const owner = ownerByLower.get(wallet.addressLower);
+      if (!owner) {
+        free.push(wallet);
+        continue;
+      }
+      if (nameOwner && owner === nameOwner) {
+        continue; // already on the matched person
+      }
+      ownershipSkipped += 1; // owned by someone else — do not steal
+    }
+
+    if (free.length === 0) continue;
+
+    const addressInfos = toAddressInfos(free);
+
+    if (nameOwner) {
+      try {
+        const updated = addTrackedAddresses(nameOwner, addressInfos);
+        if (updated) {
+          for (const wallet of free) {
+            ownerByLower.set(wallet.addressLower, nameOwner);
+            addressesAdded += 1;
+          }
+        }
+      } catch (error) {
+        if (error instanceof TrackedAddressOwnershipConflictError) {
+          ownershipSkipped += free.length;
+          continue;
+        }
+        throw error;
+      }
+      continue;
+    }
+
+    try {
+      const handle = buildHandle(group.displayName, usedHandles);
+      const created = createTrackedUser({
+        name: group.displayName,
+        handle,
+        avatar: '',
+        twitter: group.twitter || undefined,
+        addresses: addressInfos,
+        totalAssetUsd: 0,
+        historicalMaxAssetUsd: 0,
+        assetUpdatedAt: null,
+        tags: [],
+      });
+      usersCreated += 1;
+      userIdByNameKey.set(personKey, created.id);
+      for (const wallet of free) {
+        ownerByLower.set(wallet.addressLower, created.id);
+        addressesAdded += 1;
+      }
+    } catch (error) {
+      if (error instanceof TrackedAddressOwnershipConflictError) {
+        ownershipSkipped += free.length;
+        continue;
+      }
+      // Invalid address format etc. — skip this person group, do not abort whole sync
+      ownershipSkipped += free.length;
+    }
+  }
+
+  return { usersCreated, addressesAdded, ownershipSkipped };
+}
+
 /**
  * Apply enablement from newone → pili.
+ * - ensure roster for enabled wallets (create / merge by person name)
  * - address.monitoring_enabled = 1 iff lower(address) ∈ enabled ∪ self
  * - user.monitoring_enabled = 1 iff any of their addresses is enabled
  *
@@ -152,9 +445,14 @@ export function syncFeishuEnablementFromNewone(opts?: {
 
     const newone = openNewoneReadonly(newonePath);
     let enabled: Set<string>;
+    let enabledWallets: EnabledWalletRow[];
+    let skippedNoPerson = 0;
     let selfWallets: Set<string>;
     try {
-      enabled = readEnabledWalletLowers(newone);
+      const read = readEnabledWallets(newone);
+      enabled = read.enabledLowers;
+      enabledWallets = read.wallets;
+      skippedNoPerson = read.skippedNoPerson;
       selfWallets = readSelfWalletLowers(newone);
     } finally {
       newone.close();
@@ -166,6 +464,8 @@ export function syncFeishuEnablementFromNewone(opts?: {
         'newone returned 0 enabled wallets — refusing to mass-disable pili'
       );
     }
+
+    const roster = ensureRosterFromEnabledWallets(enabledWallets);
 
     const db = getDb();
     const now = Date.now();
@@ -240,6 +540,10 @@ export function syncFeishuEnablementFromNewone(opts?: {
         addressesDisabled,
         usersEnabled,
         usersDisabled,
+        usersCreated: roster.usersCreated,
+        addressesAdded: roster.addressesAdded,
+        ownershipSkipped: roster.ownershipSkipped,
+        skippedNoPerson,
       }),
       now
     );
@@ -254,6 +558,10 @@ export function syncFeishuEnablementFromNewone(opts?: {
       addressesDisabled,
       usersEnabled,
       usersDisabled,
+      usersCreated: roster.usersCreated,
+      addressesAdded: roster.addressesAdded,
+      ownershipSkipped: roster.ownershipSkipped,
+      skippedNoPerson,
     };
   } catch (error) {
     return emptyResult(
