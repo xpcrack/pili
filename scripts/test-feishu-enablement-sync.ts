@@ -8,6 +8,11 @@ import './server-only-shim.cjs';
 
 const require = createRequire(import.meta.url);
 
+/** Valid-format fixtures for create/merge path */
+const EVM_NEW = '0x1111111111111111111111111111111111111111';
+const EVM_MERGE = '0x2222222222222222222222222222222222222222';
+const EVM_CONFLICT = '0x3333333333333333333333333333333333333333';
+
 async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-feishu-en-'));
   const previousDbPath = process.env.PILIPILI_DB_PATH;
@@ -170,6 +175,138 @@ async function run() {
       )
       .get() as { en: number };
     assert.equal(labelEn.en, 1, 'sources label=self must force enable without wallets table');
+
+    // --- auto-create / merge / ownership ---
+    const rosterPath = path.join(tempDir, 'roster.sqlite');
+    const rosterDb = new BetterSqlite3(rosterPath);
+    const metaNew = JSON.stringify({
+      person_name: 'Gamma',
+      twitter: 'gamma_x',
+      note: 'Gamma#main',
+    });
+    const metaMerge = JSON.stringify({
+      person_name: 'Alpha',
+      note: 'Alpha#2',
+    });
+    const metaConflict = JSON.stringify({
+      person_name: 'Delta',
+      note: 'Delta#1',
+    });
+    const metaDisable = JSON.stringify({
+      person_name: 'Gamma',
+      note: 'Gamma#main',
+    });
+    rosterDb.exec(`
+      CREATE TABLE sources (
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        label TEXT,
+        meta_json TEXT,
+        disabled INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (kind, external_id)
+      );
+      CREATE TABLE wallets (
+        address TEXT NOT NULL,
+        chain TEXT NOT NULL,
+        is_self INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    rosterDb
+      .prepare(
+        `INSERT INTO sources (kind, external_id, label, meta_json, disabled) VALUES
+         ('wallet', ?, 'Gamma', ?, 0),
+         ('wallet', ?, 'Alpha', ?, 0),
+         ('wallet', ?, 'Delta', ?, 0),
+         ('wallet', '0xAAA', 'A', NULL, 0),
+         ('wallet', 'SoLWalletOne', 'B', NULL, 0)`
+      )
+      .run(EVM_NEW, metaNew, EVM_MERGE, metaMerge, EVM_CONFLICT, metaConflict);
+    // Keep at least one enabled so we don't hit mass-disable safety
+    rosterDb.close();
+
+    // Conflict seed: EVM_CONFLICT already owned by Beta (not Delta)
+    db.prepare(
+      `INSERT INTO tracked_addresses (id, user_id, address, address_lower, name, chain, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      'a7',
+      'u2',
+      EVM_CONFLICT,
+      EVM_CONFLICT.toLowerCase(),
+      'taken',
+      'bsc',
+      now,
+      now
+    );
+
+    const beforeUsers = listTrackedUsers().length;
+    const rosterResult = syncFeishuEnablementFromNewone({ newonePath: rosterPath });
+    assert.equal(rosterResult.ok, true, rosterResult.error);
+    assert.ok(rosterResult.usersCreated >= 1, 'should create Gamma');
+    assert.ok(rosterResult.addressesAdded >= 2, 'Gamma new + Alpha merge');
+    assert.ok(rosterResult.ownershipSkipped >= 1, 'Delta conflict skipped');
+
+    const afterUsers = listTrackedUsers();
+    assert.ok(afterUsers.length > beforeUsers, 'new person added');
+    const gamma = afterUsers.find((u) => u.name === 'Gamma');
+    assert.ok(gamma, 'Gamma user exists');
+    assert.ok(
+      gamma!.addresses.some((a) => a.address.toLowerCase() === EVM_NEW.toLowerCase()),
+      'Gamma has new wallet'
+    );
+    assert.equal(gamma!.twitter, 'gamma_x');
+
+    const alpha = afterUsers.find((u) => u.id === 'u1');
+    assert.ok(alpha);
+    assert.ok(
+      alpha!.addresses.some((a) => a.address.toLowerCase() === EVM_MERGE.toLowerCase()),
+      'Alpha received merged wallet'
+    );
+
+    const delta = afterUsers.find((u) => u.name === 'Delta');
+    assert.equal(delta, undefined, 'must not create Delta when address owned by other');
+
+    const conflictOwner = db
+      .prepare(
+        `SELECT user_id FROM tracked_addresses WHERE address_lower = ? LIMIT 1`
+      )
+      .get(EVM_CONFLICT.toLowerCase()) as { user_id: string };
+    assert.equal(conflictOwner.user_id, 'u2', 'conflict address stays on Beta');
+
+    const mon = listMonitoredUsers();
+    assert.ok(mon.some((u) => u.name === 'Gamma'));
+
+    // Disable Gamma wallet → flag off, person remains
+    const disablePath = path.join(tempDir, 'disable.sqlite');
+    const disableDb = new BetterSqlite3(disablePath);
+    disableDb.exec(`
+      CREATE TABLE sources (
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        label TEXT,
+        meta_json TEXT,
+        disabled INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    disableDb
+      .prepare(
+        `INSERT INTO sources (kind, external_id, label, meta_json, disabled) VALUES
+         ('wallet', ?, 'Gamma', ?, 1),
+         ('wallet', '0xAAA', 'A', NULL, 0),
+         ('wallet', ?, 'Alpha', ?, 0)`
+      )
+      .run(EVM_NEW, metaDisable, EVM_MERGE, metaMerge);
+    disableDb.close();
+
+    const disableResult = syncFeishuEnablementFromNewone({ newonePath: disablePath });
+    assert.equal(disableResult.ok, true, disableResult.error);
+    assert.ok(listTrackedUsers().some((u) => u.name === 'Gamma'), 'Gamma not deleted');
+    const gammaEn = db
+      .prepare(
+        `SELECT MAX(monitoring_enabled) AS en FROM tracked_addresses WHERE address_lower = ?`
+      )
+      .get(EVM_NEW.toLowerCase()) as { en: number };
+    assert.equal(gammaEn.en, 0, 'Gamma wallet monitoring off after disable');
 
     console.log('OK feishu-enablement-sync');
   } finally {

@@ -324,6 +324,10 @@ export function createDefaultRuntimeTasks(
             addressesDisabled: result.addressesDisabled,
             usersEnabled: result.usersEnabled,
             usersDisabled: result.usersDisabled,
+            usersCreated: result.usersCreated,
+            addressesAdded: result.addressesAdded,
+            ownershipSkipped: result.ownershipSkipped,
+            skippedNoPerson: result.skippedNoPerson,
             newonePath: result.newonePath,
           },
         };
