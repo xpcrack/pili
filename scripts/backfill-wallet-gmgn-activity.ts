@@ -19,6 +19,16 @@ import {
   normalizeGmgnActivityItems,
   type NormalizedLiveTrade,
 } from '../lib/server/gmgnWalletActivity';
+import {
+  assertGmgnAllowed,
+  isGmgnBanMessage,
+  isGmgnRateLimitMessage,
+  noteGmgnBan,
+  gmgnCooldownRemainingMs,
+  acquireGmgnHeavyJob,
+  releaseGmgnHeavyJob,
+  readGmgnHeavyJobLock,
+} from '../lib/server/gmgnRateLimit';
 import { upsertLiveMonitorTrades } from '../lib/server/liveMonitorIngest';
 import { listMonitoredUsers, listTrackedUsers } from '../lib/server/trackedUsersRepo';
 import type { User } from '../types';
@@ -322,6 +332,22 @@ async function upsertTradesChunked(user: User, trades: NormalizedLiveTrade[]) {
 }
 
 async function main() {
+  if (!acquireGmgnHeavyJob('wallet-activity-backfill')) {
+    const other = readGmgnHeavyJobLock()?.job || 'unknown';
+    console.error(
+      `[backfill-wallet-gmgn] refuse: heavy job lock held by ${other} (错峰: wait for holdings-refresh)`
+    );
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    await runBackfillMain();
+  } finally {
+    releaseGmgnHeavyJob('wallet-activity-backfill');
+  }
+}
+
+async function runBackfillMain() {
   const opts = parseArgs(process.argv.slice(2));
   const targets = resolveTargets({
     user: opts.user,
@@ -388,9 +414,29 @@ async function main() {
 
     // Per-address fetch + upsert so progress survives mid-user crashes / SQLITE_BUSY.
     for (const address of pending) {
+      // Global ban cooldown — stop whole run so we don't mark false-done.
+      try {
+        assertGmgnAllowed();
+      } catch (error) {
+        const left = gmgnCooldownRemainingMs();
+        console.error(
+          `[backfill-wallet-gmgn] cooldown ${Math.ceil(left / 1000)}s — stopping run to avoid false-done + ban extension`
+        );
+        progress.stats = {
+          totalRaw,
+          totalUpserted,
+          usersDone: userIndex,
+          addressesDone: doneSet.size,
+          fails,
+        };
+        if (!opts.dryRun) saveProgress(opts.progressPath, progress);
+        return;
+      }
+
       const chains = inferChainsForAddress(address);
       let addrRaw = 0;
       let addrKept = 0;
+      let addrFailed = false;
       const trades: NormalizedLiveTrade[] = [];
       for (const chain of chains) {
         try {
@@ -417,10 +463,24 @@ async function main() {
           }
         } catch (error) {
           fails += 1;
-          console.error(
-            `  FAIL ${user.name} ${address} chain=${chain}:`,
-            error instanceof Error ? error.message : error
-          );
+          addrFailed = true;
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error(`  FAIL ${user.name} ${address} chain=${chain}:`, msg);
+          if (isGmgnBanMessage(msg) || isGmgnRateLimitMessage(msg)) {
+            noteGmgnBan(msg);
+            console.error(
+              '[backfill-wallet-gmgn] hit ban/429 — stopping run (address NOT marked done)'
+            );
+            progress.stats = {
+              totalRaw,
+              totalUpserted,
+              usersDone: userIndex,
+              addressesDone: doneSet.size,
+              fails,
+            };
+            if (!opts.dryRun) saveProgress(opts.progressPath, progress);
+            return;
+          }
         }
       }
 
@@ -439,10 +499,13 @@ async function main() {
         console.log(`  nothing to upsert ${address} raw=${addrRaw} kept=${addrKept}`);
       }
 
-      const key = targetKey(user.id, address);
-      if (!doneSet.has(key)) {
-        doneSet.add(key);
-        progress.doneKeys.push(key);
+      // Only mark done when no chain failed — ban/partial must be retryable.
+      if (!addrFailed) {
+        const key = targetKey(user.id, address);
+        if (!doneSet.has(key)) {
+          doneSet.add(key);
+          progress.doneKeys.push(key);
+        }
       }
       progress.stats = {
         totalRaw,

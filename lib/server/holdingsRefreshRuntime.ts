@@ -1,7 +1,5 @@
 import 'server-only';
 
-import { spawn } from 'node:child_process';
-
 import { fetchOkxAddressAssetDetails, isSupportedOkxChain } from '@/lib/okx';
 import { getDb, type DbHandle } from '@/lib/server/sqlite';
 import { batchFetchFromDexScreener } from '@/lib/server/dexscreener';
@@ -13,6 +11,12 @@ import {
   updateAssetSnapshots,
 } from '@/lib/server/trackedUsersRepo';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
+import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
+import {
+  acquireGmgnHeavyJob,
+  readGmgnHeavyJobLock,
+  releaseGmgnHeavyJob,
+} from '@/lib/server/gmgnRateLimit';
 
 const MIN_HOLDING_USD = 5;
 const MIN_LIQUIDITY_USD = 5_000;
@@ -20,7 +24,6 @@ const DEFAULT_HOLDINGS_REFRESH_INTERVAL_MS = 30 * 60_000;
 const SUPPORTED_CHAINS = ['bsc', 'ethereum', 'base', 'solana'] as const;
 const EVM_CHAINS = new Set(['bsc', 'ethereum', 'base']);
 const ROBINHOOD_CHAIN = 'robinhood' as const;
-const GMGN_CLI_PATH = process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
 
 type SupportedChain = (typeof SUPPORTED_CHAINS)[number];
 type HoldingsChain = SupportedChain | typeof ROBINHOOD_CHAIN;
@@ -327,54 +330,13 @@ function parseGmgnHoldingsList(stdout: string): { assets: RobinhoodHoldingAsset[
 }
 
 async function runGmgnCli(args: string[], signal?: AbortSignal): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(GMGN_CLI_PATH, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const abort = () => {
-      if (!settled) child.kill('SIGTERM');
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-
-    child.on('error', (error) => {
-      settled = true;
-      signal?.removeEventListener('abort', abort);
-      reject(error);
-    });
-
-    child.on('exit', (code, exitSignal) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', abort);
-
-      if (signal?.aborted) {
-        reject(new Error('gmgn-cli aborted'));
-        return;
-      }
-      if (code !== 0) {
-        reject(
-          new Error(
-            `gmgn-cli exited with code ${code ?? 'null'}${exitSignal ? ` signal ${exitSignal}` : ''}: ${stderr.trim().slice(0, 500)}`
-          )
-        );
-        return;
-      }
-      resolve(stdout);
-    });
-  });
+  try {
+    return await runGmgnCliAsync({ args, signal });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/aborted/i.test(msg)) throw new Error('gmgn-cli aborted');
+    throw error instanceof Error ? error : new Error(msg);
+  }
 }
 
 export async function fetchRobinhoodHoldingsWithCli(
@@ -1140,11 +1102,35 @@ export async function refreshCurrentHoldings(
 }
 
 export async function runHoldingsRefreshCycle(options: RunHoldingsRefreshOptions = {}) {
-  const result = await refreshCurrentHoldings(options);
-  return {
-    sleepMs: getHoldingsRefreshIntervalMs(),
-    status: result.status,
-    summary: result.summary,
-    lastError: result.lastError,
-  };
+  if (!acquireGmgnHeavyJob('holdings-refresh')) {
+    const other = readGmgnHeavyJobLock()?.job;
+    return {
+      sleepMs: Math.min(getHoldingsRefreshIntervalMs(), 5 * 60_000),
+      status: 'idle' as const,
+      summary: {
+        trackedAddressCount: 0,
+        uniqueTrackedAddressCount: 0,
+        refreshedWalletCount: 0,
+        failedWalletCount: 0,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        robinhoodWalletCount: 0,
+        refreshedAtMs: Date.now(),
+      },
+      lastError: other
+        ? `skipped: heavy job lock held by ${other}`
+        : 'skipped: heavy job lock busy',
+    };
+  }
+  try {
+    const result = await refreshCurrentHoldings(options);
+    return {
+      sleepMs: getHoldingsRefreshIntervalMs(),
+      status: result.status,
+      summary: result.summary,
+      lastError: result.lastError,
+    };
+  } finally {
+    releaseGmgnHeavyJob('holdings-refresh');
+  }
 }

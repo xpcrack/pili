@@ -4,9 +4,8 @@
  */
 import 'server-only';
 
-import { spawn } from 'node:child_process';
+import { runGmgnCliAsync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
 
-const GMGN_CLI_PATH = process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
 const DEFAULT_TIMEOUT_MS = 12_000;
 
 export type GmgnTokenInfo = {
@@ -17,6 +16,10 @@ export type GmgnTokenInfo = {
   marketCapUsd: number | null;
   liquidityUsd: number | null;
 };
+
+/** In-process token info cache — same token won't re-hit GMGN within TTL. */
+const TOKEN_INFO_CACHE_TTL_MS = 10 * 60_000;
+const tokenInfoCache = new Map<string, { expiresAt: number; value: GmgnTokenInfo | null }>();
 
 function toGmgnCliChain(chain: string): string | null {
   const c = chain.trim().toLowerCase();
@@ -110,66 +113,23 @@ function parseGmgnTokenInfoPayload(stdout: string): GmgnTokenInfo | null {
 async function runGmgnTokenInfoCli(
   args: string[],
   signal?: AbortSignal,
-  bin = GMGN_CLI_PATH
+  bin?: string
 ): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+  try {
+    return await runGmgnCliAsync({
+      args,
+      bin: resolveGmgnCliBin(bin),
+      signal,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
     });
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const finish = (error: Error | null, output?: string) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(output || '');
-    };
-
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      finish(new Error(`gmgn-cli token info timed out after ${DEFAULT_TIMEOUT_MS}ms`));
-    }, DEFAULT_TIMEOUT_MS);
-
-    if (signal) {
-      if (signal.aborted) {
-        child.kill('SIGTERM');
-        finish(new Error('gmgn-cli token info aborted'));
-        return;
-      }
-      signal.addEventListener(
-        'abort',
-        () => {
-          child.kill('SIGTERM');
-          finish(new Error('gmgn-cli token info aborted'));
-        },
-        { once: true }
-      );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/aborted/i.test(msg)) throw new Error('gmgn-cli token info aborted');
+    if (/timed out/i.test(msg)) {
+      throw new Error(`gmgn-cli token info timed out after ${DEFAULT_TIMEOUT_MS}ms`);
     }
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', (error) => finish(error));
-    child.on('close', (code, exitSignal) => {
-      if (code === 0) {
-        finish(null, stdout);
-        return;
-      }
-      finish(
-        new Error(
-          `gmgn-cli token info exit ${code ?? 'null'}${exitSignal ? ` signal ${exitSignal}` : ''}: ${stderr.trim().slice(0, 400)}`
-        )
-      );
-    });
-  });
+    throw new Error(msg.replace(/^gmgn-cli exited/, 'gmgn-cli token info exit'));
+  }
 }
 
 export async function fetchGmgnTokenInfo(
@@ -183,6 +143,13 @@ export async function fetchGmgnTokenInfo(
     return null;
   }
 
+  const cacheKey = `${gmgnChain}:${address.toLowerCase()}`;
+  const now = Date.now();
+  const cached = tokenInfoCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
   try {
     const stdout = await runGmgnTokenInfoCli(
       ['token', 'info', '--chain', gmgnChain, '--address', address, '--raw'],
@@ -190,13 +157,21 @@ export async function fetchGmgnTokenInfo(
       options?.bin
     );
     const text = stdout.trim();
-    if (!text) return null;
-    return parseGmgnTokenInfoPayload(text);
+    const value = text ? parseGmgnTokenInfoPayload(text) : null;
+    tokenInfoCache.set(cacheKey, { expiresAt: now + TOKEN_INFO_CACHE_TTL_MS, value });
+    // prevent unbounded growth in long-lived process
+    if (tokenInfoCache.size > 5000) {
+      const first = tokenInfoCache.keys().next().value;
+      if (first) tokenInfoCache.delete(first);
+    }
+    return value;
   } catch (error) {
     console.warn(
       `[gmgnTokenInfo] failed chain=${chain} token=${address}:`,
       error instanceof Error ? error.message : error
     );
+    // short negative cache on failure to avoid stampede during ban
+    tokenInfoCache.set(cacheKey, { expiresAt: now + 60_000, value: null });
     return null;
   }
 }
