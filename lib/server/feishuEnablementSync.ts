@@ -425,6 +425,26 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
   return { usersCreated, addressesAdded, ownershipSkipped };
 }
 
+const FEISHU_ENABLEMENT_STATE_KEY = 'feishu_enablement_sync_v1';
+/** Refuse if enabled set drops by more than half AND by more than this absolute count. */
+const ENABLEMENT_PLUNGE_MIN_DROP = 100;
+const ENABLEMENT_PLUNGE_RATIO = 0.5;
+
+function readLastEnabledAddressCount(): number | null {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare(`SELECT value_json FROM app_state WHERE key = ? LIMIT 1`)
+      .get(FEISHU_ENABLEMENT_STATE_KEY) as { value_json?: string } | undefined;
+    if (!row?.value_json) return null;
+    const parsed = JSON.parse(row.value_json) as { enabledAddressCount?: unknown };
+    const n = Number(parsed.enabledAddressCount);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Apply enablement from newone → pili.
  * - ensure roster for enabled wallets (create / merge by person name)
@@ -432,6 +452,7 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
  * - user.monitoring_enabled = 1 iff any of their addresses is enabled
  *
  * When newone has zero enabled wallets, refuse to mass-disable (safety).
+ * Also refuse sudden plunges vs last successful run (e.g. 363 → 1).
  * Self wallets remain forced on even if their sources row is disabled.
  */
 export function syncFeishuEnablementFromNewone(opts?: {
@@ -463,6 +484,20 @@ export function syncFeishuEnablementFromNewone(opts?: {
         newonePath,
         'newone returned 0 enabled wallets — refusing to mass-disable pili'
       );
+    }
+
+    const previousEnabled = readLastEnabledAddressCount();
+    if (previousEnabled != null && previousEnabled > 0) {
+      const drop = previousEnabled - enabled.size;
+      if (
+        drop > ENABLEMENT_PLUNGE_MIN_DROP &&
+        enabled.size < previousEnabled * ENABLEMENT_PLUNGE_RATIO
+      ) {
+        return emptyResult(
+          newonePath,
+          `newone enabled wallets plunged ${previousEnabled} → ${enabled.size} — refusing to mass-disable pili`
+        );
+      }
     }
 
     const roster = ensureRosterFromEnabledWallets(enabledWallets);
@@ -529,7 +564,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
        VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
     ).run(
-      'feishu_enablement_sync_v1',
+      FEISHU_ENABLEMENT_STATE_KEY,
       JSON.stringify({
         at: now,
         newonePath,

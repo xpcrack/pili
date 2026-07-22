@@ -162,13 +162,6 @@ function collectMessageLinks(message: TelegramMessageLike) {
   return Array.from(links);
 }
 
-function normalizeAlias(value: string | null | undefined) {
-  return (value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/#/g, '');
-}
-
 function isEvmChain(chain: string | null | undefined) {
   return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
@@ -185,42 +178,35 @@ function isCompatibleChain(addressChain: string, eventChain: string) {
   return isFeedCompatibleEvmChain(addressChain) && isFeedCompatibleEvmChain(eventChain);
 }
 
-function findTrackedUserMatch(parsed: {
+/**
+ * Match XXYY push to a Feishu-enabled (monitoring_enabled=1) wallet by address only.
+ * Alias/person-name matching is intentionally NOT used: a disabled wallet still
+ * labeled "Tendy" in XXYY must not attach to another enabled Tendy address.
+ */
+export function findTrackedUserMatch(parsed: {
   chain: string | null;
-  walletAliasLabel: string | null;
-  walletLabel: string | null;
+  walletAliasLabel?: string | null;
+  walletLabel?: string | null;
   trackedWalletAddress: string | null;
 }) {
   if (!parsed.chain) {
-    return false;
+    return null;
+  }
+
+  const trackedWalletAddress = (parsed.trackedWalletAddress || '').trim().toLowerCase();
+  if (!trackedWalletAddress) {
+    return null;
   }
 
   // Only Feishu-enabled wallets (monitoring_enabled=1) are match targets.
   const users = listMonitoredUsers();
   const chain = parsed.chain;
-  const trackedWalletAddress = (parsed.trackedWalletAddress || '').trim().toLowerCase();
-  const aliasLabel = normalizeAlias(parsed.walletAliasLabel || parsed.walletLabel);
 
   for (const user of users) {
     for (const address of user.addresses) {
       if (!isCompatibleChain(address.chain, chain)) continue;
-
-      if (trackedWalletAddress && address.address.trim().toLowerCase() === trackedWalletAddress) {
-        return {
-          user,
-          address,
-        };
-      }
-
-      if (aliasLabel) {
-        const userAlias = normalizeAlias(user.name);
-        const addressAlias = normalizeAlias(address.name);
-        if (aliasLabel === `${userAlias}${addressAlias}` || aliasLabel === addressAlias || aliasLabel === userAlias) {
-          return {
-            user,
-            address,
-          };
-        }
+      if (address.address.trim().toLowerCase() === trackedWalletAddress) {
+        return { user, address };
       }
     }
   }

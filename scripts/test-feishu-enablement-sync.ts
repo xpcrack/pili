@@ -308,6 +308,31 @@ async function run() {
       .get(EVM_NEW.toLowerCase()) as { en: number };
     assert.equal(gammaEn.en, 0, 'Gamma wallet monitoring off after disable');
 
+    // Plunge protection: last success had many enabled, newone suddenly almost empty
+    db.prepare(
+      `INSERT INTO app_state (key, value_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+    ).run(
+      'feishu_enablement_sync_v1',
+      JSON.stringify({ enabledAddressCount: 300, at: Date.now() }),
+      Date.now()
+    );
+    const monBeforePlunge = db
+      .prepare(
+        `SELECT count(*) AS c FROM tracked_addresses WHERE COALESCE(monitoring_enabled, 1) = 1`
+      )
+      .get() as { c: number };
+    const plungeResult = syncFeishuEnablementFromNewone({ newonePath: disablePath });
+    assert.equal(plungeResult.ok, false, 'must refuse enablement plunge');
+    assert.match(String(plungeResult.error || ''), /plunged/i);
+    const monAfterPlunge = db
+      .prepare(
+        `SELECT count(*) AS c FROM tracked_addresses WHERE COALESCE(monitoring_enabled, 1) = 1`
+      )
+      .get() as { c: number };
+    assert.equal(monAfterPlunge.c, monBeforePlunge.c, 'flags unchanged on plunge refuse');
+
     console.log('OK feishu-enablement-sync');
   } finally {
     if (previousDbPath === undefined) delete process.env.PILIPILI_DB_PATH;
