@@ -1,7 +1,5 @@
 import 'server-only';
 
-import { spawn } from 'node:child_process';
-
 import {
   claimNextQueuedHolderSnapshotRun,
   completeHolderSnapshotRun,
@@ -16,6 +14,7 @@ import {
   type HolderSnapshotCollectedHolder,
 } from '@/lib/server/holderSnapshotRepo';
 import { getDb, type DbHandle } from '@/lib/server/sqlite';
+import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
 
 const HOLDER_SNAPSHOT_TARGET_WALLET = 'CJ5fHkNPf3yd7fKnjv5VtBJTNDAWFiRfLCutpuTAnpis';
 const HOLDER_SNAPSHOT_TARGET_CHAIN = 'solana';
@@ -23,7 +22,6 @@ const DEFAULT_IDLE_SLEEP_MS = 60_000;
 const DEFAULT_BACKLOG_SLEEP_MS = 1_000;
 const DEFAULT_POST_RUN_SLEEP_MS = 800;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-const GMGN_CLI_PATH = '/Users/xp/.nvm/versions/node/v24.11.1/bin/gmgn-cli';
 
 interface HolderSnapshotPayload {
   list?: unknown;
@@ -167,80 +165,31 @@ function parseHolderList(stdout: string) {
 
 async function collectTokenHoldersWithCli(input: { tokenAddress: string; signal?: AbortSignal }) {
   const startedAt = Date.now();
-
-  return await new Promise<{ holders: HolderSnapshotCollectedHolder[]; meta: Record<string, unknown> }>(
-    (resolve, reject) => {
-      const args = ['token', 'holders', '--chain', 'sol', '--address', input.tokenAddress, '--limit', '100', '--raw'];
-      const child = spawn(GMGN_CLI_PATH, args, {
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdout = '';
-      let stderr = '';
-      let settled = false;
-
-      const abort = () => {
-        if (settled) {
-          return;
-        }
-        child.kill('SIGTERM');
-      };
-
-      input.signal?.addEventListener('abort', abort, { once: true });
-
-      child.stdout.on('data', (chunk) => {
-        stdout += String(chunk);
-      });
-      child.stderr.on('data', (chunk) => {
-        stderr += String(chunk);
-      });
-
-      child.on('error', (error) => {
-        settled = true;
-        input.signal?.removeEventListener('abort', abort);
-        reject(error);
-      });
-
-      child.on('exit', (code, signal) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        input.signal?.removeEventListener('abort', abort);
-
-        const durationMs = Date.now() - startedAt;
-        if (input.signal?.aborted) {
-          reject(new Error('gmgn-cli aborted'));
-          return;
-        }
-        if (code !== 0) {
-          reject(
-            new Error(
-              `gmgn-cli exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}: ${stderr.trim().slice(0, 500)}`
-            )
-          );
-          return;
-        }
-
-        try {
-          const parsed = parseHolderList(stdout);
-          resolve({
-            holders: parsed.holders,
-            meta: {
-              durationMs,
-              payloadShape: parsed.payloadShape,
-              stdoutBytes: Buffer.byteLength(stdout),
-              stderrPreview: stderr.trim().slice(0, 500),
-            },
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          reject(new Error(`failed to parse gmgn-cli output: ${message}`));
-        }
-      });
+  const args = ['token', 'holders', '--chain', 'sol', '--address', input.tokenAddress, '--limit', '100', '--raw'];
+  try {
+    const stdout = await runGmgnCliAsync({ args, signal: input.signal });
+    const parsed = parseHolderList(stdout);
+    return {
+      holders: parsed.holders,
+      meta: {
+        durationMs: Date.now() - startedAt,
+        payloadShape: parsed.payloadShape,
+        stdoutBytes: Buffer.byteLength(stdout),
+        stderrPreview: '',
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/aborted/i.test(message)) throw new Error('gmgn-cli aborted');
+    if (/failed to parse|payload does not contain/i.test(message)) {
+      throw new Error(`failed to parse gmgn-cli output: ${message}`);
     }
-  );
+    // parseHolderList throws plain Error — wrap non-cli failures
+    if (!/gmgn-cli|GMGN_COOLDOWN/i.test(message)) {
+      throw new Error(`failed to parse gmgn-cli output: ${message}`);
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
 }
 
 export async function queueManualHolderSnapshotRun(input: {

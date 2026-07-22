@@ -2,7 +2,7 @@
  * Fetch wallet buy/sell activity via local gmgn-cli (already signed).
  * Ported lightly from newone adapters — no newone dependency.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { runGmgnCliAsync, runGmgnCliSync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
 
 export type GmgnChain = 'sol' | 'eth' | 'bsc' | 'base' | 'robinhood';
 
@@ -117,43 +117,13 @@ function buildActivityArgs(opts: {
 }
 
 async function runGmgnActivityCli(bin: string, args: string[], signal?: AbortSignal): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const abort = () => {
-      if (!settled) child.kill('SIGTERM');
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', abort);
-      reject(error);
-    });
-    child.on('exit', (code, exitSignal) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', abort);
-      if (signal?.aborted) {
-        reject(new Error('gmgn-cli activity aborted'));
-      } else if (code !== 0) {
-        reject(new Error(`gmgn-cli activity exit ${code ?? 'null'}${exitSignal ? ` signal ${exitSignal}` : ''}: ${(stderr || stdout).trim().slice(0, 400)}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-  });
+  try {
+    return await runGmgnCliAsync({ args, bin, signal });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/aborted/i.test(msg)) throw new Error('gmgn-cli activity aborted');
+    throw new Error(msg.replace(/^gmgn-cli exited/, 'gmgn-cli activity exit'));
+  }
 }
 
 function parseActivityOutput(rawText: string) {
@@ -182,7 +152,7 @@ export async function fetchGmgnWalletActivityAsync(opts: {
   bin?: string;
   signal?: AbortSignal;
 }): Promise<{ items: GmgnActivityItem[]; next: string | null; raw: unknown }> {
-  const bin = opts.bin || process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
+  const bin = resolveGmgnCliBin(opts.bin);
   const raw = await runGmgnActivityCli(bin, buildActivityArgs(opts), opts.signal);
   return parseActivityOutput(raw);
 }
@@ -196,13 +166,9 @@ export function fetchGmgnWalletActivity(opts: {
   cursor?: string;
   bin?: string;
 }): { items: GmgnActivityItem[]; next: string | null; raw: unknown } {
-  const bin = opts.bin || process.env.GMGN_CLI_PATH?.trim() || 'gmgn-cli';
+  const bin = resolveGmgnCliBin(opts.bin);
   const args = buildActivityArgs(opts);
-  const r = spawnSync(bin, args, {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    env: process.env,
-  });
+  const r = runGmgnCliSync({ args, bin });
   if (r.error) throw r.error;
   if (r.status !== 0) {
     throw new Error(

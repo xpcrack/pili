@@ -15,6 +15,8 @@ module.exports = {
         PILIPILI_EMBED_TELEGRAM_TASKS: 'false',
         // Only the long-lived web process should TRUNCATE WAL; workers use PASSIVE.
         PILIPILI_WAL_CHECKPOINT: 'TRUNCATE',
+        // Multi-key + proxy wrapper (not the nvm real binary)
+        GMGN_CLI_PATH: `${process.env.HOME}/.local/bin/gmgn-cli`,
         NODE_USE_ENV_PROXY: '1',
         HTTP_PROXY: 'http://127.0.0.1:7897',
         HTTPS_PROXY: 'http://127.0.0.1:7897',
