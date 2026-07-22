@@ -356,8 +356,10 @@ export function summarizeTelegramMonitorTxProvisional(params: {
   chain: string;
   trackedWalletAddress: string;
   txHash: string;
+  tokenAddress?: string | null;
 }) {
   const db = getDb();
+  const tokenAddressLower = normalize(params.tokenAddress);
   const rows = db
     .prepare(
       `SELECT
@@ -387,10 +389,16 @@ export function summarizeTelegramMonitorTxProvisional(params: {
          AND chain = ?
          AND tx_hash_lower = ?
          AND tracked_wallet_address_lower = ?
+         AND (? = '' OR token_address_lower = ?)
        ORDER BY updated_at ASC, id ASC`
     )
-    .all(normalize(params.chain), normalize(params.txHash), normalize(params.trackedWalletAddress)) as
-    TelegramMonitorTxAggregateRow[];
+    .all(
+      normalize(params.chain),
+      normalize(params.txHash),
+      normalize(params.trackedWalletAddress),
+      tokenAddressLower,
+      tokenAddressLower
+    ) as TelegramMonitorTxAggregateRow[];
 
   if (rows.length === 0) {
     return null;

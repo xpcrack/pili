@@ -1206,7 +1206,7 @@ async function run() {
       SOL_UNKNOWN_COLLAPSE_TOKEN_ADDRESS,
       'feed should restore provisional mint when canonical collapsed to So1111…'
     );
-    assert.equal(healedUnknownCollapseRow?.activity.metadata.displayTokenSymbol, 'Jimothy');
+    assert.equal(healedUnknownCollapseRow?.activity.metadata.displayTokenSymbol, 'JIMOTHY');
 
     const healedUnknownCollapseEvents = readEventsFeed({
       limit: 50,
