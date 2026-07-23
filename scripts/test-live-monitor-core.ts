@@ -6,6 +6,7 @@ import { matchedWatchedWallets, extractAddressesFromAlchemyPayload } from '@/lib
 import { splitTrackedAddresses } from '@/lib/server/alchemyWatchlist';
 import {
   extractActivityItems,
+  extractMarketCapUsd,
   inferChainsForAddress,
   normalizeGmgnActivityItems,
   normalizeGmgnChainToPili,
@@ -99,6 +100,48 @@ function testGmgnNormalize() {
   assert.equal(trades[0].side, 'buy');
   assert.equal(trades[0].chain, 'base');
   assert.equal(trades[0].tokenAddress, '0xtoken');
+
+  // explicit market_cap
+  assert.equal(
+    extractMarketCapUsd({
+      market_cap: 1_500_000,
+      price_usd: 0.01,
+      token: { total_supply: 1_000_000_000 },
+    }),
+    1_500_000
+  );
+  // price × supply fallback when market_cap missing
+  assert.equal(
+    extractMarketCapUsd({
+      price_usd: 0.01,
+      token: { address: '0xt', total_supply: 1_000_000_000 },
+    }),
+    10_000_000
+  );
+  // >100B discarded
+  assert.equal(
+    extractMarketCapUsd({
+      price_usd: 200,
+      token: { total_supply: 1_000_000_000 },
+    }),
+    null
+  );
+
+  const withMcap = normalizeGmgnActivityItems(
+    [
+      {
+        event_type: 'buy',
+        timestamp: 1_700_000_100,
+        tx_hash: '0xtx2',
+        token: { address: '0xToken2', symbol: 'T2', total_supply: 1_000_000_000 },
+        cost_usd: '50',
+        price_usd: '0.0005',
+      },
+    ],
+    { wallet: '0xwallet', chain: 'base', after_ts: 1_700_000_000 }
+  );
+  assert.equal(withMcap.length, 1);
+  assert.equal(withMcap[0].marketCapUsd, 500_000);
   console.log('PASS gmgn normalize');
 }
 

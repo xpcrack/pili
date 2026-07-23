@@ -14,9 +14,7 @@ import path from 'node:path';
 
 import { getDb } from '../lib/server/sqlite';
 import {
-  fetchGmgnWalletActivity,
   inferChainsForAddress,
-  normalizeGmgnActivityItems,
   type NormalizedLiveTrade,
 } from '../lib/server/gmgnWalletActivity';
 import {
@@ -29,7 +27,10 @@ import {
   releaseGmgnHeavyJob,
   readGmgnHeavyJobLock,
 } from '../lib/server/gmgnRateLimit';
-import { upsertLiveMonitorTrades } from '../lib/server/liveMonitorIngest';
+import {
+  fetchWalletActivitySince,
+  upsertWalletActivityTrades,
+} from '../lib/server/walletActivityBackfill';
 import { listMonitoredUsers, listTrackedUsers } from '../lib/server/trackedUsersRepo';
 import type { User } from '../types';
 
@@ -256,79 +257,25 @@ function defaultSinceMsForAddresses(addresses: string[]): number {
   return maxTs;
 }
 
-function fetchAllSince(params: {
+async function fetchAllSince(params: {
   chain: string;
   wallet: string;
   afterTsSec: number;
   pageLimit: number;
   maxPages: number;
-}): { rawCount: number; trades: NormalizedLiveTrade[]; pages: number } {
-  const allItems: ReturnType<typeof fetchGmgnWalletActivity>['items'] = [];
-  let cursor: string | undefined;
-  let pages = 0;
-
-  while (pages < params.maxPages) {
-    pages += 1;
-    const page = fetchGmgnWalletActivity({
-      chain: params.chain,
-      wallet: params.wallet,
-      limit: params.pageLimit,
-      type: ['buy', 'sell'],
-      cursor,
-    });
-    allItems.push(...page.items);
-    if (!page.next || page.items.length === 0) break;
-
-    // stop paging when oldest item on page is already before afterTs
-    let oldest = Infinity;
-    for (const it of page.items) {
-      const ts = Number(it.timestamp || 0);
-      if (ts > 0 && ts < oldest) oldest = ts;
-    }
-    if (Number.isFinite(oldest) && oldest <= params.afterTsSec) break;
-    cursor = page.next;
-  }
-
-  const trades = normalizeGmgnActivityItems(allItems, {
-    wallet: params.wallet,
+}): Promise<{ rawCount: number; trades: NormalizedLiveTrade[]; pages: number }> {
+  return fetchWalletActivitySince({
     chain: params.chain,
-    after_ts: params.afterTsSec,
-    min_cost_usd: 0,
+    wallet: params.wallet,
+    afterTsSec: params.afterTsSec,
+    pageLimit: params.pageLimit,
+    maxPages: params.maxPages,
+    async: false,
   });
-  return { rawCount: allItems.length, trades, pages };
 }
 
 async function upsertTradesChunked(user: User, trades: NormalizedLiveTrade[]) {
-  let upserted = 0;
-  // larger chunks ok once importance scoring is skipped for backfill
-  const chunkSize = 100;
-  for (let i = 0; i < trades.length; i += chunkSize) {
-    const chunk = trades.slice(i, i + chunkSize);
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      try {
-        const result = upsertLiveMonitorTrades({
-          user,
-          trades: chunk,
-          skipImportanceScore: true,
-          fastBulk: true,
-        });
-        upserted += result.upserted;
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        const msg = error instanceof Error ? error.message : String(error);
-        const busy = /database is locked|SQLITE_BUSY/i.test(msg);
-        if (!busy || attempt === 8) break;
-        const waitMs = 250 * attempt;
-        console.warn(`  busy retry ${attempt}/8 wait ${waitMs}ms (${chunk.length} trades)`);
-        await new Promise((r) => setTimeout(r, waitMs));
-      }
-    }
-    if (lastError) throw lastError;
-  }
-  return upserted;
+  return upsertWalletActivityTrades(user, trades);
 }
 
 async function main() {
@@ -440,7 +387,7 @@ async function runBackfillMain() {
       const trades: NormalizedLiveTrade[] = [];
       for (const chain of chains) {
         try {
-          const { rawCount, trades: pageTrades, pages } = fetchAllSince({
+          const { rawCount, trades: pageTrades, pages } = await fetchAllSince({
             chain,
             wallet: address,
             afterTsSec,

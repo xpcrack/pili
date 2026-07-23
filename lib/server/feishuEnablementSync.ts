@@ -25,6 +25,7 @@ import {
   TrackedAddressOwnershipConflictError,
 } from '@/lib/server/trackedUsersRepo';
 import { isValidTrackedAddress } from '@/lib/trackedAddressValidation';
+import { enqueueWalletActivityBackfillMany } from '@/lib/server/walletActivityBackfillQueue';
 import type { AddressInfo, ChainType } from '@/types';
 
 const require = createRequire(import.meta.url);
@@ -43,6 +44,8 @@ export type FeishuEnablementSyncResult = {
   addressesAdded: number;
   ownershipSkipped: number;
   skippedNoPerson: number;
+  /** newly enabled / rostered addresses queued for 14d GMGN timeline backfill */
+  timelineBackfillQueued?: number;
   error?: string;
 };
 
@@ -308,10 +311,13 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
   usersCreated: number;
   addressesAdded: number;
   ownershipSkipped: number;
+  /** address_lower of wallets newly attached this run */
+  addressesAddedLowers: string[];
 } {
   let usersCreated = 0;
   let addressesAdded = 0;
   let ownershipSkipped = 0;
+  const addressesAddedLowers: string[] = [];
 
   const db = getDb();
   const userRows = db
@@ -381,6 +387,7 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
           for (const wallet of free) {
             ownerByLower.set(wallet.addressLower, nameOwner);
             addressesAdded += 1;
+            if (wallet.addressLower) addressesAddedLowers.push(wallet.addressLower);
           }
         }
       } catch (error) {
@@ -411,6 +418,7 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
       for (const wallet of free) {
         ownerByLower.set(wallet.addressLower, created.id);
         addressesAdded += 1;
+        if (wallet.addressLower) addressesAddedLowers.push(wallet.addressLower);
       }
     } catch (error) {
       if (error instanceof TrackedAddressOwnershipConflictError) {
@@ -422,7 +430,7 @@ function ensureRosterFromEnabledWallets(wallets: EnabledWalletRow[]): {
     }
   }
 
-  return { usersCreated, addressesAdded, ownershipSkipped };
+  return { usersCreated, addressesAdded, ownershipSkipped, addressesAddedLowers };
 }
 
 const FEISHU_ENABLEMENT_STATE_KEY = 'feishu_enablement_sync_v1';
@@ -506,8 +514,13 @@ export function syncFeishuEnablementFromNewone(opts?: {
     const now = Date.now();
 
     const addrRows = db
-      .prepare(`SELECT id, address_lower, monitoring_enabled FROM tracked_addresses`)
-      .all() as Array<{ id: string; address_lower: string; monitoring_enabled: number | null }>;
+      .prepare(`SELECT id, address, address_lower, monitoring_enabled FROM tracked_addresses`)
+      .all() as Array<{
+      id: string;
+      address: string;
+      address_lower: string;
+      monitoring_enabled: number | null;
+    }>;
 
     const setAddr = db.prepare(
       `UPDATE tracked_addresses SET monitoring_enabled = ?, updated_at = ? WHERE id = ?`
@@ -516,8 +529,11 @@ export function syncFeishuEnablementFromNewone(opts?: {
     let addressesEnabled = 0;
     let addressesDisabled = 0;
     let selfForcedEnabled = 0;
+    /** original address form for 14d GMGN timeline backfill */
+    const timelineBackfillAddrs = new Map<string, string>(); // lower -> display address
     for (const row of addrRows) {
       const lower = String(row.address_lower || '').toLowerCase();
+      const display = String(row.address || row.address_lower || '').trim();
       const isSelf = selfWallets.has(lower);
       const want = enabled.has(lower) || isSelf ? 1 : 0;
       const cur = row.monitoring_enabled == null ? 1 : row.monitoring_enabled ? 1 : 0;
@@ -526,8 +542,19 @@ export function syncFeishuEnablementFromNewone(opts?: {
       }
       if (cur !== want) {
         setAddr.run(want, now, row.id);
-        if (want) addressesEnabled += 1;
-        else addressesDisabled += 1;
+        if (want) {
+          addressesEnabled += 1;
+          if (lower && display) timelineBackfillAddrs.set(lower, display);
+        } else addressesDisabled += 1;
+      }
+    }
+
+    for (const lower of roster.addressesAddedLowers) {
+      if (!lower) continue;
+      if (!timelineBackfillAddrs.has(lower)) {
+        // prefer original casing from enabled wallets
+        const fromEnabled = enabledWallets.find((w) => w.addressLower === lower);
+        timelineBackfillAddrs.set(lower, fromEnabled?.address || lower);
       }
     }
 
@@ -559,6 +586,18 @@ export function syncFeishuEnablementFromNewone(opts?: {
       }
     }
 
+    let timelineBackfillQueued = 0;
+    if (timelineBackfillAddrs.size > 0) {
+      const queued = enqueueWalletActivityBackfillMany(
+        [...timelineBackfillAddrs.values()].map((address) => ({
+          address,
+          days: 14,
+          reason: 'feishu-enablement',
+        }))
+      );
+      timelineBackfillQueued = queued.enqueued;
+    }
+
     db.prepare(
       `INSERT INTO app_state (key, value_json, updated_at)
        VALUES (?, ?, ?)
@@ -579,6 +618,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
         addressesAdded: roster.addressesAdded,
         ownershipSkipped: roster.ownershipSkipped,
         skippedNoPerson,
+        timelineBackfillQueued,
       }),
       now
     );
@@ -597,6 +637,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
       addressesAdded: roster.addressesAdded,
       ownershipSkipped: roster.ownershipSkipped,
       skippedNoPerson,
+      timelineBackfillQueued,
     };
   } catch (error) {
     return emptyResult(

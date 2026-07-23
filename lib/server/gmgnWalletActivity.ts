@@ -12,7 +12,14 @@ export type GmgnActivityItem = {
   tx_hash?: string;
   timestamp?: number;
   event_type?: string;
-  token?: { address?: string; symbol?: string; name?: string };
+  token?: {
+    address?: string;
+    symbol?: string;
+    name?: string;
+    total_supply?: string | number | null;
+    totalSupply?: string | number | null;
+    supply?: string | number | null;
+  };
   token_amount?: string | number;
   cost_usd?: string | number | null;
   price_usd?: string | number | null;
@@ -205,7 +212,12 @@ export type NormalizedLiveTrade = {
   eventTimeMs: number;
 };
 
-function extractMarketCapUsd(item: GmgnActivityItem): number | null {
+/**
+ * Prefer explicit MC fields; if absent, fall back to price_usd × total_supply
+ * (GMGN openapi often omits market_cap but still has price + supply).
+ * Cap at $100B to drop obvious unit/scale errors.
+ */
+export function extractMarketCapUsd(item: GmgnActivityItem): number | null {
   const token = item.token && typeof item.token === 'object' ? (item.token as Record<string, unknown>) : null;
   const candidates = [
     item.market_cap,
@@ -217,8 +229,21 @@ function extractMarketCapUsd(item: GmgnActivityItem): number | null {
   ];
   for (const candidate of candidates) {
     const value = num(candidate as string | number | null | undefined);
-    if (value != null && value > 0) {
+    if (value != null && value > 0 && value <= 100_000_000_000) {
       return value;
+    }
+  }
+
+  const price = num(item.price_usd);
+  const supply = num(
+    (token?.total_supply as string | number | null | undefined) ??
+      (token?.totalSupply as string | number | null | undefined) ??
+      (token?.supply as string | number | null | undefined)
+  );
+  if (price != null && price > 0 && supply != null && supply > 0) {
+    const mcap = price * supply;
+    if (Number.isFinite(mcap) && mcap > 0 && mcap <= 100_000_000_000) {
+      return mcap;
     }
   }
   return null;
