@@ -2,6 +2,7 @@
  * Fetch wallet buy/sell activity via local gmgn-cli (already signed).
  * Ported lightly from newone adapters — no newone dependency.
  */
+import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
 import { runGmgnCliAsync, runGmgnCliSync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
 
 export type GmgnChain = 'sol' | 'eth' | 'bsc' | 'base' | 'robinhood';
@@ -272,6 +273,17 @@ export function normalizeGmgnActivityItems(
 
     const tokenAddr = String(it.token?.address || '').trim();
     if (!tokenAddr) continue;
+
+    const tokenName = typeof it.token?.name === 'string' ? it.token.name : null;
+    if (
+      isRobinhoodStockToken({
+        chain,
+        tokenAddress: chain === 'solana' ? tokenAddr : tokenAddr.toLowerCase(),
+        tokenName,
+      })
+    ) {
+      continue;
+    }
 
     const cost = num(it.cost_usd);
     if (minCost > 0 && (cost == null || cost < minCost)) continue;
