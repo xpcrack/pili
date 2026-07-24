@@ -17,6 +17,7 @@ import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 import { bootstrapTelegramChannelSourcesFromTrackedUsers } from '@/lib/server/telegramChannelSourceRepo';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
+import { enqueueWalletActivityBackfillMany } from '@/lib/server/walletActivityBackfillQueue';
 import { type User } from '@/types';
 
 export const runtime = 'nodejs';
@@ -94,6 +95,26 @@ export async function POST(request: NextRequest) {
       action: 'created',
       userId: created.id,
     });
+
+    // Seed rolling 14d GMGN activity timeline (same as feishu enablement)
+    const seedAddrs = [
+      ...new Map(
+        (created.addresses || [])
+          .map((a) => (a.address || '').trim())
+          .filter(Boolean)
+          .map((addr) => [addr.toLowerCase(), addr] as const)
+      ).values(),
+    ];
+    if (seedAddrs.length > 0) {
+      enqueueWalletActivityBackfillMany(
+        seedAddrs.map((address) => ({
+          address,
+          userId: created.id,
+          days: 14,
+          reason: 'admin-create-user',
+        }))
+      );
+    }
 
     const hasTelegramChannels = Boolean(
       (created.telegram && created.telegram.trim()) ||

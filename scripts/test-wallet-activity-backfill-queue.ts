@@ -34,6 +34,7 @@ function makeUser(): User {
 
 async function main() {
   const calls: Array<{ address: string; days?: number }> = [];
+  const marks: Array<{ kind: 'ok' | 'fail'; address: string; days?: number; error?: string }> = [];
   const queue = createWalletActivityBackfillQueue({
     memoryOnly: true,
     debounceMs: 0,
@@ -49,6 +50,12 @@ async function main() {
         chainsFailed: [],
         stoppedOnBan: false,
       };
+    },
+    markOk: (input) => {
+      marks.push({ kind: 'ok', address: input.address, days: input.windowDays });
+    },
+    markFail: (input) => {
+      marks.push({ kind: 'fail', address: input.address, error: input.error });
     },
     log: () => {},
   });
@@ -74,11 +81,40 @@ async function main() {
     calls[0].address.toLowerCase(),
     '0x57841a6640bf42d4f2aa7d87308db3c962c3945c'
   );
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].kind, 'ok');
+  assert.equal(marks[0].days, 14);
+
+  // ban path marks fail and re-queues
+  const banQueue = createWalletActivityBackfillQueue({
+    memoryOnly: true,
+    debounceMs: 0,
+    listUsers: () => [makeUser()],
+    backfill: async () => ({
+      address: '0x57841A6640bf42d4F2aA7D87308db3c962C3945C',
+      rawCount: 0,
+      tradeCount: 0,
+      upserted: 0,
+      chainsOk: ['base'],
+      chainsFailed: [{ chain: 'eth', error: 'rate limited' }],
+      stoppedOnBan: true,
+    }),
+    markOk: (input) => marks.push({ kind: 'ok', address: input.address }),
+    markFail: (input) => marks.push({ kind: 'fail', address: input.address, error: input.error }),
+    log: () => {},
+  });
+  marks.length = 0;
+  banQueue.enqueue({ address: '0x57841A6640bf42d4F2aA7D87308db3c962C3945C', reason: 'ban-test' });
+  const banDrain = await banQueue.drain({ maxJobs: 1 });
+  assert.equal(banDrain.stoppedOnBan, true);
+  assert.equal(banDrain.remaining, 1);
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].kind, 'fail');
 
   console.log('PASS wallet-activity-backfill-queue');
 }
 
-void main().catch((error) => {
+main().catch((error) => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

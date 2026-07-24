@@ -12,8 +12,11 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
+import { getGmgnOpenApiClient } from '@/lib/server/gmgnOpenApiClient';
 import {
   acquireGmgnHeavyJob,
+  isGmgnBanMessage,
+  isGmgnRateLimitMessage,
   readGmgnHeavyJobLock,
   releaseGmgnHeavyJob,
 } from '@/lib/server/gmgnRateLimit';
@@ -339,7 +342,81 @@ async function runGmgnCli(args: string[], signal?: AbortSignal): Promise<string>
   }
 }
 
-export async function fetchRobinhoodHoldingsWithCli(
+function preferOpenApiHoldings(): boolean {
+  const v = (process.env.PILI_GMGN_HOLDINGS_VIA || 'openapi').trim().toLowerCase();
+  return v !== 'cli' && v !== 'gmgn-cli';
+}
+
+function mapOpenApiHoldingsPayload(raw: unknown): { assets: RobinhoodHoldingAsset[]; next: string } {
+  const root = raw as {
+    list?: unknown;
+    holdings?: unknown;
+    next?: unknown;
+    data?: { list?: unknown; holdings?: unknown; next?: unknown };
+  } | null;
+  const rows =
+    (root && Array.isArray(root.list) && root.list) ||
+    (root && Array.isArray(root.holdings) && root.holdings) ||
+    (root && root.data && Array.isArray(root.data.list) && root.data.list) ||
+    (root && root.data && Array.isArray(root.data.holdings) && root.data.holdings) ||
+    (Array.isArray(raw) ? raw : []);
+  if (!Array.isArray(rows)) {
+    throw new Error('gmgn openapi wallet_holdings payload is not a list');
+  }
+  const assets = rows
+    .map((row) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+      return mapGmgnHolding(row as Record<string, unknown>);
+    })
+    .filter((row): row is RobinhoodHoldingAsset => Boolean(row));
+  const nextRaw = (root && (root.next ?? root.data?.next)) ?? '';
+  const next = typeof nextRaw === 'string' ? nextRaw.trim() : '';
+  return { assets, next };
+}
+
+async function fetchRobinhoodHoldingsWithOpenApi(
+  address: string,
+  signal?: AbortSignal
+): Promise<RobinhoodHoldingsResult> {
+  try {
+    const client = getGmgnOpenApiClient();
+    const assets: RobinhoodHoldingAsset[] = [];
+    let cursor: string | undefined;
+    // sequential pages; primary key signed, keep concurrency low
+    for (;;) {
+      ensureNotAborted(signal);
+      const raw = await client.walletHoldings({
+        chain: 'robinhood',
+        wallet: address,
+        limit: 50,
+        cursor,
+        order_by: 'usd_value',
+        direction: 'desc',
+        hide_closed: true,
+        hide_airdrop: false,
+      });
+      const page = mapOpenApiHoldingsPayload(raw);
+      assets.push(...page.assets);
+      if (!page.next || page.next === cursor) break;
+      cursor = page.next;
+    }
+    return { ok: true, assets, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      assets: [],
+      error: message,
+      rateLimited:
+        isRateLimitError(message) ||
+        isGmgnBanMessage(message) ||
+        isGmgnRateLimitMessage(message) ||
+        /RATE_LIMIT|BANNED|429/i.test(message),
+    };
+  }
+}
+
+async function fetchRobinhoodHoldingsWithCliOnly(
   address: string,
   signal?: AbortSignal
 ): Promise<RobinhoodHoldingsResult> {
@@ -388,6 +465,27 @@ export async function fetchRobinhoodHoldingsWithCli(
       rateLimited: isRateLimitError(message),
     };
   }
+}
+
+/**
+ * Robinhood holdings: default openapi signed (primary key).
+ * Fallback to gmgn-cli on non-ban hard errors. Force cli with PILI_GMGN_HOLDINGS_VIA=cli.
+ */
+export async function fetchRobinhoodHoldingsWithCli(
+  address: string,
+  signal?: AbortSignal
+): Promise<RobinhoodHoldingsResult> {
+  if (!preferOpenApiHoldings()) {
+    return fetchRobinhoodHoldingsWithCliOnly(address, signal);
+  }
+  const openapi = await fetchRobinhoodHoldingsWithOpenApi(address, signal);
+  if (openapi.ok) return openapi;
+  // ban / rate limit: do not fall back to cli (same quota)
+  if (openapi.rateLimited) return openapi;
+  console.warn(
+    `[holdingsRefresh] openapi holdings failed, fallback cli: ${openapi.error}`
+  );
+  return fetchRobinhoodHoldingsWithCliOnly(address, signal);
 }
 
 /** Last-good bags for one wallet×chain. Used when refresh fails so absence≠sold. */
@@ -934,7 +1032,7 @@ export async function refreshCurrentHoldings(
     }
   }
 
-  // Robinhood: only XXYY-active EVM wallets, sequential GMGN portfolio fetch
+  // Robinhood: XXYY-active EVM wallets; openapi signed (primary key) — keep sequential
   let stopRobinhood = false;
   for (const row of robinhoodCandidates) {
     ensureNotAborted(options.signal);

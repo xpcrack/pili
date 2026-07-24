@@ -1,6 +1,7 @@
 /**
  * Debounced queue: newly enabled / added wallets get a 14d GMGN timeline backfill.
  * Coalesces by address_lower. Drain from completeness worker (or tests).
+ * Successful drains mark wallet_timeline_state so the rolling 14d sweeper can skip fresh wallets.
  */
 import 'server-only';
 
@@ -11,6 +12,10 @@ import {
   DEFAULT_TIMELINE_DAYS,
   type BackfillWalletTimelineResult,
 } from '@/lib/server/walletActivityBackfill';
+import {
+  markWalletTimelineFail,
+  markWalletTimelineOk,
+} from '@/lib/server/walletTimelineState';
 import type { User } from '@/types';
 
 const DEFAULT_DEBOUNCE_MS = 5_000;
@@ -42,6 +47,8 @@ export type WalletActivityBackfillQueueDeps = {
   backfill?: typeof backfillWalletTimeline;
   listUsers?: typeof listMonitoredUsers;
   log?: (message: string) => void;
+  markOk?: typeof markWalletTimelineOk;
+  markFail?: typeof markWalletTimelineFail;
   /** When true, skip sqlite persistence (unit tests). */
   memoryOnly?: boolean;
 };
@@ -116,6 +123,8 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
   const now = deps.now ?? Date.now;
   const backfill = deps.backfill ?? backfillWalletTimeline;
   const listUsers = deps.listUsers ?? listMonitoredUsers;
+  const markOk = deps.markOk ?? markWalletTimelineOk;
+  const markFail = deps.markFail ?? markWalletTimelineFail;
   const log =
     deps.log ??
     ((message: string) => {
@@ -172,19 +181,27 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
 
     try {
       const users = listUsers();
-      while (processed < maxJobs && pending.size > 0) {
+      // Take a batch up front so multiple addresses can run concurrently (key pool paces HTTP).
+      const batch: QueueItem[] = [];
+      while (batch.length < maxJobs && pending.size > 0) {
         const next = [...pending.values()].sort((a, b) => a.enqueuedAt - b.enqueuedAt)[0];
         if (!next) break;
         pending.delete(next.addressLower);
-        persist();
+        batch.push(next);
+      }
+      persist();
 
+      const concurrencyEnv = Number(process.env.PILI_WALLET_TIMELINE_ADDR_PARALLEL || maxJobs);
+      const concurrency = Number.isFinite(concurrencyEnv)
+        ? Math.max(1, Math.min(batch.length || 1, Math.floor(concurrencyEnv)))
+        : Math.min(batch.length || 1, maxJobs);
+
+      const runItem = async (next: QueueItem) => {
         const user = findUserForAddress(users, next.address, next.userId);
         if (!user) {
           log(`skip no-user ${next.address} reason=${next.reason}`);
-          processed += 1;
-          continue;
+          return { kind: 'skip' as const, next };
         }
-
         try {
           const result = await backfill({
             user,
@@ -192,26 +209,69 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
             days: next.days,
             async: true,
           });
-          results.push(result);
           log(
             `ok ${next.address} upserted=${result.upserted}/${result.tradeCount} raw=${result.rawCount} reason=${next.reason}`
           );
           if (result.stoppedOnBan) {
-            stoppedOnBan = true;
-            // re-queue remaining chains later
-            pending.set(next.addressLower, { ...next, enqueuedAt: now() });
-            persist();
-            break;
+            markFail({
+              address: next.address,
+              error: 'gmgn ban/rate-limit',
+              at: now(),
+            });
+            return { kind: 'ban' as const, next, result };
           }
+          if (result.chainsOk.length > 0) {
+            markOk({
+              address: next.address,
+              windowDays: next.days,
+              at: now(),
+            });
+            return { kind: 'ok' as const, next, result };
+          }
+          const err =
+            result.chainsFailed.map((c) => `${c.chain}:${c.error}`).join(';') ||
+            'all_chains_failed';
+          markFail({ address: next.address, error: err, at: now() });
+          return { kind: 'fail' as const, next, result, error: err };
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           log(`fail ${next.address}: ${msg}`);
-          // put back for retry
-          pending.set(next.addressLower, { ...next, enqueuedAt: now() });
-          persist();
-          break;
+          markFail({ address: next.address, error: msg, at: now() });
+          return { kind: 'fail' as const, next, error: msg };
         }
+      };
+
+      // Worker pool over batch
+      const outcomes: Array<Awaited<ReturnType<typeof runItem>> | null> = Array.from(
+        { length: batch.length },
+        () => null
+      );
+      let cursor = 0;
+      const workers = Array.from({ length: Math.min(concurrency, batch.length) }, async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= batch.length) break;
+          outcomes[i] = await runItem(batch[i]!);
+        }
+      });
+      await Promise.all(workers);
+
+      for (const outcome of outcomes) {
+        if (!outcome) continue;
         processed += 1;
+        if (outcome.kind === 'ok' && outcome.result) {
+          results.push(outcome.result);
+        } else if (outcome.kind === 'ban') {
+          stoppedOnBan = true;
+          if (outcome.result) results.push(outcome.result);
+          pending.set(outcome.next.addressLower, { ...outcome.next, enqueuedAt: now() });
+        } else if (outcome.kind === 'fail') {
+          if (outcome.result) results.push(outcome.result);
+          pending.set(outcome.next.addressLower, { ...outcome.next, enqueuedAt: now() });
+        }
+      }
+      if (stoppedOnBan || outcomes.some((o) => o && o.kind === 'fail')) {
+        persist();
       }
     } finally {
       draining = false;

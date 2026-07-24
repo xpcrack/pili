@@ -1,9 +1,12 @@
 /**
- * Fetch wallet buy/sell activity via local gmgn-cli (already signed).
- * Ported lightly from newone adapters — no newone dependency.
+ * Fetch wallet buy/sell activity.
+ * Default path: openapi multi-key pool (concurrent-friendly).
+ * Fallback: gmgn-cli when PILI_GMGN_ACTIVITY_VIA=cli or openapi fails hard.
  */
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
 import { runGmgnCliAsync, runGmgnCliSync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
+import { getGmgnOpenApiClient } from '@/lib/server/gmgnOpenApiClient';
+import { noteGmgnError } from '@/lib/server/gmgnRateLimit';
 
 export type GmgnChain = 'sol' | 'eth' | 'bsc' | 'base' | 'robinhood';
 
@@ -150,6 +153,11 @@ function parseActivityOutput(rawText: string) {
   };
 }
 
+function preferOpenApiActivity(): boolean {
+  const v = (process.env.PILI_GMGN_ACTIVITY_VIA || 'openapi').trim().toLowerCase();
+  return v !== 'cli' && v !== 'gmgn-cli';
+}
+
 export async function fetchGmgnWalletActivityAsync(opts: {
   chain: GmgnChain | string;
   wallet: string;
@@ -159,7 +167,43 @@ export async function fetchGmgnWalletActivityAsync(opts: {
   cursor?: string;
   bin?: string;
   signal?: AbortSignal;
+  /** force openapi | cli; default from PILI_GMGN_ACTIVITY_VIA */
+  via?: 'openapi' | 'cli';
 }): Promise<{ items: GmgnActivityItem[]; next: string | null; raw: unknown }> {
+  const via = opts.via ?? (preferOpenApiActivity() ? 'openapi' : 'cli');
+  if (via === 'openapi') {
+    try {
+      if (opts.signal?.aborted) throw new Error('gmgn activity aborted');
+      const types = Array.isArray(opts.type)
+        ? opts.type
+        : opts.type
+          ? [opts.type]
+          : ['buy', 'sell'];
+      const data = await getGmgnOpenApiClient().walletActivity({
+        chain: String(opts.chain),
+        wallet: opts.wallet,
+        limit: opts.limit,
+        cursor: opts.cursor,
+        token: opts.token,
+        type: types,
+      });
+      const parsed = data ?? null;
+      if (!parsed) return { items: [], next: null, raw: null };
+      // openapi client unwraps JSON.data → usually { activities, next }
+      return {
+        items: extractActivityItems(parsed),
+        next: extractNextCursor(parsed),
+        raw: parsed,
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // ban / rate limit: do not silently fall back to cli (same quota)
+      if (/RATE_LIMIT|BANNED|429/i.test(msg)) throw error instanceof Error ? error : new Error(msg);
+      noteGmgnError(`openapi activity fallback→cli: ${msg}`);
+      // fall through to cli
+    }
+  }
+
   const bin = resolveGmgnCliBin(opts.bin);
   const raw = await runGmgnActivityCli(bin, buildActivityArgs(opts), opts.signal);
   return parseActivityOutput(raw);
