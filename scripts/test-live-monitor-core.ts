@@ -142,6 +142,37 @@ function testGmgnNormalize() {
   );
   assert.equal(withMcap.length, 1);
   assert.equal(withMcap[0].marketCapUsd, 500_000);
+
+  // RH official equity tokens dropped; meme same-ticker kept
+  const rhTrades = normalizeGmgnActivityItems(
+    [
+      {
+        event_type: 'buy',
+        timestamp: 1_700_000_100,
+        tx_hash: '0xstock',
+        token: {
+          address: '0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec',
+          symbol: 'NVDA',
+          name: 'NVIDIA • Robinhood Token',
+        },
+        cost_usd: '100',
+      },
+      {
+        event_type: 'buy',
+        timestamp: 1_700_000_101,
+        tx_hash: '0xmeme',
+        token: {
+          address: '0xc32e0a4fd976cb2285c1ba7528aaff9473dd1e18',
+          symbol: 'GME',
+          name: 'GAMESTOP',
+        },
+        cost_usd: '50',
+      },
+    ],
+    { wallet: '0xwallet', chain: 'robinhood', after_ts: 1_700_000_000 }
+  );
+  assert.equal(rhTrades.length, 1);
+  assert.equal(rhTrades[0].tokenSymbol, 'GME');
   console.log('PASS gmgn normalize');
 }
 

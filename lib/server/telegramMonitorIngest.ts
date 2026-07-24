@@ -8,6 +8,7 @@ import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/li
 import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
+import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
 import { shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import {
@@ -320,6 +321,28 @@ export async function ingestTelegramMonitorUpdate(
         walletLabel: parsed.walletLabel,
         walletAliasLabel: parsed.walletAliasLabel,
         trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
+  }
+
+  // Drop official RH equity tokens (stock/ETF wrappers) — not meme intent.
+  if (
+    isRobinhoodStockToken({
+      chain: parsed.chain,
+      tokenAddress: parsed.tokenAddress,
+    })
+  ) {
+    return {
+      ok: true,
+      ignored: true,
+      reason: 'robinhood-stock-token-filtered' as const,
+      parsed: {
+        chain: parsed.chain,
+        walletLabel: parsed.walletLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+        tokenAddress: parsed.tokenAddress,
+        tokenSymbol: parsed.tokenSymbol,
       },
     };
   }
