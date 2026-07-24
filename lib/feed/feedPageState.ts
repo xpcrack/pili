@@ -1,5 +1,6 @@
 import type { Activity, User } from '@/types';
 import {
+  DEFAULT_FEED_SEARCH_FILTERS,
   type FeedSearchFilters,
   hasAnyEnabledFeedType,
   matchesFeedSearchFilters,
@@ -12,13 +13,14 @@ export interface FeedPageItem {
 }
 
 export function hasActiveFeedLocalFilters(searchFilters: FeedSearchFilters) {
+  const defaults = DEFAULT_FEED_SEARCH_FILTERS;
   return (
     searchFilters.keyword.trim().length > 0 ||
-    !searchFilters.typeFilters.trade ||
-    !searchFilters.typeFilters.transfer ||
-    !searchFilters.typeFilters.twitter ||
-    !searchFilters.typeFilters.telegram ||
-    searchFilters.typeFilters.news ||
+    searchFilters.typeFilters.trade !== defaults.typeFilters.trade ||
+    searchFilters.typeFilters.transfer !== defaults.typeFilters.transfer ||
+    searchFilters.typeFilters.twitter !== defaults.typeFilters.twitter ||
+    searchFilters.typeFilters.telegram !== defaults.typeFilters.telegram ||
+    searchFilters.typeFilters.news !== defaults.typeFilters.news ||
     searchFilters.minTradeAmountUsd.trim().length > 0 ||
     searchFilters.minTradeMarketCapUsd.trim().length > 0
   );

@@ -23,7 +23,8 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
   keyword: '',
   typeFilters: {
     trade: true,
-    transfer: true,
+    // v1 交易 Feed 默认降权转账；需要时再手动打开
+    transfer: false,
     twitter: true,
     telegram: true,
     news: false,

@@ -186,6 +186,8 @@ export interface Activity {
     /** Alchemy doorbell + GMGN enrichment (not XXYY TG). */
     liveSource?: 'alchemy-gmgn';
     marketCapAtTxEstimated?: boolean;
+    /** 相对仓位变化：0.348 = +34.8%。暂无数据时 Feed 幅度列显示「待补」。 */
+    positionDeltaRatio?: number;
     displayWalletLabel?: string;
     displayActionVariantLabel?: string;
     displayTradeAmountText?: string;

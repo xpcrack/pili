@@ -103,6 +103,8 @@ function run() {
   assert.doesNotMatch(markup, /https:\/\/t\.co\/MU3UISkJ0r/, 'activity card should not show the quote stub url as正文');
   assert.match(markup, /引用 @tradexyz/, 'activity card should render the quoted author handle');
   assert.match(markup, /DRAM is now live\. 20x leverage, 24\/7, 365\./, 'activity card should render the quoted tweet content');
+  assert.match(markup, /data-social-row/, 'twitter cards should use compact social row layout');
+  assert.match(markup, />引用</, 'twitter quote kind badge should render');
 
   const translatedMarkup = renderToStaticMarkup(
     <ActivityCard
@@ -113,6 +115,64 @@ function run() {
 
   assert.match(translatedMarkup, /看好 BTC 和 ETH。/, 'activity card should render the translated tweet text');
   assert.doesNotMatch(translatedMarkup, /Original:/, 'activity card should not show the original text when translation exists');
+  assert.match(translatedMarkup, /data-social-row/, 'translated twitter cards should use compact social row layout');
+
+  const telegramMarkup = renderToStaticMarkup(
+    <ActivityCard
+      activity={{
+        id: 'telegram:1',
+        userId: 'user-1',
+        source: 'telegram',
+        type: 'post',
+        title: 'TG',
+        content: '频道更新：关注 $SOL 和 $BTC',
+        timestamp: 1_777_912_752_222,
+        metadata: {
+          telegramPostUrl: 'https://t.me/channel/1',
+          translationZh: '频道更新：关注 $SOL 和 $BTC',
+          tokenSentiments: [
+            { tokenSymbol: 'SOL', sentiment: 'positive', matchSource: 'ticker' },
+          ],
+        },
+      }}
+      user={makeUser()}
+    />
+  );
+  assert.match(telegramMarkup, /data-social-row/, 'telegram cards should use compact social row layout');
+  assert.match(telegramMarkup, /频道更新：关注/, 'telegram body should render');
+  assert.match(telegramMarkup, />TG</, 'telegram kind badge should render');
+
+  const transferMarkup = renderToStaticMarkup(
+    <ActivityCard
+      activity={{
+        id: 'transfer:send-1',
+        userId: 'user-1',
+        source: 'blockchain',
+        type: 'transfer',
+        title: 'transfer',
+        content: 'transfer',
+        timestamp: 1_777_912_752_333,
+        metadata: {
+          chain: 'solana',
+          txHash: 'SendTx111',
+          token: 'USDC',
+          tokenAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          value: '1000',
+          txAction: 'send',
+          txActionLabel: '发送',
+          trackedAddress: 'TrackedWallet111',
+          fromAddress: 'TrackedWallet111',
+          toAddress: 'Counterparty111',
+        },
+      }}
+      user={makeUser()}
+      addressAliasMap={new Map([['counterparty111', 'Friend']])}
+    />
+  );
+  assert.match(transferMarkup, /data-transfer-row/, 'send/receive cards should use compact transfer row layout');
+  assert.match(transferMarkup, />发送</, 'transfer action pill should render');
+  assert.match(transferMarkup, /USDC/, 'transfer token symbol should render');
+  assert.doesNotMatch(transferMarkup, /data-trade-row/, 'pure send should not use trade row');
 
   console.log('activity card render tests: ok');
 }

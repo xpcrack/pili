@@ -427,27 +427,27 @@ export default function Home() {
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
-          <aside className="w-full md:sticky md:top-20 md:w-64 md:shrink-0">
-            <div className="mb-2 flex items-center justify-center gap-1 rounded-lg border border-zinc-800/70 bg-zinc-900/50 p-1">
-              <button
-                onClick={() => setSidebarSortMode('recent')}
-                className={`rounded px-2 py-1 text-xs transition-colors ${
-                  sidebarSortMode === 'recent'
-                    ? 'bg-zinc-700 text-zinc-100'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                }`}
-              >
-                最近活跃
-              </button>
+          <aside className="w-full md:sticky md:top-20 md:w-[230px] md:shrink-0">
+            <div className="mb-2 grid grid-cols-2 gap-0.5 rounded-[9px] border border-white/[0.07] bg-black/20 p-0.5">
               <button
                 onClick={() => setSidebarSortMode('asset')}
-                className={`rounded px-2 py-1 text-xs transition-colors ${
+                className={`rounded-[7px] px-1.5 py-1.5 text-[11.5px] transition-colors ${
                   sidebarSortMode === 'asset'
-                    ? 'bg-zinc-700 text-zinc-100'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                    ? 'bg-white/[0.08] text-zinc-100'
+                    : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
                 最高资产
+              </button>
+              <button
+                onClick={() => setSidebarSortMode('recent')}
+                className={`rounded-[7px] px-1.5 py-1.5 text-[11.5px] transition-colors ${
+                  sidebarSortMode === 'recent'
+                    ? 'bg-white/[0.08] text-zinc-100'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                最近活跃
               </button>
             </div>
             <UserBar
@@ -676,26 +676,47 @@ export default function Home() {
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
-                  <div id="feed-list" className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/70">
-                    <div className="divide-y divide-zinc-800/70">
-                      {filteredFeed.map(({ user, activity }) => (
+                  <div id="feed-list" className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-950/70">
+                    <div className={searchFilters.typeFilters.trade ? 'min-w-[820px]' : undefined}>
+                      {searchFilters.typeFilters.trade ? (
                         <div
-                          key={getActivityRenderKey(
-                            user.id,
-                            activity.id,
-                            buildActivityScopedDedupKey(activity, user.id)
-                          )}
-                          className="[content-visibility:auto] [contain-intrinsic-size:auto_140px]"
+                          className="sticky top-0 z-[2] grid min-h-[30px] items-center gap-x-3 border-b border-white/[0.07] bg-zinc-950/95 px-3 text-[11px] text-zinc-500 backdrop-blur"
+                          style={{
+                            gridTemplateColumns:
+                              '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr) 118px',
+                          }}
                         >
-                          <ActivityCard
-                            activity={activity}
-                            user={user}
-                            timeDisplayMode={timeDisplayMode}
-                            tradeValueDisplayMode={tradeValueDisplayMode}
-                            addressAliasMap={addressAliasMap}
-                          />
+                          <div />
+                          <div>人物 / 钱包</div>
+                          <div>Ticker</div>
+                          <div className="text-right">成交</div>
+                          <div className="text-right">USD</div>
+                          <div className="text-right">MC</div>
+                          <div className="text-right">时间</div>
+                          <div>幅度</div>
+                          <div className="text-right">操作</div>
                         </div>
-                      ))}
+                      ) : null}
+                      <div>
+                        {filteredFeed.map(({ user, activity }) => (
+                          <div
+                            key={getActivityRenderKey(
+                              user.id,
+                              activity.id,
+                              buildActivityScopedDedupKey(activity, user.id)
+                            )}
+                            className="[content-visibility:auto] [contain-intrinsic-size:auto_44px]"
+                          >
+                            <ActivityCard
+                              activity={activity}
+                              user={user}
+                              timeDisplayMode={timeDisplayMode}
+                              tradeValueDisplayMode={tradeValueDisplayMode}
+                              addressAliasMap={addressAliasMap}
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <div ref={loadMoreSentinelRef} className="h-2" />

@@ -315,6 +315,10 @@ function run() {
   assert.equal(
     matchesFeedSearchFilters(transferItem, {
       ...DEFAULT_FEED_SEARCH_FILTERS,
+      typeFilters: {
+        ...DEFAULT_FEED_SEARCH_FILTERS.typeFilters,
+        transfer: true,
+      },
       minTradeAmountUsd: '999999',
       minTradeMarketCapUsd: '999999',
     }),
