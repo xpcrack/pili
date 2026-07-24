@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { toProxiedMediaUrl } from '@/lib/mediaProxy';
 import { getUserAvatar } from '@/lib/userProfile';
-import { getActivityCardContentColumnClass } from '@/lib/activityCardLayout';
 import { buildActivityCardViewModel } from '@/lib/activityCardViewModel';
 import {
   cleanTwitterDisplayText,
@@ -23,7 +22,6 @@ import {
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
 import { formatCompactMarketCap, type TradeValueDisplayMode } from '@/lib/tradeDisplay';
-import { setFeedAddressHover, setFeedTokenHover } from '@/lib/feed/feedHoverHighlight';
 
 interface ActivityCardProps {
   activity: Activity;
@@ -31,10 +29,6 @@ interface ActivityCardProps {
   timeDisplayMode?: FeedTimeDisplayMode;
   tradeValueDisplayMode?: TradeValueDisplayMode;
   onClick?: () => void;
-  activeTokenCa?: string | null;
-  onTokenCaHover?: (tokenCa: string | null) => void;
-  activeAddress?: string | null;
-  onAddressHover?: (address: string | null) => void;
   addressAliasMap?: Map<string, string>;
 }
 
@@ -55,10 +49,6 @@ export const ActivityCard = memo(function ActivityCard({
   timeDisplayMode = 'relative',
   tradeValueDisplayMode = 'native',
   onClick,
-  activeTokenCa = null,
-  onTokenCaHover,
-  activeAddress = null,
-  onAddressHover,
   addressAliasMap,
 }: ActivityCardProps) {
   const [now, setNow] = useState(activity.timestamp);
@@ -103,6 +93,7 @@ export const ActivityCard = memo(function ActivityCard({
     newsChannelLabel,
     hasMedia,
     isTransfer,
+    transferAction,
     displayActionVariantLabel,
     trackedAddress,
     isTradeAction,
@@ -113,13 +104,14 @@ export const ActivityCard = memo(function ActivityCard({
     marketCapTooltip,
     displayWalletLabel,
     displayTradeHeadlineText,
+    displayTradeAmountText,
+    displayTradeUsdText,
+    positionDeltaText,
+    positionDeltaTone,
     displayTokenSymbol,
     displayMarketCapText,
     shouldUseOutgoingAmountTone,
     canCopyTokenCa,
-    isSameCaHighlighted,
-    isTrackedAddressHighlighted,
-    isCounterpartyAddressHighlighted,
     primaryText,
     explorerTxUrl,
     tokenGmgnUrl,
@@ -134,8 +126,6 @@ export const ActivityCard = memo(function ActivityCard({
     tradeValueDisplayMode,
     resolvedTokenInfo,
     addressAliasMap,
-    activeTokenCa,
-    activeAddress,
   });
   const secondaryText =
     !isBlockchain && activity.title && !usesSocialBodyLayout(activity.source) ? activity.content : null;
@@ -198,8 +188,7 @@ export const ActivityCard = memo(function ActivityCard({
         );
       })
     : [];
-  const coHitAddressCount = activity.metadata.coHitAddressCount ?? 1;
-  const socialPostUrl = activity.metadata.tweetUrl || activity.metadata.telegramPostUrl || '';
+    const socialPostUrl = activity.metadata.tweetUrl || activity.metadata.telegramPostUrl || '';
   const copyText = useCallback(async (text: string) => {
     if (!text) return;
     try {
@@ -321,17 +310,603 @@ export const ActivityCard = memo(function ActivityCard({
     };
   }, [activity.metadata.chain, activity.timestamp, isTransfer, tokenAvatarKey, tokenCa, tokenInfoKey, tokenSymbolUpper, txHash]);
 
+  const positionDeltaClassName =
+    positionDeltaTone === 'up'
+      ? 'border-emerald-400/30 bg-emerald-500/12 text-emerald-300'
+      : positionDeltaTone === 'down'
+        ? 'border-rose-400/30 bg-rose-500/12 text-rose-300'
+        : positionDeltaTone === 'neutral'
+          ? 'border-sky-400/30 bg-sky-500/10 text-sky-200'
+          : 'border-zinc-700 bg-zinc-800/60 text-zinc-500';
+
+  // 交易：单行表布局（设计稿 v1）
+  if (isTransfer && isTradeAction) {
+    return (
+      <Card
+        data-feed-card
+        data-trade-row
+        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        onClick={onClick}
+      >
+        <CardContent className="px-0 py-0">
+          <div
+            className="feed-trade-row grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
+            style={{
+              gridTemplateColumns:
+                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr) 118px',
+            }}
+          >
+            <Avatar className="h-7 w-7 shrink-0">
+              <AvatarImage src={getUserAvatar(user)} alt={user.name} />
+              <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
+                {user.name.slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="min-w-0">
+              <div className="truncate font-semibold leading-tight text-zinc-100">{user.name}</div>
+              <div className="mt-0.5 min-w-0">
+                {trackedAddress ? (
+                  <button
+                    type="button"
+                    className="max-w-full truncate rounded text-left text-[10.5px] leading-none text-zinc-500 transition-colors hover:bg-cyan-500/10 hover:text-zinc-300"
+                    title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void copyText(trackedAddress);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openExternalLink(trackedAddressGmgnUrl);
+                    }}
+                  >
+                    {displayWalletLabel}
+                  </button>
+                ) : (
+                  <span className="truncate text-[10.5px] leading-none text-zinc-500">{displayWalletLabel}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex min-w-0 items-center gap-1.5">
+              {canCopyTokenCa ? (
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1.5 rounded px-0.5 transition-colors hover:bg-yellow-500/10"
+                  title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void copyText(tokenCa);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openExternalLink(tokenGmgnUrl);
+                  }}
+                >
+                  <Avatar className="h-[18px] w-[18px] shrink-0 rounded-[5px]">
+                    <AvatarImage src={resolvedTokenAvatar || undefined} alt={displayTokenSymbol} />
+                    <AvatarFallback className="rounded-[5px] bg-zinc-800 text-[8px] text-zinc-400">
+                      {displayTokenSymbol.slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate font-bold tracking-wide text-zinc-100">{displayTokenSymbol}</span>
+                </button>
+              ) : (
+                <>
+                  <Avatar className="h-[18px] w-[18px] shrink-0 rounded-[5px]">
+                    <AvatarImage src={resolvedTokenAvatar || undefined} alt={displayTokenSymbol} />
+                    <AvatarFallback className="rounded-[5px] bg-zinc-800 text-[8px] text-zinc-400">
+                      {displayTokenSymbol.slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate font-bold tracking-wide text-zinc-100">{displayTokenSymbol}</span>
+                </>
+              )}
+              {isMergedTradeCard ? (
+                <span className="shrink-0 rounded-full border border-sky-400/40 bg-sky-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-200">
+                  合{mergedTradeCount}
+                </span>
+              ) : null}
+            </div>
+
+            <div
+              className={`min-w-0 truncate text-right font-semibold ${
+                shouldUseOutgoingAmountTone ? 'text-rose-300' : 'text-emerald-300'
+              }`}
+              title={displayTradeHeadlineText || undefined}
+            >
+              {displayTradeAmountText}
+            </div>
+
+            <div className="min-w-0 truncate text-right font-semibold text-zinc-200">{displayTradeUsdText}</div>
+
+            <div
+              className="min-w-0 truncate text-right font-semibold text-zinc-300"
+              title={marketCapTooltip}
+            >
+              {displayMarketCapText || '—'}
+            </div>
+
+            <div className="text-right text-xs text-zinc-500">
+              {activity.metadata.txHash ? (
+                <button
+                  type="button"
+                  className="rounded px-0.5 hover:bg-zinc-800 hover:text-zinc-300"
+                  title="左键复制交易哈希，右键打开浏览器"
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    await copyText(activity.metadata.txHash || '');
+                    setTxCopied(true);
+                    if (txCopyTimerRef.current !== null) {
+                      window.clearTimeout(txCopyTimerRef.current);
+                    }
+                    txCopyTimerRef.current = window.setTimeout(() => {
+                      setTxCopied(false);
+                    }, 1200);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (explorerTxUrl) {
+                      window.open(explorerTxUrl, '_blank', 'noopener,noreferrer');
+                    }
+                  }}
+                >
+                  {txCopied ? '已复制' : timeAgo}
+                </button>
+              ) : (
+                timeAgo
+              )}
+            </div>
+
+            <div>
+              <span
+                className={`inline-flex h-[22px] min-w-[64px] items-center justify-center rounded-full border px-2 font-mono text-xs font-bold tracking-tight ${positionDeltaClassName}`}
+                title={displayActionVariantLabel || undefined}
+              >
+                {positionDeltaText}
+              </span>
+            </div>
+
+            <div className="flex w-full items-center justify-end gap-1">
+              <button
+                type="button"
+                disabled={!canCopyTokenCa}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={canCopyTokenCa ? `复制 CA: ${tokenCa}` : '无 CA'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (canCopyTokenCa) void copyText(tokenCa);
+                }}
+              >
+                CA
+              </button>
+              <button
+                type="button"
+                disabled={!tokenGmgnUrl}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={tokenGmgnUrl || '无 GMGN'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openExternalLink(tokenGmgnUrl);
+                }}
+              >
+                GMGN
+              </button>
+              <button
+                type="button"
+                disabled={!explorerTxUrl}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={explorerTxUrl || '无 TX'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openExternalLink(explorerTxUrl);
+                }}
+              >
+                TX
+              </button>
+            </div>
+          </div>
+          {importanceBadgeText ? (
+            <span
+              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
+              title={importanceTooltip || undefined}
+            >
+              {importanceBadgeText}
+            </span>
+          ) : null}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // 转账：紧凑单行（默认筛选关闭，打开时仍要可读）
+  if (isTransfer && isSendReceiveTransfer) {
+    const transferBadgeClass = shouldUseOutgoingAmountTone
+      ? 'border-rose-400/30 bg-rose-500/12 text-rose-300'
+      : 'border-emerald-400/30 bg-emerald-500/12 text-emerald-300';
+    const counterpartyLabel = displayMarketCapText || '—';
+
+    return (
+      <Card
+        data-feed-card
+        data-transfer-row
+        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        onClick={onClick}
+      >
+        <CardContent className="px-0 py-0">
+          <div
+            className="grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
+            style={{
+              gridTemplateColumns:
+                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(64px,0.65fr) minmax(96px,1fr) 44px 118px',
+            }}
+          >
+            <Avatar className="h-7 w-7 shrink-0">
+              <AvatarImage src={getUserAvatar(user)} alt={user.name} />
+              <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
+                {user.name.slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="min-w-0">
+              <div className="truncate font-semibold leading-tight text-zinc-100">{user.name}</div>
+              <div className="mt-0.5 min-w-0">
+                {trackedAddress ? (
+                  <button
+                    type="button"
+                    className="max-w-full truncate rounded text-left text-[10.5px] leading-none text-zinc-500 transition-colors hover:bg-cyan-500/10 hover:text-zinc-300"
+                    title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void copyText(trackedAddress);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openExternalLink(trackedAddressGmgnUrl);
+                    }}
+                  >
+                    {displayWalletLabel}
+                  </button>
+                ) : (
+                  <span className="truncate text-[10.5px] leading-none text-zinc-500">{displayWalletLabel}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex min-w-0 items-center gap-1.5">
+              {canCopyTokenCa ? (
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1.5 rounded px-0.5 transition-colors hover:bg-yellow-500/10"
+                  title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void copyText(tokenCa);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openExternalLink(tokenGmgnUrl);
+                  }}
+                >
+                  <Avatar className="h-[18px] w-[18px] shrink-0 rounded-[5px]">
+                    <AvatarImage src={resolvedTokenAvatar || undefined} alt={displayTokenSymbol} />
+                    <AvatarFallback className="rounded-[5px] bg-zinc-800 text-[8px] text-zinc-400">
+                      {displayTokenSymbol.slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                </button>
+              ) : (
+                <>
+                  <Avatar className="h-[18px] w-[18px] shrink-0 rounded-[5px]">
+                    <AvatarImage src={resolvedTokenAvatar || undefined} alt={displayTokenSymbol} />
+                    <AvatarFallback className="rounded-[5px] bg-zinc-800 text-[8px] text-zinc-400">
+                      {displayTokenSymbol.slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                </>
+              )}
+            </div>
+
+            <div
+              className={`min-w-0 truncate text-right font-semibold ${
+                shouldUseOutgoingAmountTone ? 'text-rose-300' : 'text-emerald-300'
+              }`}
+              title={displayTradeHeadlineText || undefined}
+            >
+              {displayTradeAmountText}
+            </div>
+
+            <div>
+              <span
+                className={`inline-flex h-[22px] min-w-[48px] items-center justify-center rounded-full border px-2 text-[11px] font-semibold ${transferBadgeClass}`}
+              >
+                {displayActionVariantLabel || transferAction}
+              </span>
+            </div>
+
+            <div className="min-w-0">
+              {counterpartyAddress ? (
+                <button
+                  type="button"
+                  className="max-w-full truncate rounded px-0.5 text-left font-semibold text-zinc-300 transition-colors hover:bg-cyan-500/10"
+                  title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void copyText(counterpartyAddress);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openExternalLink(counterpartyGmgnUrl);
+                  }}
+                >
+                  {counterpartyLabel}
+                </button>
+              ) : (
+                <span className="truncate text-zinc-500">{counterpartyLabel}</span>
+              )}
+            </div>
+
+            <div className="text-right text-xs text-zinc-500">
+              {activity.metadata.txHash ? (
+                <button
+                  type="button"
+                  className="rounded px-0.5 hover:bg-zinc-800 hover:text-zinc-300"
+                  title="左键复制交易哈希，右键打开浏览器"
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    await copyText(activity.metadata.txHash || '');
+                    setTxCopied(true);
+                    if (txCopyTimerRef.current !== null) {
+                      window.clearTimeout(txCopyTimerRef.current);
+                    }
+                    txCopyTimerRef.current = window.setTimeout(() => {
+                      setTxCopied(false);
+                    }, 1200);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (explorerTxUrl) {
+                      window.open(explorerTxUrl, '_blank', 'noopener,noreferrer');
+                    }
+                  }}
+                >
+                  {txCopied ? '已复制' : timeAgo}
+                </button>
+              ) : (
+                timeAgo
+              )}
+            </div>
+
+            <div className="flex w-full items-center justify-end gap-1">
+              <button
+                type="button"
+                disabled={!canCopyTokenCa}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={canCopyTokenCa ? `复制 CA: ${tokenCa}` : '无 CA'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (canCopyTokenCa) void copyText(tokenCa);
+                }}
+              >
+                CA
+              </button>
+              <button
+                type="button"
+                disabled={!tokenGmgnUrl}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={tokenGmgnUrl || '无 GMGN'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openExternalLink(tokenGmgnUrl);
+                }}
+              >
+                GMGN
+              </button>
+              <button
+                type="button"
+                disabled={!explorerTxUrl}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={explorerTxUrl || '无 TX'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openExternalLink(explorerTxUrl);
+                }}
+              >
+                TX
+              </button>
+            </div>
+          </div>
+          {importanceBadgeText ? (
+            <span
+              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
+              title={importanceTooltip || undefined}
+            >
+              {importanceBadgeText}
+            </span>
+          ) : null}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // 推特 / TG：紧凑行（对齐交易 Feed 密度）
+  if (isTwitter || isTelegram) {
+    const socialPrimary = isTwitter ? twitterPrimaryText : telegramDisplayPrimary;
+    const sentimentChips = isTwitter ? tweetSentimentChips : telegramSentimentChips;
+    const personLabel = isNews && newsChannelLabel ? newsChannelLabel : user.name;
+    const kindBadge = typeLabel || (isTwitter ? '推特' : 'TG');
+    const kindBadgeClass = isNews
+      ? 'border-amber-400/30 bg-amber-500/10 text-amber-200'
+      : isTwitter
+        ? 'border-sky-400/30 bg-sky-500/10 text-sky-200'
+        : 'border-violet-400/30 bg-violet-500/10 text-violet-200';
+    const quotedPreview = isTwitter
+      ? (twitterQuotedContent || twitterQuotedOriginal || '').replace(/\s+/g, ' ').trim()
+      : '';
+    const quoteAuthor = twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用';
+
+    return (
+      <Card
+        data-feed-card
+        data-social-row
+        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        onClick={onClick}
+      >
+        <CardContent className="px-0 py-0">
+          <div className="flex min-h-10 items-start gap-2.5 border-b border-white/[0.035] px-3 py-2">
+            <Avatar className="mt-0.5 h-7 w-7 shrink-0">
+              <AvatarImage src={getUserAvatar(user)} alt={personLabel} />
+              <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
+                {personLabel.slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="w-[108px] shrink-0 min-w-0">
+              <div className="truncate text-[12.5px] font-semibold leading-tight text-zinc-100">{personLabel}</div>
+              <div className="mt-1 flex items-center gap-1">
+                <span
+                  className={`inline-flex h-[18px] items-center rounded-full border px-1.5 text-[10px] font-medium leading-none ${kindBadgeClass}`}
+                >
+                  {kindBadge}
+                </span>
+                {hasMedia ? <span className="text-[10px] text-zinc-500">媒体</span> : null}
+              </div>
+            </div>
+
+            <div className="min-w-0 flex-1 space-y-1">
+              {socialPrimary ? (
+                <p className="line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] leading-[1.35] text-zinc-100">
+                  {highlightSocialContent(socialPrimary, activity.metadata.tokenSentiments)}
+                </p>
+              ) : null}
+              {quotedPreview ? (
+                <p className="line-clamp-1 text-[11.5px] leading-snug text-zinc-500">
+                  <span className="text-zinc-400">{quoteAuthor}</span>
+                  <span className="mx-1 text-zinc-600">·</span>
+                  {quotedPreview}
+                </p>
+              ) : null}
+              {sentimentChips.length > 0 ? (
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  {sentimentChips.map((chip, index) => {
+                    const symbol = chip.tokenSymbol
+                      ? chip.tokenSymbol.toUpperCase()
+                      : chip.tokenAddress
+                        ? chip.tokenAddress.length > 12
+                          ? `${chip.tokenAddress.slice(0, 4)}…${chip.tokenAddress.slice(-4)}`
+                          : chip.tokenAddress
+                        : 'TOKEN';
+                    const mcLabel = formatCompactMarketCap(chip.marketCapAtPostUsd);
+                    const sentimentLabel =
+                      chip.sentiment === 'positive'
+                        ? '正'
+                        : chip.sentiment === 'negative'
+                          ? '负'
+                          : '中';
+                    const currentMc = formatCompactMarketCap(chip.marketCapUsd);
+                    const titleParts = [
+                      chip.tokenAddress || null,
+                      mcLabel
+                        ? `发帖时市值 ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}`
+                        : null,
+                      currentMc ? `当前市值 ${currentMc}` : null,
+                    ].filter(Boolean);
+                    return (
+                      <span
+                        key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
+                        title={titleParts.join(' · ') || undefined}
+                        className={
+                          chip.sentiment === 'positive'
+                            ? 'rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10.5px] text-emerald-300'
+                            : chip.sentiment === 'negative'
+                              ? 'rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[10.5px] text-rose-300'
+                              : 'rounded-full bg-zinc-700/70 px-1.5 py-0.5 text-[10.5px] text-zinc-200'
+                        }
+                      >
+                        {symbol}
+                        {mcLabel ? ` · ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}` : ''}
+                        {` · ${sentimentLabel}`}
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
+              {socialPostUrl ? (
+                <button
+                  type="button"
+                  className="rounded px-0.5 text-right text-xs tabular-nums text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                  title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    await copyText(socialPostUrl);
+                    setTweetLinkCopied(true);
+                    if (tweetCopyTimerRef.current !== null) {
+                      window.clearTimeout(tweetCopyTimerRef.current);
+                    }
+                    tweetCopyTimerRef.current = window.setTimeout(() => {
+                      setTweetLinkCopied(false);
+                    }, 1200);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
+                  }}
+                >
+                  {tweetLinkCopied ? '已复制' : timeAgo}
+                </button>
+              ) : (
+                <span className="text-xs tabular-nums text-zinc-500">{timeAgo}</span>
+              )}
+              <button
+                type="button"
+                disabled={!socialPostUrl}
+                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                title={socialPostUrl || '无链接'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (socialPostUrl) {
+                    window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
+                  }
+                }}
+              >
+                打开
+              </button>
+            </div>
+          </div>
+          {importanceBadgeText ? (
+            <span
+              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
+              title={importanceTooltip || undefined}
+            >
+              {importanceBadgeText}
+            </span>
+          ) : null}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // 兜底：非交易/非转账/非社交的其它动态
   return (
     <Card
       data-feed-card
-      className={`group relative cursor-pointer gap-0 rounded-none py-0 shadow-none ring-0 transition-all ${
-        isMergedTradeCard
-          ? 'border-y border-sky-500/20 bg-gradient-to-r from-sky-500/8 via-cyan-500/6 to-transparent hover:bg-sky-500/10'
-          : 'border-0 bg-transparent hover:bg-zinc-900/60'
-      }`}
+      className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
       onClick={onClick}
     >
-      <CardContent className="px-3 py-2 pr-14">
+      <CardContent className="px-3 py-2">
         {importanceBadgeText ? (
           <Badge
             variant="secondary"
@@ -341,487 +916,25 @@ export const ActivityCard = memo(function ActivityCard({
             {importanceBadgeText}
           </Badge>
         ) : null}
-        <div className="grid gap-y-1 md:grid-cols-[minmax(0,0.78fr)_8.75rem_minmax(0,1.22fr)] md:gap-x-1">
-          {!isTransfer && !isTwitter && !isTelegram && (
-            <div className="flex min-w-0 items-start gap-1.5 text-[13px] md:col-start-3 md:row-start-1 md:self-start">
-              <Avatar className="h-9 w-9 shrink-0">
-                <AvatarImage src={getUserAvatar(user)} alt={user.name} />
-                <AvatarFallback className="bg-zinc-800 text-[11px] text-zinc-400">
-                  {user.name.slice(0, 1).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-semibold text-zinc-300">{isNews && newsChannelLabel ? newsChannelLabel : user.name}</span>
-                </div>
-                {isBlockchain && (
-                  <div className="mt-0.5 text-zinc-500">
-                    {activity.metadata.txHash ? (
-                      <button
-                        type="button"
-                        className="rounded px-1 py-0 -ml-1 hover:bg-zinc-800 hover:text-zinc-300"
-                        title="左键复制交易哈希，右键打开 OKX 浏览器"
-                        onClick={async (event) => {
-                          event.stopPropagation();
-                          await copyText(activity.metadata.txHash || '');
-                          setTxCopied(true);
-                          if (txCopyTimerRef.current !== null) {
-                            window.clearTimeout(txCopyTimerRef.current);
-                          }
-                          txCopyTimerRef.current = window.setTimeout(() => {
-                            setTxCopied(false);
-                          }, 1200);
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          if (explorerTxUrl) {
-                            window.open(explorerTxUrl, '_blank', 'noopener,noreferrer');
-                          }
-                        }}
-                      >
-                        {txCopied ? '已复制' : timeAgo}
-                      </button>
-                    ) : (
-                      timeAgo
-                    )}
-                  </div>
-                )}
-                {activity.type !== 'transfer' && typeLabel && (
-                  <div className="mt-0.5 text-zinc-500">{typeLabel}</div>
-                )}
-              </div>
+        <div className="flex min-w-0 items-start gap-2.5">
+          <Avatar className="h-7 w-7 shrink-0">
+            <AvatarImage src={getUserAvatar(user)} alt={user.name} />
+            <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
+              {user.name.slice(0, 1).toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+              <span className="truncate font-semibold text-zinc-100">{user.name}</span>
+              {typeLabel ? <span className="shrink-0 text-[11px] text-zinc-500">{typeLabel}</span> : null}
+              <span className="ml-auto shrink-0 text-xs tabular-nums text-zinc-500">{timeAgo}</span>
             </div>
-          )}
-
-          <div
-            className={`min-w-0 md:row-start-1 ${getActivityCardContentColumnClass({
-              isTransfer,
-              isBlockchain,
-              isTwitter,
-              isTelegram,
-            })}`}
-          >
-            <div className="space-y-0.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-1 text-[13px] leading-5">
-                {!isTwitter && !isTelegram && !isTransfer && (
-                  <span className="line-clamp-1 text-zinc-300">{primaryText}</span>
-                )}
-                {(isTwitter || isTelegram) && (
-                  <div className="w-full min-w-0">
-                    {/*
-                      与交易卡同一 3 列栅格宽度：
-                      左 2.5+12.167 空着对齐交易内容区，
-                      右 8.75rem 放用户头像（与交易人像同列），
-                      内容再贴在头像右边继续展开。
-                    */}
-                    <div className="flex w-full min-w-0 items-start gap-1.5">
-                      <div className="hidden shrink-0 md:block md:w-[14.667rem]" aria-hidden />
-                      <div className="grid h-10 w-[8.75rem] shrink-0 grid-cols-[2.5rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-0.5">
-                        <Avatar className="row-span-2 h-10 w-10 shrink-0">
-                          <AvatarImage src={getUserAvatar(user)} alt={user.name} />
-                          <AvatarFallback className="bg-zinc-800 text-[11px] text-zinc-400">
-                            {user.name.slice(0, 1).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="min-w-0 flex-1 truncate font-semibold leading-none text-zinc-300">
-                            {isNews && newsChannelLabel ? newsChannelLabel : user.name}
-                          </span>
-                        </div>
-                        <div className="min-w-0 text-zinc-500 leading-none">
-                          {socialPostUrl ? (
-                            <button
-                              type="button"
-                              className="rounded px-1 py-0 -ml-1 hover:bg-zinc-800 hover:text-zinc-300"
-                              title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
-                              onClick={async (event) => {
-                                event.stopPropagation();
-                                await copyText(socialPostUrl);
-                                setTweetLinkCopied(true);
-                                if (tweetCopyTimerRef.current !== null) {
-                                  window.clearTimeout(tweetCopyTimerRef.current);
-                                }
-                                tweetCopyTimerRef.current = window.setTimeout(() => {
-                                  setTweetLinkCopied(false);
-                                }, 1200);
-                              }}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
-                              }}
-                            >
-                              {tweetLinkCopied ? '已复制' : [timeAgo, typeLabel].filter(Boolean).join(' ')}
-                            </button>
-                          ) : (
-                            <span className="px-1 -ml-1">{[timeAgo, typeLabel].filter(Boolean).join(' ')}</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="min-w-0 flex-1 space-y-1 text-[13px] leading-5">
-                        {isTwitter ? (
-                          <>
-                            {twitterPrimaryText ? (
-                              <p className="whitespace-pre-wrap break-words text-zinc-100">
-                                {highlightSocialContent(twitterPrimaryText, activity.metadata.tokenSentiments)}
-                              </p>
-                            ) : null}
-                            {twitterQuotedContent || twitterQuotedOriginal ? (
-                              <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                                <p className="text-[11px] text-zinc-500">
-                                  {twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用内容'}
-                                </p>
-                                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-300">
-                                  {twitterQuotedContent || twitterQuotedOriginal}
-                                </p>
-                              </div>
-                            ) : null}
-                            {tweetSentimentChips.length > 0 ? (
-                              <div className="flex flex-wrap gap-1.5 pt-1">
-                                {tweetSentimentChips.map((chip, index) => {
-                                  const symbol = chip.tokenSymbol
-                                    ? chip.tokenSymbol.toUpperCase()
-                                    : chip.tokenAddress
-                                      ? chip.tokenAddress.length > 12
-                                        ? `${chip.tokenAddress.slice(0, 4)}…${chip.tokenAddress.slice(-4)}`
-                                        : chip.tokenAddress
-                                      : 'TOKEN';
-                                  const mcLabel = formatCompactMarketCap(chip.marketCapAtPostUsd);
-                                  const sentimentLabel =
-                                    chip.sentiment === 'positive'
-                                      ? '正面'
-                                      : chip.sentiment === 'negative'
-                                        ? '负面'
-                                        : '中性';
-                                  const currentMc = formatCompactMarketCap(chip.marketCapUsd);
-                                  const titleParts = [
-                                    chip.tokenAddress || null,
-                                    mcLabel
-                                      ? `发帖时市值 ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}`
-                                      : null,
-                                    currentMc ? `当前市值 ${currentMc}` : null,
-                                  ].filter(Boolean);
-                                  return (
-                                    <span
-                                      key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                                      title={titleParts.join(' · ') || undefined}
-                                      className={
-                                        chip.sentiment === 'positive'
-                                          ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                          : chip.sentiment === 'negative'
-                                            ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                            : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                                      }
-                                    >
-                                      {symbol}
-                                      {mcLabel ? ` · ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}` : ''}
-                                      {` · ${sentimentLabel}`}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : (
-                          <>
-                            <p className="whitespace-pre-wrap break-words text-zinc-100">
-                              {highlightSocialContent(telegramDisplayPrimary, activity.metadata.tokenSentiments)}
-                            </p>
-                            {telegramSentimentChips.length > 0 ? (
-                              <div className="flex flex-wrap gap-1.5 pt-1">
-                                {telegramSentimentChips.map((chip, index) => {
-                                  const symbol = chip.tokenSymbol
-                                    ? chip.tokenSymbol.toUpperCase()
-                                    : chip.tokenAddress
-                                      ? chip.tokenAddress.length > 12
-                                        ? `${chip.tokenAddress.slice(0, 4)}…${chip.tokenAddress.slice(-4)}`
-                                        : chip.tokenAddress
-                                      : 'TOKEN';
-                                  const mcLabel = formatCompactMarketCap(chip.marketCapAtPostUsd);
-                                  const sentimentLabel =
-                                    chip.sentiment === 'positive'
-                                      ? '正面'
-                                      : chip.sentiment === 'negative'
-                                        ? '负面'
-                                        : '中性';
-                                  const currentMc = formatCompactMarketCap(chip.marketCapUsd);
-                                  const titleParts = [
-                                    chip.tokenAddress || null,
-                                    mcLabel
-                                      ? `发帖时市值 ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}`
-                                      : null,
-                                    currentMc ? `当前市值 ${currentMc}` : null,
-                                  ].filter(Boolean);
-                                  return (
-                                    <span
-                                      key={`${chip.tokenAddress || chip.tokenSymbol || 'token'}:${index}`}
-                                      title={titleParts.join(' · ') || undefined}
-                                      className={
-                                        chip.sentiment === 'positive'
-                                          ? 'rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300'
-                                          : chip.sentiment === 'negative'
-                                            ? 'rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-300'
-                                            : 'rounded-full bg-zinc-700/70 px-2 py-0.5 text-[11px] text-zinc-200'
-                                      }
-                                    >
-                                      {symbol}
-                                      {mcLabel ? ` · ${chip.marketCapAtPostEstimated ? '~' : ''}${mcLabel}` : ''}
-                                      {` · ${sentimentLabel}`}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </>
-                        )}
-                        {hasMedia && !isTwitter ? <div className="text-[12px] text-zinc-500">媒体</div> : null}
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {isTransfer && (
-                  <div className="w-full min-w-0">
-                    <div className="grid h-10 w-full min-w-0 grid-cols-[2.5rem_minmax(0,1fr)_8.75rem] grid-rows-2 gap-x-0.5 md:w-[23.417rem] md:max-w-[23.417rem] md:grid-cols-[2.5rem_12.167rem_8.75rem]">
-                      <div className="row-span-2 flex items-center">
-                        {canCopyTokenCa ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void copyText(tokenCa);
-                            }}
-                            data-token-ca={tokenCa.toLowerCase()}
-                            className="rounded-md transition-all hover:bg-yellow-500/10"
-                            title={`复制 ${displayTokenSymbol} CA: ${tokenCa}`}
-                            onMouseEnter={() => {
-                              setFeedTokenHover(tokenCa);
-                              onTokenCaHover?.(tokenCa);
-                            }}
-                            onMouseLeave={() => {
-                              setFeedTokenHover(null);
-                              onTokenCaHover?.(null);
-                            }}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              openExternalLink(tokenGmgnUrl);
-                            }}
-                          >
-                            <Avatar className="h-10 w-10 shrink-0 rounded-md">
-                              <AvatarImage src={resolvedTokenAvatar || undefined} alt={`${displayTokenSymbol} avatar`} />
-                              <AvatarFallback className="rounded-md bg-zinc-800 text-[11px] text-zinc-400">
-                                {displayTokenSymbol.slice(0, 1)}
-                              </AvatarFallback>
-                            </Avatar>
-                          </button>
-                        ) : (
-                          <Avatar className="h-10 w-10 shrink-0 rounded-md">
-                            <AvatarImage src={resolvedTokenAvatar || undefined} alt={`${displayTokenSymbol} avatar`} />
-                            <AvatarFallback className="rounded-md bg-zinc-800 text-[11px] text-zinc-400">
-                              {displayTokenSymbol.slice(0, 1)}
-                            </AvatarFallback>
-                          </Avatar>
-                        )}
-                      </div>
-
-                      <div className="row-span-2 flex h-10 min-w-0 flex-col justify-between">
-                        <div className="flex min-w-0 items-center justify-between gap-1">
-                          <div className="min-w-0 flex items-center">
-                            {canCopyTokenCa ? (
-                              <button
-                                type="button"
-                                data-token-ca={tokenCa.toLowerCase()}
-                                className="min-w-0 flex-1 truncate rounded px-1 py-0 text-left font-semibold leading-none text-yellow-400 transition-all hover:bg-yellow-500/10"
-                                title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void copyText(tokenCa);
-                                }}
-                                onMouseEnter={() => {
-                                  setFeedTokenHover(tokenCa);
-                                  onTokenCaHover?.(tokenCa);
-                                }}
-                                onMouseLeave={() => {
-                                  setFeedTokenHover(null);
-                                  onTokenCaHover?.(null);
-                                }}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  openExternalLink(tokenGmgnUrl);
-                                }}
-                              >
-                                {displayTokenSymbol}
-                              </button>
-                            ) : (
-                              <span className="min-w-0 flex-1 truncate text-left font-semibold leading-none text-yellow-400">{displayTokenSymbol}</span>
-                            )}
-                          </div>
-                          <div className="min-w-0 flex flex-1 items-center justify-end">
-                            {trackedAddress ? (
-                              <button
-                                type="button"
-                                data-address={trackedAddress.toLowerCase()}
-                                className="min-w-0 flex-1 truncate rounded px-1 py-0 text-right font-semibold leading-none text-zinc-300 transition-all hover:bg-cyan-500/10"
-                                title={`左键复制地址，右键打开 GMGN: ${trackedAddress}`}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void copyText(trackedAddress);
-                                }}
-                                onMouseEnter={() => {
-                                  setFeedAddressHover(trackedAddress);
-                                  onAddressHover?.(trackedAddress);
-                                }}
-                                onMouseLeave={() => {
-                                  setFeedAddressHover(null);
-                                  onAddressHover?.(null);
-                                }}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  openExternalLink(trackedAddressGmgnUrl);
-                                }}
-                              >
-                                {displayWalletLabel}
-                              </button>
-                            ) : (
-                              <span className="min-w-0 flex-1 truncate text-right font-semibold leading-none text-zinc-300">{displayWalletLabel}</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex min-w-0 items-center justify-between gap-1">
-                          <div className="min-w-0 flex flex-1 items-center">
-                            <span
-                              className={
-                                shouldUseOutgoingAmountTone
-                                  ? 'min-w-0 shrink truncate text-right leading-none tabular-nums text-red-400'
-                                  : 'min-w-0 shrink truncate text-right leading-none tabular-nums text-emerald-400'
-                              }
-                            >
-                              {[displayActionVariantLabel, displayTradeHeadlineText].filter(Boolean).join(' ')}
-                            </span>
-                          </div>
-                          <div className="min-w-0 flex items-center justify-end">
-                            {displayMarketCapText && isSendReceiveTransfer && counterpartyAddress ? (
-                              <button
-                                type="button"
-                                data-address={counterpartyAddress.toLowerCase()}
-                                className="ml-auto shrink-0 whitespace-nowrap rounded px-1 py-0 text-right leading-none tabular-nums text-zinc-300 transition-all hover:bg-cyan-500/10"
-                                title={`左键复制地址，右键打开 GMGN: ${counterpartyAddress}`}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void copyText(counterpartyAddress);
-                                }}
-                                onMouseEnter={() => {
-                                  setFeedAddressHover(counterpartyAddress);
-                                  onAddressHover?.(counterpartyAddress);
-                                }}
-                                onMouseLeave={() => {
-                                  setFeedAddressHover(null);
-                                  onAddressHover?.(null);
-                                }}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  openExternalLink(counterpartyGmgnUrl);
-                                }}
-                              >
-                                {displayMarketCapText}
-                              </button>
-                            ) : isTradeAction && displayMarketCapText ? (
-                              <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
-                                {displayMarketCapText}
-                              </span>
-                            ) : displayMarketCapText ? (
-                              <span className="ml-auto shrink-0 whitespace-nowrap text-right leading-none tabular-nums text-zinc-300" title={marketCapTooltip}>
-                                {displayMarketCapText}
-                              </span>
-                            ) : (
-                              <span className="min-w-0" />
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="row-span-2 grid h-10 w-[8.75rem] grid-cols-[2.5rem_minmax(0,1fr)] grid-rows-2 items-center gap-x-0.5 justify-self-end">
-                        <Avatar className="row-span-2 h-10 w-10 shrink-0">
-                          <AvatarImage src={getUserAvatar(user)} alt={user.name} />
-                          <AvatarFallback className="bg-zinc-800 text-[11px] text-zinc-400">
-                            {user.name.slice(0, 1).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="min-w-0 flex-1 truncate font-semibold leading-none text-zinc-300">{user.name}</span>
-                          {isMergedTradeCard && (
-                            <span className="ml-auto shrink-0 rounded-full border border-sky-400/40 bg-sky-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-200">
-                              合并 {mergedTradeCount} 笔
-                            </span>
-                          )}
-                          {isMergedTradeCard && coHitAddressCount > 1 && (
-                            <span className="shrink-0 rounded-full border border-violet-400/40 bg-violet-400/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-violet-200">
-                              {coHitAddressCount} 地址
-                            </span>
-                          )}
-                        </div>
-                        <div className="min-w-0 text-zinc-500 leading-none">
-                          {activity.metadata.txHash ? (
-                            <button
-                              type="button"
-                              className="rounded px-1 py-0 -ml-1 hover:bg-zinc-800 hover:text-zinc-300"
-                              title="左键复制交易哈希，右键打开 OKX 浏览器"
-                              onClick={async (event) => {
-                                event.stopPropagation();
-                                await copyText(activity.metadata.txHash || '');
-                                setTxCopied(true);
-                                if (txCopyTimerRef.current !== null) {
-                                  window.clearTimeout(txCopyTimerRef.current);
-                                }
-                                txCopyTimerRef.current = window.setTimeout(() => {
-                                  setTxCopied(false);
-                                }, 1200);
-                              }}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                if (explorerTxUrl) {
-                                  window.open(explorerTxUrl, '_blank', 'noopener,noreferrer');
-                                }
-                              }}
-                            >
-                              {txCopied ? '已复制' : timeAgo}
-                            </button>
-                          ) : (
-                            timeAgo
-                          )}
-                        </div>
-                      </div>
-
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {!isTwitter && !isTelegram ? (
-                <div className="flex flex-wrap items-center gap-x-2 text-[12px] text-zinc-500">
-                  {secondaryText && <span className="line-clamp-1">{secondaryText}</span>}
-                  {activity.metadata.likes !== undefined && (
-                    <span className="flex items-center gap-1">
-                      👍
-                      {activity.metadata.likes}
-                    </span>
-                  )}
-                  {activity.metadata.replies !== undefined && (
-                    <span className="flex items-center gap-1">
-                      💬
-                      {activity.metadata.replies}
-                    </span>
-                  )}
-                  {hasMedia && !isBlockchain && !isTwitter && <span>媒体</span>}
-                </div>
-              ) : null}
-            </div>
+            {primaryText ? (
+              <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-zinc-300">{primaryText}</p>
+            ) : null}
+            {secondaryText ? (
+              <p className="mt-0.5 line-clamp-1 text-[11.5px] text-zinc-500">{secondaryText}</p>
+            ) : null}
           </div>
         </div>
       </CardContent>

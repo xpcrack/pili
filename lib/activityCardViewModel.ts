@@ -1,5 +1,5 @@
 import type { Activity, User } from '@/types';
-import { formatTokenAmount } from '@/lib/assetFormat';
+import { formatTokenAmount, formatTradeAmountUsdLabel } from '@/lib/assetFormat';
 import {
   type ActivityImportance,
   buildActivityImportanceExplanationRows,
@@ -13,6 +13,7 @@ import {
   getTradeHeadlineDisplayText,
   isTradeDisplayAction,
   normalizeDisplayTradeAmountText,
+  resolvePositionDeltaDisplay,
   type TradeValueDisplayMode,
 } from '@/lib/tradeDisplay';
 
@@ -153,8 +154,6 @@ export function buildActivityCardViewModel(params: {
   tradeValueDisplayMode: TradeValueDisplayMode;
   resolvedTokenInfo: ActivityCardTokenInfoView;
   addressAliasMap?: Map<string, string>;
-  activeTokenCa?: string | null;
-  activeAddress?: string | null;
 }) {
   const { activity, user, resolvedTokenInfo } = params;
   const isBlockchain = activity.source === 'blockchain';
@@ -266,6 +265,16 @@ export function buildActivityCardViewModel(params: {
         tradeAmountUsdAtTx,
       })
     : displayTradeAmountText;
+  const displayTradeUsdText =
+    tradeAmountUsdAtTx === null ? '—' : formatTradeAmountUsdLabel(tradeAmountUsdAtTx);
+  const positionDelta = resolvePositionDeltaDisplay({
+    txActionVariant: activity.metadata.txActionVariant,
+    displayActionVariantLabel,
+    positionDeltaRatio:
+      typeof activity.metadata.positionDeltaRatio === 'number'
+        ? activity.metadata.positionDeltaRatio
+        : null,
+  });
   const displayTokenSymbol = activity.metadata.displayTokenSymbol || tokenSymbolDisplay;
   const displayMarketCapText = isMergedTradeCard
     ? mergedAverageMarketCapLabel
@@ -280,16 +289,6 @@ export function buildActivityCardViewModel(params: {
   const canCopyTokenCa = Boolean(
     tokenCa && tokenSymbolRaw && !NATIVE_OR_STABLE_SYMBOLS.has(tokenSymbolRaw.toLowerCase())
   );
-  const isSameCaHighlighted =
-    Boolean(params.activeTokenCa) && Boolean(tokenCa) && params.activeTokenCa?.toLowerCase() === tokenCa.toLowerCase();
-  const normalizedActiveAddress = params.activeAddress?.trim().toLowerCase() || null;
-  const isTrackedAddressHighlighted =
-    Boolean(normalizedActiveAddress) && Boolean(normalizedTrackedAddress) && normalizedActiveAddress === normalizedTrackedAddress;
-  const normalizedCounterpartyAddress = counterpartyAddress.trim().toLowerCase();
-  const isCounterpartyAddressHighlighted =
-    Boolean(normalizedActiveAddress) &&
-    Boolean(normalizedCounterpartyAddress) &&
-    normalizedActiveAddress === normalizedCounterpartyAddress;
   const primaryText = isTransfer
     ? `${transferAction} ${formattedTokenAmount} ${tokenSymbolDisplay}`
     : isBlockchain
@@ -348,13 +347,14 @@ export function buildActivityCardViewModel(params: {
     normalizedTrackedAddress,
     displayWalletLabel,
     displayTradeHeadlineText,
+    displayTradeAmountText: displayTradeAmountText || '—',
+    displayTradeUsdText,
+    positionDeltaText: positionDelta.text,
+    positionDeltaTone: positionDelta.tone,
     displayTokenSymbol,
     displayMarketCapText,
     shouldUseOutgoingAmountTone,
     canCopyTokenCa,
-    isSameCaHighlighted,
-    isTrackedAddressHighlighted,
-    isCounterpartyAddressHighlighted,
     primaryText,
     explorerTxUrl,
     tokenGmgnUrl,

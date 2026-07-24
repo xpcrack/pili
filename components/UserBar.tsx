@@ -79,27 +79,37 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
         </ScrollArea>
       </div>
 
-      {/* 桌面端：左侧栏 */}
+      {/* 桌面端：左侧栏 — ATH 排序 + 红点更新（v1 设计稿） */}
       <div className="hidden md:block md:w-full">
-        <div className="rounded-2xl border border-zinc-800/70 bg-zinc-900/50 p-2">
-          <div className="max-h-[calc(100vh-7rem)] space-y-1 overflow-y-auto pr-1">
+        <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-[#111318]/95">
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3 py-2.5">
+            <div>
+              <div className="text-[12.5px] font-semibold text-zinc-100">聪明钱雷达</div>
+              <div className="text-[11px] text-zinc-500">历史资产高峰排序</div>
+            </div>
+            <div className="text-[11px] text-zinc-500">更新</div>
+          </div>
+          <div className="max-h-[calc(100vh-9rem)] space-y-0.5 overflow-y-auto p-2">
             <button
               onClick={() => onSelectUser(null)}
-              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
-                isAllSelected ? 'bg-blue-500/15 text-blue-300' : 'text-zinc-300 hover:bg-zinc-800/70'
+              className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
+                isAllSelected
+                  ? 'border-sky-400/20 bg-sky-400/[0.07] text-sky-100'
+                  : 'border-transparent text-zinc-300 hover:bg-white/[0.035]'
               }`}
             >
               <div
-                className={`flex h-9 w-9 items-center justify-center rounded-full ${
-                  isAllSelected ? 'bg-blue-500/20 ring-1 ring-blue-500' : 'bg-zinc-800'
+                className={`flex h-7 w-7 items-center justify-center rounded-full ${
+                  isAllSelected ? 'bg-sky-500/20 ring-1 ring-sky-400/50' : 'bg-zinc-800'
                 }`}
               >
-                <Activity className={`h-4 w-4 ${isAllSelected ? 'text-blue-400' : 'text-zinc-400'}`} />
+                <Activity className={`h-3.5 w-3.5 ${isAllSelected ? 'text-sky-300' : 'text-zinc-400'}`} />
               </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium">全部动态</div>
-                <div className="truncate text-xs text-zinc-500">All users</div>
+                <div className="truncate text-[12.5px] font-semibold">全部动态</div>
+                <div className="truncate text-[10.5px] text-zinc-500">全局 Feed</div>
               </div>
+              <div className={`text-[10.5px] ${isAllSelected ? 'text-sky-300' : 'text-zinc-500'}`}>live</div>
             </button>
 
             {users.map((user) => {
@@ -111,29 +121,31 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                 <button
                   key={user.id}
                   onClick={() => onSelectUser(user)}
-                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
-                    isSelected ? 'bg-blue-500/15 text-blue-300' : 'text-zinc-300 hover:bg-zinc-800/70'
+                  className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
+                    isSelected
+                      ? 'border-sky-400/20 bg-sky-400/[0.07] text-sky-100'
+                      : 'border-transparent text-zinc-300 hover:bg-white/[0.035]'
                   }`}
                 >
-                  <div className="relative">
-                    <Avatar className={`h-9 w-9 ${isSelected ? 'ring-1 ring-blue-500' : ''}`}>
+                  <div className="relative h-7 w-7">
+                    <Avatar className={`h-7 w-7 ${isSelected ? 'ring-1 ring-sky-400/60' : ''}`}>
                       <AvatarImage src={getUserAvatar(user)} alt={user.name} />
-                      <AvatarFallback className="bg-zinc-800 text-zinc-300">{user.name.slice(0, 2)}</AvatarFallback>
+                      <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-300">
+                        {user.name.slice(0, 2)}
+                      </AvatarFallback>
                     </Avatar>
                     {hasNew[user.id] && !isSelected && (
-                      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-zinc-900" />
+                      <span className="absolute -right-px -top-px h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_#111318]" />
                     )}
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{user.name}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-xs">
-                      <span className="min-w-0 truncate text-zinc-500">
-                        {formatUsdCompact(user.historicalMaxAssetUsd)}
-                      </span>
-                      <span className={`shrink-0 text-[11px] ${isSelected ? 'text-blue-300/90' : 'text-zinc-400'}`}>
-                        {latestActivityText}
-                      </span>
+                    <div className="truncate text-[12.5px] font-semibold">{user.name}</div>
+                    <div className="mt-px truncate text-[10.5px] text-zinc-500">
+                      ATH {formatUsdCompact(user.historicalMaxAssetUsd)}
                     </div>
+                  </div>
+                  <div className={`shrink-0 text-[10.5px] ${isSelected ? 'text-sky-300' : 'text-zinc-500'}`}>
+                    {latestActivityText}
                   </div>
                 </button>
               );

@@ -73,8 +73,78 @@ function run() {
   assert.equal(trade.displayTradeHeadlineText, '$115.5', 'USD mode should use transaction USD value');
   assert.equal(trade.shouldUseOutgoingAmountTone, true, 'close/reduce actions should use outgoing tone');
   assert.equal(trade.displayMarketCapText, '$2.5M');
+  assert.equal(trade.positionDeltaText, '-100%', 'close maps to -100%');
+  assert.equal(trade.positionDeltaTone, 'down');
+  assert.equal(trade.displayTradeUsdText, '$115.5');
   assert.equal(trade.explorerTxUrl, 'https://web3.okx.com/explorer/solana/tx/SwapTx111');
   assert.equal(trade.tokenGmgnUrl, 'https://gmgn.ai/sol/token/OgreMint111');
+
+  const openTrade = buildActivityCardViewModel({
+    activity: makeTransfer({
+      chain: 'solana',
+      txHash: 'OpenTx111',
+      token: 'MOMO',
+      tokenAddress: 'MomoMint111',
+      value: '100',
+      quoteToken: 'SOL',
+      quoteAmount: '1.2',
+      txActionVariant: 'open',
+      displayActionVariantLabel: '建仓',
+      trackedAddress: 'TrackedWallet111',
+      fromAddress: 'TrackedWallet111',
+      tradeAmountUsdAtTx: 180,
+    }),
+    user,
+    tradeValueDisplayMode: 'native',
+    resolvedTokenInfo: { marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
+  });
+  assert.equal(openTrade.positionDeltaText, '新仓');
+  assert.equal(openTrade.positionDeltaTone, 'neutral');
+
+  const addTrade = buildActivityCardViewModel({
+    activity: makeTransfer({
+      chain: 'solana',
+      txHash: 'AddTx111',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      value: '10',
+      quoteToken: 'SOL',
+      quoteAmount: '0.5',
+      txActionVariant: 'add',
+      displayActionVariantLabel: '加仓',
+      trackedAddress: 'TrackedWallet111',
+      fromAddress: 'TrackedWallet111',
+      tradeAmountUsdAtTx: 90,
+      positionDeltaRatio: 0.348,
+    }),
+    user,
+    tradeValueDisplayMode: 'native',
+    resolvedTokenInfo: { marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
+  });
+  assert.equal(addTrade.positionDeltaText, '+34.8%');
+  assert.equal(addTrade.positionDeltaTone, 'up');
+
+  const pendingAdd = buildActivityCardViewModel({
+    activity: makeTransfer({
+      chain: 'solana',
+      txHash: 'AddPending111',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      value: '10',
+      quoteToken: 'SOL',
+      quoteAmount: '0.5',
+      txActionVariant: 'add',
+      displayActionVariantLabel: '加仓',
+      trackedAddress: 'TrackedWallet111',
+      fromAddress: 'TrackedWallet111',
+      tradeAmountUsdAtTx: 90,
+    }),
+    user,
+    tradeValueDisplayMode: 'native',
+    resolvedTokenInfo: { marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
+  });
+  assert.equal(pendingAdd.positionDeltaText, '待补');
+  assert.equal(pendingAdd.positionDeltaTone, 'muted');
 
   const rhTrade = buildActivityCardViewModel({
     activity: makeTransfer({
@@ -141,7 +211,6 @@ function run() {
     user,
     tradeValueDisplayMode: 'usd',
     addressAliasMap: new Map([['counterparty111', 'Friend']]),
-    activeAddress: 'Counterparty111',
     resolvedTokenInfo: { marketCapUsd: 1_000_000, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
   });
 
@@ -150,7 +219,6 @@ function run() {
   assert.equal(send.counterpartyAddress, 'Counterparty111');
   assert.equal(send.displayMarketCapText, 'Friend', 'send/receive cards should show counterparty label');
   assert.equal(send.marketCapTooltip, '交易对象: Counterparty111');
-  assert.equal(send.isCounterpartyAddressHighlighted, true);
   assert.equal(send.counterpartyGmgnUrl, 'https://gmgn.ai/sol/address/Counterparty111');
 
   console.log('activity card view model tests: ok');

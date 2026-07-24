@@ -46,6 +46,40 @@ export function isTradeDisplayAction(
   return label === '建仓' || label === '加仓' || label === '减仓' || label === '清仓';
 }
 
+/** 幅度列：动作并入幅度。无真实仓位%时 open/close 可定，add/reduce 先「待补」。 */
+export type PositionDeltaTone = 'up' | 'down' | 'neutral' | 'muted';
+
+export function resolvePositionDeltaDisplay(params: {
+  txActionVariant?: Activity['metadata']['txActionVariant'] | null;
+  displayActionVariantLabel?: string | null;
+  /** 相对仓位变化，0.348 = +34.8%。有值时优先于动作兜底。 */
+  positionDeltaRatio?: number | null;
+}) {
+  const ratio =
+    typeof params.positionDeltaRatio === 'number' && Number.isFinite(params.positionDeltaRatio)
+      ? params.positionDeltaRatio
+      : null;
+  if (ratio !== null) {
+    const pct = Math.round(ratio * 1000) / 10;
+    const signed = pct > 0 ? `+${pct}%` : `${pct}%`;
+    return {
+      text: signed,
+      tone: (pct > 0 ? 'up' : pct < 0 ? 'down' : 'muted') as PositionDeltaTone,
+    };
+  }
+
+  const variant = normalize(params.txActionVariant).toLowerCase();
+  const label = normalize(params.displayActionVariantLabel);
+  if (variant === 'open' || label === '建仓') {
+    return { text: '新仓', tone: 'neutral' as const };
+  }
+  if (variant === 'close' || label === '清仓') {
+    return { text: '-100%', tone: 'down' as const };
+  }
+  // ponytail: no balance-before/after yet → placeholder until metadata carries %
+  return { text: '待补', tone: 'muted' as const };
+}
+
 export function formatCompactMarketCap(marketCapUsd: number | null | undefined) {
   if (marketCapUsd === null || marketCapUsd === undefined || !Number.isFinite(marketCapUsd) || marketCapUsd <= 0) {
     return null;
