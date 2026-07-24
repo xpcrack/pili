@@ -904,6 +904,20 @@ CREATE TABLE IF NOT EXISTS app_state (
   updated_at INTEGER NOT NULL
 );
 
+-- Per-wallet GMGN activity timeline completeness (rolling ≥14d).
+-- Separate from tracked_addresses.last_synced_at (OKX asset/sync path).
+CREATE TABLE IF NOT EXISTS wallet_timeline_state (
+  address_lower TEXT PRIMARY KEY,
+  last_backfill_at INTEGER,
+  last_ok_at INTEGER,
+  window_start_ms INTEGER,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_timeline_state_last_ok
+ON wallet_timeline_state(last_ok_at);
+
 CREATE TABLE IF NOT EXISTS telegram_ingest_cursors (
   worker_key TEXT PRIMARY KEY,
   last_update_id INTEGER NOT NULL,
@@ -1251,6 +1265,7 @@ function initializeDb(db: SqlDatabase) {
     ensureTelegramsJsonColumn(db);
     ensureMonitoringEnabledColumns(db);
     ensureCompletenessSchema(db);
+    ensureWalletTimelineStateSchema(db);
     ensureEventsFtsIndexing(db);
     migrateLegacyJudgments(db);
   }, { label: 'initializeDb' });
@@ -1557,6 +1572,21 @@ function ensureCompletenessSchema(db: SqlDatabase) {
     `CREATE INDEX IF NOT EXISTS idx_completeness_run_sources_run_source
      ON completeness_run_sources(run_id, source)`
   );
+}
+
+function ensureWalletTimelineStateSchema(db: SqlDatabase) {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS wallet_timeline_state (
+  address_lower TEXT PRIMARY KEY,
+  last_backfill_at INTEGER,
+  last_ok_at INTEGER,
+  window_start_ms INTEGER,
+  last_error TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_timeline_state_last_ok
+ON wallet_timeline_state(last_ok_at);
+`);
 }
 
 export function getDb() {

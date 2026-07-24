@@ -9,6 +9,7 @@ import {
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
+import { enqueueWalletActivityBackfillMany } from '@/lib/server/walletActivityBackfillQueue';
 import { type ChainType } from '@/types';
 
 export const runtime = 'nodejs';
@@ -58,6 +59,25 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       userId: id,
       address: addresses[0]?.address || null,
     });
+
+    const seedAddrs = [
+      ...new Map(
+        addresses
+          .map((a) => (a.address || '').trim())
+          .filter(Boolean)
+          .map((addr) => [addr.toLowerCase(), addr] as const)
+      ).values(),
+    ];
+    if (seedAddrs.length > 0) {
+      enqueueWalletActivityBackfillMany(
+        seedAddrs.map((address) => ({
+          address,
+          userId: id,
+          days: 14,
+          reason: 'admin-add-address',
+        }))
+      );
+    }
 
     return NextResponse.json({ ok: true, user: updated });
   } catch (error) {

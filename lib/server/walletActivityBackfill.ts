@@ -165,7 +165,13 @@ export async function backfillWalletTimeline(params: {
   const chainsFailed: Array<{ chain: string; error: string }> = [];
   let stoppedOnBan = false;
 
-  for (const chain of chains) {
+  // Parallel per-chain (key pool paces actual HTTP). Sequential only if chainParallel=1.
+  const chainParallelEnv = Number(process.env.PILI_WALLET_TIMELINE_CHAIN_PARALLEL || 4);
+  const chainParallel = Number.isFinite(chainParallelEnv)
+    ? Math.max(1, Math.min(chains.length, Math.floor(chainParallelEnv)))
+    : Math.min(4, chains.length);
+
+  const runOneChain = async (chain: string) => {
     try {
       const page = await fetchWalletActivitySince({
         chain,
@@ -176,16 +182,54 @@ export async function backfillWalletTimeline(params: {
         sleepMs: params.sleepMs,
         async: params.async ?? true,
       });
-      rawCount += page.rawCount;
-      trades.push(...page.trades);
-      chainsOk.push(chain);
+      return {
+        chain,
+        ok: true as const,
+        rawCount: page.rawCount,
+        trades: page.trades,
+        error: null as string | null,
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      chainsFailed.push({ chain, error: msg });
-      if (isGmgnBanMessage(msg) || isGmgnRateLimitMessage(msg)) {
-        noteGmgnBan(msg);
-        stoppedOnBan = true;
-        break;
+      return {
+        chain,
+        ok: false as const,
+        rawCount: 0,
+        trades: [] as NormalizedLiveTrade[],
+        error: msg,
+      };
+    }
+  };
+
+  if (chainParallel <= 1) {
+    for (const chain of chains) {
+      const result = await runOneChain(chain);
+      if (result.ok) {
+        rawCount += result.rawCount;
+        trades.push(...result.trades);
+        chainsOk.push(result.chain);
+      } else {
+        chainsFailed.push({ chain: result.chain, error: result.error || 'unknown' });
+        if (result.error && (isGmgnBanMessage(result.error) || isGmgnRateLimitMessage(result.error))) {
+          noteGmgnBan(result.error);
+          stoppedOnBan = true;
+          break;
+        }
+      }
+    }
+  } else {
+    const results = await Promise.all(chains.map((c) => runOneChain(c)));
+    for (const result of results) {
+      if (result.ok) {
+        rawCount += result.rawCount;
+        trades.push(...result.trades);
+        chainsOk.push(result.chain);
+      } else {
+        chainsFailed.push({ chain: result.chain, error: result.error || 'unknown' });
+        if (result.error && (isGmgnBanMessage(result.error) || isGmgnRateLimitMessage(result.error))) {
+          noteGmgnBan(result.error);
+          stoppedOnBan = true;
+        }
       }
     }
   }

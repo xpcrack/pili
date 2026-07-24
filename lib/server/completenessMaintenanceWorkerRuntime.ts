@@ -38,6 +38,7 @@ import { acquireIngestionLease, releaseIngestionLease } from '@/lib/server/twitt
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 import { refreshCurrentHoldings } from '@/lib/server/holdingsRefreshRuntime';
 import { drainWalletActivityBackfillQueue } from '@/lib/server/walletActivityBackfillQueue';
+import { sweepStaleWalletTimelines } from '@/lib/server/walletTimelineSweep';
 
 const WORKER_KEY = 'completeness-maintenance';
 const WORKER_TYPE = 'completeness-maintenance';
@@ -47,6 +48,62 @@ const BUSY_RETRY_DELAY_MS = 30_000;
 const HOLDINGS_REFRESH_INTERVAL_MS = process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS
   ? parseInt(process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS, 10)
   : 60 * 60_000; // 默认 1 小时
+
+function walletTimelineMaintenanceEnabled() {
+  // Opt-in full-fleet rolling 14d sweep. Default off (too slow / GMGN heavy).
+  return process.env.PILI_WALLET_TIMELINE_MAINTENANCE === '1';
+}
+
+function walletTimelineDrainMaxJobs() {
+  // With openapi key pool, default higher than the old serial cli path.
+  const n = Number(process.env.PILI_WALLET_TIMELINE_DRAIN_MAX_JOBS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 6;
+}
+
+async function runWalletTimelineMaintenance() {
+  // Sweep (re-enqueue all stale monitored wallets) is opt-in only.
+  // Drain always runs so enablement / admin / manual seeds still process.
+  let sweep: ReturnType<typeof sweepStaleWalletTimelines> | null = null;
+  if (walletTimelineMaintenanceEnabled()) {
+    try {
+      sweep = sweepStaleWalletTimelines();
+      if (sweep.enqueued > 0 || sweep.scannedStale > 0) {
+        console.log(
+          `[completeness-worker] wallet-timeline-sweep stale=${sweep.scannedStale} enqueued=${sweep.enqueued} pending=${sweep.pendingAfter}`
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[completeness-worker] wallet-timeline-sweep failed: ${message}`);
+    }
+  }
+
+  let walletBackfill: {
+    processed: number;
+    remaining: number;
+    stoppedOnBan: boolean;
+  } | null = null;
+  try {
+    const q = await drainWalletActivityBackfillQueue({
+      maxJobs: walletTimelineDrainMaxJobs(),
+    });
+    if (q.processed > 0 || q.remaining > 0) {
+      walletBackfill = {
+        processed: q.processed,
+        remaining: q.remaining,
+        stoppedOnBan: q.stoppedOnBan,
+      };
+      console.log(
+        `[completeness-worker] wallet-activity-backfill processed=${q.processed} remaining=${q.remaining} ban=${q.stoppedOnBan}`
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[completeness-worker] wallet-activity-backfill drain failed: ${message}`);
+  }
+
+  return { sweep, walletBackfill };
+}
 
 let lastHoldingsRefreshMs = 0;
 
@@ -390,28 +447,8 @@ export function createCompletenessMaintenanceWorkerCycle(
         }
       }
 
-      // Drain enablement-triggered 14d GMGN wallet timeline backfills (1 addr / cycle)
-      let walletBackfill: {
-        processed: number;
-        remaining: number;
-        stoppedOnBan: boolean;
-      } | null = null;
-      try {
-        const q = await drainWalletActivityBackfillQueue({ maxJobs: 1 });
-        if (q.processed > 0 || q.remaining > 0) {
-          walletBackfill = {
-            processed: q.processed,
-            remaining: q.remaining,
-            stoppedOnBan: q.stoppedOnBan,
-          };
-          console.log(
-            `[completeness-worker] wallet-activity-backfill processed=${q.processed} remaining=${q.remaining} ban=${q.stoppedOnBan}`
-          );
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[completeness-worker] wallet-activity-backfill drain failed: ${message}`);
-      }
+      // Rolling 14d wallet timeline: re-enqueue stale monitored addrs, then drain queue
+      const { walletBackfill } = await runWalletTimelineMaintenance();
 
       return {
         ...result,
@@ -442,19 +479,6 @@ export async function runCompletenessMaintenanceWorkerLoop() {
     try {
       const cycle = await runCompletenessMaintenanceWorkerCycle();
       await sleep(cycle.sleepMs);
-
-      // Drain enablement-triggered 14d GMGN wallet timeline backfills (1 addr / cycle)
-      try {
-        const q = await drainWalletActivityBackfillQueue({ maxJobs: 1 });
-        if (q.processed > 0 || q.remaining > 0) {
-          console.log(
-            `[completeness-worker] wallet-activity-backfill processed=${q.processed} remaining=${q.remaining} ban=${q.stoppedOnBan}`
-          );
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[completeness-worker] wallet-activity-backfill drain failed: ${message}`);
-      }
 
       // 定期刷新持仓数据
       const nowMs = Date.now();
