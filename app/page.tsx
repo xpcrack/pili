@@ -676,24 +676,36 @@ export default function Home() {
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
-                  <div id="feed-list" className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-950/70">
+                  <div id="feed-list" className="rounded-xl border border-zinc-800/70 bg-zinc-950/70">
                     <div className={searchFilters.typeFilters.trade ? 'min-w-[700px]' : undefined}>
                       {searchFilters.typeFilters.trade ? (
                         <div
-                          className="sticky top-0 z-[2] grid min-h-[30px] items-center gap-x-3 border-b border-white/[0.07] bg-zinc-950/95 px-3 text-[11px] text-zinc-500 backdrop-blur"
+                          className="sticky top-14 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)]"
                           style={{
                             gridTemplateColumns:
-                              '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr)',
+                              '28px 100px 120px 48px 68px minmax(72px,1fr) 40px',
                           }}
                         >
                           <div />
                           <div>人物 / 钱包</div>
                           <div>Ticker</div>
-                          <div className="text-right">成交</div>
-                          <div className="text-right">USD</div>
                           <div className="text-right">MC</div>
+                          <div className="text-right">幅度</div>
+                          <button
+                            type="button"
+                            className="text-left transition-colors hover:text-zinc-300"
+                            title={
+                              tradeValueDisplayMode === 'usd'
+                                ? '当前 USD，点击切换为代币金额'
+                                : '当前代币金额，点击切换为 USD'
+                            }
+                            onClick={() =>
+                              setTradeValueDisplayMode((mode) => (mode === 'usd' ? 'native' : 'usd'))
+                            }
+                          >
+                            {tradeValueDisplayMode === 'usd' ? 'USD' : '成交'}
+                          </button>
                           <div className="text-right">时间</div>
-                          <div>幅度</div>
                         </div>
                       ) : null}
                       <div>

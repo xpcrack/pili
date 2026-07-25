@@ -412,7 +412,7 @@ function run() {
   ]);
   assert.equal(positionSeries.length, 4);
   const byId = Object.fromEntries(positionSeries.map((item) => [item.activity.id, item.activity.metadata]));
-  assert.equal(byId['pos-open']?.positionDeltaRatio, undefined, 'open stays 新仓 without ratio');
+  assert.equal(byId['pos-open']?.positionDeltaRatio, undefined, 'open stays 建仓 without ratio');
   assert.equal(byId['pos-open']?.txActionVariant, 'open');
   assert.ok(
     Math.abs((byId['pos-add']?.positionDeltaRatio || 0) - 0.5) < 1e-9,

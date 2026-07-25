@@ -20,7 +20,7 @@ import {
   getRelativeTimeState,
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
-import { formatCompactMarketCap, type TradeValueDisplayMode } from '@/lib/tradeDisplay';
+import { formatCompactMarketCap, type TradeValueDisplayMode, tradeUsdBarPercent } from '@/lib/tradeDisplay';
 
 interface ActivityCardProps {
   activity: Activity;
@@ -105,6 +105,7 @@ export const ActivityCard = memo(function ActivityCard({
     displayTradeHeadlineText,
     displayTradeAmountText,
     displayTradeUsdText,
+    tradeAmountUsdAtTx,
     positionDeltaText,
     positionDeltaTone,
     displayTokenSymbol,
@@ -308,12 +309,10 @@ export const ActivityCard = memo(function ActivityCard({
 
   const positionDeltaClassName =
     positionDeltaTone === 'up'
-      ? 'border-emerald-400/30 bg-emerald-500/12 text-emerald-300'
+      ? 'text-emerald-300'
       : positionDeltaTone === 'down'
-        ? 'border-rose-400/30 bg-rose-500/12 text-rose-300'
-        : positionDeltaTone === 'neutral'
-          ? 'border-sky-400/30 bg-sky-500/10 text-sky-200'
-          : 'border-zinc-700 bg-zinc-800/60 text-zinc-500';
+        ? 'text-rose-300'
+        : 'text-zinc-500';
 
   // 交易：单行表布局（设计稿 v1）
   if (isTransfer && isTradeAction) {
@@ -326,10 +325,10 @@ export const ActivityCard = memo(function ActivityCard({
       >
         <CardContent className="px-0 py-0">
           <div
-            className="feed-trade-row grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
+            className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
             style={{
               gridTemplateColumns:
-                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr)',
+                '28px 100px 120px 48px 68px minmax(72px,1fr) 40px',
             }}
           >
             <Avatar className="h-7 w-7 shrink-0">
@@ -408,21 +407,36 @@ export const ActivityCard = memo(function ActivityCard({
             </div>
 
             <div
-              className={`min-w-0 truncate text-right font-semibold ${
-                shouldUseOutgoingAmountTone ? 'text-rose-300' : 'text-emerald-300'
-              }`}
-              title={displayTradeHeadlineText || undefined}
-            >
-              {displayTradeAmountText}
-            </div>
-
-            <div className="min-w-0 truncate text-right font-semibold text-zinc-200">{displayTradeUsdText}</div>
-
-            <div
               className="min-w-0 truncate text-right font-semibold text-zinc-300"
               title={marketCapTooltip}
             >
               {displayMarketCapText || '—'}
+            </div>
+
+            <div className="min-w-0 truncate text-right font-semibold tabular-nums">
+              <span className={positionDeltaClassName} title={displayActionVariantLabel || undefined}>
+                {positionDeltaText}
+              </span>
+            </div>
+
+            <div className="relative min-w-0 self-stretch">
+              {tradeAmountUsdAtTx != null && tradeUsdBarPercent(tradeAmountUsdAtTx) > 0 ? (
+                <div
+                  aria-hidden
+                  className={`absolute inset-y-0.5 left-0 rounded-sm ${
+                    shouldUseOutgoingAmountTone ? 'bg-rose-500/25' : 'bg-emerald-500/25'
+                  }`}
+                  style={{ width: `${tradeUsdBarPercent(tradeAmountUsdAtTx)}%` }}
+                />
+              ) : null}
+              <div
+                className={`relative flex h-full min-w-0 items-center justify-start truncate px-1 font-semibold ${
+                  shouldUseOutgoingAmountTone ? 'text-rose-300' : 'text-emerald-300'
+                }`}
+                title={displayTradeHeadlineText || displayTradeUsdText || undefined}
+              >
+                {displayTradeHeadlineText || displayTradeUsdText}
+              </div>
             </div>
 
             <div className="text-right text-xs text-zinc-500">
@@ -455,15 +469,6 @@ export const ActivityCard = memo(function ActivityCard({
               ) : (
                 timeAgo
               )}
-            </div>
-
-            <div>
-              <span
-                className={`inline-flex h-[22px] min-w-[64px] items-center justify-center rounded-full border px-2 font-mono text-xs font-bold tracking-tight ${positionDeltaClassName}`}
-                title={displayActionVariantLabel || undefined}
-              >
-                {positionDeltaText}
-              </span>
             </div>
           </div>
         </CardContent>
@@ -811,20 +816,6 @@ export const ActivityCard = memo(function ActivityCard({
               ) : (
                 <span className="text-xs tabular-nums text-zinc-500">{timeAgo}</span>
               )}
-              <button
-                type="button"
-                disabled={!socialPostUrl}
-                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                title={socialPostUrl || '无链接'}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (socialPostUrl) {
-                    window.open(socialPostUrl, '_blank', 'noopener,noreferrer');
-                  }
-                }}
-              >
-                打开
-              </button>
             </div>
           </div>
         </CardContent>
