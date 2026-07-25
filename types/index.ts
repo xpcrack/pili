@@ -188,6 +188,11 @@ export interface Activity {
     marketCapAtTxEstimated?: boolean;
     /** 相对仓位变化：0.348 = +34.8%。暂无数据时 Feed 幅度列显示「待补」。 */
     positionDeltaRatio?: number;
+    /**
+     * true = 该比例由客户端按「当前已加载窗口」推算，历史可能不完整，UI 显示 `~` 前缀。
+     * 服务端（backfill/worker）基于完整历史写入的值不带此标记。
+     */
+    positionDeltaEstimated?: boolean;
     displayWalletLabel?: string;
     displayActionVariantLabel?: string;
     displayTradeAmountText?: string;

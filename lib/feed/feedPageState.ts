@@ -41,12 +41,14 @@ export function buildAddressAliasMap(users: User[]) {
   return map;
 }
 
-export function selectFeedPageState(params: {
+/**
+ * 重活：过滤人物 → 仓位推算/合并排序 → 搜索匹配。
+ * 故意不接受 visibleCount，这样滚动加载（只改 visibleCount）不会重跑全量排序合并。
+ */
+export function selectMatchedFeed(params: {
   feed: FeedPageItem[];
   selectedUserId: string | null;
   searchFilters: FeedSearchFilters;
-  globalVisibleCount: number;
-  selectedUserVisibleCount: number;
 }) {
   const selectedUserFeed = params.selectedUserId
     ? params.feed.filter((item) => item.user.id === params.selectedUserId)
@@ -55,18 +57,31 @@ export function selectFeedPageState(params: {
     ? prepareUserFeed(selectedUserFeed)
     : prepareGlobalFeed(selectedUserFeed);
   const matchedFeed = orderedFeed.filter((item) => matchesFeedSearchFilters(item, params.searchFilters));
-  const filteredFeed = params.selectedUserId
-    ? matchedFeed.slice(0, params.selectedUserVisibleCount)
-    : matchedFeed.slice(0, params.globalVisibleCount);
-  const visibleUserIds = new Set(matchedFeed.map((item) => item.user.id));
 
   return {
     selectedUserFeed,
     orderedFeed,
     matchedFeed,
-    filteredFeed,
-    visibleUserIds,
+    visibleUserIds: new Set(matchedFeed.map((item) => item.user.id)),
     hasActiveLocalFilters: hasActiveFeedLocalFilters(params.searchFilters),
     hasEnabledFeedTypes: hasAnyEnabledFeedType(params.searchFilters.typeFilters),
+  };
+}
+
+export function selectFeedPageState(params: {
+  feed: FeedPageItem[];
+  selectedUserId: string | null;
+  searchFilters: FeedSearchFilters;
+  globalVisibleCount: number;
+  selectedUserVisibleCount: number;
+}) {
+  const matched = selectMatchedFeed(params);
+  const visibleCount = params.selectedUserId
+    ? params.selectedUserVisibleCount
+    : params.globalVisibleCount;
+
+  return {
+    ...matched,
+    filteredFeed: matched.matchedFeed.slice(0, visibleCount),
   };
 }

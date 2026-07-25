@@ -223,13 +223,12 @@ export function buildActivityCardViewModel(params: {
       typeof activity.metadata.positionDeltaRatio === 'number'
         ? activity.metadata.positionDeltaRatio
         : null,
+    positionDeltaEstimated: activity.metadata.positionDeltaEstimated ?? null,
   });
   const displayTokenSymbol = activity.metadata.displayTokenSymbol || tokenSymbolDisplay;
   const displayMarketCapText = isMergedTradeCard
     ? mergedAverageMarketCapLabel
-    : isSendReceiveTransfer
-      ? counterpartyLabel
-      : stripMarketCapUsdPrefix(activity.metadata.displayMarketCapText) || marketCapLabel;
+    : stripMarketCapUsdPrefix(activity.metadata.displayMarketCapText) || marketCapLabel;
   const shouldUseOutgoingAmountTone =
     displayActionVariantLabel === '减仓' ||
     displayActionVariantLabel === '清仓' ||
@@ -275,6 +274,8 @@ export function buildActivityCardViewModel(params: {
     mergedTradeCount,
     isMergedTradeCard,
     counterpartyAddress,
+    /** 转账行「对手方」列。曾借用 displayMarketCapText 传递，已拆开。 */
+    counterpartyLabel: counterpartyLabel || '—',
     marketCapTooltip,
     normalizedTrackedAddress,
     displayWalletLabel,
@@ -284,6 +285,7 @@ export function buildActivityCardViewModel(params: {
     tradeAmountUsdAtTx,
     positionDeltaText: positionDelta.text,
     positionDeltaTone: positionDelta.tone,
+    positionDeltaEstimated: positionDelta.estimated,
     displayTokenSymbol,
     displayMarketCapText,
     shouldUseOutgoingAmountTone,

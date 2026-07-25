@@ -422,10 +422,16 @@ export function mergeShortWindowSimilarTrades(feed: FeedItem[]) {
     .map((entry) => entry.item);
 }
 
+// 客户端只看到已加载窗口，推算出的仓位%可能随「加载更多」变化 → 标记为估算（UI 显示 `~`）。
+// 服务端 backfill 基于完整历史，不传 markEstimated，写出的是精确值。
+const CLIENT_POSITION_DELTA_OPTIONS = { markEstimated: true } as const;
+
 export function prepareUserFeed(feed: FeedItem[]) {
-  return mergeShortWindowSimilarTrades(fillPositionDeltaRatios(feed));
+  return mergeShortWindowSimilarTrades(fillPositionDeltaRatios(feed, CLIENT_POSITION_DELTA_OPTIONS));
 }
 
 export function prepareGlobalFeed(feed: FeedItem[]) {
-  return mergeShortWindowSimilarTrades(fillPositionDeltaRatios(mergeGlobalFeedByPrimaryKey(feed)));
+  return mergeShortWindowSimilarTrades(
+    fillPositionDeltaRatios(mergeGlobalFeedByPrimaryKey(feed), CLIENT_POSITION_DELTA_OPTIONS)
+  );
 }

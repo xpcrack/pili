@@ -3,6 +3,7 @@ import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completeness
 import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
 import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
 import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
+import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
 
@@ -289,6 +290,7 @@ interface DefaultRuntimeTaskDeps {
   runHolderSnapshotCycle?: typeof runHolderSnapshotCycle;
   runTelegramBridgeCycle?: typeof runTelegramBridgeCycle;
   runLiveMonitorCycle?: typeof runLiveMonitorCycle;
+  runPositionDeltaCycle?: typeof runPositionDeltaCycle;
   syncFeishuEnablement?: typeof syncFeishuEnablementFromNewone;
 }
 
@@ -303,6 +305,7 @@ export function createDefaultRuntimeTasks(
   const runHolderSnapshotCycleImpl = deps.runHolderSnapshotCycle ?? runHolderSnapshotCycle;
   const runTelegramBridgeCycleImpl = deps.runTelegramBridgeCycle ?? runTelegramBridgeCycle;
   const runLiveMonitorCycleImpl = deps.runLiveMonitorCycle ?? runLiveMonitorCycle;
+  const runPositionDeltaCycleImpl = deps.runPositionDeltaCycle ?? runPositionDeltaCycle;
   const syncEnablement = deps.syncFeishuEnablement ?? syncFeishuEnablementFromNewone;
 
   const tasks: TaskDefinition[] = [];
@@ -418,6 +421,23 @@ export function createDefaultRuntimeTasks(
             lastError: result.lastError,
             ...result.summary,
           },
+        };
+      },
+    })
+  );
+
+  // 仓位幅度服务端真源：每 10 分钟回填近 3 天交易的 positionDeltaRatio。
+  // 客户端只能看到已加载窗口，推算值会随滚动变化；这里基于完整历史写权威值。
+  tasks.push(
+    createLoopTask({
+      key: 'position-delta-fill',
+      label: 'Position Delta Fill',
+      cycle: async () => {
+        const result = await runPositionDeltaCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
         };
       },
     })

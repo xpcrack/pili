@@ -212,7 +212,9 @@ function run() {
   assert.equal(send.isTradeAction, false, 'send transfers should not use trade USD headline');
   assert.equal(send.displayTradeHeadlineText, '1K USDC');
   assert.equal(send.counterpartyAddress, 'Counterparty111');
-  assert.equal(send.displayMarketCapText, 'Friend', 'send/receive cards should show counterparty label');
+  assert.equal(send.counterpartyLabel, 'Friend', 'send/receive cards should show counterparty label');
+  // MC 字段只装市值，不再兼职装对手方地址（各列语义独立）
+  assert.equal(send.displayMarketCapText, '1M', 'market cap field should stay a market cap');
   assert.equal(send.marketCapTooltip, '交易对象: Counterparty111');
   assert.equal(send.counterpartyGmgnUrl, 'https://gmgn.ai/sol/address/Counterparty111');
 

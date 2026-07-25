@@ -449,6 +449,7 @@ async function testDefaultTaskOrderIsStable() {
       'holdings-refresh',
       'holder-snapshot',
       'live-monitor',
+      'position-delta-fill',
       'telegram-bridge',
     ]
   );
@@ -505,6 +506,7 @@ async function testDefaultTaskOrderIsStable() {
     'holdings-refresh',
     'holder-snapshot',
     'live-monitor',
+    'position-delta-fill',
   ]);
 }
 
