@@ -106,9 +106,16 @@ function testExtractTweetTokenMentions() {
   const bare = extractTweetTokenMentions('我看好熊猫头 没有标签');
   assert.equal(bare.length, 0);
 
-  // bare TitleCase CT ticker (no $) — Jimothy-style
-  const bareEn = extractTweetTokenMentions(
+  // bare TitleCase needs primary-pool allowlist (fail closed without it)
+  const bareNoPool = extractTweetTokenMentions(
     'Jimothy hit the floor on the 8h chart, hitting RSI50, be patient'
+  );
+  assert.equal(bareNoPool.length, 0);
+
+  const pool = new Set(['jimothy', 'pons']);
+  const bareEn = extractTweetTokenMentions(
+    'Jimothy hit the floor on the 8h chart, hitting RSI50, be patient',
+    { bareSymbolAllowlist: pool },
   );
   assert.deepEqual(
     bareEn.map((item) => ({
@@ -119,16 +126,47 @@ function testExtractTweetTokenMentions() {
     [{ tokenSymbol: 'JIMOTHY', tokenAddress: null, matchSource: 'ticker' }]
   );
 
+  // @handle never a bare ticker even if in pool
+  const handle = extractTweetTokenMentions('@Unipioneer bought 666 sol $Jimothy', {
+    bareSymbolAllowlist: new Set(['unipioneer', 'jimothy']),
+  });
+  assert.deepEqual(
+    handle.map((item) => item.tokenSymbol),
+    ['JIMOTHY']
+  );
+
+  // yeonwoo sample: only pool symbols; Bankr not in pool as BANKR → drop
+  const yeon = extractTweetTokenMentions(
+    'Personally disappointed. Longxyz fees high. PONS and Bankr compete in RWA space.',
+    { bareSymbolAllowlist: new Set(['pons', 'rwa']) },
+  );
+  assert.deepEqual(
+    yeon.map((item) => item.tokenSymbol),
+    ['PONS', 'RWA']
+  );
+
   // stopwords / chart jargon must not become tickers
-  const stop = extractTweetTokenMentions('Patience and Conviction on the Chart Floor');
+  const stop = extractTweetTokenMentions('Patience and Conviction on the Chart Floor', {
+    bareSymbolAllowlist: new Set(['patience', 'conviction', 'chart', 'floor']),
+  });
   assert.equal(stop.length, 0);
 
   // $TICKER still preferred; bare duplicate of same symbol collapsed;
   // sentence-initial "Buying" is a stopword, must not become a ticker
-  const mixed = extractTweetTokenMentions('Buying more $Jimothy today Jimothy looks strong');
+  // $ does not need pool; bare Jimothy does
+  const mixed = extractTweetTokenMentions('Buying more $Jimothy today Jimothy looks strong', {
+    bareSymbolAllowlist: new Set(['jimothy']),
+  });
   assert.deepEqual(
     mixed.map((item) => item.tokenSymbol),
     ['JIMOTHY']
+  );
+
+  // $TICKER without pool still works
+  const dollarOnly = extractTweetTokenMentions('ape $FOOBAR now');
+  assert.deepEqual(
+    dollarOnly.map((item) => item.tokenSymbol),
+    ['FOOBAR']
   );
 
   // hashtag + following CA binds like $TICKER CA
