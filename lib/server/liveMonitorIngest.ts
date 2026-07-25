@@ -44,12 +44,26 @@ export function isLiveOrXxyyMonitorActivityId(id: string | null | undefined) {
   );
 }
 
-function sideToAction(side: 'buy' | 'sell') {
+function sideToAction(side: 'buy' | 'sell', isOpenOrClose: boolean | null | undefined) {
   if (side === 'buy') {
+    if (isOpenOrClose === true) {
+      return {
+        action: 'buy' as const,
+        actionLabel: '建仓' as const,
+        actionVariant: 'open' as const,
+      };
+    }
     return {
       action: 'buy' as const,
       actionLabel: '加仓' as const,
       actionVariant: 'add' as const,
+    };
+  }
+  if (isOpenOrClose === true) {
+    return {
+      action: 'sell' as const,
+      actionLabel: '清仓' as const,
+      actionVariant: 'close' as const,
     };
   }
   return {
@@ -75,7 +89,7 @@ export function buildLiveMonitorActivity(params: {
   skipImportanceScore?: boolean;
 }): Activity {
   const { user, trade } = params;
-  const { action, actionLabel, actionVariant } = sideToAction(trade.side);
+  const { action, actionLabel, actionVariant } = sideToAction(trade.side, trade.isOpenOrClose);
   const quoteAmount =
     typeof trade.costUsd === 'number' && Number.isFinite(trade.costUsd) ? trade.costUsd : null;
 
@@ -114,6 +128,14 @@ export function buildLiveMonitorActivity(params: {
     eventTimeMs: trade.eventTimeMs,
   });
 
+  // open → 新仓 (no ratio); close → -100%
+  const positionDeltaRatio =
+    actionVariant === 'close'
+      ? -1
+      : typeof base.metadata.positionDeltaRatio === 'number'
+        ? base.metadata.positionDeltaRatio
+        : undefined;
+
   return {
     ...base,
     id: liveId,
@@ -125,6 +147,7 @@ export function buildLiveMonitorActivity(params: {
       // Prefer GMGN MC when present; never claim telegram-monitor-exact.
       marketCapAtTxSource: marketCapUsd != null ? 'gmgn-activity' : undefined,
       tradeAmountUsdAtTx: quoteAmount ?? base.metadata.tradeAmountUsdAtTx,
+      ...(positionDeltaRatio !== undefined ? { positionDeltaRatio } : {}),
       ...(params.skipImportanceScore ? { importance: { ...BACKFILL_IMPORTANCE_STUB } } : {}),
     },
   };

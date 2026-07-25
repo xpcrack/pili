@@ -17,7 +17,7 @@ import {
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import { buildActivityFromSnapshotSync, repairCollapsedCanonicalActivity, type MonitorActivitySnapshot } from '@/lib/server/telegramMonitorActivity';
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
-import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import { liveMonitorOwnsWalletTx, upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import {
   claimTelegramMonitorTxStatesForRepair,
@@ -140,6 +140,19 @@ async function persistCounterFlowEvent(
     };
   }
 ): Promise<boolean> {
+  // live-monitor already recorded this wallet+tx (usually the real meme leg).
+  // Counter-flow often invents the opposite native/stable leg (e.g. buy WETH for a sell).
+  if (
+    liveMonitorOwnsWalletTx({
+      userId: params.user.id,
+      chain: params.state.chain,
+      trackedAddress: params.state.trackedWalletAddress,
+      txHash: params.state.txHash,
+    })
+  ) {
+    return false;
+  }
+
   const userAddressLower = normalize(params.addressInfo.address);
   const counterFlow = findCounterFlow(primaryAction, transactions, userAddressLower, params.state.chain);
   if (!counterFlow) {

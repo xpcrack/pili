@@ -136,12 +136,24 @@ function testGmgnNormalize() {
         token: { address: '0xToken2', symbol: 'T2', total_supply: 1_000_000_000 },
         cost_usd: '50',
         price_usd: '0.0005',
+        is_open_or_close: 1,
+      },
+      {
+        event_type: 'sell',
+        timestamp: 1_700_000_101,
+        tx_hash: '0xtx3',
+        token: { address: '0xToken3', symbol: 'T3' },
+        token_amount: '9',
+        cost_usd: '30',
+        is_open_or_close: 0,
       },
     ],
     { wallet: '0xwallet', chain: 'base', after_ts: 1_700_000_000 }
   );
-  assert.equal(withMcap.length, 1);
+  assert.equal(withMcap.length, 2);
   assert.equal(withMcap[0].marketCapUsd, 500_000);
+  assert.equal(withMcap[0].isOpenOrClose, true);
+  assert.equal(withMcap[1].isOpenOrClose, false);
 
   // RH official equity tokens dropped; meme same-ticker kept
   const rhTrades = normalizeGmgnActivityItems(
@@ -245,6 +257,7 @@ function testLiveActivityShape() {
       costUsd: 25,
       priceUsd: 2.5,
       marketCapUsd: 1_200_000,
+      isOpenOrClose: false,
       eventTimeMs: 1_700_000_000_000,
     },
   });
@@ -258,6 +271,48 @@ function testLiveActivityShape() {
   assert.equal(activity.metadata.chain, 'base');
   assert.equal(activity.metadata.marketCapAtTxUsd, 1_200_000);
   assert.equal(activity.metadata.marketCapAtTxSource, 'gmgn-activity');
+
+  const openActivity = buildLiveMonitorActivity({
+    user,
+    trade: {
+      chain: 'solana',
+      wallet: 'Wallet111',
+      txHash: 'TxOpen',
+      tokenAddress: 'MintOpen',
+      tokenSymbol: 'NEW',
+      side: 'buy',
+      tokenAmount: 100,
+      costUsd: 50,
+      priceUsd: 0.5,
+      marketCapUsd: null,
+      isOpenOrClose: true,
+      eventTimeMs: 1_700_000_000_100,
+    },
+  });
+  assert.equal(openActivity.metadata.txActionVariant, 'open');
+  assert.equal(openActivity.metadata.txActionLabel, '建仓');
+  assert.equal(openActivity.metadata.positionDeltaRatio, undefined);
+
+  const closeActivity = buildLiveMonitorActivity({
+    user,
+    trade: {
+      chain: 'solana',
+      wallet: 'Wallet111',
+      txHash: 'TxClose',
+      tokenAddress: 'MintClose',
+      tokenSymbol: 'OLD',
+      side: 'sell',
+      tokenAmount: 100,
+      costUsd: 40,
+      priceUsd: 0.4,
+      marketCapUsd: null,
+      isOpenOrClose: true,
+      eventTimeMs: 1_700_000_000_200,
+    },
+  });
+  assert.equal(closeActivity.metadata.txActionVariant, 'close');
+  assert.equal(closeActivity.metadata.txActionLabel, '清仓');
+  assert.equal(closeActivity.metadata.positionDeltaRatio, -1);
 
   const id = buildLiveMonitorActivityId({
     chain: 'robinhood',
