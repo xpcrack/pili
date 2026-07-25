@@ -276,6 +276,42 @@ async function run() {
     const mon = listMonitoredUsers();
     assert.ok(mon.some((u) => u.name === 'Gamma'));
 
+    // Backfill twitter onto existing user who was created without one
+    db.prepare(`UPDATE tracked_users SET twitter = NULL WHERE name = 'Alpha'`).run();
+    const backfillMeta = JSON.stringify({
+      person_name: 'Alpha',
+      twitter: 'alpha_x_now',
+      note: 'Alpha#2',
+    });
+    const backfillPath = path.join(tempDir, 'backfill-twitter.sqlite');
+    const backfillDb = new BetterSqlite3(backfillPath);
+    backfillDb.exec(`
+      CREATE TABLE sources (
+        kind TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        label TEXT,
+        meta_json TEXT,
+        disabled INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    backfillDb
+      .prepare(
+        `INSERT INTO sources (kind, external_id, label, meta_json, disabled) VALUES
+         ('wallet', ?, 'Gamma', ?, 0),
+         ('wallet', ?, 'Alpha', ?, 0),
+         ('wallet', '0xAAA', 'A', NULL, 0)`
+      )
+      .run(EVM_NEW, metaNew, EVM_MERGE, backfillMeta);
+    backfillDb.close();
+    const backfillResult = syncFeishuEnablementFromNewone({ newonePath: backfillPath });
+    assert.equal(backfillResult.ok, true, backfillResult.error);
+    assert.ok((backfillResult.twittersBackfilled || 0) >= 1, 'should backfill Alpha twitter');
+    const alphaAfter = listTrackedUsers().find((u) => u.id === 'u1');
+    assert.equal(alphaAfter?.twitter, 'alpha_x_now');
+    // must not overwrite existing twitter
+    const gammaTwitterBefore = listTrackedUsers().find((u) => u.name === 'Gamma')?.twitter;
+    assert.equal(gammaTwitterBefore, 'gamma_x');
+
     // Disable Gamma wallet → flag off, person remains
     const disablePath = path.join(tempDir, 'disable.sqlite');
     const disableDb = new BetterSqlite3(disablePath);

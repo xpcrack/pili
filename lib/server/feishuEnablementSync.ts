@@ -26,6 +26,7 @@ import {
 } from '@/lib/server/trackedUsersRepo';
 import { isValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { enqueueWalletActivityBackfillMany } from '@/lib/server/walletActivityBackfillQueue';
+import { normalizeTwitterHandle } from '@/lib/userProfile';
 import type { AddressInfo, ChainType } from '@/types';
 
 const require = createRequire(import.meta.url);
@@ -44,6 +45,8 @@ export type FeishuEnablementSyncResult = {
   addressesAdded: number;
   ownershipSkipped: number;
   skippedNoPerson: number;
+  /** existing users whose empty twitter was filled from feishu/newone meta */
+  twittersBackfilled: number;
   /** newly enabled / rostered addresses queued for 14d GMGN timeline backfill */
   timelineBackfillQueued?: number;
   error?: string;
@@ -279,8 +282,56 @@ function emptyResult(newonePath: string, error: string): FeishuEnablementSyncRes
     addressesAdded: 0,
     ownershipSkipped: 0,
     skippedNoPerson: 0,
+    twittersBackfilled: 0,
     error,
   };
+}
+
+/**
+ * Fill empty tracked_users.twitter from feishu/newone wallet meta.
+ * Only writes when current twitter is empty — never overwrites manual edits.
+ */
+function backfillTwitterFromEnabledWallets(wallets: EnabledWalletRow[]): number {
+  const groups = groupEnabledWallets(wallets);
+  const db = getDb();
+  const userRows = db
+    .prepare(
+      `SELECT id, name, twitter
+       FROM tracked_users`
+    )
+    .all() as Array<{ id: string; name: string; twitter: string | null }>;
+
+  const userByNameKey = new Map<string, { id: string; twitter: string }>();
+  for (const row of userRows) {
+    const key = String(row.name || '')
+      .trim()
+      .toLowerCase();
+    if (!key || userByNameKey.has(key)) continue;
+    userByNameKey.set(key, {
+      id: row.id,
+      twitter: String(row.twitter || '').trim(),
+    });
+  }
+
+  // SQL-only: avoid updateTrackedUser which re-sanitizes all addresses
+  const setTwitter = db.prepare(
+    `UPDATE tracked_users
+     SET twitter = ?, updated_at = ?
+     WHERE id = ?
+       AND (twitter IS NULL OR trim(twitter) = '')`
+  );
+  const now = Date.now();
+  let filled = 0;
+  for (const [personKey, group] of groups) {
+    const want = normalizeTwitterHandle(group.twitter || '');
+    if (!want) continue;
+    const user = userByNameKey.get(personKey);
+    if (!user) continue;
+    if (normalizeTwitterHandle(user.twitter)) continue; // already has one
+    const result = setTwitter.run(want, now, user.id);
+    if (result.changes > 0) filled += 1;
+  }
+  return filled;
 }
 
 function groupEnabledWallets(wallets: EnabledWalletRow[]): Map<string, PersonGroup> {
@@ -509,6 +560,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
     }
 
     const roster = ensureRosterFromEnabledWallets(enabledWallets);
+    const twittersBackfilled = backfillTwitterFromEnabledWallets(enabledWallets);
 
     const db = getDb();
     const now = Date.now();
@@ -618,6 +670,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
         addressesAdded: roster.addressesAdded,
         ownershipSkipped: roster.ownershipSkipped,
         skippedNoPerson,
+        twittersBackfilled,
         timelineBackfillQueued,
       }),
       now
@@ -637,6 +690,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
       addressesAdded: roster.addressesAdded,
       ownershipSkipped: roster.ownershipSkipped,
       skippedNoPerson,
+      twittersBackfilled,
       timelineBackfillQueued,
     };
   } catch (error) {
