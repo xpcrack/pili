@@ -5,6 +5,14 @@ const usdCompactFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
 });
 
+/** 成交列专用：紧凑 USD，只留 1 位小数（$1.3K / $12.5K） */
+const tradeAmountUsdFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 1,
+  notation: 'compact',
+});
+
 const usdStandardFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -21,7 +29,7 @@ export function formatTradeAmountUsdLabel(value: number | null | undefined) {
     return '金额未知';
   }
 
-  return formatUsdCompact(value);
+  return tradeAmountUsdFormatter.format(value);
 }
 
 export function formatUsd(value: number) {

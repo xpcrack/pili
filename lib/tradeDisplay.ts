@@ -21,7 +21,8 @@ function normalize(value: string | null | undefined) {
 export function normalizeTradeValueDisplayMode(
   value: string | null | undefined
 ): TradeValueDisplayMode {
-  return value === 'usd' ? 'usd' : 'native';
+  // 默认 USD；只有显式 native 才切回代币金额
+  return value === 'native' ? 'native' : 'usd';
 }
 
 export function isTradeDisplayAction(

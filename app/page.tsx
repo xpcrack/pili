@@ -101,7 +101,7 @@ export default function Home() {
   const [expandFeedback, setExpandFeedback] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<FeedSearchFilters>(DEFAULT_FEED_SEARCH_FILTERS);
   const [timeDisplayMode, setTimeDisplayMode] = useState<FeedTimeDisplayMode>('relative');
-  const [tradeValueDisplayMode, setTradeValueDisplayMode] = useState<TradeValueDisplayMode>('native');
+  const [tradeValueDisplayMode, setTradeValueDisplayMode] = useState<TradeValueDisplayMode>('usd');
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
@@ -141,7 +141,7 @@ export default function Home() {
         );
       } catch {
         setTimeDisplayMode('relative');
-        setTradeValueDisplayMode('native');
+        setTradeValueDisplayMode('usd');
       }
     }, 0);
 

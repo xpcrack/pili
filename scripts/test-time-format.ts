@@ -89,8 +89,8 @@ function run() {
 
   assert.deepEqual(
     ['native', 'usd', 'broken'].map((value) => normalizeTradeValueDisplayMode(value)),
-    ['native', 'usd', 'native'],
-    'invalid persisted trade value display modes should fall back to native'
+    ['native', 'usd', 'usd'],
+    'invalid persisted trade value display modes should fall back to usd'
   );
 
   assert.equal(
@@ -109,8 +109,8 @@ function run() {
       nativeAmountText: '18.28 SOL',
       tradeAmountUsdAtTx: 1620,
     }),
-    '$1.62K',
-    'usd mode should use the compact USD amount as the headline'
+    '$1.6K',
+    'usd mode should use the compact USD amount as the headline (1 decimal)'
   );
 
   assert.equal(

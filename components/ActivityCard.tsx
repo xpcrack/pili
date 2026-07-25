@@ -68,7 +68,7 @@ export const ActivityCard = memo(function ActivityCard({
   activity,
   user,
   timeDisplayMode = 'relative',
-  tradeValueDisplayMode = 'native',
+  tradeValueDisplayMode = 'usd',
   onClick,
   addressAliasMap,
 }: ActivityCardProps) {
@@ -339,7 +339,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-zinc-100">{displayTokenSymbol}</span>
+                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </button>
               ) : (
                 <>
@@ -349,7 +349,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-zinc-100">{displayTokenSymbol}</span>
+                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </>
               )}
               {isMergedTradeCard ? (
