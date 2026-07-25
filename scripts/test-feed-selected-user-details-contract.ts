@@ -42,9 +42,6 @@ async function run() {
     buildSelectedUserDetailsPanelProps({
       selectedUser: null,
       onBack: () => {},
-      matchedFeedCount: 0,
-      hasMore: false,
-      activityBreakdown: null,
       selectedUserDetails: null,
       selectedUserDetailsLoading: false,
       selectedUserDetailsRefreshing: false,
@@ -60,12 +57,6 @@ async function run() {
   const props = buildSelectedUserDetailsPanelProps({
     selectedUser,
     onBack: () => {},
-    matchedFeedCount: 7,
-    hasMore: true,
-    activityBreakdown: {
-      twitterCount: 3,
-      tradeCount: 4,
-    },
     selectedUserDetails,
     selectedUserDetailsLoading: true,
     selectedUserDetailsRefreshing: false,
@@ -75,12 +66,6 @@ async function run() {
 
   assert.ok(props, 'helper should build panel props when a selected user exists');
   assert.equal(props?.selectedUser, selectedUser);
-  assert.equal(props?.matchedFeedCount, 7);
-  assert.equal(props?.hasMore, true);
-  assert.deepEqual(props?.activityBreakdown, {
-    twitterCount: 3,
-    tradeCount: 4,
-  });
   assert.equal(props?.details, selectedUserDetails);
   assert.equal(props?.detailsLoading, true);
   assert.equal(props?.detailsRefreshing, false);

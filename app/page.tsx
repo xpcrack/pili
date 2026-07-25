@@ -48,12 +48,6 @@ function getActivityRenderKey(userId: string, activityId: string, scopedKey: str
 interface BuildSelectedUserDetailsPanelPropsArgs {
   selectedUser: User | null;
   onBack: () => void;
-  matchedFeedCount: number;
-  hasMore: boolean;
-  activityBreakdown: {
-    twitterCount: number;
-    tradeCount: number;
-  } | null;
   selectedUserDetails: SelectedUserDetailsPanelProps['details'];
   selectedUserDetailsLoading: boolean;
   selectedUserDetailsRefreshing: boolean;
@@ -64,9 +58,6 @@ interface BuildSelectedUserDetailsPanelPropsArgs {
 export function buildSelectedUserDetailsPanelProps({
   selectedUser,
   onBack,
-  matchedFeedCount,
-  hasMore,
-  activityBreakdown,
   selectedUserDetails,
   selectedUserDetailsLoading,
   selectedUserDetailsRefreshing,
@@ -80,9 +71,6 @@ export function buildSelectedUserDetailsPanelProps({
   return {
     selectedUser,
     onBack,
-    matchedFeedCount,
-    hasMore,
-    activityBreakdown,
     details: selectedUserDetails,
     detailsLoading: selectedUserDetailsLoading,
     detailsRefreshing: selectedUserDetailsRefreshing,
@@ -300,9 +288,6 @@ export default function Home() {
   const selectedUserDetailsPanelProps = buildSelectedUserDetailsPanelProps({
     selectedUser,
     onBack: handleBackToAll,
-    matchedFeedCount: matchedFeed.length,
-    hasMore,
-    activityBreakdown,
     selectedUserDetails,
     selectedUserDetailsLoading,
     selectedUserDetailsRefreshing,
