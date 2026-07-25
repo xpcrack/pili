@@ -5,7 +5,13 @@ import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/te
 import { extractTweetTokenMentions } from '@/lib/twitter/extractTweetTokenMentions';
 import { isLikelyEnglish } from '@/lib/server/nvidiaEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
-import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
+import {
+  barkOfficialTwitterCollisionOnce,
+  ensurePrimaryPoolForAddress,
+  getPrimaryPoolAddressSet,
+  getPrimaryPoolOfficialTwitterMap,
+  getPrimaryPoolSymbolAllowlist,
+} from '@/lib/server/primaryPoolSymbols';
 import type { Activity, User } from '@/types';
 
 function buildTelegramPostUrl(params: {
@@ -39,7 +45,27 @@ export function projectTelegramChannelPostToFeed(params: {
   const postText = params.post.text || '';
   const mentions = extractTweetTokenMentions(postText, {
     bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+    officialTwitterByHandle: getPrimaryPoolOfficialTwitterMap(),
+    onAmbiguousOfficialTwitter: (info) => {
+      // 同一批 CA 只报一次，避免频道帖重复解析连发
+      void barkOfficialTwitterCollisionOnce({
+        handle: info.handle,
+        tokens: info.tokens,
+      });
+    },
   });
+  // CA not in primary pool → import
+  const poolAddrs = getPrimaryPoolAddressSet();
+  for (const m of mentions) {
+    const addr = (m.tokenAddress || '').trim();
+    if (!addr || poolAddrs.has(addr.toLowerCase())) continue;
+    ensurePrimaryPoolForAddress({
+      address: addr,
+      symbol: m.tokenSymbol,
+      chain: addr.startsWith('0x') ? null : 'solana',
+      reason: 'telegram_ca_mention',
+    });
+  }
   const mentionedTickers = [...new Set(mentions.map(m => m.tokenSymbol).filter(Boolean))] as string[];
   const mentionedTokenAddresses = [...new Set(mentions.map(m => m.tokenAddress).filter(Boolean))] as string[];
   const tokenSentiments = mentions.map(m => ({

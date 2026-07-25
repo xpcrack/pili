@@ -133,7 +133,7 @@ export interface Activity {
       tokenAddress?: string;
       chain?: string;
       sentiment: 'positive' | 'negative' | 'neutral';
-      matchSource: 'ticker' | 'ca' | 'both';
+      matchSource: 'ticker' | 'ca' | 'both' | 'official_twitter';
       marketCapUsd?: number;
       marketCapAtPostUsd?: number;
       marketCapAtPostEstimated?: boolean;
