@@ -1,6 +1,6 @@
 /**
- * newone 一级池 symbol 字典 — 裸 ticker 社媒识别白名单。
- * 只认 tokens.symbol（小写）；不扩 name / 别名。
+ * newone 一级池字典 — 裸 ticker / 官方推特 handle / CA 入池。
+ * 只认 tokens.symbol（小写）与 tokens.twitter_url 解析出的 handle。
  */
 import 'server-only';
 
@@ -13,11 +13,26 @@ const require = createRequire(import.meta.url);
 const CACHE_TTL_MS = 60_000;
 
 type NewoneSqlite = {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  prepare(sql: string): {
+    all(...params: unknown[]): unknown[];
+    get(...params: unknown[]): unknown;
+    run(...params: unknown[]): unknown;
+  };
   close(): void;
 };
 
-let cache: { loadedAtMs: number; symbols: Set<string> } | null = null;
+export type PrimaryPoolTokenRef = {
+  symbol: string | null;
+  address: string;
+  chain: string;
+};
+
+let cache: {
+  loadedAtMs: number;
+  symbols: Set<string>;
+  addresses: Set<string>;
+  officialTwitterByHandle: Map<string, PrimaryPoolTokenRef[]>;
+} | null = null;
 
 export function resolveNewoneDbPath() {
   const fromEnv = (process.env.NEWONE_DB_PATH || process.env.PILI_NEWONE_DB_PATH || '').trim();
@@ -29,18 +44,18 @@ function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }
 
-function openNewoneReadonly(newonePath: string): NewoneSqlite {
+function openNewone(newonePath: string, readonly: boolean): NewoneSqlite {
   if (isBunRuntime()) {
     const { Database } = require('bun:sqlite') as {
       Database: new (filename: string, opts?: { readonly?: boolean }) => NewoneSqlite;
     };
-    return new Database(newonePath, { readonly: true });
+    return new Database(newonePath, { readonly });
   }
   const BetterSqlite3 = require('better-sqlite3') as new (
     filename: string,
     opts?: { readonly?: boolean }
   ) => NewoneSqlite;
-  return new BetterSqlite3(newonePath, { readonly: true });
+  return new BetterSqlite3(newonePath, { readonly });
 }
 
 /** Normalize pool symbol for bare-ticker match: trim, strip leading $, lower. */
@@ -51,31 +66,82 @@ export function normalizePoolSymbolKey(raw: string | null | undefined): string {
   return s.toLowerCase();
 }
 
-function loadPrimaryPoolSymbolsFromDb(newonePath: string): Set<string> {
+/** Parse x.com / twitter.com URL or bare @handle → lowercased handle. */
+export function parseTwitterHandleFromUrl(raw: string | null | undefined): string | null {
+  const s = (raw || '').trim();
+  if (!s) return null;
+  if (s.startsWith('@')) {
+    const h = s.slice(1).trim().toLowerCase();
+    return /^[a-z0-9_]{1,15}$/.test(h) ? h : null;
+  }
+  try {
+    const withProto = /^https?:\/\//i.test(s) ? s : `https://${s}`;
+    const u = new URL(withProto);
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host !== 'x.com' && host !== 'twitter.com' && host !== 'mobile.twitter.com') {
+      return null;
+    }
+    const seg = u.pathname.split('/').filter(Boolean)[0] || '';
+    const h = seg.trim().toLowerCase();
+    if (!h || ['i', 'home', 'share', 'intent', 'search'].includes(h)) return null;
+    return /^[a-z0-9_]{1,15}$/.test(h) ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadPrimaryPoolFromDb(newonePath: string): {
+  symbols: Set<string>;
+  addresses: Set<string>;
+  officialTwitterByHandle: Map<string, PrimaryPoolTokenRef[]>;
+} {
   const symbols = new Set<string>();
+  const addresses = new Set<string>();
+  const officialTwitterByHandle = new Map<string, PrimaryPoolTokenRef[]>();
   if (!existsSync(newonePath)) {
     console.warn(`[primaryPoolSymbols] newone db missing: ${newonePath}`);
-    return symbols;
+    return { symbols, addresses, officialTwitterByHandle };
   }
 
   let db: NewoneSqlite | null = null;
   try {
-    db = openNewoneReadonly(newonePath);
+    db = openNewone(newonePath, true);
     const rows = db
       .prepare(
-        `SELECT t.symbol AS symbol
+        `SELECT t.symbol AS symbol,
+                t.address AS address,
+                t.chain AS chain,
+                t.twitter_url AS twitter_url
          FROM token_pool_memberships m
          JOIN tokens t ON t.id = m.token_id
          WHERE m.pool_type = 'primary'
-           AND m.state = 'active'
-           AND t.symbol IS NOT NULL
-           AND trim(t.symbol) != ''`,
+           AND m.state = 'active'`,
       )
-      .all() as Array<{ symbol?: string }>;
+      .all() as Array<{
+      symbol?: string;
+      address?: string;
+      chain?: string;
+      twitter_url?: string | null;
+    }>;
 
     for (const row of rows) {
       const key = normalizePoolSymbolKey(row.symbol);
       if (key) symbols.add(key);
+      const addr = (row.address || '').trim();
+      const addrLower = addr.toLowerCase();
+      if (addrLower) addresses.add(addrLower);
+      const handle = parseTwitterHandleFromUrl(row.twitter_url);
+      if (handle && addr) {
+        const list = officialTwitterByHandle.get(handle) || [];
+        if (!list.some((x) => x.address.toLowerCase() === addrLower)) {
+          list.push({
+            symbol: row.symbol ? String(row.symbol).trim() : null,
+            address: addr,
+            chain: (row.chain || '').trim() || 'unknown',
+          });
+          officialTwitterByHandle.set(handle, list);
+        }
+      }
     }
   } catch (err) {
     console.warn(
@@ -89,7 +155,26 @@ function loadPrimaryPoolSymbolsFromDb(newonePath: string): Set<string> {
       // ignore
     }
   }
-  return symbols;
+  return { symbols, addresses, officialTwitterByHandle };
+}
+
+function getCached(opts?: { forceRefresh?: boolean; newonePath?: string }) {
+  const now = Date.now();
+  if (
+    !opts?.forceRefresh &&
+    !opts?.newonePath &&
+    cache &&
+    now - cache.loadedAtMs < CACHE_TTL_MS
+  ) {
+    return cache;
+  }
+  const newonePath = opts?.newonePath || resolveNewoneDbPath();
+  const loaded = loadPrimaryPoolFromDb(newonePath);
+  const next = { loadedAtMs: now, ...loaded };
+  if (!opts?.newonePath) {
+    cache = next;
+  }
+  return next;
 }
 
 /**
@@ -100,22 +185,212 @@ export function getPrimaryPoolSymbolAllowlist(opts?: {
   forceRefresh?: boolean;
   newonePath?: string;
 }): Set<string> {
-  const now = Date.now();
-  if (
-    !opts?.forceRefresh &&
-    !opts?.newonePath &&
-    cache &&
-    now - cache.loadedAtMs < CACHE_TTL_MS
-  ) {
-    return cache.symbols;
+  return getCached(opts).symbols;
+}
+
+/** Lowercased primary-pool contract addresses. */
+export function getPrimaryPoolAddressSet(opts?: {
+  forceRefresh?: boolean;
+  newonePath?: string;
+}): Set<string> {
+  return getCached(opts).addresses;
+}
+
+/**
+ * Official twitter handle (lower) → primary-pool tokens.
+ * Empty until tokens.twitter_url is populated.
+ */
+export function getPrimaryPoolOfficialTwitterMap(opts?: {
+  forceRefresh?: boolean;
+  newonePath?: string;
+}): Map<string, PrimaryPoolTokenRef[]> {
+  return getCached(opts).officialTwitterByHandle;
+}
+
+/**
+ * Ensure CA is an active primary-pool member in newone.
+ * Returns true if newly entered or reactivated; false if already active / failed.
+ */
+export function ensurePrimaryPoolForAddress(params: {
+  address: string;
+  symbol?: string | null;
+  chain?: string | null;
+  reason?: string;
+}): { ok: boolean; entered: boolean; tokenId?: number; error?: string } {
+  const address = (params.address || '').trim();
+  if (!address) return { ok: false, entered: false, error: 'empty_address' };
+  const addressLower = address.toLowerCase();
+  const chain =
+    (params.chain || '').trim() ||
+    (addressLower.startsWith('0x') ? 'bsc' : 'solana');
+  const symbol = (params.symbol || '').trim() || null;
+  const newonePath = resolveNewoneDbPath();
+  if (!existsSync(newonePath)) {
+    return { ok: false, entered: false, error: 'newone_db_missing' };
   }
 
-  const newonePath = opts?.newonePath || resolveNewoneDbPath();
-  const symbols = loadPrimaryPoolSymbolsFromDb(newonePath);
-  if (!opts?.newonePath) {
-    cache = { loadedAtMs: now, symbols };
+  let db: NewoneSqlite | null = null;
+  try {
+    db = openNewone(newonePath, false);
+    // Prefer existing token by CA
+    const existing = db
+      .prepare(
+        `SELECT id, chain FROM tokens
+         WHERE address_lower = ?
+         ORDER BY CASE chain WHEN 'robinhood' THEN 1 ELSE 0 END, id ASC
+         LIMIT 1`,
+      )
+      .get(addressLower) as { id: number; chain: string } | undefined;
+
+    let tokenId: number;
+    if (existing?.id) {
+      tokenId = existing.id;
+      if (symbol) {
+        db.prepare(
+          `UPDATE tokens SET symbol = COALESCE(?, symbol) WHERE id = ?`,
+        ).run(symbol, tokenId);
+      }
+    } else {
+      db.prepare(
+        `INSERT INTO tokens (chain, address, address_lower, symbol, name)
+         VALUES (?, ?, ?, ?, NULL)
+         ON CONFLICT(chain, address_lower) DO UPDATE SET
+           symbol = COALESCE(excluded.symbol, tokens.symbol)`,
+      ).run(chain, address, addressLower, symbol);
+      const row = db
+        .prepare(`SELECT id FROM tokens WHERE chain = ? AND address_lower = ?`)
+        .get(chain, addressLower) as { id: number } | undefined;
+      if (!row?.id) return { ok: false, entered: false, error: 'token_insert_failed' };
+      tokenId = row.id;
+    }
+
+    const membership = db
+      .prepare(
+        `SELECT id, state FROM token_pool_memberships
+         WHERE token_id = ? AND pool_type = 'primary' AND strategy_id = 'default'`,
+      )
+      .get(tokenId) as { id: number; state: string } | undefined;
+
+    const reasonJson = JSON.stringify({
+      source: 'pili-social-ca',
+      reason: params.reason || 'social_ca_mention',
+      address,
+      symbol,
+    });
+
+    if (membership) {
+      if (membership.state === 'active') {
+        // refresh cache
+        if (cache) {
+          cache.addresses.add(addressLower);
+          if (symbol) cache.symbols.add(normalizePoolSymbolKey(symbol));
+        }
+        return { ok: true, entered: false, tokenId };
+      }
+      // excluded/exited → reactivate for social CA (user rule: CA not in pool → import)
+      db.prepare(
+        `UPDATE token_pool_memberships SET
+           state = 'active',
+           entered_at = datetime('now'),
+           exited_at = NULL,
+           reason_json = ?,
+           last_evaluated_at = datetime('now'),
+           updated_at = datetime('now')
+         WHERE id = ?`,
+      ).run(reasonJson, membership.id);
+    } else {
+      db.prepare(
+        `INSERT INTO token_pool_memberships (
+           token_id, pool_type, strategy_id, state,
+           source_event_id, reason_json, rule_version, last_evaluated_at
+         ) VALUES (?, 'primary', 'default', 'active', NULL, ?, 'pili-social-ca', datetime('now'))`,
+      ).run(tokenId, reasonJson);
+    }
+
+    if (cache) {
+      cache.addresses.add(addressLower);
+      if (symbol) cache.symbols.add(normalizePoolSymbolKey(symbol));
+    } else {
+      cache = null; // force reload next read
+    }
+    return { ok: true, entered: true, tokenId };
+  } catch (err) {
+    return {
+      ok: false,
+      entered: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore
+    }
   }
-  return symbols;
+}
+
+/** Best-effort Bark (dual device if BARK_URLS / default). */
+export async function barkPrimaryPoolAlert(title: string, body: string) {
+  const raw =
+    process.env.PILI_BARK_URLS ||
+    process.env.NEWONE_NOTIFY_BARK_URL ||
+    'https://api.day.app/kZdThYxm7DXZDvXtjyBsNV,https://api.day.app/sUE4eWUoGvY7jKuWUy9oVS';
+  const urls = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  await Promise.allSettled(
+    urls.map(async (base) => {
+      const u = new URL(base.replace(/\/$/, '') + '/' + encodeURIComponent(title));
+      u.searchParams.set('body', body.slice(0, 500));
+      u.searchParams.set('group', 'pili-pool');
+      await fetch(u.toString(), { method: 'GET' });
+    }),
+  );
+}
+
+/**
+ * 官方推特撞车：同一批 CA 只 Bark 一次。
+ * key = 排序后的 address 集合；同一集合后续命中静默（进程内记忆）。
+ * 换进程/重启后会再报一次。
+ */
+const officialTwitterCollisionAlertedKeys = new Set<string>();
+
+export function officialTwitterCollisionKey(
+  tokens: Array<{ address?: string | null }>,
+): string {
+  const set = new Set<string>();
+  for (const t of tokens) {
+    const a = (t.address || '').trim().toLowerCase();
+    if (a) set.add(a);
+  }
+  return Array.from(set).sort().join('|');
+}
+
+/**
+ * 同一批 CA 首次撞车才推送；已报过的集合直接 skip。
+ * 返回 true = 本次发了 Bark。
+ */
+export async function barkOfficialTwitterCollisionOnce(params: {
+  handle: string;
+  tokens: Array<{ symbol?: string | null; address?: string | null }>;
+}): Promise<boolean> {
+  const handle = (params.handle || '').trim().toLowerCase().replace(/^@/, '');
+  const key = officialTwitterCollisionKey(params.tokens);
+  if (!key) return false;
+  if (officialTwitterCollisionAlertedKeys.has(key)) return false;
+  officialTwitterCollisionAlertedKeys.add(key);
+
+  const body = `@${handle || '?'} → ${params.tokens
+    .map((t) => `${t.symbol || '?'} ${t.address || ''}`)
+    .join(' | ')}`;
+  await barkPrimaryPoolAlert('一级池官方推特撞车', body);
+  return true;
+}
+
+/** Test helper — clear in-memory collision dedupe. */
+export function clearOfficialTwitterCollisionAlertCache() {
+  officialTwitterCollisionAlertedKeys.clear();
 }
 
 /** Test helper — clear in-memory cache. */

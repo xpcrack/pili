@@ -1,9 +1,17 @@
+export type TweetTokenMatchSource = 'ticker' | 'ca' | 'both' | 'official_twitter';
+
 export interface ExtractedTweetTokenMention {
   tokenAddress: string | null;
   tokenSymbol: string | null;
-  matchSource: 'ticker' | 'ca' | 'both';
+  matchSource: TweetTokenMatchSource;
   rankInTweet: number;
 }
+
+export type OfficialTwitterTokenRef = {
+  symbol: string | null;
+  address: string | null;
+  chain?: string | null;
+};
 
 export type ExtractTweetTokenMentionsOptions = {
   /**
@@ -11,6 +19,16 @@ export type ExtractTweetTokenMentionsOptions = {
    * $ / # / CA never require the pool. Missing/empty → bare tickers all drop (fail closed).
    */
   bareSymbolAllowlist?: ReadonlySet<string> | null;
+  /**
+   * Lowercased official twitter handle → primary-pool token(s).
+   * @handle only counts when present here.
+   */
+  officialTwitterByHandle?: ReadonlyMap<string, OfficialTwitterTokenRef[]> | null;
+  /** Fired when one handle maps to multiple primary-pool tokens (user wants Bark + multi-mention). */
+  onAmbiguousOfficialTwitter?: (info: {
+    handle: string;
+    tokens: OfficialTwitterTokenRef[];
+  }) => void;
 };
 
 const EVM_CA_PATTERN = /\b0x[a-fA-F0-9]{40}\b/g;
@@ -28,6 +46,9 @@ const HASH_ASCII_PATTERN = /#([A-Za-z][A-Za-z0-9_]{1,19})(?![A-Za-z0-9_])/g;
 
 /** Chinese (CJK) #tag — pure Han, 2–20 chars (e.g. #熊猫头). */
 const HASH_CJK_PATTERN = /#([一-鿿]{2,20})/g;
+
+/** @handle (Twitter username). */
+const AT_HANDLE_PATTERN = /@([A-Za-z0-9_]{1,15})(?![A-Za-z0-9_])/g;
 
 /**
  * Bare TitleCase ticker (CT often omits $): Jimothy, Pepe, Bonk.
@@ -137,6 +158,7 @@ const BARE_TICKER_STOPWORDS = new Set(
     'HODL', 'FOMO', 'FUD', 'REKT', 'WAGMI', 'NGMI', 'LFG', 'GM', 'GN',
     'IDK', 'IDC', 'IMO', 'TBF', 'TBH', 'SMH', 'LOL', 'LMAO', 'OMG', 'BRB',
     'USA', 'EU', 'UK', 'CN', 'KR', 'JP', 'NYC', 'SF',
+    'RT', 'KOL', // retweet prefix / influencer slang
   ].map((w) => w.toLowerCase())
 );
 
@@ -179,7 +201,7 @@ function isMostlyAllCapsShout(text: string): boolean {
   return allCaps / words.length >= SHOUT_ALLCAPS_RATIO;
 }
 
-/** True if already covered by $ / # cashtag, or @handle (never a ticker). */
+/** True if already covered by $ / # cashtag, or @handle (never a bare ticker). */
 function isPrefixedTicker(text: string, index: number) {
   if (index <= 0) return false;
   const prev = text[index - 1];
@@ -250,19 +272,32 @@ function findCaCandidates(text: string) {
   return result.sort((a, b) => a.index - b.index);
 }
 
-type TickerKind = 'marked' | 'bare';
+type TickerKind = 'marked' | 'bare' | 'official_twitter';
 
-function findTickerCandidates(text: string) {
-  const result: Array<{ tokenSymbol: string; index: number; kind: TickerKind }> = [];
+function findTickerCandidates(
+  text: string,
+  options: ExtractTweetTokenMentionsOptions,
+) {
+  const result: Array<{
+    tokenSymbol: string | null;
+    tokenAddress: string | null;
+    index: number;
+    kind: TickerKind;
+  }> = [];
   const seenAt = new Set<string>();
 
-  const push = (raw: string, index: number, kind: TickerKind) => {
-    const tokenSymbol = normalizeTickerSymbol(raw);
-    if (!tokenSymbol) return;
-    const key = `${tokenSymbol.toLowerCase()}@${index}`;
+  const push = (
+    raw: string,
+    index: number,
+    kind: TickerKind,
+    tokenAddress: string | null = null,
+  ) => {
+    const tokenSymbol = raw ? normalizeTickerSymbol(raw) : null;
+    if (!tokenSymbol && !tokenAddress) return;
+    const key = `${(tokenSymbol || '').toLowerCase()}|${(tokenAddress || '').toLowerCase()}@${index}`;
     if (seenAt.has(key)) return;
     seenAt.add(key);
-    result.push({ tokenSymbol, index, kind });
+    result.push({ tokenSymbol, tokenAddress, index, kind });
   };
 
   for (const match of text.matchAll(DOLLAR_ASCII_PATTERN)) {
@@ -278,8 +313,28 @@ function findTickerCandidates(text: string) {
     push(match[1] || '', match.index ?? 0, 'marked');
   }
 
+  // @official handle → primary-pool token(s)
+  const byHandle = options.officialTwitterByHandle;
+  if (byHandle && byHandle.size > 0) {
+    for (const match of text.matchAll(AT_HANDLE_PATTERN)) {
+      const handle = (match[1] || '').toLowerCase();
+      const index = match.index ?? 0;
+      if (!handle) continue;
+      const tokens = byHandle.get(handle);
+      if (!tokens || tokens.length === 0) continue;
+      if (tokens.length > 1) {
+        options.onAmbiguousOfficialTwitter?.({ handle, tokens });
+      }
+      for (const tok of tokens) {
+        const sym = (tok.symbol || '').trim();
+        const addr = (tok.address || '').trim() || null;
+        push(sym, index, 'official_twitter', addr);
+      }
+    }
+  }
+
   // Bare TitleCase / ALLCAPS (PRD: independent tickers under whitelist/rules).
-  // Runs after $/# so those keep original positions; symbol dedupe later.
+  // Runs after $/#/@ so those keep original positions; symbol dedupe later.
   const shoutMode = isMostlyAllCapsShout(text);
   for (const match of text.matchAll(BARE_TITLE_PATTERN)) {
     const raw = match[1] || '';
@@ -329,8 +384,8 @@ export function listPreserveTickerSymbols(
   for (const symbol of extraSymbols) {
     push(symbol);
   }
-  for (const match of findTickerCandidates(normalizeText(text))) {
-    if (match.kind === 'bare' && !isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist)) {
+  for (const match of findTickerCandidates(normalizeText(text), options)) {
+    if (match.kind === 'bare' && match.tokenSymbol && !isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist)) {
       continue;
     }
     push(match.tokenSymbol);
@@ -345,15 +400,21 @@ export function extractTweetTokenMentions(
   const normalized = normalizeText(text);
   const results: ExtractedTweetTokenMention[] = [];
   const bySymbol = new Map<string, ExtractedTweetTokenMention>();
-  const tickerMatches = findTickerCandidates(normalized)
+  const byAddress = new Map<string, ExtractedTweetTokenMention>();
+  const tickerMatches = findTickerCandidates(normalized, options)
     .filter((match) => {
-      if (match.kind !== 'bare') return true;
-      return isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist);
+      if (match.kind === 'bare') {
+        if (!match.tokenSymbol) return false;
+        return isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist);
+      }
+      return true;
     })
     .map((match) => ({
       type: 'ticker' as const,
       index: match.index,
       tokenSymbol: match.tokenSymbol,
+      tokenAddress: match.tokenAddress,
+      matchSource: (match.kind === 'official_twitter' ? 'official_twitter' : 'ticker') as TweetTokenMatchSource,
     }));
   const caMatches = findCaCandidates(normalized).map((match) => ({
     type: 'ca' as const,
@@ -365,18 +426,35 @@ export function extractTweetTokenMentions(
 
   for (const match of orderedMatches) {
     if (match.type === 'ticker') {
-      const symbolKey = match.tokenSymbol.toLowerCase();
-      if (bySymbol.has(symbolKey)) {
+      const symbolKey = (match.tokenSymbol || '').toLowerCase();
+      const addrKey = (match.tokenAddress || '').toLowerCase();
+      if (symbolKey && bySymbol.has(symbolKey)) {
+        const existing = bySymbol.get(symbolKey)!;
+        if (!existing.tokenAddress && match.tokenAddress) {
+          existing.tokenAddress = match.tokenAddress;
+          if (existing.matchSource === 'ticker') existing.matchSource = 'both';
+          if (existing.matchSource === 'official_twitter' && match.tokenAddress) {
+            // keep official_twitter
+          }
+        }
+        continue;
+      }
+      if (addrKey && byAddress.has(addrKey)) {
+        const existing = byAddress.get(addrKey)!;
+        if (!existing.tokenSymbol && match.tokenSymbol) {
+          existing.tokenSymbol = match.tokenSymbol;
+        }
         continue;
       }
       rank += 1;
       const mention: ExtractedTweetTokenMention = {
-        tokenAddress: null,
+        tokenAddress: match.tokenAddress,
         tokenSymbol: match.tokenSymbol,
-        matchSource: 'ticker',
+        matchSource: match.matchSource,
         rankInTweet: rank,
       };
-      bySymbol.set(symbolKey, mention);
+      if (symbolKey) bySymbol.set(symbolKey, mention);
+      if (addrKey) byAddress.set(addrKey, mention);
       results.push(mention);
       continue;
     }
@@ -385,16 +463,24 @@ export function extractTweetTokenMentions(
     const latest = results[results.length - 1];
     if (latest && latest.tokenAddress === null) {
       latest.tokenAddress = match.tokenAddress;
-      latest.matchSource = latest.tokenSymbol ? 'both' : 'ca';
+      latest.matchSource =
+        latest.matchSource === 'official_twitter'
+          ? 'official_twitter'
+          : latest.tokenSymbol
+            ? 'both'
+            : 'ca';
+      byAddress.set(match.tokenAddress.toLowerCase(), latest);
       continue;
     }
 
-    results.push({
+    const caMention: ExtractedTweetTokenMention = {
       tokenAddress: match.tokenAddress,
       tokenSymbol: null,
       matchSource: 'ca',
       rankInTweet: rank,
-    });
+    };
+    byAddress.set(match.tokenAddress.toLowerCase(), caMention);
+    results.push(caMention);
   }
 
   return results;

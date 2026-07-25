@@ -23,10 +23,16 @@ import {
 } from '@/lib/server/tweetSourceTexts';
 import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/server/visionEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
-import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
+import {
+  barkOfficialTwitterCollisionOnce,
+  ensurePrimaryPoolForAddress,
+  getPrimaryPoolAddressSet,
+  getPrimaryPoolOfficialTwitterMap,
+  getPrimaryPoolSymbolAllowlist,
+} from '@/lib/server/primaryPoolSymbols';
 
-/** rule-v6: + shout ALLCAPS tighten + bare ALLCAPS min len; pool + @ rules from v5 */
-const EXTRACTOR_VERSION = 'rule-v6';
+/** rule-v7: @official_twitter from primary pool; $ free; bare pool-gated; CA import primary */
+const EXTRACTOR_VERSION = 'rule-v7';
 const TRANSLATOR_VERSION = 'model-v4';
 
 function normalize(value: string | null | undefined) {
@@ -114,7 +120,37 @@ function extractMentionsFromTweet(tweet: StoredTwitterTweet) {
   const combined = blobs.filter(Boolean).join('\n');
   return extractTweetTokenMentions(combined, {
     bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+    officialTwitterByHandle: getPrimaryPoolOfficialTwitterMap(),
+    onAmbiguousOfficialTwitter: (info) => {
+      // 同一批 CA 只报一次，避免 enrichment 每条推文/TG 连发
+      void barkOfficialTwitterCollisionOnce({
+        handle: info.handle,
+        tokens: info.tokens,
+      });
+    },
   });
+}
+
+/** CA not in primary pool → import (user rule). Best-effort, never throws. */
+function ensureExtractedCasInPrimaryPool(mentions: ExtractedTweetTokenMention[]) {
+  const poolAddrs = getPrimaryPoolAddressSet();
+  for (const m of mentions) {
+    const addr = (m.tokenAddress || '').trim();
+    if (!addr) continue;
+    if (poolAddrs.has(addr.toLowerCase())) continue;
+    const chain = addr.startsWith('0x') ? null : 'solana';
+    const res = ensurePrimaryPoolForAddress({
+      address: addr,
+      symbol: m.tokenSymbol,
+      chain,
+      reason: 'social_ca_mention',
+    });
+    if (res.entered) {
+      console.log(`[primary-pool] imported CA ${addr} symbol=${m.tokenSymbol || ''}`);
+    } else if (!res.ok) {
+      console.warn(`[primary-pool] import CA failed ${addr}: ${res.error}`);
+    }
+  }
 }
 
 async function translateQuotedContent(params: {
@@ -181,6 +217,7 @@ async function runEnrichmentForTweet(params: {
   }
 
   const mergedMentions = mergeMentions({ textMentions, imageMentions });
+  ensureExtractedCasInPrimaryPool(mergedMentions);
 
   upsertTwitterTweetEnrichment({
     tweetId: params.tweet.tweetId,

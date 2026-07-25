@@ -7,7 +7,10 @@ import type {
   TweetEnrichmentModelResult,
 } from '@/lib/server/twitterEnrichmentModel';
 import { listPreserveTickerSymbols } from '@/lib/twitter/extractTweetTokenMentions';
-import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
+import {
+  getPrimaryPoolOfficialTwitterMap,
+  getPrimaryPoolSymbolAllowlist,
+} from '@/lib/server/primaryPoolSymbols';
 
 /** OpenAI-compatible chat base. Prefer local AxonHub MIMO over NVIDIA NIM. */
 export const DEFAULT_ENRICHMENT_BASE_URL = 'http://127.0.0.1:8090/v1';
@@ -325,7 +328,10 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     const preserveSymbols = listPreserveTickerSymbols(
       text,
       mentions.map((m) => m.tokenSymbol),
-      { bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist() },
+      {
+        bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+        officialTwitterByHandle: getPrimaryPoolOfficialTwitterMap(),
+      },
     );
     const { masked, tokens } = maskPreserveTokens(text, preserveSymbols);
     const prompt = buildEnrichmentPrompt(masked, mentions);
@@ -422,6 +428,7 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
 
     const preserveSymbols = listPreserveTickerSymbols(trimmed, [], {
       bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+      officialTwitterByHandle: getPrimaryPoolOfficialTwitterMap(),
     });
     const { masked, tokens } = maskPreserveTokens(trimmed, preserveSymbols);
 

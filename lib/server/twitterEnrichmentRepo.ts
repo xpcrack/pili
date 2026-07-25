@@ -3,7 +3,7 @@ import 'server-only';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 
 export type TweetEnrichmentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'skipped';
-export type TweetMentionMatchSource = 'ticker' | 'ca' | 'both';
+export type TweetMentionMatchSource = 'ticker' | 'ca' | 'both' | 'official_twitter';
 export type TweetMentionSentiment = 'positive' | 'negative' | 'neutral';
 export type TweetMentionOrigin = 'text' | 'image';
 export type EventTweetRefSource = 'telegram-monitor' | 'telegram-channel' | 'historical-backfill';
@@ -118,7 +118,7 @@ function normalizeStatus(value: string): TweetEnrichmentStatus {
 }
 
 function normalizeMatchSource(value: string): TweetMentionMatchSource {
-  if (value === 'ca' || value === 'both') {
+  if (value === 'ca' || value === 'both' || value === 'official_twitter') {
     return value;
   }
   return 'ticker';

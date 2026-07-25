@@ -126,13 +126,56 @@ function testExtractTweetTokenMentions() {
     [{ tokenSymbol: 'JIMOTHY', tokenAddress: null, matchSource: 'ticker' }]
   );
 
-  // @handle never a bare ticker even if in pool
+  // @handle not a bare ticker; only official-twitter map counts
   const handle = extractTweetTokenMentions('@Unipioneer bought 666 sol $Jimothy', {
     bareSymbolAllowlist: new Set(['unipioneer', 'jimothy']),
   });
   assert.deepEqual(
     handle.map((item) => item.tokenSymbol),
     ['JIMOTHY']
+  );
+
+  // @official → token mention (primary-pool official twitter)
+  const official = extractTweetTokenMentions('@pepecoin moon and $FOO', {
+    bareSymbolAllowlist: new Set(['pepe']),
+    officialTwitterByHandle: new Map([
+      ['pepecoin', [{ symbol: 'PEPE', address: 'SoPePe1111111111111111111111111111111111111' }]],
+    ]),
+  });
+  assert.deepEqual(
+    official.map((item) => ({
+      tokenSymbol: item.tokenSymbol,
+      tokenAddress: item.tokenAddress,
+      matchSource: item.matchSource,
+    })),
+    [
+      {
+        tokenSymbol: 'PEPE',
+        tokenAddress: 'SoPePe1111111111111111111111111111111111111',
+        matchSource: 'official_twitter',
+      },
+      { tokenSymbol: 'FOO', tokenAddress: null, matchSource: 'ticker' },
+    ]
+  );
+
+  // ambiguous official handle → multi-mention + callback
+  const ambiguousHandles: string[] = [];
+  const multi = extractTweetTokenMentions('check @shared', {
+    officialTwitterByHandle: new Map([
+      [
+        'shared',
+        [
+          { symbol: 'AAA', address: 'AddrA' },
+          { symbol: 'BBB', address: 'AddrB' },
+        ],
+      ],
+    ]),
+    onAmbiguousOfficialTwitter: (info) => ambiguousHandles.push(info.handle),
+  });
+  assert.deepEqual(ambiguousHandles, ['shared']);
+  assert.deepEqual(
+    multi.map((item) => item.tokenSymbol),
+    ['AAA', 'BBB']
   );
 
   // yeonwoo sample: only pool symbols; Bankr not in pool as BANKR → drop
