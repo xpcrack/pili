@@ -24,8 +24,8 @@ import {
 import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/server/visionEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
 
-const EXTRACTOR_VERSION = 'rule-v3';
-const TRANSLATOR_VERSION = 'model-v3';
+const EXTRACTOR_VERSION = 'rule-v4';
+const TRANSLATOR_VERSION = 'model-v4';
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();

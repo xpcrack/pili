@@ -118,7 +118,7 @@ async function main() {
         AND (
           e.tweet_id IS NULL
           OR e.translator_version IS NULL
-          OR e.translator_version != 'model-v3'
+          OR e.translator_version != 'model-v4'
           OR e.translation_status IN ('pending', 'failed')
         )
       ORDER BY af.timestamp DESC
@@ -140,7 +140,7 @@ async function main() {
         AND (
           e.tweet_id IS NULL
           OR e.translator_version IS NULL
-          OR e.translator_version != 'model-v3'
+          OR e.translator_version != 'model-v4'
           OR e.translation_status IN ('pending', 'failed')
         )
       ORDER BY t.created_at_ms DESC
@@ -152,7 +152,7 @@ async function main() {
   }
 
   console.log(
-    `Found ${pendingIds.length} tweets needing model-v3 enrichment` +
+    `Found ${pendingIds.length} tweets needing model-v4 enrichment` +
       (feedOnly ? ' (feed-only)' : ' (full twitter corpus)') +
       (days ? ` (last ${days}d)` : '') +
       (excludeNews ? ' (exclude-news)' : '')
