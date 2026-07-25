@@ -128,7 +128,7 @@ export function buildLiveMonitorActivity(params: {
     eventTimeMs: trade.eventTimeMs,
   });
 
-  // open → 新仓 (no ratio); close → -100%
+  // open → 建仓 (no ratio); close → -100%
   const positionDeltaRatio =
     actionVariant === 'close'
       ? -1

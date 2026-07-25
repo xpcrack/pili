@@ -71,7 +71,7 @@ export function resolvePositionDeltaDisplay(params: {
   const variant = normalize(params.txActionVariant).toLowerCase();
   const label = normalize(params.displayActionVariantLabel);
   if (variant === 'open' || label === '建仓') {
-    return { text: '新仓', tone: 'neutral' as const };
+    return { text: '建仓', tone: 'up' as const };
   }
   if (variant === 'close' || label === '清仓') {
     return { text: '-100%', tone: 'down' as const };
@@ -140,7 +140,7 @@ function positionSeriesKey(activity: Activity) {
 
 /**
  * Fill missing positionDeltaRatio from in-page wallet×token timeline.
- * - open / first buy after flat: leave ratio unset → UI shows 新仓
+ * - open / first buy after flat: leave ratio unset → UI shows 建仓
  * - close / sell that empties: -1
  * - add: +qty/before；reduce: -qty/before
  * Already-set ratio is preserved. Unknown pre-balance stays 待补 but seeds inventory.
@@ -203,7 +203,7 @@ export function fillPositionDeltaRatios<T extends { activity: Activity }>(items:
         if (row.amount != null) balance = row.amount;
         else if (balance == null || balance <= 0) balance = 0;
         if (!isOpenVariant(row.item.activity) && row.side === 'buy') {
-          // first buy after flat on live data stored as add → treat as 新仓
+          // first buy after flat on live data stored as add → treat as 建仓
           patchByIndex.set(row.index, { ...(patchByIndex.get(row.index) || {}), open: true });
         }
         continue;
@@ -288,13 +288,30 @@ export function formatCompactMarketCap(marketCapUsd: number | null | undefined) 
 
   const formatCompact = (value: number, unit: string) => {
     const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-    return `$${value.toFixed(decimals).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')}${unit}`;
+    return `${value.toFixed(decimals).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')}${unit}`;
   };
 
   if (marketCapUsd >= 1_000_000_000) return formatCompact(marketCapUsd / 1_000_000_000, 'B');
   if (marketCapUsd >= 1_000_000) return formatCompact(marketCapUsd / 1_000_000, 'M');
   if (marketCapUsd >= 1_000) return formatCompact(marketCapUsd / 1_000, 'K');
-  return `$${Math.round(marketCapUsd)}`;
+  return `${Math.round(marketCapUsd)}`;
+}
+
+/** MC 列不带 $；兼容历史 metadata 里已存的 `$100K` */
+export function stripMarketCapUsdPrefix(text: string | null | undefined) {
+  const value = typeof text === 'string' ? text.trim() : '';
+  if (!value) return null;
+  return value.replace(/^\$/, '') || null;
+}
+
+/** GMGN 风格：USD 色条宽度（log 刻度，$10→最短，$10k+→满宽） */
+export function tradeUsdBarPercent(usd: number | null | undefined) {
+  if (usd === null || usd === undefined || !Number.isFinite(usd) || usd <= 0) return 0;
+  const min = 10;
+  const max = 10_000;
+  const clamped = Math.min(max, Math.max(min, usd));
+  const t = (Math.log10(clamped) - Math.log10(min)) / (Math.log10(max) - Math.log10(min));
+  return Math.round(Math.min(100, Math.max(6, t * 100)));
 }
 
 function sanitizeTradeAmount(value: string | number | null | undefined) {

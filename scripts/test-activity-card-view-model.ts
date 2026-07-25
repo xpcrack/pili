@@ -72,7 +72,7 @@ function run() {
   assert.equal(trade.displayActionVariantLabel, '清仓');
   assert.equal(trade.displayTradeHeadlineText, '$115.5', 'USD mode should use transaction USD value');
   assert.equal(trade.shouldUseOutgoingAmountTone, true, 'close/reduce actions should use outgoing tone');
-  assert.equal(trade.displayMarketCapText, '$2.5M');
+  assert.equal(trade.displayMarketCapText, '2.5M');
   assert.equal(trade.positionDeltaText, '-100%', 'close maps to -100%');
   assert.equal(trade.positionDeltaTone, 'down');
   assert.equal(trade.displayTradeUsdText, '$115.5');
@@ -98,8 +98,8 @@ function run() {
     tradeValueDisplayMode: 'native',
     resolvedTokenInfo: { marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null },
   });
-  assert.equal(openTrade.positionDeltaText, '新仓');
-  assert.equal(openTrade.positionDeltaTone, 'neutral');
+  assert.equal(openTrade.positionDeltaText, '建仓');
+  assert.equal(openTrade.positionDeltaTone, 'up');
 
   const addTrade = buildActivityCardViewModel({
     activity: makeTransfer({

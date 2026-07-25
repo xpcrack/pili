@@ -14,6 +14,7 @@ import {
   isTradeDisplayAction,
   normalizeDisplayTradeAmountText,
   resolvePositionDeltaDisplay,
+  stripMarketCapUsdPrefix,
   type TradeValueDisplayMode,
 } from '@/lib/tradeDisplay';
 
@@ -280,7 +281,7 @@ export function buildActivityCardViewModel(params: {
     ? mergedAverageMarketCapLabel
     : isSendReceiveTransfer
       ? counterpartyLabel
-    : activity.metadata.displayMarketCapText || marketCapLabel;
+      : stripMarketCapUsdPrefix(activity.metadata.displayMarketCapText) || marketCapLabel;
   const shouldUseOutgoingAmountTone =
     displayActionVariantLabel === '减仓' ||
     displayActionVariantLabel === '清仓' ||
@@ -349,6 +350,7 @@ export function buildActivityCardViewModel(params: {
     displayTradeHeadlineText,
     displayTradeAmountText: displayTradeAmountText || '—',
     displayTradeUsdText,
+    tradeAmountUsdAtTx,
     positionDeltaText: positionDelta.text,
     positionDeltaTone: positionDelta.tone,
     displayTokenSymbol,
