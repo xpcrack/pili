@@ -589,7 +589,7 @@ export default function Home() {
                           className="sticky top-14 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)]"
                           style={{
                             gridTemplateColumns:
-                              '28px 100px 120px 48px 68px minmax(72px,1fr) 40px',
+                              '28px 100px 120px 48px 68px minmax(72px,1fr) 80px',
                           }}
                         >
                           <div />
