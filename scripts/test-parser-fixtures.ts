@@ -19,6 +19,9 @@ process.env.OKX_API_KEY ??= 'fixture-okx-key';
 process.env.OKX_SECRET_KEY ??= 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE ??= 'fixture-okx-passphrase';
 process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
+// Fixture path asserts xxyy-monitor projection (not doorbell).
+process.env.PILI_XXYY_FEED = 'project';
+process.env.PILI_LIVE_SOURCE = 'xxyy';
 
 const INTENTIONAL_CRASH_AFTER_SYSTEM_CONFIG = 'PARSER_FIXTURE_TEST_CRASH_AFTER_SYSTEM_CONFIG';
 

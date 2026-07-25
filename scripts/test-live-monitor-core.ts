@@ -200,9 +200,19 @@ function testXxyyFilter() {
   assert.equal(readLiveSourceMode({ PILI_LIVE_SOURCE: 'alchemy' }), 'alchemy');
 
   assert.equal(shouldAcceptXxyyChain('solana', { PILI_LIVE_SOURCE: 'xxyy' }), true);
+  // Default alchemy feed mode is doorbell → all chains accepted as rings.
   assert.equal(
     shouldAcceptXxyyChain('solana', {
       PILI_LIVE_SOURCE: 'alchemy',
+      PILI_LIVE_XXYY_CHAINS: 'robinhood',
+    }),
+    true
+  );
+  // Legacy project mode still respects residual chain allowlist.
+  assert.equal(
+    shouldAcceptXxyyChain('solana', {
+      PILI_LIVE_SOURCE: 'alchemy',
+      PILI_XXYY_FEED: 'project',
       PILI_LIVE_XXYY_CHAINS: 'robinhood',
     }),
     false
@@ -210,6 +220,7 @@ function testXxyyFilter() {
   assert.equal(
     shouldAcceptXxyyChain('robinhood', {
       PILI_LIVE_SOURCE: 'alchemy',
+      PILI_XXYY_FEED: 'project',
       PILI_LIVE_XXYY_CHAINS: 'robinhood',
     }),
     true
@@ -217,6 +228,7 @@ function testXxyyFilter() {
   assert.equal(
     shouldAcceptXxyyChain('bsc', {
       PILI_LIVE_SOURCE: 'dual',
+      PILI_XXYY_FEED: 'project',
       PILI_LIVE_XXYY_CHAINS: 'robinhood',
     }),
     false

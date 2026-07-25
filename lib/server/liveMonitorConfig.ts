@@ -3,6 +3,14 @@
  */
 export type LiveSourceMode = 'dual' | 'alchemy' | 'xxyy';
 
+/**
+ * How XXYY TG trades enter the system:
+ * - project: parse + write xxyy-monitor feed (legacy)
+ * - doorbell: parse + audit row + ring live-monitor → GMGN is sole feed writer
+ * - off: drop
+ */
+export type XxyyFeedMode = 'project' | 'doorbell' | 'off';
+
 /** Loose env map so unit tests can pass plain objects. */
 export type EnvMap = Record<string, string | undefined>;
 
@@ -16,7 +24,17 @@ export function readLiveSourceMode(env: EnvMap = process.env): LiveSourceMode {
   return hasInbox ? 'dual' : 'xxyy';
 }
 
-/** Chains still accepted from XXYY TG. null = all chains. */
+/**
+ * Default: alchemy/dual → doorbell (GMGN sole parser); xxyy-only → project.
+ * Override: PILI_XXYY_FEED=project|doorbell|off
+ */
+export function readXxyyFeedMode(env: EnvMap = process.env): XxyyFeedMode {
+  const raw = (env.PILI_XXYY_FEED || '').trim().toLowerCase();
+  if (raw === 'project' || raw === 'doorbell' || raw === 'off') return raw;
+  return readLiveSourceMode(env) === 'xxyy' ? 'project' : 'doorbell';
+}
+
+/** Chains still accepted from XXYY when projecting feed. null = all chains. */
 export function readXxyyAllowedChains(env: EnvMap = process.env): Set<string> | null {
   const mode = readLiveSourceMode(env);
   if (mode === 'xxyy') return null;
@@ -46,6 +64,10 @@ export function shouldAcceptXxyyChain(
   chain: string | null | undefined,
   env: EnvMap = process.env
 ): boolean {
+  // Doorbell mode: every chain can ring GMGN (Alchemy miss complement).
+  if (readXxyyFeedMode(env) === 'doorbell') return true;
+  if (readXxyyFeedMode(env) === 'off') return false;
+
   const allowed = readXxyyAllowedChains(env);
   if (allowed == null) return true;
   const c = (chain || '').trim().toLowerCase();

@@ -6,9 +6,12 @@
 tracked_users
   → (可选) pili 自有 Alchemy webhook 地址同步
   → ADDRESS_ACTIVITY → CF inbox（可与 newone 共用收件箱 URL）
-  → runtime task `live-monitor` pull
-  → GMGN portfolio activity
-  → events id = live-monitor:{chain}:{wallet}:{tx}
+  ↘
+XXYY TG（bridge）→ 只写审计 + live_doorbell_queue（不解析买卖腿）
+  ↘
+runtime task `live-monitor` 合并门铃
+  → GMGN portfolio activity（唯一成交解析）
+  → events id = live-monitor:{chain}:{wallet}:{tx}:{token}
 ```
 
 ## 环境变量
@@ -16,7 +19,9 @@ tracked_users
 | 变量 | 说明 |
 |------|------|
 | `PILI_LIVE_SOURCE` | `dual` / `alchemy` / `xxyy`。未设时：有 inbox url+token → dual，否则 xxyy |
-| `PILI_LIVE_XXYY_CHAINS` | dual/alchemy 时 XXYY 仍放行的链，逗号分隔。alchemy 默认 `robinhood` |
+| `PILI_XXYY_FEED` | `doorbell`（默认，alchemy/dual）/ `project`（旧 XXYY 直写 feed）/ `off` |
+| `PILI_LIVE_DOORBELL_DEBOUNCE_MS` | XXYY 门铃 trailing debounce，默认 2000 |
+| `PILI_LIVE_XXYY_CHAINS` | 仅 `PILI_XXYY_FEED=project` 时生效；alchemy 默认 `robinhood` |
 | `PILI_ALCHEMY_INBOX_URL` | CF inbox 根 URL（可回退 `NEWONE_ALCHEMY_INBOX_URL`） |
 | `PILI_ALCHEMY_PULL_TOKEN` | pull Bearer（可回退 NEWONE） |
 | `PILI_ALCHEMY_WEBHOOK_API_KEY` | Notify 名单 API（可回退 NEWONE） |

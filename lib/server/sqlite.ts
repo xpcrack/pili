@@ -536,6 +536,21 @@ ON telegram_monitor_tx_states(event_time_ms DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_telegram_monitor_tx_states_repair
 ON telegram_monitor_tx_states(reconciliation_status, next_retry_at, updated_at DESC);
 
+-- Cross-process doorbell: XXYY (bridge) rings, live-monitor (web) claims → GMGN.
+CREATE TABLE IF NOT EXISTS live_doorbell_queue (
+  wallet_lower TEXT PRIMARY KEY,
+  address TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  chains_json TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'xxyy',
+  due_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_doorbell_queue_due
+ON live_doorbell_queue(due_at_ms ASC);
+
 CREATE TABLE IF NOT EXISTS telegram_channel_sources (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

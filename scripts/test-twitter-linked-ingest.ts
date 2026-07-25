@@ -10,6 +10,8 @@ async function run() {
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
   process.env.TWITTER_FETCH_PROVIDER = 'fixture';
+  process.env.PILI_XXYY_FEED = 'project';
+  process.env.PILI_LIVE_SOURCE = 'xxyy';
 
   const fixtureDir = path.join(process.cwd(), '.data', 'twitter-fixtures');
   const fixtureFile = path.join(fixtureDir, 'by-id.json');
