@@ -5,6 +5,14 @@ export interface ExtractedTweetTokenMention {
   rankInTweet: number;
 }
 
+export type ExtractTweetTokenMentionsOptions = {
+  /**
+   * Lowercased primary-pool symbols. Bare TitleCase/ALLCAPS must hit this set.
+   * $ / # / CA never require the pool. Missing/empty → bare tickers all drop (fail closed).
+   */
+  bareSymbolAllowlist?: ReadonlySet<string> | null;
+};
+
 const EVM_CA_PATTERN = /\b0x[a-fA-F0-9]{40}\b/g;
 const SOL_CA_PATTERN = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 const SOL_CA_EXACT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -138,11 +146,11 @@ function isBareTickerStopword(raw: string) {
   return BARE_TICKER_STOPWORDS.has(raw.toLowerCase());
 }
 
-/** True if this match is already covered by a leading $ or #. */
+/** True if already covered by $ / # cashtag, or @handle (never a ticker). */
 function isPrefixedTicker(text: string, index: number) {
   if (index <= 0) return false;
   const prev = text[index - 1];
-  return prev === '$' || prev === '#';
+  return prev === '$' || prev === '#' || prev === '@';
 }
 
 /**
@@ -200,30 +208,32 @@ function findCaCandidates(text: string) {
   return result.sort((a, b) => a.index - b.index);
 }
 
+type TickerKind = 'marked' | 'bare';
+
 function findTickerCandidates(text: string) {
-  const result: Array<{ tokenSymbol: string; index: number }> = [];
+  const result: Array<{ tokenSymbol: string; index: number; kind: TickerKind }> = [];
   const seenAt = new Set<string>();
 
-  const push = (raw: string, index: number) => {
+  const push = (raw: string, index: number, kind: TickerKind) => {
     const tokenSymbol = normalizeTickerSymbol(raw);
     if (!tokenSymbol) return;
     const key = `${tokenSymbol.toLowerCase()}@${index}`;
     if (seenAt.has(key)) return;
     seenAt.add(key);
-    result.push({ tokenSymbol, index });
+    result.push({ tokenSymbol, index, kind });
   };
 
   for (const match of text.matchAll(DOLLAR_ASCII_PATTERN)) {
-    push(match[1] || '', match.index ?? 0);
+    push(match[1] || '', match.index ?? 0, 'marked');
   }
   for (const match of text.matchAll(DOLLAR_CJK_PATTERN)) {
-    push(match[1] || '', match.index ?? 0);
+    push(match[1] || '', match.index ?? 0, 'marked');
   }
   for (const match of text.matchAll(HASH_ASCII_PATTERN)) {
-    push(match[1] || '', match.index ?? 0);
+    push(match[1] || '', match.index ?? 0, 'marked');
   }
   for (const match of text.matchAll(HASH_CJK_PATTERN)) {
-    push(match[1] || '', match.index ?? 0);
+    push(match[1] || '', match.index ?? 0, 'marked');
   }
 
   // Bare TitleCase / ALLCAPS (PRD: independent tickers under whitelist/rules).
@@ -232,23 +242,36 @@ function findTickerCandidates(text: string) {
     const raw = match[1] || '';
     const index = match.index ?? 0;
     if (!isPlausibleBareTitleTicker(raw, text, index)) continue;
-    push(raw, index);
+    push(raw, index, 'bare');
   }
   for (const match of text.matchAll(BARE_ALLCAPS_PATTERN)) {
     const raw = match[1] || '';
     const index = match.index ?? 0;
     if (!isPlausibleBareAllcapsTicker(raw, text, index)) continue;
-    push(raw, index);
+    push(raw, index, 'bare');
   }
 
   return result.sort((a, b) => a.index - b.index);
 }
 
+function isBareAllowed(
+  tokenSymbol: string,
+  allowlist: ReadonlySet<string> | null | undefined,
+): boolean {
+  if (!allowlist || allowlist.size === 0) return false;
+  return allowlist.has(tokenSymbol.toLowerCase());
+}
+
 /**
  * Symbols that must survive translation unchanged (mentions + bare candidates in text).
  * Used by the enrichment model to mask/unmask before calling the LLM.
+ * Bare candidates only preserved when in primary-pool allowlist (same rule as extract).
  */
-export function listPreserveTickerSymbols(text: string, extraSymbols: Array<string | null | undefined> = []): string[] {
+export function listPreserveTickerSymbols(
+  text: string,
+  extraSymbols: Array<string | null | undefined> = [],
+  options: ExtractTweetTokenMentionsOptions = {},
+): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
   const push = (raw: string | null | undefined) => {
@@ -256,7 +279,6 @@ export function listPreserveTickerSymbols(text: string, extraSymbols: Array<stri
     if (!s) return;
     const key = s.toLowerCase();
     if (seen.has(key)) return;
-    // Skip pure CJK extras here only if empty; CJK $/# already in extract path.
     seen.add(key);
     ordered.push(s);
   };
@@ -265,20 +287,31 @@ export function listPreserveTickerSymbols(text: string, extraSymbols: Array<stri
     push(symbol);
   }
   for (const match of findTickerCandidates(normalizeText(text))) {
+    if (match.kind === 'bare' && !isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist)) {
+      continue;
+    }
     push(match.tokenSymbol);
   }
   return ordered;
 }
 
-export function extractTweetTokenMentions(text: string): ExtractedTweetTokenMention[] {
+export function extractTweetTokenMentions(
+  text: string,
+  options: ExtractTweetTokenMentionsOptions = {},
+): ExtractedTweetTokenMention[] {
   const normalized = normalizeText(text);
   const results: ExtractedTweetTokenMention[] = [];
   const bySymbol = new Map<string, ExtractedTweetTokenMention>();
-  const tickerMatches = findTickerCandidates(normalized).map((match) => ({
-    type: 'ticker' as const,
-    index: match.index,
-    tokenSymbol: match.tokenSymbol,
-  }));
+  const tickerMatches = findTickerCandidates(normalized)
+    .filter((match) => {
+      if (match.kind !== 'bare') return true;
+      return isBareAllowed(match.tokenSymbol, options.bareSymbolAllowlist);
+    })
+    .map((match) => ({
+      type: 'ticker' as const,
+      index: match.index,
+      tokenSymbol: match.tokenSymbol,
+    }));
   const caMatches = findCaCandidates(normalized).map((match) => ({
     type: 'ca' as const,
     index: match.index,

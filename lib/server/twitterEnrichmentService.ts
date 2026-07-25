@@ -23,8 +23,10 @@ import {
 } from '@/lib/server/tweetSourceTexts';
 import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/server/visionEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
+import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
 
-const EXTRACTOR_VERSION = 'rule-v4';
+/** rule-v5: bare ticker must hit newone primary-pool symbol; @handles never tickers */
+const EXTRACTOR_VERSION = 'rule-v5';
 const TRANSLATOR_VERSION = 'model-v4';
 
 function normalize(value: string | null | undefined) {
@@ -110,7 +112,9 @@ function readQuotedContent(sourceJson: string): string {
 function extractMentionsFromTweet(tweet: StoredTwitterTweet) {
   const blobs = [tweet.fullText, ...collectTweetSourceTexts(tweet.sourceJson)];
   const combined = blobs.filter(Boolean).join('\n');
-  return extractTweetTokenMentions(combined);
+  return extractTweetTokenMentions(combined, {
+    bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+  });
 }
 
 async function translateQuotedContent(params: {

@@ -5,6 +5,7 @@ import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/te
 import { extractTweetTokenMentions } from '@/lib/twitter/extractTweetTokenMentions';
 import { isLikelyEnglish } from '@/lib/server/nvidiaEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
+import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
 import type { Activity, User } from '@/types';
 
 function buildTelegramPostUrl(params: {
@@ -36,7 +37,9 @@ export function projectTelegramChannelPostToFeed(params: {
     messageId: params.post.messageId,
   });
   const postText = params.post.text || '';
-  const mentions = extractTweetTokenMentions(postText);
+  const mentions = extractTweetTokenMentions(postText, {
+    bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
+  });
   const mentionedTickers = [...new Set(mentions.map(m => m.tokenSymbol).filter(Boolean))] as string[];
   const mentionedTokenAddresses = [...new Set(mentions.map(m => m.tokenAddress).filter(Boolean))] as string[];
   const tokenSentiments = mentions.map(m => ({
