@@ -55,6 +55,8 @@ export function resolvePositionDeltaDisplay(params: {
   displayActionVariantLabel?: string | null;
   /** 相对仓位变化，0.348 = +34.8%。有值时优先于动作兜底。 */
   positionDeltaRatio?: number | null;
+  /** true = 前端按已加载窗口推算，可能随加载更多变化；显示 `~` 前缀。 */
+  positionDeltaEstimated?: boolean | null;
 }) {
   const ratio =
     typeof params.positionDeltaRatio === 'number' && Number.isFinite(params.positionDeltaRatio)
@@ -62,23 +64,25 @@ export function resolvePositionDeltaDisplay(params: {
       : null;
   if (ratio !== null) {
     const pct = Math.round(ratio * 1000) / 10;
-    const signed = pct > 0 ? `+${pct}%` : `${pct}%`;
+    const prefix = params.positionDeltaEstimated ? '~' : '';
+    const signed = pct > 0 ? `${prefix}+${pct}%` : `${prefix}${pct}%`;
     return {
       text: signed,
       tone: (pct > 0 ? 'up' : pct < 0 ? 'down' : 'muted') as PositionDeltaTone,
+      estimated: Boolean(params.positionDeltaEstimated),
     };
   }
 
   const variant = normalize(params.txActionVariant).toLowerCase();
   const label = normalize(params.displayActionVariantLabel);
   if (variant === 'open' || label === '建仓') {
-    return { text: '建仓', tone: 'up' as const };
+    return { text: '建仓', tone: 'up' as const, estimated: false };
   }
   if (variant === 'close' || label === '清仓') {
-    return { text: '-100%', tone: 'down' as const };
+    return { text: '-100%', tone: 'down' as const, estimated: false };
   }
   // ponytail: no balance-before/after yet → placeholder until metadata carries %
-  return { text: '待补', tone: 'muted' as const };
+  return { text: '待补', tone: 'muted' as const, estimated: false };
 }
 
 /** XXYY rawText: `Token: 93568.85  [PUMPCADE]` — token qty, not quote. */
@@ -131,14 +135,22 @@ function positionSeriesKey(activity: Activity) {
 }
 
 /**
- * Fill missing positionDeltaRatio from in-page wallet×token timeline.
+ * Fill missing positionDeltaRatio from the wallet×token timeline in `items`.
  * - open / first buy after flat: leave ratio unset → UI shows 建仓
  * - close / sell that empties: -1
  * - add: +qty/before；reduce: -qty/before
  * Already-set ratio is preserved. Unknown pre-balance stays 待补 but seeds inventory.
  * Also upgrades live add/reduce → open/close when the timeline implies it.
+ *
+ * IMPORTANT: accuracy depends on `items` covering the full history of each series.
+ * The client only ever holds a sliding window, so it must pass
+ * `markEstimated: true` — the ratio then renders with a `~` prefix. Server-side
+ * callers reading the whole DB (scripts/backfill-position-delta.ts) omit it.
  */
-export function fillPositionDeltaRatios<T extends { activity: Activity }>(items: T[]): T[] {
+export function fillPositionDeltaRatios<T extends { activity: Activity }>(
+  items: T[],
+  options: { markEstimated?: boolean } = {}
+): T[] {
   type Work = { item: T; index: number; side: 'buy' | 'sell'; amount: number | null };
   const buckets = new Map<string, Work[]>();
 
@@ -253,6 +265,9 @@ export function fillPositionDeltaRatios<T extends { activity: Activity }>(items:
     const nextMeta = { ...item.activity.metadata };
     if (typeof patch.ratio === 'number') {
       nextMeta.positionDeltaRatio = patch.ratio;
+      if (options.markEstimated) {
+        nextMeta.positionDeltaEstimated = true;
+      }
     }
     if (patch.open) {
       nextMeta.txActionVariant = 'open';
@@ -296,14 +311,13 @@ export function stripMarketCapUsdPrefix(text: string | null | undefined) {
   return value.replace(/^\$/, '') || null;
 }
 
-/** GMGN 风格：USD 色条宽度（log 刻度，$10→最短，$10k+→满宽） */
+/** USD 色条宽度：线性 $100→0%，$5k→100%，区间外封顶/触底 */
 export function tradeUsdBarPercent(usd: number | null | undefined) {
   if (usd === null || usd === undefined || !Number.isFinite(usd) || usd <= 0) return 0;
-  const min = 10;
-  const max = 10_000;
+  const min = 100;
+  const max = 5_000;
   const clamped = Math.min(max, Math.max(min, usd));
-  const t = (Math.log10(clamped) - Math.log10(min)) / (Math.log10(max) - Math.log10(min));
-  return Math.round(Math.min(100, Math.max(6, t * 100)));
+  return Math.round(((clamped - min) / (max - min)) * 100);
 }
 
 function sanitizeTradeAmount(value: string | number | null | undefined) {

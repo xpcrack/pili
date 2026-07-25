@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Card, CardContent } from '@/components/ui/card';
@@ -21,6 +21,14 @@ import {
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
 import { formatCompactMarketCap, type TradeValueDisplayMode, tradeUsdBarPercent } from '@/lib/tradeDisplay';
+import {
+  buildTokenAvatarKey,
+  buildTokenInfoKey,
+  getCachedTokenAvatar,
+  getCachedTokenInfo,
+  subscribeTokenInfoCache,
+  type TokenInfoSnapshot,
+} from '@/lib/tokenInfoCache';
 
 interface ActivityCardProps {
   activity: Activity;
@@ -31,16 +39,30 @@ interface ActivityCardProps {
   addressAliasMap?: Map<string, string>;
 }
 
-interface TokenInfoSnapshot {
-  logoUrl: string | null;
-  marketCapUsd: number | null;
-  marketCapAtTxUsd: number | null;
-  marketCapAtTxEstimated: boolean;
-  source?: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
-}
+const EMPTY_TOKEN_INFO: TokenInfoSnapshot = {
+  logoUrl: null,
+  marketCapUsd: null,
+  marketCapAtTxUsd: null,
+  marketCapAtTxEstimated: false,
+};
 
-const tokenAvatarCache = new Map<string, string | null>();
-const tokenInfoCache = new Map<string, TokenInfoSnapshot>();
+function useTokenInfo(key: string, avatarKey: string) {
+  // 缓存更新时通知所有订阅者；读时按 key 取当前快照。
+  const version = useSyncExternalStore(
+    subscribeTokenInfoCache,
+    () => {
+      const info = getCachedTokenInfo(key);
+      const avatar = getCachedTokenAvatar(avatarKey);
+      return `${key}|${info ? '1' : '0'}|${info?.logoUrl || ''}|${info?.marketCapAtTxUsd ?? ''}|${info?.marketCapUsd ?? ''}|${avatar ?? ''}`;
+    },
+    () => 'ssr'
+  );
+  void version;
+  return {
+    info: getCachedTokenInfo(key) ?? EMPTY_TOKEN_INFO,
+    avatar: getCachedTokenAvatar(avatarKey),
+  };
+}
 
 export const ActivityCard = memo(function ActivityCard({
   activity,
@@ -62,27 +84,20 @@ export const ActivityCard = memo(function ActivityCard({
   const tweetCopyTimerRef = useRef<number | null>(null);
   const lastTimeDisplayModeRef = useRef<FeedTimeDisplayMode>(timeDisplayMode);
 
-  const txTimestampBucket = Math.floor(activity.timestamp / 60_000);
   const tokenSymbolRaw = (activity.metadata.token || '').trim();
   const tokenSymbolUpper = tokenSymbolRaw.toUpperCase();
   const tokenCa = activity.metadata.displayTokenAvatarTokenAddress || activity.metadata.tokenAddress || '';
-  const txHash = activity.metadata.txHash || '';
-  const tokenAvatarKey = `${activity.metadata.chain || ''}:${tokenCa.toLowerCase()}`;
-  const tokenInfoKey = `${activity.metadata.chain || ''}:${tokenCa.toLowerCase()}:${tokenSymbolUpper}:${txTimestampBucket}:${(activity.metadata.txHash || '').toLowerCase()}`;
-  const cachedTokenAvatar = tokenAvatarCache.get(tokenAvatarKey);
-  const cachedTokenInfo = tokenInfoCache.get(tokenInfoKey);
-  const [tokenInfoState, setTokenInfoState] = useState<{ key: string; info: TokenInfoSnapshot }>({
-    key: tokenInfoKey,
-    info: cachedTokenInfo ?? { logoUrl: null, marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false },
+  const tokenAvatarKey = buildTokenAvatarKey(activity.metadata.chain || '', tokenCa);
+  const tokenInfoKey = buildTokenInfoKey({
+    chain: activity.metadata.chain || '',
+    tokenAddress: tokenCa,
+    tokenSymbol: tokenSymbolUpper,
+    txTimestampMs: activity.timestamp,
+    txHash: activity.metadata.txHash || '',
   });
-  const resolvedTokenInfo =
-    cachedTokenInfo ??
-    (
-      tokenInfoState.key === tokenInfoKey
-        ? tokenInfoState.info
-        : { logoUrl: null, marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false }
-    );
-  const resolvedTokenAvatarRaw = cachedTokenAvatar !== undefined ? cachedTokenAvatar : resolvedTokenInfo.logoUrl;
+  const { info: resolvedTokenInfo, avatar: cachedTokenAvatar } = useTokenInfo(tokenInfoKey, tokenAvatarKey);
+  const resolvedTokenAvatarRaw =
+    cachedTokenAvatar !== undefined ? cachedTokenAvatar : resolvedTokenInfo.logoUrl;
   const resolvedTokenAvatar = toProxiedMediaUrl(resolvedTokenAvatarRaw);
   const {
     isBlockchain,
@@ -100,6 +115,7 @@ export const ActivityCard = memo(function ActivityCard({
     mergedTradeCount,
     isMergedTradeCard,
     counterpartyAddress,
+    counterpartyLabel,
     marketCapTooltip,
     displayWalletLabel,
     displayTradeHeadlineText,
@@ -108,6 +124,7 @@ export const ActivityCard = memo(function ActivityCard({
     tradeAmountUsdAtTx,
     positionDeltaText,
     positionDeltaTone,
+    positionDeltaEstimated,
     displayTokenSymbol,
     displayMarketCapText,
     shouldUseOutgoingAmountTone,
@@ -241,73 +258,7 @@ export const ActivityCard = memo(function ActivityCard({
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!isTransfer || !tokenCa || !activity.metadata.chain) {
-      return;
-    }
-
-    const cached = tokenInfoCache.get(tokenInfoKey);
-    if (cached !== undefined) {
-      return;
-    }
-
-    const query = new URLSearchParams({
-      chain: activity.metadata.chain,
-      tokenAddress: tokenCa,
-      tokenSymbol: tokenSymbolUpper,
-      txTimestamp: String(activity.timestamp),
-      txHash,
-    });
-
-    void fetch(`/api/token-logo?${query.toString()}`, {
-      method: 'GET',
-      cache: 'force-cache',
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          return { logoUrl: null, marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false };
-        }
-        const payload = (await response.json()) as {
-          logoUrl?: string | null;
-          marketCapUsd?: number | null;
-          marketCapAtTxUsd?: number | null;
-          marketCapAtTxEstimated?: boolean;
-          source?: 'dexscreener' | 'okx' | 'gmgn' | 'xxyy' | 'telegram-monitor' | null;
-        };
-        return {
-          logoUrl: typeof payload.logoUrl === 'string' && payload.logoUrl.trim() ? payload.logoUrl : null,
-          marketCapUsd: typeof payload.marketCapUsd === 'number' && Number.isFinite(payload.marketCapUsd)
-            ? payload.marketCapUsd
-            : null,
-          marketCapAtTxUsd: typeof payload.marketCapAtTxUsd === 'number' && Number.isFinite(payload.marketCapAtTxUsd)
-            ? payload.marketCapAtTxUsd
-            : null,
-          marketCapAtTxEstimated: Boolean(payload.marketCapAtTxEstimated),
-          source: payload.source || null,
-        };
-      })
-      .catch(() => ({ logoUrl: null, marketCapUsd: null, marketCapAtTxUsd: null, marketCapAtTxEstimated: false, source: null }))
-      .then((nextTokenInfo) => {
-        const cachedAvatar = tokenAvatarCache.get(tokenAvatarKey);
-        const resolvedAvatar = cachedAvatar || nextTokenInfo.logoUrl || null;
-        if (resolvedAvatar) {
-          tokenAvatarCache.set(tokenAvatarKey, resolvedAvatar);
-        }
-        const nextResolvedTokenInfo = {
-          ...nextTokenInfo,
-          logoUrl: resolvedAvatar,
-        };
-        tokenInfoCache.set(tokenInfoKey, nextResolvedTokenInfo);
-        if (!cancelled) {
-          setTokenInfoState({ key: tokenInfoKey, info: nextResolvedTokenInfo });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activity.metadata.chain, activity.timestamp, isTransfer, tokenAvatarKey, tokenCa, tokenInfoKey, tokenSymbolUpper, txHash]);
+  // token logo / 市值由 useTokenInfoPrefetch 批量预取，卡片只读共享缓存。
 
   const positionDeltaClassName =
     positionDeltaTone === 'up'
@@ -416,7 +367,14 @@ export const ActivityCard = memo(function ActivityCard({
             </div>
 
             <div className="min-w-0 truncate text-right font-semibold tabular-nums">
-              <span className={positionDeltaClassName} title={displayActionVariantLabel || undefined}>
+              <span
+                className={positionDeltaClassName}
+                title={
+                  positionDeltaEstimated
+                    ? `${displayActionVariantLabel || '幅度'}（按已加载记录推算，加载更多历史后可能变化）`
+                    : displayActionVariantLabel || undefined
+                }
+              >
                 {positionDeltaText}
               </span>
             </div>
@@ -483,7 +441,6 @@ export const ActivityCard = memo(function ActivityCard({
     const transferBadgeClass = shouldUseOutgoingAmountTone
       ? 'border-rose-400/30 bg-rose-500/12 text-rose-300'
       : 'border-emerald-400/30 bg-emerald-500/12 text-emerald-300';
-    const counterpartyLabel = displayMarketCapText || '—';
 
     return (
       <Card

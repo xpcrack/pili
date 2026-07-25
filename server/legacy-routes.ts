@@ -50,6 +50,7 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'GET', path: '/avatar', load: () => import('@/app/api/avatar/route') },
   { method: 'GET', path: '/media', load: () => import('@/app/api/media/route') },
   { method: 'GET', path: '/token-logo', load: () => import('@/app/api/token-logo/route') },
+  { method: 'POST', path: '/token-logo/batch', load: () => import('@/app/api/token-logo/batch/route') },
 ];
 
 function normalizeLoopback(address: string | undefined | null) {

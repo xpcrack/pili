@@ -9,9 +9,11 @@ import {
   type SelectedUserDetailsPanelProps,
 } from '@/components/SelectedUserDetailsPanel';
 import { TopNav } from '@/components/TopNav';
+import { FeedFreshnessIndicator } from '@/components/FeedFreshnessIndicator';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
 import { useIsClient } from '@/hooks/useIsClient';
 import { useSelectedUserDetails } from '@/hooks/useSelectedUserDetails';
+import { useTokenInfoPrefetch } from '@/hooks/useTokenInfoPrefetch';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { User as UserIcon } from 'lucide-react';
@@ -23,7 +25,7 @@ import {
   getRemoteFeedSearchKeyword,
   getRemoteFeedSource,
 } from '@/lib/smartSearch';
-import { buildAddressAliasMap, selectFeedPageState } from '@/lib/feed/feedPageState';
+import { buildAddressAliasMap, selectMatchedFeed } from '@/lib/feed/feedPageState';
 import { FEED_LOAD_MORE_BATCH_SIZE, FEED_PAGE_BATCH_SIZE } from '@/lib/feed/feedQueryMode';
 import {
   normalizeTradeValueDisplayMode,
@@ -109,11 +111,10 @@ export default function Home() {
     loading,
     error,
     hasMore,
-    historyComplete,
-    localQualifiedCount,
     activityBreakdown,
     refetch,
     summary,
+    lastUpdate,
   } = useActivityPolling(
     selectedUserId,
     getRemoteFeedSearchKeyword(searchFilters.keyword),
@@ -186,22 +187,23 @@ export default function Home() {
     retry: retrySelectedUserDetails,
   } = useSelectedUserDetails(selectedUserId);
 
+  // 排序/合并/仓位推算只依赖数据与筛选条件，滚动加载不触发重算。
   const {
     matchedFeed,
-    filteredFeed,
     visibleUserIds,
     hasActiveLocalFilters,
     hasEnabledFeedTypes,
   } = useMemo(
-    () => selectFeedPageState({
-      feed,
-      selectedUserId,
-      searchFilters,
-      globalVisibleCount,
-      selectedUserVisibleCount,
-    }),
-    [feed, selectedUserId, searchFilters, globalVisibleCount, selectedUserVisibleCount]
+    () => selectMatchedFeed({ feed, selectedUserId, searchFilters }),
+    [feed, selectedUserId, searchFilters]
   );
+  const visibleCount = selectedUserId ? selectedUserVisibleCount : globalVisibleCount;
+  const filteredFeed = useMemo(
+    () => matchedFeed.slice(0, visibleCount),
+    [matchedFeed, visibleCount]
+  );
+  // 可见交易批量预取 token logo / 市值，避免每张卡各自打接口
+  useTokenInfoPrefetch(filteredFeed);
   const isInitialLoading = loading && feed.length === 0;
   const hasAnyActiveFilter = Boolean(selectedUserId) || hasActiveLocalFilters;
 
@@ -417,15 +419,18 @@ export default function Home() {
       <TopNav
         active="feed"
         rightSlot={
-          summary ? (
-            <div className="truncate text-[11px] tabular-nums text-zinc-500">
-              <span className="text-zinc-300">{summary.userCount}</span> 人
-              <span className="mx-1.5 text-zinc-700">·</span>
-              <span className="text-zinc-300">{summary.addressCount}</span> 地址
-              <span className="mx-1.5 text-zinc-700">·</span>
-              <span className="text-zinc-300">{summary.transactionCount}</span> 动态
-            </div>
-          ) : null
+          <div className="flex min-w-0 items-center gap-2">
+            {summary ? (
+              <div className="truncate text-[11px] tabular-nums text-zinc-500">
+                <span className="text-zinc-300">{summary.userCount}</span> 人
+                <span className="mx-1.5 text-zinc-700">·</span>
+                <span className="text-zinc-300">{summary.addressCount}</span> 地址
+                <span className="mx-1.5 text-zinc-700">·</span>
+                <span className="text-zinc-300">{summary.transactionCount}</span> 动态
+              </div>
+            ) : null}
+            <FeedFreshnessIndicator lastUpdate={lastUpdate} />
+          </div>
         }
       />
 
