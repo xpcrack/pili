@@ -350,7 +350,7 @@ export function buildActivityFromSnapshotSync(
   return buildActivityFromSnapshotCore(params, options?.tradeAmountUsdAtTx ?? null);
 }
 
-function shouldRepairCollapsedCanonicalActivity(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {
+function hasUsableProvisionalTradeToken(state: MonitorCanonicalRepairState) {
   const provisionalToken = (state.provisionalTokenSymbol || state.tokenSymbol || '').trim();
   const provisionalTokenAddress = (state.tokenAddress || '').trim();
   // Only repair when XXYY provisional side has a real (non-native) trade token.
@@ -363,6 +363,13 @@ function shouldRepairCollapsedCanonicalActivity(state: MonitorCanonicalRepairSta
   ) {
     return false;
   }
+  return true;
+}
+
+function shouldRepairCollapsedCanonicalActivity(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {
+  if (!hasUsableProvisionalTradeToken(state)) {
+    return false;
+  }
 
   const canonicalToken = (canonicalActivity.metadata.token || '').trim();
   const canonicalTokenAddress = (canonicalActivity.metadata.tokenAddress || '').trim();
@@ -372,6 +379,44 @@ function shouldRepairCollapsedCanonicalActivity(state: MonitorCanonicalRepairSta
   }
 
   return isCollapsedCanonicalToken(state.chain, canonicalToken, canonicalTokenAddress);
+}
+
+/**
+ * OKX address/detail parse can flip Uniswap V4 legs (or collapse to receive).
+ * When XXYY provisional already has a clear buy/sell on a real meme token, trust that side.
+ */
+function shouldRepairConflictingCanonicalTradeAction(
+  state: MonitorCanonicalRepairState,
+  canonicalActivity: Activity
+) {
+  const provisionalAction = state.provisionalAction;
+  if (provisionalAction !== 'buy' && provisionalAction !== 'sell') {
+    return false;
+  }
+  if (!hasUsableProvisionalTradeToken(state)) {
+    return false;
+  }
+  // Need a usable provisional quote/size so we don't invent a trade from a header-only alert.
+  if (!hasUsableProvisionalTradeQuote(state) && !(typeof state.provisionalTokenAmount === 'number' && state.provisionalTokenAmount > 0)) {
+    return false;
+  }
+
+  const canonicalAction = canonicalActivity.metadata.txAction;
+  if (canonicalAction === provisionalAction) {
+    return false;
+  }
+  // Opposite trade side, or non-trade (receive/send), or missing action.
+  return true;
+}
+
+function shouldRebuildCanonicalFromProvisional(
+  state: MonitorCanonicalRepairState,
+  canonicalActivity: Activity
+) {
+  return (
+    shouldRepairCollapsedCanonicalActivity(state, canonicalActivity) ||
+    shouldRepairConflictingCanonicalTradeAction(state, canonicalActivity)
+  );
 }
 
 function shouldRepairMissingCanonicalTradeQuote(state: MonitorCanonicalRepairState, canonicalActivity: Activity) {
@@ -463,7 +508,7 @@ export async function repairCollapsedCanonicalActivity(params: {
   canonicalActivity: Activity;
 }) {
   const { user, state, canonicalActivity } = params;
-  if (!shouldRepairCollapsedCanonicalActivity(state, canonicalActivity)) {
+  if (!shouldRebuildCanonicalFromProvisional(state, canonicalActivity)) {
     return repairMissingCanonicalTradeQuote(state, canonicalActivity);
   }
 
@@ -487,7 +532,7 @@ export function repairCollapsedCanonicalActivitySync(params: {
   canonicalActivity: Activity;
 }) {
   const { user, state, canonicalActivity } = params;
-  if (!shouldRepairCollapsedCanonicalActivity(state, canonicalActivity)) {
+  if (!shouldRebuildCanonicalFromProvisional(state, canonicalActivity)) {
     return repairMissingCanonicalTradeQuote(state, canonicalActivity);
   }
 

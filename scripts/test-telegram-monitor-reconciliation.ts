@@ -662,6 +662,73 @@ async function run() {
     );
     assert.equal(secondBscMultiFill.ok, true, 'second BSC multi-fill leg should ingest');
 
+    // XXYY phantom opposite-side: real buy 0.0588 + fake sell 0.0005 (~1%) on same token/tx.
+    const PHANTOM_TX_HASH = '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccddddddddd';
+    const phantomBuy = await ingestTelegramMonitorUpdate(
+      buildBscMultiFillTelegramUpdate({
+        messageId: 652,
+        txHash: PHANTOM_TX_HASH,
+        quoteAmount: '0.0588',
+        tokenAmount: '3975.1',
+        priceUsd: '0.0275',
+        platform: 'UniSwap V4',
+      })
+    );
+    assert.equal(phantomBuy.ok, true, 'phantom-pair real buy should ingest');
+    const phantomSell = await ingestTelegramMonitorUpdate({
+      update_id: 930_653,
+      message: {
+        message_id: 653,
+        date: Math.floor(BSC_MULTI_FILL_EVENT_TIME_MS / 1000),
+        chat: { id: -100123456 },
+        text: [
+          '[User_D#1]',
+          '🔴 Sell Part 0.0005 BNB',
+          'Token: 39.75  [4]',
+          'Price: $0.0275',
+          'MCAP: $27.5M',
+          'Platform: UniSwap V4',
+          `CA: ${BSC_MULTI_FILL_TOKEN_ADDRESS}`,
+        ].join('\n'),
+        entities: [
+          {
+            type: 'text_link',
+            url: `https://www.xxyy.io/bsc/${BSC_MULTI_FILL_TOKEN_ADDRESS}?wallet=${TRACKED_BSC_ADDRESS}&ref=`,
+          },
+        ],
+        reply_markup: {
+          inline_keyboard: [[{ text: 'Bscscan', url: `https://bscscan.com/tx/${PHANTOM_TX_HASH}` }]],
+        },
+      },
+    });
+    assert.equal(phantomSell.ok, true, 'phantom-pair fake sell should ingest');
+    const phantomState = getTelegramMonitorTxState({
+      chain: 'bsc',
+      trackedWalletAddress: TRACKED_BSC_ADDRESS,
+      txHash: PHANTOM_TX_HASH,
+      tokenAddress: BSC_MULTI_FILL_TOKEN_ADDRESS,
+    });
+    assert.equal(phantomState?.provisionalAction, 'buy', 'phantom opposite sell must not flip dominant action');
+    assert.equal(
+      phantomState?.provisionalQuoteAmount,
+      0.0588,
+      'phantom opposite sell must not be summed into quote'
+    );
+    assert.equal(
+      phantomState?.provisionalTokenAmount,
+      3975.1,
+      'phantom opposite sell must not be summed into token amount'
+    );
+    const phantomEvent = readEventsFeed({ limit: 50, userId: bscTrackedUser.id }).feed.find(
+      (item) => item.activity.metadata.txHash === PHANTOM_TX_HASH
+    );
+    assert.equal(phantomEvent?.activity.metadata.txAction, 'buy', 'feed row must stay buy after phantom sell');
+    assert.equal(
+      phantomEvent?.activity.metadata.quoteAmount,
+      '0.0588',
+      'feed quote must ignore phantom sell amount'
+    );
+
     const aggregatedBscState = getTelegramMonitorTxState({
       chain: 'bsc',
       trackedWalletAddress: TRACKED_BSC_ADDRESS,

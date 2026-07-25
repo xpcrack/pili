@@ -236,6 +236,56 @@ function computeWeightedPriceUsd(entries: TelegramMonitorTxAggregateEntry[]) {
   return roundAggregateNumber(totalUsd / totalTokenAmount);
 }
 
+function entryAction(entry: TelegramMonitorTxAggregateEntry) {
+  return parseAction(entry.row.action || entry.parsed.action);
+}
+
+function entryQuoteAmount(entry: TelegramMonitorTxAggregateEntry) {
+  const value = entry.row.quote_amount ?? entry.parsed.quoteAmount;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function entryTokenAmount(entry: TelegramMonitorTxAggregateEntry) {
+  const value = entry.parsed.tokenAmount;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * XXYY sometimes emits a phantom opposite-side alert for the same wallet+tx+token
+ * (often ~1% of the real fill). Same-action multi-fills still sum; conflicting
+ * buy/sell on one token keeps only the dominant side by quote, then token qty.
+ */
+function selectDominantDirectionEntries(entries: TelegramMonitorTxAggregateEntry[]) {
+  if (entries.length <= 1) return entries;
+
+  const buyEntries = entries.filter((entry) => entryAction(entry) === 'buy');
+  const sellEntries = entries.filter((entry) => entryAction(entry) === 'sell');
+  if (buyEntries.length === 0 || sellEntries.length === 0) {
+    return entries;
+  }
+
+  const score = (group: TelegramMonitorTxAggregateEntry[]) => {
+    const quote = sumFiniteNumbers(group.map(entryQuoteAmount)) || 0;
+    const token = sumFiniteNumbers(group.map(entryTokenAmount)) || 0;
+    return { quote, token };
+  };
+
+  const buyScore = score(buyEntries);
+  const sellScore = score(sellEntries);
+
+  if (buyScore.quote > sellScore.quote) return buyEntries;
+  if (sellScore.quote > buyScore.quote) return sellEntries;
+  if (buyScore.token > sellScore.token) return buyEntries;
+  if (sellScore.token > buyScore.token) return sellEntries;
+
+  // tie → latest message wins (stable with previous "latest action" behavior)
+  const latest = entries[entries.length - 1];
+  const latestAction = entryAction(latest);
+  if (latestAction === 'buy') return buyEntries;
+  if (latestAction === 'sell') return sellEntries;
+  return entries;
+}
+
 export function upsertTelegramMonitorEvent(input: UpsertTelegramMonitorEventInput) {
   const db = getDb();
   const now = Date.now();
@@ -419,15 +469,21 @@ export function summarizeTelegramMonitorTxProvisional(params: {
   const uniqueEntries = Array.from(entriesBySignature.values()).sort(
     (left, right) => left.row.updated_at - right.row.updated_at || left.row.id - right.row.id
   );
-  const latest = uniqueEntries[uniqueEntries.length - 1];
+  if (uniqueEntries.length === 0) {
+    return null;
+  }
+
+  // Drop XXYY phantom opposite-side legs; keep same-action multi-fills summable.
+  const directionEntries = selectDominantDirectionEntries(uniqueEntries);
+  const latest = directionEntries[directionEntries.length - 1];
   if (!latest) {
     return null;
   }
 
-  const quoteAmount = sumFiniteNumbers(uniqueEntries.map((entry) => entry.row.quote_amount ?? entry.parsed.quoteAmount));
-  const tokenAmount = sumFiniteNumbers(uniqueEntries.map((entry) => entry.parsed.tokenAmount));
-  const weightedPriceUsd = computeWeightedPriceUsd(uniqueEntries);
-  const eventTimes = uniqueEntries
+  const quoteAmount = sumFiniteNumbers(directionEntries.map((entry) => entry.row.quote_amount ?? entry.parsed.quoteAmount));
+  const tokenAmount = sumFiniteNumbers(directionEntries.map((entry) => entry.parsed.tokenAmount));
+  const weightedPriceUsd = computeWeightedPriceUsd(directionEntries);
+  const eventTimes = directionEntries
     .map((entry) => entry.row.event_time_ms ?? entry.row.updated_at)
     .filter((value): value is number => Number.isFinite(value));
 
@@ -436,8 +492,8 @@ export function summarizeTelegramMonitorTxProvisional(params: {
     tokenAddress: normalizeText(latest.row.token_address) || latest.parsed.tokenAddress || '',
     tokenSymbol: pickLatestText(latest.row.token_symbol, latest.parsed.tokenSymbol),
     txHash: normalizeText(latest.row.tx_hash) || latest.parsed.txHash || normalizeText(params.txHash),
-    marketCapUsd: pickLatestFiniteNumber(...uniqueEntries.map((entry) => entry.row.market_cap_usd ?? entry.parsed.marketCapUsd)),
-    priceUsd: weightedPriceUsd ?? pickLatestFiniteNumber(...uniqueEntries.map((entry) => entry.row.price_usd ?? entry.parsed.priceUsd)),
+    marketCapUsd: pickLatestFiniteNumber(...directionEntries.map((entry) => entry.row.market_cap_usd ?? entry.parsed.marketCapUsd)),
+    priceUsd: weightedPriceUsd ?? pickLatestFiniteNumber(...directionEntries.map((entry) => entry.row.price_usd ?? entry.parsed.priceUsd)),
     quoteAmount,
     quoteSymbol: pickLatestText(latest.row.quote_symbol, latest.parsed.quoteSymbol),
     action: parseAction(latest.row.action || latest.parsed.action),
@@ -450,11 +506,11 @@ export function summarizeTelegramMonitorTxProvisional(params: {
       pickLatestText(latest.row.tracked_wallet_address, latest.parsed.trackedWalletAddress) ||
       normalizeText(params.trackedWalletAddress),
     tokenAmount,
-    rawText: uniqueEntries.length === 1 ? normalizeText(latest.row.raw_text) || null : null,
-    messageLinks: normalizeMessageLinks(uniqueEntries.flatMap((entry) => entry.messageLinks)),
+    rawText: directionEntries.length === 1 ? normalizeText(latest.row.raw_text) || null : null,
+    messageLinks: normalizeMessageLinks(directionEntries.flatMap((entry) => entry.messageLinks)),
     eventTimeMs:
       eventTimes.length > 0 ? Math.min(...eventTimes) : latest.row.updated_at,
-    fillCount: uniqueEntries.length,
+    fillCount: directionEntries.length,
   } satisfies TelegramMonitorTxProvisionalSummary;
 }
 
