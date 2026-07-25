@@ -25,8 +25,8 @@ import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
 import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
 
-/** rule-v5: bare ticker must hit newone primary-pool symbol; @handles never tickers */
-const EXTRACTOR_VERSION = 'rule-v5';
+/** rule-v6: + shout ALLCAPS tighten + bare ALLCAPS min len; pool + @ rules from v5 */
+const EXTRACTOR_VERSION = 'rule-v6';
 const TRANSLATOR_VERSION = 'model-v4';
 
 function normalize(value: string | null | undefined) {

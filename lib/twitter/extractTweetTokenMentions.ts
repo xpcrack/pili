@@ -35,8 +35,17 @@ const HASH_CJK_PATTERN = /#([一-鿿]{2,20})/g;
  */
 const BARE_TITLE_PATTERN = /\b([A-Z][a-z]{3,19})\b/g;
 
-/** Bare ALLCAPS ticker: BTC, ETH, SOL — exclude tech abbreviations via stop list. */
-const BARE_ALLCAPS_PATTERN = /\b([A-Z]{2,10})\b/g;
+/**
+ * Bare ALLCAPS ticker: BTC, ETH, SOL — exclude tech abbreviations via stop list.
+ * Min 3 letters in practice (see isPlausibleBareAllcapsTicker); 2-letter too noisy (IN/IS).
+ */
+const BARE_ALLCAPS_PATTERN = /\b([A-Z]{3,10})\b/g;
+
+/** Share of ASCII letter-words that are ALLCAPS before we treat the blob as a shout. */
+const SHOUT_ALLCAPS_RATIO = 0.7;
+const SHOUT_MIN_LETTER_WORDS = 4;
+/** In shout posts, bare ALLCAPS shorter than this are English noise (DOGE in "SWOLE DOGE"). */
+const SHOUT_BARE_ALLCAPS_MIN_LEN = 5;
 
 /**
  * English / CT words that look like bare tickers but are not.
@@ -105,6 +114,16 @@ const BARE_TICKER_STOPWORDS = new Set(
     'January', 'February', 'March', 'April', 'June', 'July', 'August',
     'September', 'October', 'November', 'December',
     'Bitcoin', 'Ethereum', 'Solana', // chain names as bare words are noisy; $BTC still works
+    // common function words (ALLCAPS shout posts: THE/NOT/IS/IN/…)
+    'The', 'And', 'For', 'Are', 'You', 'Was', 'Can', 'Has', 'Had', 'His', 'Her',
+    'Its', 'Our', 'All', 'Any', 'Out', 'Off', 'Own', 'Too', 'Not', 'Is', 'In',
+    'At', 'On', 'To', 'Of', 'Or', 'But', 'An', 'Be', 'Do', 'If', 'So', 'No', 'Yes',
+    'We', 'He', 'She', 'It', 'As', 'By', 'Up', 'My', 'Me', 'Him', 'Who', 'How',
+    'Why', 'Did', 'Got', 'Get', 'Put', 'Let', 'May', 'Say', 'Says', 'Said',
+    'Just', 'Until', 'While', 'Where', 'When', 'What', 'Which', 'Whom',
+    'Hes', "He's", 'Shes', "She's", 'Theyre', "They're", 'Wont', "Won't",
+    'Dont', "Don't", 'Cant', "Can't", 'Isnt', "Isn't", 'Arent', "Aren't",
+    'Posted', 'Posting', 'Stopping', 'Stop', 'Everywhere', 'Saying', 'Says',
     // tech / chart abbreviations / labels (not tickers)
     // "CA:" before an address is a label — bare CA must never be a ticker
     'CA', 'MC', 'Mcap', 'MCap', 'Cap', 'Liq', 'Vol', 'Tx', 'TX', 'Txn',
@@ -146,6 +165,20 @@ function isBareTickerStopword(raw: string) {
   return BARE_TICKER_STOPWORDS.has(raw.toLowerCase());
 }
 
+/**
+ * Shout / all-caps CT posts: almost every word is ALLCAPS, so bare ALLCAPS
+ * extraction becomes a tokenizer. Detect and tighten bare ALLCAPS rules.
+ */
+function isMostlyAllCapsShout(text: string): boolean {
+  const words = text.match(/\b[A-Za-z]{2,}\b/g);
+  if (!words || words.length < SHOUT_MIN_LETTER_WORDS) return false;
+  let allCaps = 0;
+  for (const w of words) {
+    if (/^[A-Z]+$/.test(w)) allCaps += 1;
+  }
+  return allCaps / words.length >= SHOUT_ALLCAPS_RATIO;
+}
+
 /** True if already covered by $ / # cashtag, or @handle (never a ticker). */
 function isPrefixedTicker(text: string, index: number) {
   if (index <= 0) return false;
@@ -177,9 +210,18 @@ function isPlausibleBareTitleTicker(raw: string, text: string, index: number) {
   return true;
 }
 
-function isPlausibleBareAllcapsTicker(raw: string, text: string, index: number) {
+function isPlausibleBareAllcapsTicker(
+  raw: string,
+  text: string,
+  index: number,
+  shoutMode: boolean,
+) {
   if (!raw || isPrefixedTicker(text, index) || isBareTickerStopword(raw)) return false;
   if (text[index + raw.length] === ':') return false;
+  // Always drop 1–2 letter ALLCAPS (IN/IS/AI noise); pattern already ≥3.
+  if (raw.length < 3) return false;
+  // Shout posts: require longer tickers so "SWOLE DOGE MEME" doesn't flood.
+  if (shoutMode && raw.length < SHOUT_BARE_ALLCAPS_MIN_LEN) return false;
   return true;
 }
 
@@ -238,6 +280,7 @@ function findTickerCandidates(text: string) {
 
   // Bare TitleCase / ALLCAPS (PRD: independent tickers under whitelist/rules).
   // Runs after $/# so those keep original positions; symbol dedupe later.
+  const shoutMode = isMostlyAllCapsShout(text);
   for (const match of text.matchAll(BARE_TITLE_PATTERN)) {
     const raw = match[1] || '';
     const index = match.index ?? 0;
@@ -247,7 +290,7 @@ function findTickerCandidates(text: string) {
   for (const match of text.matchAll(BARE_ALLCAPS_PATTERN)) {
     const raw = match[1] || '';
     const index = match.index ?? 0;
-    if (!isPlausibleBareAllcapsTicker(raw, text, index)) continue;
+    if (!isPlausibleBareAllcapsTicker(raw, text, index, shoutMode)) continue;
     push(raw, index, 'bare');
   }
 
