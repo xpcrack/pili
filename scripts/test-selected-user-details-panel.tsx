@@ -60,9 +60,6 @@ function renderPanel(props: Partial<React.ComponentProps<typeof SelectedUserDeta
     <SelectedUserDetailsPanel
       selectedUser={selectedUser}
       onBack={() => {}}
-      matchedFeedCount={7}
-      hasMore={true}
-      activityBreakdown={{ twitterCount: 3, tradeCount: 4 }}
       details={null}
       detailsLoading={false}
       detailsRefreshing={false}
@@ -77,7 +74,7 @@ function run() {
   const loadingMarkup = renderPanel({ detailsLoading: true });
   assert.match(loadingMarkup, /正在加载持仓明细/, 'panel should show the loading state when details are pending');
   assert.match(loadingMarkup, /持仓明细/, 'panel should render the holdings section title during loading');
-  assert.match(loadingMarkup, /已隐藏 &lt; 5 USD 持仓/, 'panel should show the hidden threshold helper text');
+  assert.match(loadingMarkup, /已隐藏 &lt; 5 USD/, 'panel should show the hidden threshold helper text');
 
   const errorMarkup = renderPanel({ detailsError: '读取失败', detailsLoading: false });
   assert.match(errorMarkup, /读取失败/, 'panel should show the error text when details request fails');
