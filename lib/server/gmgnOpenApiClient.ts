@@ -19,6 +19,7 @@ import {
   noteGmgnBan,
   noteGmgnError,
 } from '@/lib/server/gmgnRateLimit';
+import { loadGmgnApiKeys } from '@/lib/server/gmgnCli';
 
 const DEFAULT_HOST = 'https://openapi.gmgn.ai';
 const DEFAULT_PROXY = 'http://127.0.0.1:7897';
@@ -51,55 +52,8 @@ export class GmgnApiError extends Error {
   }
 }
 
-function parseKeysFromText(text: string): string[] {
-  const keys: string[] = [];
-  for (const raw of text.split('\n')) {
-    let line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    if (/PRIVATE|BEGIN|END /.test(line)) continue;
-    if (line.startsWith('GMGN_API_KEY=')) {
-      line = line.slice('GMGN_API_KEY='.length).trim().replace(/^["']|["']$/g, '');
-    }
-    if (line.startsWith('gmgn_') && line.length >= 20 && !/\s/.test(line)) {
-      keys.push(line);
-    }
-  }
-  return keys;
-}
-
 export function loadGmgnOpenApiKeys(): string[] {
-  const keys: string[] = [];
-  const multi = process.env.GMGN_API_KEYS?.trim();
-  if (multi) {
-    for (const k of multi.split(',')) {
-      const t = k.trim();
-      if (t) keys.push(t);
-    }
-  }
-  const one = process.env.GMGN_API_KEY?.trim();
-  if (one) keys.push(one);
-
-  const home = homedir();
-  for (const p of [
-    join(home, '.config/gmgn/api_keys.list'),
-    join(home, '.config/gmgn/.env'),
-  ]) {
-    if (!existsSync(p)) continue;
-    try {
-      keys.push(...parseKeysFromText(readFileSync(p, 'utf8')));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const k of keys) {
-    if (k && !seen.has(k)) {
-      seen.add(k);
-      out.push(k);
-    }
-  }
+  const out = loadGmgnApiKeys();
   if (!out.length) {
     throw new Error('No GMGN API keys. Set GMGN_API_KEY or ~/.config/gmgn/api_keys.list');
   }

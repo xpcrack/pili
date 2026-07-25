@@ -4,11 +4,16 @@
  * Fallback: gmgn-cli when PILI_GMGN_ACTIVITY_VIA=cli or openapi fails hard.
  */
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
+import {
+  normalizeGmgnChainToPili,
+  toGmgnChain as toGmgnChainOrNull,
+  type GmgnChain,
+} from '@/lib/gmgnChain';
 import { runGmgnCliAsync, runGmgnCliSync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
 import { getGmgnOpenApiClient } from '@/lib/server/gmgnOpenApiClient';
 import { noteGmgnError } from '@/lib/server/gmgnRateLimit';
 
-export type GmgnChain = 'sol' | 'eth' | 'bsc' | 'base' | 'robinhood';
+export type { GmgnChain };
 
 export type GmgnActivityItem = {
   wallet?: string;
@@ -39,24 +44,11 @@ export function inferChainsForAddress(address: string): GmgnChain[] {
   return ['sol'];
 }
 
-export function normalizeGmgnChainToPili(chain: string): string {
-  const c = chain.toLowerCase();
-  if (c === 'sol' || c === 'solana') return 'solana';
-  if (c === 'eth' || c === 'ethereum') return 'ethereum';
-  if (c === 'bsc') return 'bsc';
-  if (c === 'base') return 'base';
-  if (c === 'robinhood') return 'robinhood';
-  return c;
-}
+export { normalizeGmgnChainToPili };
 
+/** pili chain → GMGN segment; falls back to lowercased input for unknown chains (legacy callers). */
 export function toGmgnChain(piliChain: string): GmgnChain {
-  const c = piliChain.toLowerCase();
-  if (c === 'solana' || c === 'sol') return 'sol';
-  if (c === 'ethereum' || c === 'eth') return 'eth';
-  if (c === 'bsc') return 'bsc';
-  if (c === 'base') return 'base';
-  if (c === 'robinhood') return 'robinhood';
-  return c as GmgnChain;
+  return toGmgnChainOrNull(piliChain) ?? (piliChain.toLowerCase() as GmgnChain);
 }
 
 function num(v: unknown): number | null {

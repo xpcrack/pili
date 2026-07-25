@@ -16,7 +16,6 @@ import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
 import { User as UserIcon } from 'lucide-react';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
-import { shouldShowGlobalCompletenessWindow } from '@/lib/feedCompletenessVisibility';
 import { Input } from '@/components/ui/input';
 import {
   type FeedSearchFilters,
@@ -113,12 +112,8 @@ export default function Home() {
     historyComplete,
     localQualifiedCount,
     activityBreakdown,
-    completenessWindow,
     refetch,
-    lastUpdate,
     summary,
-    diagnostics,
-    prewarmLabel,
   } = useActivityPolling(
     selectedUserId,
     getRemoteFeedSearchKeyword(searchFilters.keyword),
@@ -209,10 +204,6 @@ export default function Home() {
   );
   const isInitialLoading = loading && feed.length === 0;
   const hasAnyActiveFilter = Boolean(selectedUserId) || hasActiveLocalFilters;
-  const showGlobalCompletenessWindow = shouldShowGlobalCompletenessWindow({
-    selectedUserId,
-    completenessWindow,
-  });
 
   const sidebarUsers = useMemo(() => {
     const sorted = [...users];
@@ -423,7 +414,20 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <TopNav active="feed" />
+      <TopNav
+        active="feed"
+        rightSlot={
+          summary ? (
+            <div className="truncate text-[11px] tabular-nums text-zinc-500">
+              <span className="text-zinc-300">{summary.userCount}</span> 人
+              <span className="mx-1.5 text-zinc-700">·</span>
+              <span className="text-zinc-300">{summary.addressCount}</span> 地址
+              <span className="mx-1.5 text-zinc-700">·</span>
+              <span className="text-zinc-300">{summary.transactionCount}</span> 动态
+            </div>
+          ) : null
+        }
+      />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
@@ -462,104 +466,6 @@ export default function Home() {
             {error && (
               <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-400">
                 {error}
-              </div>
-            )}
-
-            {summary && (
-              <div className="mb-4 rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-300">
-                <div className="flex flex-wrap gap-x-4 gap-y-2">
-                  <span>已检查 {summary.userCount} 人</span>
-                  <span>{summary.addressCount} 个地址</span>
-                  <span>{summary.transactionCount} 条动态</span>
-                  <span>成功 {summary.successfulAddressCount}</span>
-                  <span>空地址 {summary.emptyAddressCount}</span>
-                  <span className={summary.failedAddressCount > 0 ? 'text-red-400' : 'text-zinc-400'}>
-                    失败 {summary.failedAddressCount}
-                  </span>
-                </div>
-                {diagnostics.some((item) => item.error) && (
-                  <div className="mt-3 space-y-1 text-xs text-zinc-500">
-                    {diagnostics
-                      .filter((item) => item.error)
-                      .slice(0, 5)
-                      .map((item) => (
-                        <div key={`${item.userId}-${item.address}`}>
-                          {item.userName} / {item.addressName}: {item.error}
-                        </div>
-                      ))}
-                  </div>
-                )}
-                {showGlobalCompletenessWindow && completenessWindow && (
-                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-500">
-                    <span>全局完备起点 {completenessWindow.label || '尚未建立'}</span>
-                    <span className={completenessWindow.complete ? 'text-emerald-400' : 'text-amber-400'}>
-                      {completenessWindow.complete ? '已对齐' : '部分对齐'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {prewarmLabel && (
-              <div className="mb-4 flex flex-col gap-2 rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-3 text-xs text-zinc-400 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 space-y-1">
-                  <div className="truncate">{prewarmLabel}</div>
-                  {lastUpdate ? (
-                    <div className="text-[11px] text-zinc-500">
-                      更新于 {lastUpdate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <div className="inline-flex rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setTradeValueDisplayMode('native')}
-                      className={`rounded px-2.5 py-1 transition-colors ${
-                        tradeValueDisplayMode === 'native'
-                          ? 'bg-zinc-700 text-zinc-100'
-                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      原生计价
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTradeValueDisplayMode('usd')}
-                      className={`rounded px-2.5 py-1 transition-colors ${
-                        tradeValueDisplayMode === 'usd'
-                          ? 'bg-zinc-700 text-zinc-100'
-                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      USD计价
-                    </button>
-                  </div>
-                  <div className="inline-flex rounded-md border border-zinc-700 bg-zinc-950/70 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setTimeDisplayMode('relative')}
-                      className={`rounded px-2.5 py-1 transition-colors ${
-                        timeDisplayMode === 'relative'
-                          ? 'bg-zinc-700 text-zinc-100'
-                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      相对时间
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTimeDisplayMode('absolute')}
-                      className={`rounded px-2.5 py-1 transition-colors ${
-                        timeDisplayMode === 'absolute'
-                          ? 'bg-zinc-700 text-zinc-100'
-                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                      }`}
-                    >
-                      精确时间
-                    </button>
-                  </div>
-                </div>
               </div>
             )}
 
@@ -705,7 +611,20 @@ export default function Home() {
                           >
                             {tradeValueDisplayMode === 'usd' ? 'USD' : '成交'}
                           </button>
-                          <div className="text-right">时间</div>
+                          <button
+                            type="button"
+                            className="text-right transition-colors hover:text-zinc-300"
+                            title={
+                              timeDisplayMode === 'relative'
+                                ? '当前相对时间，点击切换为精确时间'
+                                : '当前精确时间，点击切换为相对时间'
+                            }
+                            onClick={() =>
+                              setTimeDisplayMode((mode) => (mode === 'relative' ? 'absolute' : 'relative'))
+                            }
+                          >
+                            时间
+                          </button>
                         </div>
                       ) : null}
                       <div>

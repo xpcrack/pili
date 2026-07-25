@@ -124,6 +124,8 @@ export const ActivityCard = memo(function ActivityCard({
     resolvedTokenInfo,
     addressAliasMap,
   });
+  const tradeUsdBarPct =
+    tradeAmountUsdAtTx != null ? tradeUsdBarPercent(tradeAmountUsdAtTx) : 0;
   const secondaryText =
     !isBlockchain && activity.title && !usesSocialBodyLayout(activity.source) ? activity.content : null;
   const twitterKindLabel =
@@ -420,13 +422,13 @@ export const ActivityCard = memo(function ActivityCard({
             </div>
 
             <div className="relative min-w-0 self-stretch">
-              {tradeAmountUsdAtTx != null && tradeUsdBarPercent(tradeAmountUsdAtTx) > 0 ? (
+              {tradeUsdBarPct > 0 ? (
                 <div
                   aria-hidden
                   className={`absolute inset-y-0.5 left-0 rounded-sm ${
                     shouldUseOutgoingAmountTone ? 'bg-rose-500/25' : 'bg-emerald-500/25'
                   }`}
-                  style={{ width: `${tradeUsdBarPercent(tradeAmountUsdAtTx)}%` }}
+                  style={{ width: `${tradeUsdBarPct}%` }}
                 />
               ) : null}
               <div

@@ -55,8 +55,8 @@ export function writeAdminTokenToStorage(token: string) {
 }
 
 /** Headers for mutating/admin API calls. Empty when no token (dev insecure local admin). */
-export function adminHeaders(extra?: HeadersInit): HeadersInit {
-  const token = readAdminTokenFromSession();
+export function adminHeaders(extra?: HeadersInit, tokenOverride?: string): HeadersInit {
+  const token = (tokenOverride ?? readAdminTokenFromSession()).trim();
   const headers: Record<string, string> = {};
   if (extra) {
     const base = new Headers(extra);

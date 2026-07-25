@@ -4,6 +4,7 @@
  */
 import 'server-only';
 
+import { toGmgnChain } from '@/lib/gmgnChain';
 import { runGmgnCliAsync, resolveGmgnCliBin } from '@/lib/server/gmgnCli';
 
 const DEFAULT_TIMEOUT_MS = 12_000;
@@ -20,16 +21,6 @@ export type GmgnTokenInfo = {
 /** In-process token info cache — same token won't re-hit GMGN within TTL. */
 const TOKEN_INFO_CACHE_TTL_MS = 10 * 60_000;
 const tokenInfoCache = new Map<string, { expiresAt: number; value: GmgnTokenInfo | null }>();
-
-function toGmgnCliChain(chain: string): string | null {
-  const c = chain.trim().toLowerCase();
-  if (c === 'solana' || c === 'sol') return 'sol';
-  if (c === 'ethereum' || c === 'eth') return 'eth';
-  if (c === 'bsc') return 'bsc';
-  if (c === 'base') return 'base';
-  if (c === 'robinhood' || c === 'rh') return 'robinhood';
-  return null;
-}
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -137,7 +128,7 @@ export async function fetchGmgnTokenInfo(
   tokenAddress: string,
   options?: { signal?: AbortSignal; bin?: string }
 ): Promise<GmgnTokenInfo | null> {
-  const gmgnChain = toGmgnCliChain(chain);
+  const gmgnChain = toGmgnChain(chain);
   const address = tokenAddress.trim();
   if (!gmgnChain || !address) {
     return null;
@@ -191,5 +182,5 @@ export function parseGmgnTokenInfoForTests(stdout: string) {
 }
 
 export function toGmgnCliChainForTests(chain: string) {
-  return toGmgnCliChain(chain);
+  return toGmgnChain(chain);
 }

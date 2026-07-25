@@ -181,6 +181,28 @@ function buildTelegramMonitorLogicalTxKey(activity: Activity) {
  * Once live-monitor owns a wallet+tx, telegram/xxyy rows for the same key are shadows
  * (same-token dups or counter-flow wrong-token legs). Prefer live as authority.
  */
+const LIVE_MONITOR_OWNS_WALLET_TX_SQL = `SELECT 1 AS ok
+       FROM events
+       WHERE user_id = ?
+         AND source = 'blockchain'
+         AND chain = ?
+         AND address = ?
+         AND LOWER(COALESCE(tx_hash, '')) = ?
+         AND (
+           ingest_source LIKE 'live-monitor%'
+           OR event_id LIKE 'live-monitor:%'
+         )
+       LIMIT 1`;
+
+let liveMonitorOwnsWalletTxStmt: ReturnType<ReturnType<typeof getDb>['prepare']> | null = null;
+
+function getLiveMonitorOwnsWalletTxStmt() {
+  if (!liveMonitorOwnsWalletTxStmt) {
+    liveMonitorOwnsWalletTxStmt = getDb().prepare(LIVE_MONITOR_OWNS_WALLET_TX_SQL);
+  }
+  return liveMonitorOwnsWalletTxStmt;
+}
+
 export function liveMonitorOwnsWalletTx(params: {
   userId: string;
   chain: string | null | undefined;
@@ -195,22 +217,9 @@ export function liveMonitorOwnsWalletTx(params: {
     return false;
   }
 
-  const row = getDb()
-    .prepare(
-      `SELECT 1 AS ok
-       FROM events
-       WHERE user_id = ?
-         AND source = 'blockchain'
-         AND chain = ?
-         AND address = ?
-         AND LOWER(COALESCE(tx_hash, '')) = ?
-         AND (
-           ingest_source LIKE 'live-monitor%'
-           OR event_id LIKE 'live-monitor:%'
-         )
-       LIMIT 1`
-    )
-    .get(userId, chain, address, txHash) as { ok: number } | undefined;
+  const row = getLiveMonitorOwnsWalletTxStmt().get(userId, chain, address, txHash) as
+    | { ok: number }
+    | undefined;
 
   return Boolean(row);
 }

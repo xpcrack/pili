@@ -29,9 +29,6 @@ import {
   resolveFeedUsers,
 } from '@/lib/feed/feedClientSnapshot';
 import {
-  filterPoisonFromFeed,
-} from '@/lib/feed/feedPoisonFilter';
-import {
   FEED_LOAD_MORE_BATCH_SIZE,
   FEED_PAGE_BATCH_SIZE,
   FEED_POLL_MAX_TARGET,
@@ -589,26 +586,23 @@ export function useActivityPolling(
         setCompletenessWindow(result.completenessWindow);
       }
 
-      // Debug: Check if feed is being filtered by client-side poison detection
-      const poisonFilteredFeed = filterPoisonFromFeed(mergedFeed);
-      if (poisonFilteredFeed.length !== mergedFeed.length) {
-        console.warn('[fetchActivities] 客户端投毒过滤统计:', {
-          feedBeforeFilter: mergedFeed.length,
-          feedAfterFilter: poisonFilteredFeed.length,
-          filteredCount: mergedFeed.length - poisonFilteredFeed.length,
-        });
+      // Group address assets once instead of re-filtering the full list per user.
+      const addressAssetsByUser = new Map<string, typeof result.addressAssets>();
+      for (const addressAsset of result.addressAssets) {
+        const list = addressAssetsByUser.get(addressAsset.userId);
+        if (list) list.push(addressAsset);
+        else addressAssetsByUser.set(addressAsset.userId, [addressAsset]);
       }
       result.userAssets.forEach((userAsset) => {
+        const addresses = addressAssetsByUser.get(userAsset.userId) || [];
         upsertUserAssetSnapshot(userAsset.userId, {
           totalAssetUsd: userAsset.totalAssetUsd,
           updatedAt: userAsset.updatedAt,
-          addresses: result.addressAssets
-            .filter((addressAsset) => addressAsset.userId === userAsset.userId)
-            .map((addressAsset) => ({
-              address: addressAsset.address,
-              totalAssetUsd: addressAsset.totalAssetUsd,
-              updatedAt: addressAsset.updatedAt,
-            })),
+          addresses: addresses.map((addressAsset) => ({
+            address: addressAsset.address,
+            totalAssetUsd: addressAsset.totalAssetUsd,
+            updatedAt: addressAsset.updatedAt,
+          })),
         });
       });
 
