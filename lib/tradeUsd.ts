@@ -45,7 +45,8 @@ function normalizeSymbol(symbol: string | null | undefined) {
   return (symbol || '').trim().toUpperCase();
 }
 
-function parsePositiveFiniteNumber(value: string | number | null | undefined) {
+/** Shared positive amount parse (number or comma-separated string). */
+export function parsePositiveFiniteNumber(value: string | number | null | undefined) {
   if (typeof value === 'number') {
     return Number.isFinite(value) && value > 0 ? value : null;
   }

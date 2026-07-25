@@ -190,11 +190,6 @@ function run() {
     'https://robinhoodchain.blockscout.com/tx/0xrhTx111'
   );
 
-  assert.equal(trade.importanceBadgeText, '88分');
-  assert.equal(trade.importanceLevelLabel, '高重要');
-  assert.match(trade.importanceTooltip || '', /同源稀缺分/);
-  assert.match(trade.importanceTooltip || '', /总频率因子/);
-
   const send = buildActivityCardViewModel({
     activity: makeTransfer({
       chain: 'solana',

@@ -1,4 +1,5 @@
 import type { AddressInfo, ChainType, User } from '@/types';
+import { toGmgnChain } from '@/lib/gmgnChain';
 
 export const EVM_CHAINS: ChainType[] = ['bsc', 'ethereum', 'base'];
 
@@ -134,19 +135,8 @@ export function formatUsersForAddressExport(users: readonly User[]) {
     .join('\n');
 }
 
-function toGmgnChainSegment(chain: string | null | undefined) {
-  const normalized = (chain || '').trim().toLowerCase();
-  if (normalized === 'solana' || normalized === 'sol') return 'sol';
-  if (normalized === 'bsc') return 'bsc';
-  if (normalized === 'ethereum' || normalized === 'eth') return 'eth';
-  if (normalized === 'base') return 'base';
-  // GMGN uses full "robinhood" segment: https://gmgn.ai/robinhood/token/<ca>
-  if (normalized === 'robinhood' || normalized === 'rh') return 'robinhood';
-  return null;
-}
-
 export function buildGmgnTokenUrl(chain: string | null | undefined, tokenAddress: string) {
-  const chainSegment = toGmgnChainSegment(chain);
+  const chainSegment = toGmgnChain(chain);
   const normalizedAddress = tokenAddress.trim();
   if (!chainSegment || !normalizedAddress) {
     return null;
@@ -155,7 +145,7 @@ export function buildGmgnTokenUrl(chain: string | null | undefined, tokenAddress
 }
 
 export function buildGmgnAddressUrl(chain: string | null | undefined, address: string) {
-  const chainSegment = toGmgnChainSegment(chain);
+  const chainSegment = toGmgnChain(chain);
   const normalizedAddress = address.trim();
   if (!chainSegment || !normalizedAddress) {
     return null;

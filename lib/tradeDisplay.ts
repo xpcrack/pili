@@ -1,5 +1,6 @@
 import type { Activity } from '@/types';
 import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
+import { parsePositiveFiniteNumber } from '@/lib/tradeUsd';
 
 export type TradeValueDisplayMode = 'native' | 'usd';
 
@@ -80,20 +81,11 @@ export function resolvePositionDeltaDisplay(params: {
   return { text: '待补', tone: 'muted' as const };
 }
 
-function parsePositiveTokenAmount(value: string | number | null | undefined) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) && value > 0 ? value : null;
-  }
-  if (typeof value !== 'string') return null;
-  const parsed = Number.parseFloat(value.trim().replace(/,/g, ''));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 /** XXYY rawText: `Token: 93568.85  [PUMPCADE]` — token qty, not quote. */
 export function extractTokenAmountFromRawText(rawText: string | null | undefined) {
   const match = normalize(rawText).match(/\btoken\s*:\s*([0-9][0-9.,]*)/i);
   if (!match?.[1]) return null;
-  return parsePositiveTokenAmount(match[1]);
+  return parsePositiveFiniteNumber(match[1]);
 }
 
 /**
@@ -104,7 +96,7 @@ export function extractTokenAmountFromRawText(rawText: string | null | undefined
 export function resolveTradeTokenAmount(activity: Activity) {
   const fromRaw = extractTokenAmountFromRawText(activity.metadata.rawText);
   if (fromRaw != null) return fromRaw;
-  return parsePositiveTokenAmount(activity.metadata.value);
+  return parsePositiveFiniteNumber(activity.metadata.value);
 }
 
 function resolveTradeSide(activity: Activity): 'buy' | 'sell' | null {
@@ -394,7 +386,10 @@ function extractRawMcapText(rawText: string) {
   return match?.[1]?.trim() ? match[1].trim() : null;
 }
 
-function mapActionVariantLabel(actionVariant: string | null | undefined, txActionLabel: string | null | undefined) {
+export function mapActionVariantLabel(
+  actionVariant: string | null | undefined,
+  txActionLabel?: string | null | undefined
+) {
   const variant = normalize(actionVariant).toLowerCase();
   if (variant && ACTION_VARIANT_LABELS[variant]) {
     return ACTION_VARIANT_LABELS[variant];

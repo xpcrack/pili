@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { TopNav } from '@/components/TopNav';
-import { readAdminTokenFromSession, writeAdminTokenToStorage } from '@/lib/adminClient';
+import { adminHeaders, readAdminTokenFromSession, writeAdminTokenToStorage } from '@/lib/adminClient';
 
 type StatusType = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -166,18 +166,9 @@ export default function SystemPage() {
   const [completenessAction, setCompletenessAction] = useState<string | null>(null);
   const [completenessError, setCompletenessError] = useState<string | null>(null);
 
-  const buildAdminHeaders = (extra?: Record<string, string>) => {
-    const headers: Record<string, string> = {
-      ...(extra || {}),
-    };
-
-    const token = adminToken.trim();
-    if (token) {
-      headers['x-admin-token'] = token;
-    }
-
-    return Object.keys(headers).length > 0 ? headers : undefined;
-  };
+  // Pass live form token so headers stay correct before the storage write effect runs.
+  const buildAdminHeaders = (extra?: Record<string, string>) =>
+    adminHeaders(extra, adminToken);
 
   const mapAdminError = (payload: unknown, fallback: string) => {
     const body = payload && typeof payload === 'object' ? (payload as { error?: unknown; retryAfterSeconds?: unknown }) : null;

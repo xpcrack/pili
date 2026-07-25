@@ -1,17 +1,12 @@
 import type { Activity, User } from '@/types';
 import { formatTokenAmount, formatTradeAmountUsdLabel } from '@/lib/assetFormat';
-import {
-  type ActivityImportance,
-  buildActivityImportanceExplanationRows,
-  getActivityImportanceLevel,
-  getActivityImportanceLevelLabel,
-} from '@/lib/activityImportance';
 import { buildGmgnAddressUrl, buildGmgnTokenUrl } from '@/lib/addressBook';
 import {
   formatCompactMarketCap,
   formatDisplayTradeAmount,
   getTradeHeadlineDisplayText,
   isTradeDisplayAction,
+  mapActionVariantLabel,
   normalizeDisplayTradeAmountText,
   resolvePositionDeltaDisplay,
   stripMarketCapUsdPrefix,
@@ -90,18 +85,6 @@ function mapTxActionLabel(metadata: Activity['metadata'], fallbackAction: string
   return fallbackAction;
 }
 
-function translateActionVariant(
-  variant: Activity['metadata']['txActionVariant'],
-  fallbackLabel?: string
-) {
-  if (variant === 'open') return '建仓';
-  if (variant === 'add') return '加仓';
-  if (variant === 'reduce') return '减仓';
-  if (variant === 'close') return '清仓';
-  if (variant === 'send') return '发送';
-  return fallbackLabel || null;
-}
-
 function formatMergeWindowLabel(windowMs: number | null | undefined) {
   if (typeof windowMs !== 'number' || !Number.isFinite(windowMs) || windowMs <= 0) {
     return '短时间';
@@ -112,41 +95,6 @@ function formatMergeWindowLabel(windowMs: number | null | undefined) {
   }
 
   return `${Math.round(windowMs / 1000)} 秒`;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function canBuildImportanceExplanation(
-  importance: Partial<ActivityImportance> | null | undefined
-): importance is ActivityImportance {
-  if (!importance || (importance.version !== 1 && importance.version !== 2)) {
-    return false;
-  }
-  if (importance.sourceKind !== 'social' && importance.sourceKind !== 'wallet') {
-    return false;
-  }
-  if (!isFiniteNumber(importance.score)) {
-    return false;
-  }
-  if (
-    !isFiniteNumber(importance.sourceCount7d) ||
-    !isFiniteNumber(importance.socialCount7d) ||
-    !isFiniteNumber(importance.walletCount7d) ||
-    !isFiniteNumber(importance.totalCount7d)
-  ) {
-    return false;
-  }
-  if (
-    !isFiniteNumber(importance.sourceRarity) ||
-    !isFiniteNumber(importance.assetWeight) ||
-    !isFiniteNumber(importance.totalFrequencyFactor) ||
-    !isFiniteNumber(importance.dataConfidenceFactor)
-  ) {
-    return false;
-  }
-  return importance.historicalMaxAssetUsd === null || isFiniteNumber(importance.historicalMaxAssetUsd);
 }
 
 export function buildActivityCardViewModel(params: {
@@ -181,7 +129,7 @@ export function buildActivityCardViewModel(params: {
   const txActionLabel = mapTxActionLabel(activity.metadata, transferAction);
   const displayActionVariantLabel =
     activity.metadata.displayActionVariantLabel ||
-    translateActionVariant(activity.metadata.txActionVariant, txActionLabel) ||
+    mapActionVariantLabel(activity.metadata.txActionVariant, txActionLabel) ||
     txActionLabel;
   const tokenSymbolRaw = (activity.metadata.token || '').trim();
   const tokenSymbolUpper = tokenSymbolRaw.toUpperCase();
@@ -301,23 +249,6 @@ export function buildActivityCardViewModel(params: {
   const counterpartyGmgnUrl = counterpartyAddress
     ? buildGmgnAddressUrl(activity.metadata.chain, counterpartyAddress)
     : null;
-  const importance = (activity.metadata.importance as Partial<ActivityImportance> | null | undefined) ?? null;
-  const importanceScore = isFiniteNumber(importance?.score) ? importance.score : null;
-  const importanceLevel = importanceScore === null ? null : getActivityImportanceLevel(importanceScore);
-  const importanceLevelLabel = importanceScore === null ? null : getActivityImportanceLevelLabel(importanceScore);
-  const importanceBadgeText = importanceScore === null ? null : `${importanceScore}分`;
-  const importanceTooltip = canBuildImportanceExplanation(importance)
-    ? buildActivityImportanceExplanationRows(importance)
-        .map((row) => `${row.label}: ${row.valueText}\n${row.description}`)
-        .join('\n\n')
-    : null;
-  const importanceBadgeClassName =
-    importanceLevel === 'high'
-      ? 'bg-rose-500/15 text-rose-200 ring-1 ring-rose-400/35'
-      : importanceLevel === 'important'
-        ? 'bg-amber-500/15 text-amber-200 ring-1 ring-amber-400/35'
-        : 'bg-zinc-800 text-zinc-300 ring-1 ring-zinc-700';
-
   const newsChannelLabel = isNews && isTelegram
     ? (activity.metadata.telegramChannelTitle || activity.metadata.telegramChannelUsername || '新闻频道')
     : null;
@@ -362,9 +293,5 @@ export function buildActivityCardViewModel(params: {
     tokenGmgnUrl,
     trackedAddressGmgnUrl,
     counterpartyGmgnUrl,
-    importanceBadgeText,
-    importanceLevelLabel,
-    importanceTooltip,
-    importanceBadgeClassName,
   };
 }
