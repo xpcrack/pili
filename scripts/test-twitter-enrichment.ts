@@ -169,6 +169,35 @@ function testExtractTweetTokenMentions() {
     ['FOOBAR']
   );
 
+  // ALLCAPS shout: short English + DOGE-in-phrase drop; SWOGE (≥5 + pool) keeps
+  // TESLA is ≥5 but not in pool → drop; DOGE is 4 < shout min → drop
+  const shout = extractTweetTokenMentions(
+    'WTF TESLA ACC JUST POSTED IN THE SWOGE X COMM SAYING HES NOT STOPPING UNTIL SWOLE DOGE MEME IS EVERYWHERE',
+    { bareSymbolAllowlist: new Set(['swoge', 'doge', 'in', 'tesla']) },
+  );
+  assert.deepEqual(
+    shout.map((item) => item.tokenSymbol),
+    ['TESLA', 'SWOGE']
+  );
+  const shoutPoolOnly = extractTweetTokenMentions(
+    'WTF TESLA ACC JUST POSTED IN THE SWOGE X COMM SAYING HES NOT STOPPING UNTIL SWOLE DOGE MEME IS EVERYWHERE',
+    { bareSymbolAllowlist: new Set(['swoge', 'doge', 'in']) },
+  );
+  assert.deepEqual(
+    shoutPoolOnly.map((item) => item.tokenSymbol),
+    ['SWOGE']
+  );
+
+  // $SWOGE in shout still works without pool
+  const shoutDollar = extractTweetTokenMentions(
+    'WTF TESLA POSTED $SWOGE EVERYWHERE DOGE MEME',
+    { bareSymbolAllowlist: new Set(['doge']) },
+  );
+  assert.deepEqual(
+    shoutDollar.map((item) => item.tokenSymbol),
+    ['SWOGE']
+  );
+
   // hashtag + following CA binds like $TICKER CA
   const hashCa = extractTweetTokenMentions(
     '#熊猫头 0x1234567890abcdef1234567890abcdef12345678'
