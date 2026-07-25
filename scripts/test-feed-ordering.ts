@@ -462,6 +462,22 @@ function run() {
     'rawText Token qty drives +50% even when metadata.value is quote'
   );
 
+  const addOnlyWindow = prepareUserFeed([
+    makeTradeItem(bob, 'explicit-add-only', base - 50_000, {
+      txAction: 'buy',
+      txActionLabel: '加仓',
+      txActionVariant: 'add',
+      quoteAmount: '73',
+      value: '16008',
+      token: 'AI',
+      tokenAddress: 'AiMint111',
+      trackedAddress: 'WalletAi111',
+    }),
+  ]);
+  const explicitAdd = addOnlyWindow[0]?.activity.metadata;
+  assert.equal(explicitAdd?.txActionVariant, 'add', 'explicit add must not become open in a partial client window');
+  assert.equal(explicitAdd?.txActionLabel, '加仓');
+
   console.log('feed ordering tests: ok');
 }
 
