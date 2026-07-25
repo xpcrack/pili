@@ -106,6 +106,31 @@ function testExtractTweetTokenMentions() {
   const bare = extractTweetTokenMentions('我看好熊猫头 没有标签');
   assert.equal(bare.length, 0);
 
+  // bare TitleCase CT ticker (no $) — Jimothy-style
+  const bareEn = extractTweetTokenMentions(
+    'Jimothy hit the floor on the 8h chart, hitting RSI50, be patient'
+  );
+  assert.deepEqual(
+    bareEn.map((item) => ({
+      tokenSymbol: item.tokenSymbol,
+      tokenAddress: item.tokenAddress,
+      matchSource: item.matchSource,
+    })),
+    [{ tokenSymbol: 'JIMOTHY', tokenAddress: null, matchSource: 'ticker' }]
+  );
+
+  // stopwords / chart jargon must not become tickers
+  const stop = extractTweetTokenMentions('Patience and Conviction on the Chart Floor');
+  assert.equal(stop.length, 0);
+
+  // $TICKER still preferred; bare duplicate of same symbol collapsed;
+  // sentence-initial "Buying" is a stopword, must not become a ticker
+  const mixed = extractTweetTokenMentions('Buying more $Jimothy today Jimothy looks strong');
+  assert.deepEqual(
+    mixed.map((item) => item.tokenSymbol),
+    ['JIMOTHY']
+  );
+
   // hashtag + following CA binds like $TICKER CA
   const hashCa = extractTweetTokenMentions(
     '#熊猫头 0x1234567890abcdef1234567890abcdef12345678'
@@ -299,7 +324,7 @@ async function testQuotedTranslationAndMcFields() {
   assert.equal(enrichment?.translationZh, '同意这个关于 PEPE 的看法');
   assert.equal(enrichment?.quotedTranslationZh, '这是下一波上涨的强势布局。');
   assert.equal(enrichment?.quotedTranslationStatus, 'succeeded');
-  assert.equal(enrichment?.translatorVersion, 'model-v3');
+  assert.equal(enrichment?.translatorVersion, 'model-v4');
   assert.equal(enrichment?.visionStatus, 'skipped');
 
   const mentions = listTwitterTweetTokenMentions('tweet-quote-v2');

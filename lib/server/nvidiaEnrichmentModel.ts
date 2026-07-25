@@ -6,6 +6,7 @@ import type {
   TweetEnrichmentModelOutputSentiment,
   TweetEnrichmentModelResult,
 } from '@/lib/server/twitterEnrichmentModel';
+import { listPreserveTickerSymbols } from '@/lib/twitter/extractTweetTokenMentions';
 
 /** OpenAI-compatible chat base. Prefer local AxonHub MIMO over NVIDIA NIM. */
 export const DEFAULT_ENRICHMENT_BASE_URL = 'http://127.0.0.1:8090/v1';
@@ -80,8 +81,68 @@ function sanitizeTranslationZh(value: string | null | undefined): string | null 
 }
 
 /**
+ * Mask ticker symbols / CAs so the LLM cannot transliterate them (Jimothy→吉米).
+ * Longer symbols first to avoid partial overlaps.
+ */
+export function maskPreserveTokens(
+  text: string,
+  symbols: string[],
+): { masked: string; tokens: string[] } {
+  const tokens: string[] = [];
+  let masked = text;
+
+  const unique = Array.from(
+    new Set(
+      symbols
+        .map((s) => (s || '').trim())
+        .filter((s) => s.length >= 2)
+    )
+  ).sort((a, b) => b.length - a.length);
+
+  for (const symbol of unique) {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // ASCII word boundary; CJK matched as literal substring.
+    const isAscii = /^[A-Za-z][A-Za-z0-9_]*$/.test(symbol);
+    const pattern = isAscii
+      ? new RegExp(`\\b${escaped}\\b`, 'gi')
+      : new RegExp(escaped, 'g');
+    if (!pattern.test(masked)) continue;
+    // reset lastIndex after test()
+    pattern.lastIndex = 0;
+    const idx = tokens.length;
+    const placeholder = `⟦TK${idx}⟧`;
+    masked = masked.replace(pattern, () => {
+      // Always restore the canonical symbol casing from the list entry.
+      tokens[idx] = symbol;
+      return placeholder;
+    });
+    if (tokens[idx] === undefined) {
+      tokens[idx] = symbol;
+    }
+  }
+
+  // Also mask naked EVM/SOL CAs that may not be in symbol list.
+  masked = masked.replace(/\b0x[a-fA-F0-9]{40}\b/g, (ca) => {
+    const idx = tokens.length;
+    tokens.push(ca);
+    return `⟦TK${idx}⟧`;
+  });
+
+  return { masked, tokens };
+}
+
+export function unmaskPreserveTokens(text: string, tokens: string[]): string {
+  if (!text || tokens.length === 0) return text;
+  return text.replace(/⟦TK(\d+)⟧/g, (full, rawIdx: string) => {
+    const idx = Number.parseInt(rawIdx, 10);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= tokens.length) return full;
+    return tokens[idx];
+  });
+}
+
+/**
  * Build a Chinese prompt that asks the model to:
- * 1) translate English to Chinese (preserving $TICKER and CA addresses)
+ * 1) translate English to Chinese (preserving $TICKER, bare tickers, and CA addresses)
  * 2) judge sentiment for each mentioned token
  * Output format: JSON {"translation_zh":"...","sentiments":[...]}
  */
@@ -100,7 +161,10 @@ export function buildEnrichmentPrompt(
 
   return `你是一个加密货币推文分析助手。请完成以下两个任务：
 
-1. **翻译**：将以下英文推文翻译为中文。保留所有 $TICKER 格式（如 $BTC、$ETH）和合约地址（CA）不翻译。翻译必须是完整中文句子，不要输出占位符。
+1. **翻译**：将以下英文推文翻译为中文。
+   - 保留所有 $TICKER / #TAG、合约地址（CA）、以及代币专有名（如 Jimothy、Pepe）的**原文拉丁拼写**，禁止音译成中文人名/昵称（错误示例：Jimothy→吉米）。
+   - 文中形如 ⟦TK0⟧ / ⟦TK1⟧ 的占位符必须原样保留，不得翻译或删除。
+   - 翻译必须是完整中文句子，不要输出占位词。
 2. **情感分析**：对每个提到的代币判断情感倾向（positive/negative/neutral）。
 
 推文原文：
@@ -118,6 +182,7 @@ ${tokenList || '（无明确代币）'}
 - sentiment 只能是 positive、negative 或 neutral
 - confidence 范围 0-1；不确定时用 neutral + 0.5
 - translation_zh 必须是真实译文，禁止输出「中文翻译」「翻译」「TODO」等占位词
+- 代币名/⟦TKn⟧/CA 保持原样，不要本地化
 - 不要在 translation_zh 里使用未转义的换行；如需换行请使用 \\n`;
 }
 
@@ -256,7 +321,12 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
       };
     }
 
-    const prompt = buildEnrichmentPrompt(text, mentions);
+    const preserveSymbols = listPreserveTickerSymbols(
+      text,
+      mentions.map((m) => m.tokenSymbol),
+    );
+    const { masked, tokens } = maskPreserveTokens(text, preserveSymbols);
+    const prompt = buildEnrichmentPrompt(masked, mentions);
 
     try {
       const controller = new AbortController();
@@ -275,7 +345,7 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
             {
               role: 'system',
               content:
-                'You are a JSON API. Reply with a single JSON object only. No markdown, no reasoning, no preface.',
+                'You are a JSON API. Reply with a single JSON object only. No markdown, no reasoning, no preface. Keep ⟦TKn⟧ placeholders unchanged.',
             },
             { role: 'user', content: prompt },
           ],
@@ -321,8 +391,12 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
           confidence: typeof s.confidence === 'number' ? s.confidence : undefined,
         }));
 
+      const translationZh = sanitizeTranslationZh(
+        unmaskPreserveTokens(parsed.translation_zh || '', tokens)
+      );
+
       return {
-        translationZh: sanitizeTranslationZh(parsed.translation_zh),
+        translationZh,
         sentiments:
           validSentiments.length > 0
             ? validSentiments
@@ -344,10 +418,14 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     if (!trimmed) return null;
     if (!isLikelyEnglish(trimmed)) return null;
 
+    const preserveSymbols = listPreserveTickerSymbols(trimmed);
+    const { masked, tokens } = maskPreserveTokens(trimmed, preserveSymbols);
+
     const prompt =
-      'Translate the following English tweet/text to Chinese. Keep $TICKER and contract addresses unchanged. ' +
+      'Translate the following English tweet/text to Chinese. ' +
+      'Keep $TICKER, bare token names, contract addresses, and ⟦TKn⟧ placeholders unchanged — never transliterate tickers into Chinese names. ' +
       'Return ONLY JSON: {"translation_zh":"..."}\n\nText:\n' +
-      trimmed;
+      masked;
 
     try {
       const controller = new AbortController();
@@ -363,7 +441,7 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
           messages: [
             {
               role: 'system',
-              content: 'Output ONLY one JSON object. No markdown, no reasoning.',
+              content: 'Output ONLY one JSON object. No markdown, no reasoning. Keep ⟦TKn⟧ placeholders unchanged.',
             },
             { role: 'user', content: prompt },
           ],
@@ -381,7 +459,8 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
         (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
         '';
       const parsed = parseModelOutput(content);
-      return sanitizeTranslationZh(parsed?.translation_zh || extractTranslationByRegex(content));
+      const rawZh = sanitizeTranslationZh(parsed?.translation_zh || extractTranslationByRegex(content));
+      return rawZh ? unmaskPreserveTokens(rawZh, tokens) : null;
     } catch {
       return null;
     }
