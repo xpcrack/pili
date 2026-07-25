@@ -327,8 +327,14 @@ async function main() {
               sourceHint: 'telegram-bridge',
               reason: 'telegram monitor ingest',
             });
+            const feedMode =
+              'feedMode' in result.result && result.result.feedMode
+                ? String(result.result.feedMode)
+                : '-';
+            const doorbell =
+              'doorbell' in result.result ? String(Boolean(result.result.doorbell)) : '-';
             console.log(
-              `${LOG_PREFIX} monitor ingested chat=${result.chatId} source=${result.source} projected=${String(result.result.projected)} preview=${result.preview}`
+              `${LOG_PREFIX} monitor ingested chat=${result.chatId} source=${result.source} feedMode=${feedMode} doorbell=${doorbell} projected=${String(result.result.projected)} preview=${result.preview}`
             );
           }
         } else if (result.kind === 'twitter-relay') {

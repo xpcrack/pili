@@ -10,6 +10,9 @@ process.env.OKX_SECRET_KEY ??= 'fixture-okx-secret';
 process.env.OKX_API_PASSPHRASE ??= 'fixture-okx-passphrase';
 process.env.TELEGRAM_MONITOR_INGEST_TOKEN ??= 'fixture-telegram-ingest-token';
 process.env.PILI_DISABLE_TELEGRAM_MONITOR_AUTO_RECONCILE = '1';
+// Legacy project path under test (doorbell is production default for alchemy/dual).
+process.env.PILI_XXYY_FEED = 'project';
+process.env.PILI_LIVE_SOURCE = 'xxyy';
 delete process.env.INTERNAL_BID_HMAC_SECRET;
 delete process.env.BID_FEED_PUSH_URL;
 

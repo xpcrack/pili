@@ -9,7 +9,8 @@ import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonit
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
-import { shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
+import { enqueueLiveDoorbell } from '@/lib/server/liveDoorbellQueue';
+import { readXxyyFeedMode, shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import {
   summarizeTelegramMonitorTxProvisional,
@@ -399,6 +400,66 @@ export async function ingestTelegramMonitorUpdate(
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
   }
 
+  const xxyyFeedMode = readXxyyFeedMode();
+
+  // Dual-doorbell: XXYY only rings live-monitor; GMGN is the sole trade parser/writer.
+  if (xxyyFeedMode === 'doorbell') {
+    const ringAddress =
+      (trackedMatch.address.address || '').trim() ||
+      (parsed.trackedWalletAddress || '').trim();
+    const doorbell = enqueueLiveDoorbell({
+      address: ringAddress,
+      userId: trackedMatch.user.id,
+      chain: parsed.chain,
+      source: 'xxyy',
+    });
+    return {
+      ok: true,
+      saved,
+      projected: false,
+      doorbell: Boolean(doorbell.enqueued),
+      feedMode: 'doorbell' as const,
+      parsed: {
+        chain: parsed.chain,
+        tokenAddress: parsed.tokenAddress,
+        txHash: parsed.txHash,
+        marketCapUsd: parsed.marketCapUsd,
+        action: parsed.action,
+        actionLabel: parsed.actionLabel,
+        actionVariant: parsed.actionVariant,
+        walletLabel: parsed.walletLabel,
+        walletGroupLabel: parsed.walletGroupLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
+  }
+
+  if (xxyyFeedMode === 'off') {
+    return {
+      ok: true,
+      saved,
+      projected: false,
+      feedMode: 'off' as const,
+      ignored: true,
+      reason: 'xxyy-feed-off' as const,
+      parsed: {
+        chain: parsed.chain,
+        tokenAddress: parsed.tokenAddress,
+        txHash: parsed.txHash,
+        marketCapUsd: parsed.marketCapUsd,
+        action: parsed.action,
+        actionLabel: parsed.actionLabel,
+        actionVariant: parsed.actionVariant,
+        walletLabel: parsed.walletLabel,
+        walletGroupLabel: parsed.walletGroupLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
+  }
+
+  // Legacy project path: XXYY text → xxyy-monitor feed (+ optional OKX reconcile).
   // Same-tx multi-token legs stay separate (token-aware aggregate key + summarize filter).
 
   const provisionalSummary =
@@ -524,6 +585,7 @@ export async function ingestTelegramMonitorUpdate(
     ok: true,
     saved,
     projected: Boolean(scoredProjected),
+    feedMode: 'project' as const,
     parsed: {
       chain: parsed.chain,
       tokenAddress: parsed.tokenAddress,
