@@ -288,6 +288,16 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
       ? formatDisplayTradeAmount(resolvedAmountTotal, resolvedAmountSymbol)
       : representative.activity.metadata.displayTradeAmountText;
 
+  // USD column is independent of displayTradeAmountText — sum every leg so
+  // merged cards don't keep only the representative row's tradeAmountUsdAtTx.
+  const mergedTradeAmountUsdAtTx = group.entries.reduce((sum, entry) => {
+    const usd = entry.item.activity.metadata.tradeAmountUsdAtTx;
+    if (typeof usd === 'number' && Number.isFinite(usd) && usd > 0) {
+      return sum + usd;
+    }
+    return sum;
+  }, 0);
+
   // Prefer combined position % vs balance before earliest leg (not latest-only).
   const chronological = [...group.entries].sort((left, right) => {
     const timeDelta = left.item.activity.timestamp - right.item.activity.timestamp;
@@ -341,6 +351,7 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
       metadata: {
         ...representative.activity.metadata,
         displayTradeAmountText: mergedTradeAmountText || representative.activity.metadata.displayTradeAmountText,
+        ...(mergedTradeAmountUsdAtTx > 0 ? { tradeAmountUsdAtTx: mergedTradeAmountUsdAtTx } : {}),
         displayMarketCapText:
           mergedAverageMarketCapUsd && formatCompactMarketCap(mergedAverageMarketCapUsd)
             ? formatCompactMarketCap(mergedAverageMarketCapUsd) || undefined

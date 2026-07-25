@@ -191,14 +191,17 @@ function run() {
     makeTradeItem(alice, 'merge-1', base - 5_000, {
       quoteAmount: '0.5',
       marketCapAtTxUsd: 110_000_000,
+      tradeAmountUsdAtTx: 100,
     }),
     makeTradeItem(alice, 'merge-2', base - 150_000, {
       quoteAmount: '1',
       marketCapAtTxUsd: 120_000_000,
+      tradeAmountUsdAtTx: 220,
     }),
     makeTradeItem(alice, 'merge-3', base - 290_000, {
       quoteAmount: '1.5',
       marketCapAtTxUsd: 130_000_000,
+      tradeAmountUsdAtTx: 330,
       txActionLabel: '清仓',
       txActionVariant: 'close',
     }),
@@ -208,6 +211,11 @@ function run() {
   assert.equal(mergedTrades[0]?.activity.metadata.mergedTradeCount, 3);
   assert.equal(mergedTrades[0]?.activity.metadata.mergedTradeWindowMs, 300_000);
   assert.equal(mergedTrades[0]?.activity.metadata.displayTradeAmountText, '3 ETH');
+  assert.equal(
+    mergedTrades[0]?.activity.metadata.tradeAmountUsdAtTx,
+    650,
+    'merged USD column must sum every leg, not keep only the representative'
+  );
   assert.ok(
     Math.abs((mergedTrades[0]?.activity.metadata.mergedTradeAverageMarketCapUsd || 0) - 123_333_333.33333333) < 0.001,
     'merged market cap should be weighted by merged trade amount'
