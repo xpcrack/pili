@@ -330,7 +330,7 @@ export const ActivityCard = memo(function ActivityCard({
             className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
             style={{
               gridTemplateColumns:
-                '28px 100px 120px 48px 68px minmax(72px,1fr) 40px',
+                '28px 100px 120px 48px 68px minmax(72px,1fr) 80px',
             }}
           >
             <Avatar className="h-7 w-7 shrink-0">
@@ -441,11 +441,11 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="text-right text-xs text-zinc-500">
+            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500">
               {activity.metadata.txHash ? (
                 <button
                   type="button"
-                  className="rounded px-0.5 hover:bg-zinc-800 hover:text-zinc-300"
+                  className="rounded px-0.5 whitespace-nowrap hover:bg-zinc-800 hover:text-zinc-300"
                   title="左键复制交易哈希，右键打开浏览器"
                   onClick={async (event) => {
                     event.stopPropagation();
@@ -497,7 +497,7 @@ export const ActivityCard = memo(function ActivityCard({
             className="grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
             style={{
               gridTemplateColumns:
-                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(64px,0.65fr) minmax(96px,1fr) 44px 118px',
+                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(64px,0.65fr) minmax(96px,1fr) 80px 118px',
             }}
           >
             <Avatar className="h-7 w-7 shrink-0">
@@ -610,11 +610,11 @@ export const ActivityCard = memo(function ActivityCard({
               )}
             </div>
 
-            <div className="text-right text-xs text-zinc-500">
+            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500">
               {activity.metadata.txHash ? (
                 <button
                   type="button"
-                  className="rounded px-0.5 hover:bg-zinc-800 hover:text-zinc-300"
+                  className="rounded px-0.5 whitespace-nowrap hover:bg-zinc-800 hover:text-zinc-300"
                   title="左键复制交易哈希，右键打开浏览器"
                   onClick={async (event) => {
                     event.stopPropagation();
@@ -790,11 +790,11 @@ export const ActivityCard = memo(function ActivityCard({
               ) : null}
             </div>
 
-            <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
+            <div className="flex w-20 shrink-0 flex-col items-end gap-1 pt-0.5">
               {socialPostUrl ? (
                 <button
                   type="button"
-                  className="rounded px-0.5 text-right text-xs tabular-nums text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                  className="rounded px-0.5 text-right text-xs tabular-nums whitespace-nowrap text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
                   title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
                   onClick={async (event) => {
                     event.stopPropagation();
@@ -816,7 +816,7 @@ export const ActivityCard = memo(function ActivityCard({
                   {tweetLinkCopied ? '已复制' : timeAgo}
                 </button>
               ) : (
-                <span className="text-xs tabular-nums text-zinc-500">{timeAgo}</span>
+                <span className="text-xs tabular-nums whitespace-nowrap text-zinc-500">{timeAgo}</span>
               )}
             </div>
           </div>
@@ -844,7 +844,7 @@ export const ActivityCard = memo(function ActivityCard({
             <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
               <span className="truncate font-semibold text-zinc-100">{user.name}</span>
               {typeLabel ? <span className="shrink-0 text-[11px] text-zinc-500">{typeLabel}</span> : null}
-              <span className="ml-auto shrink-0 text-xs tabular-nums text-zinc-500">{timeAgo}</span>
+              <span className="ml-auto w-20 shrink-0 text-right text-xs tabular-nums whitespace-nowrap text-zinc-500">{timeAgo}</span>
             </div>
             {primaryText ? (
               <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-zinc-300">{primaryText}</p>
