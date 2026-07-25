@@ -1,6 +1,11 @@
 import type { Activity, User } from '@/types';
 import { buildActivityGlobalDedupKey } from '@/lib/activityIdentity';
-import { formatCompactMarketCap, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
+import {
+  formatCompactMarketCap,
+  formatDisplayTradeAmount,
+  fillPositionDeltaRatios,
+  resolveTradeTokenAmount,
+} from '@/lib/tradeDisplay';
 
 export interface FeedItem {
   user: User;
@@ -283,6 +288,52 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
       ? formatDisplayTradeAmount(resolvedAmountTotal, resolvedAmountSymbol)
       : representative.activity.metadata.displayTradeAmountText;
 
+  // Prefer combined position % vs balance before earliest leg (not latest-only).
+  const chronological = [...group.entries].sort((left, right) => {
+    const timeDelta = left.item.activity.timestamp - right.item.activity.timestamp;
+    if (timeDelta !== 0) return timeDelta;
+    return left.originalIndex - right.originalIndex;
+  });
+  let mergedPositionDeltaRatio =
+    typeof representative.activity.metadata.positionDeltaRatio === 'number' &&
+    Number.isFinite(representative.activity.metadata.positionDeltaRatio)
+      ? representative.activity.metadata.positionDeltaRatio
+      : null;
+  const direction = resolveTradeDirectionKey(representative.activity);
+  if (direction === 'buy' || direction === 'sell') {
+    const first = chronological[0]!.item.activity;
+    const firstRatio =
+      typeof first.metadata.positionDeltaRatio === 'number' && Number.isFinite(first.metadata.positionDeltaRatio)
+        ? first.metadata.positionDeltaRatio
+        : null;
+    const firstAmount = resolveTradeTokenAmount(first);
+    const totalTokenAmount = chronological.reduce((sum, entry) => {
+      return sum + (resolveTradeTokenAmount(entry.item.activity) ?? 0);
+    }, 0);
+    const anyClose = chronological.some((entry) => {
+      const variant = normalize(entry.item.activity.metadata.txActionVariant);
+      const label = normalize(
+        entry.item.activity.metadata.displayActionVariantLabel || entry.item.activity.metadata.txActionLabel
+      );
+      return variant === 'close' || label === '清仓';
+    });
+    if (anyClose && direction === 'sell') {
+      mergedPositionDeltaRatio = -1;
+    } else if (firstRatio != null && firstAmount != null && firstAmount > 0 && totalTokenAmount > 0) {
+      const before =
+        direction === 'buy'
+          ? firstRatio !== 0
+            ? firstAmount / firstRatio
+            : null
+          : firstRatio !== 0
+            ? firstAmount / -firstRatio
+            : null;
+      if (before != null && before > 0) {
+        mergedPositionDeltaRatio = direction === 'buy' ? totalTokenAmount / before : -totalTokenAmount / before;
+      }
+    }
+  }
+
   return {
     ...representative,
     activity: {
@@ -292,7 +343,7 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
         displayTradeAmountText: mergedTradeAmountText || representative.activity.metadata.displayTradeAmountText,
         displayMarketCapText:
           mergedAverageMarketCapUsd && formatCompactMarketCap(mergedAverageMarketCapUsd)
-            ? `均市值 ${formatCompactMarketCap(mergedAverageMarketCapUsd)}`
+            ? formatCompactMarketCap(mergedAverageMarketCapUsd) || undefined
             : undefined,
         coHitUserCount: coHitUserNames.size,
         coHitAddressCount: coHitAddresses.size,
@@ -301,6 +352,7 @@ function mergeTradeGroup(group: TradeMergeGroup): FeedItem {
         mergedTradeCount: group.entries.length,
         mergedTradeWindowMs: SHORT_TRADE_MERGE_WINDOW_MS,
         mergedTradeAverageMarketCapUsd: mergedAverageMarketCapUsd,
+        ...(mergedPositionDeltaRatio != null ? { positionDeltaRatio: mergedPositionDeltaRatio } : {}),
       },
     },
   };
@@ -360,9 +412,9 @@ export function mergeShortWindowSimilarTrades(feed: FeedItem[]) {
 }
 
 export function prepareUserFeed(feed: FeedItem[]) {
-  return mergeShortWindowSimilarTrades(feed);
+  return mergeShortWindowSimilarTrades(fillPositionDeltaRatios(feed));
 }
 
 export function prepareGlobalFeed(feed: FeedItem[]) {
-  return mergeShortWindowSimilarTrades(mergeGlobalFeedByPrimaryKey(feed));
+  return mergeShortWindowSimilarTrades(fillPositionDeltaRatios(mergeGlobalFeedByPrimaryKey(feed)));
 }

@@ -80,6 +80,207 @@ export function resolvePositionDeltaDisplay(params: {
   return { text: '待补', tone: 'muted' as const };
 }
 
+function parsePositiveTokenAmount(value: string | number | null | undefined) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== 'string') return null;
+  const parsed = Number.parseFloat(value.trim().replace(/,/g, ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** XXYY rawText: `Token: 93568.85  [PUMPCADE]` — token qty, not quote. */
+export function extractTokenAmountFromRawText(rawText: string | null | undefined) {
+  const match = normalize(rawText).match(/\btoken\s*:\s*([0-9][0-9.,]*)/i);
+  if (!match?.[1]) return null;
+  return parsePositiveTokenAmount(match[1]);
+}
+
+/**
+ * Best-effort token qty for position %:
+ * 1) rawText Token: line (XXYY)
+ * 2) metadata.value when it looks like token qty (live-monitor / reconciled)
+ */
+export function resolveTradeTokenAmount(activity: Activity) {
+  const fromRaw = extractTokenAmountFromRawText(activity.metadata.rawText);
+  if (fromRaw != null) return fromRaw;
+  return parsePositiveTokenAmount(activity.metadata.value);
+}
+
+function resolveTradeSide(activity: Activity): 'buy' | 'sell' | null {
+  const variant = normalize(activity.metadata.txActionVariant).toLowerCase();
+  const label = normalize(activity.metadata.displayActionVariantLabel || activity.metadata.txActionLabel);
+  if (variant === 'open' || variant === 'add' || label === '建仓' || label === '加仓') return 'buy';
+  if (variant === 'close' || variant === 'reduce' || label === '清仓' || label === '减仓') return 'sell';
+  const action = normalize(activity.metadata.txAction).toLowerCase();
+  if (action === 'buy') return 'buy';
+  if (action === 'sell') return 'sell';
+  return null;
+}
+
+function isOpenVariant(activity: Activity) {
+  const variant = normalize(activity.metadata.txActionVariant).toLowerCase();
+  const label = normalize(activity.metadata.displayActionVariantLabel || activity.metadata.txActionLabel);
+  return variant === 'open' || label === '建仓';
+}
+
+function isCloseVariant(activity: Activity) {
+  const variant = normalize(activity.metadata.txActionVariant).toLowerCase();
+  const label = normalize(activity.metadata.displayActionVariantLabel || activity.metadata.txActionLabel);
+  return variant === 'close' || label === '清仓';
+}
+
+function positionSeriesKey(activity: Activity) {
+  const wallet = normalize(activity.metadata.trackedAddress);
+  const chain = normalize(activity.metadata.chain);
+  const token = normalize(activity.metadata.tokenAddress);
+  if (!wallet || !chain || !token) return null;
+  return `${chain}|${wallet}|${token}`;
+}
+
+/**
+ * Fill missing positionDeltaRatio from in-page wallet×token timeline.
+ * - open / first buy after flat: leave ratio unset → UI shows 新仓
+ * - close / sell that empties: -1
+ * - add: +qty/before；reduce: -qty/before
+ * Already-set ratio is preserved. Unknown pre-balance stays 待补 but seeds inventory.
+ * Also upgrades live add/reduce → open/close when the timeline implies it.
+ */
+export function fillPositionDeltaRatios<T extends { activity: Activity }>(items: T[]): T[] {
+  type Work = { item: T; index: number; side: 'buy' | 'sell'; amount: number | null };
+  const buckets = new Map<string, Work[]>();
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    const { activity } = item;
+    if (activity.source !== 'blockchain' || activity.type !== 'transfer') continue;
+    const side = resolveTradeSide(activity);
+    if (!side) continue;
+    const key = positionSeriesKey(activity);
+    if (!key) continue;
+    const list = buckets.get(key) || [];
+    list.push({ item, index, side, amount: resolveTradeTokenAmount(activity) });
+    buckets.set(key, list);
+  }
+
+  if (buckets.size === 0) return items;
+
+  type Patch = {
+    ratio?: number;
+    open?: boolean;
+    close?: boolean;
+  };
+  const patchByIndex = new Map<number, Patch>();
+
+  for (const series of buckets.values()) {
+    // oldest → newest
+    series.sort((a, b) => {
+      const t = a.item.activity.timestamp - b.item.activity.timestamp;
+      if (t !== 0) return t;
+      return a.index - b.index;
+    });
+
+    let balance: number | null = null;
+    for (const row of series) {
+      const existing = row.item.activity.metadata.positionDeltaRatio;
+      if (typeof existing === 'number' && Number.isFinite(existing)) {
+        // Keep author-provided ratio, still advance inventory when possible.
+        if (row.amount != null) {
+          if (row.side === 'buy') {
+            balance = (balance ?? 0) + row.amount;
+          } else if (balance != null) {
+            balance = Math.max(0, balance - row.amount);
+          }
+        } else if (isCloseVariant(row.item.activity) || existing <= -0.999) {
+          balance = 0;
+        } else if (isOpenVariant(row.item.activity)) {
+          balance = balance ?? 0;
+        }
+        continue;
+      }
+
+      if (isOpenVariant(row.item.activity) || (row.side === 'buy' && (balance == null || balance <= 0))) {
+        if (row.amount != null) balance = row.amount;
+        else if (balance == null || balance <= 0) balance = 0;
+        if (!isOpenVariant(row.item.activity) && row.side === 'buy') {
+          // first buy after flat on live data stored as add → treat as 新仓
+          patchByIndex.set(row.index, { ...(patchByIndex.get(row.index) || {}), open: true });
+        }
+        continue;
+      }
+
+      if (isCloseVariant(row.item.activity)) {
+        patchByIndex.set(row.index, { ...(patchByIndex.get(row.index) || {}), ratio: -1, close: true });
+        balance = 0;
+        continue;
+      }
+
+      if (row.amount == null) continue;
+
+      if (row.side === 'buy') {
+        if (balance != null && balance > 0) {
+          patchByIndex.set(row.index, {
+            ...(patchByIndex.get(row.index) || {}),
+            ratio: row.amount / balance,
+          });
+          balance += row.amount;
+        } else {
+          // seed without % (history incomplete)
+          balance = (balance ?? 0) + row.amount;
+        }
+        continue;
+      }
+
+      // sell / reduce
+      if (balance != null && balance > 0) {
+        const soldFraction = row.amount / balance;
+        if (soldFraction >= 0.995 || row.amount >= balance) {
+          patchByIndex.set(row.index, {
+            ...(patchByIndex.get(row.index) || {}),
+            ratio: -1,
+            close: true,
+          });
+          balance = 0;
+        } else {
+          patchByIndex.set(row.index, {
+            ...(patchByIndex.get(row.index) || {}),
+            ratio: -soldFraction,
+          });
+          balance = Math.max(0, balance - row.amount);
+        }
+      }
+      // unknown pre-balance: leave 待补
+    }
+  }
+
+  if (patchByIndex.size === 0) return items;
+
+  return items.map((item, index) => {
+    const patch = patchByIndex.get(index);
+    if (!patch) return item;
+    const nextMeta = { ...item.activity.metadata };
+    if (typeof patch.ratio === 'number') {
+      nextMeta.positionDeltaRatio = patch.ratio;
+    }
+    if (patch.open) {
+      nextMeta.txActionVariant = 'open';
+      nextMeta.txActionLabel = '建仓';
+      nextMeta.displayActionVariantLabel = '建仓';
+    } else if (patch.close) {
+      nextMeta.txActionVariant = 'close';
+      nextMeta.txActionLabel = '清仓';
+      nextMeta.displayActionVariantLabel = '清仓';
+    }
+    return {
+      ...item,
+      activity: {
+        ...item.activity,
+        metadata: nextMeta,
+      },
+    };
+  });
+}
+
 export function formatCompactMarketCap(marketCapUsd: number | null | undefined) {
   if (marketCapUsd === null || marketCapUsd === undefined || !Number.isFinite(marketCapUsd) || marketCapUsd <= 0) {
     return null;

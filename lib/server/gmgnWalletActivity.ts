@@ -254,6 +254,11 @@ export type NormalizedLiveTrade = {
   priceUsd: number | null;
   /** Circulating MC at trade time when GMGN provides it (optional). */
   marketCapUsd: number | null;
+  /**
+   * GMGN flag: 1 = full open (buy) or full close (sell).
+   * Used to map side → open/close and fill 幅度 without balance history.
+   */
+  isOpenOrClose: boolean | null;
   eventTimeMs: number;
 };
 
@@ -333,6 +338,9 @@ export function normalizeGmgnActivityItems(
     if (minCost > 0 && (cost == null || cost < minCost)) continue;
 
     const tx = String(it.tx_hash || '').trim() || null;
+    const openOrCloseRaw = num(
+      (it as { is_open_or_close?: string | number | null }).is_open_or_close
+    );
     out.push({
       chain,
       wallet: opts.wallet,
@@ -344,6 +352,7 @@ export function normalizeGmgnActivityItems(
       costUsd: cost,
       priceUsd: num(it.price_usd),
       marketCapUsd: extractMarketCapUsd(it),
+      isOpenOrClose: openOrCloseRaw == null ? null : openOrCloseRaw === 1,
       eventTimeMs: ts * 1000,
     });
   }

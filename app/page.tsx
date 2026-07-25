@@ -677,13 +677,13 @@ export default function Home() {
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
                   <div id="feed-list" className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-950/70">
-                    <div className={searchFilters.typeFilters.trade ? 'min-w-[820px]' : undefined}>
+                    <div className={searchFilters.typeFilters.trade ? 'min-w-[700px]' : undefined}>
                       {searchFilters.typeFilters.trade ? (
                         <div
                           className="sticky top-0 z-[2] grid min-h-[30px] items-center gap-x-3 border-b border-white/[0.07] bg-zinc-950/95 px-3 text-[11px] text-zinc-500 backdrop-blur"
                           style={{
                             gridTemplateColumns:
-                              '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr) 118px',
+                              '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr)',
                           }}
                         >
                           <div />
@@ -694,7 +694,6 @@ export default function Home() {
                           <div className="text-right">MC</div>
                           <div className="text-right">时间</div>
                           <div>幅度</div>
-                          <div className="text-right">操作</div>
                         </div>
                       ) : null}
                       <div>

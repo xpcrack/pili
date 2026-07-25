@@ -359,6 +359,101 @@ function run() {
     'different transfer counterparty, direction, token, or time window must not merge'
   );
 
+  // position % from wallet×token timeline (open → add → reduce → close)
+  const positionSeries = prepareUserFeed([
+    makeTradeItem(bob, 'pos-open', base - 3_600_000, {
+      txAction: 'buy',
+      txActionLabel: '建仓',
+      txActionVariant: 'open',
+      quoteAmount: '1',
+      value: '100',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      trackedAddress: 'WalletPos111',
+    }),
+    makeTradeItem(bob, 'pos-add', base - 2_400_000, {
+      txAction: 'buy',
+      txActionLabel: '加仓',
+      txActionVariant: 'add',
+      quoteAmount: '1',
+      value: '50',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      trackedAddress: 'WalletPos111',
+    }),
+    makeTradeItem(bob, 'pos-reduce', base - 1_200_000, {
+      txAction: 'sell',
+      txActionLabel: '减仓',
+      txActionVariant: 'reduce',
+      quoteAmount: '1',
+      value: '30',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      trackedAddress: 'WalletPos111',
+    }),
+    makeTradeItem(bob, 'pos-close', base - 100_000, {
+      txAction: 'sell',
+      txActionLabel: '减仓',
+      txActionVariant: 'reduce',
+      quoteAmount: '1',
+      value: '120',
+      token: 'HOOD',
+      tokenAddress: 'HoodMint111',
+      trackedAddress: 'WalletPos111',
+    }),
+  ]);
+  assert.equal(positionSeries.length, 4);
+  const byId = Object.fromEntries(positionSeries.map((item) => [item.activity.id, item.activity.metadata]));
+  assert.equal(byId['pos-open']?.positionDeltaRatio, undefined, 'open stays 新仓 without ratio');
+  assert.equal(byId['pos-open']?.txActionVariant, 'open');
+  assert.ok(
+    Math.abs((byId['pos-add']?.positionDeltaRatio || 0) - 0.5) < 1e-9,
+    'add 50 onto 100 → +50%'
+  );
+  assert.ok(
+    Math.abs((byId['pos-reduce']?.positionDeltaRatio || 0) - -0.2) < 1e-9,
+    'reduce 30 from 150 → -20%'
+  );
+  assert.equal(byId['pos-close']?.positionDeltaRatio, -1, 'sell remaining → -100%');
+  assert.equal(byId['pos-close']?.txActionVariant, 'close', 'timeline-emptying sell upgrades to close');
+
+  // XXYY rawText Token: qty preferred over wrong metadata.value (USDC quote)
+  const xxyySeries = prepareUserFeed([
+    {
+      user: bob,
+      activity: makeActivity('xxyy-open', bob.id, 'blockchain', base - 700_000, {
+        chain: 'solana',
+        trackedAddress: 'WalletXxyy111',
+        token: 'USDC',
+        tokenAddress: 'PumpMint111',
+        txAction: 'buy',
+        txActionLabel: '建仓',
+        txActionVariant: 'open',
+        value: '20',
+        rawText: '[w]\n🟢 New buy 20 SOL\nToken: 1000  [PUMP]\nCA: PumpMint111',
+      }),
+    },
+    {
+      user: bob,
+      activity: makeActivity('xxyy-add', bob.id, 'blockchain', base - 350_000, {
+        chain: 'solana',
+        trackedAddress: 'WalletXxyy111',
+        token: 'USDC',
+        tokenAddress: 'PumpMint111',
+        txAction: 'buy',
+        txActionLabel: '加仓',
+        txActionVariant: 'add',
+        value: '10',
+        rawText: '[w]\n🟢 Buy more 10 SOL\nToken: 500  [PUMP]\nCA: PumpMint111',
+      }),
+    },
+  ]);
+  assert.ok(
+    Math.abs((xxyySeries.find((i) => i.activity.id === 'xxyy-add')?.activity.metadata.positionDeltaRatio || 0) - 0.5) <
+      1e-9,
+    'rawText Token qty drives +50% even when metadata.value is quote'
+  );
+
   console.log('feed ordering tests: ok');
 }
 

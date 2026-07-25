@@ -3,7 +3,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { toProxiedMediaUrl } from '@/lib/mediaProxy';
 import { getUserAvatar } from '@/lib/userProfile';
@@ -117,9 +116,6 @@ export const ActivityCard = memo(function ActivityCard({
     tokenGmgnUrl,
     trackedAddressGmgnUrl,
     counterpartyGmgnUrl,
-    importanceBadgeText,
-    importanceTooltip,
-    importanceBadgeClassName,
   } = buildActivityCardViewModel({
     activity,
     user,
@@ -333,7 +329,7 @@ export const ActivityCard = memo(function ActivityCard({
             className="feed-trade-row grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
             style={{
               gridTemplateColumns:
-                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr) 118px',
+                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(72px,0.7fr) minmax(72px,0.7fr) 44px minmax(78px,0.75fr)',
             }}
           >
             <Avatar className="h-7 w-7 shrink-0">
@@ -469,54 +465,7 @@ export const ActivityCard = memo(function ActivityCard({
                 {positionDeltaText}
               </span>
             </div>
-
-            <div className="flex w-full items-center justify-end gap-1">
-              <button
-                type="button"
-                disabled={!canCopyTokenCa}
-                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                title={canCopyTokenCa ? `复制 CA: ${tokenCa}` : '无 CA'}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (canCopyTokenCa) void copyText(tokenCa);
-                }}
-              >
-                CA
-              </button>
-              <button
-                type="button"
-                disabled={!tokenGmgnUrl}
-                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                title={tokenGmgnUrl || '无 GMGN'}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openExternalLink(tokenGmgnUrl);
-                }}
-              >
-                GMGN
-              </button>
-              <button
-                type="button"
-                disabled={!explorerTxUrl}
-                className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                title={explorerTxUrl || '无 TX'}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openExternalLink(explorerTxUrl);
-                }}
-              >
-                TX
-              </button>
-            </div>
           </div>
-          {importanceBadgeText ? (
-            <span
-              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
-              title={importanceTooltip || undefined}
-            >
-              {importanceBadgeText}
-            </span>
-          ) : null}
         </CardContent>
       </Card>
     );
@@ -725,14 +674,6 @@ export const ActivityCard = memo(function ActivityCard({
               </button>
             </div>
           </div>
-          {importanceBadgeText ? (
-            <span
-              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
-              title={importanceTooltip || undefined}
-            >
-              {importanceBadgeText}
-            </span>
-          ) : null}
         </CardContent>
       </Card>
     );
@@ -886,14 +827,6 @@ export const ActivityCard = memo(function ActivityCard({
               </button>
             </div>
           </div>
-          {importanceBadgeText ? (
-            <span
-              className={`pointer-events-none absolute right-2 top-1 rounded px-1 text-[9px] font-medium ${importanceBadgeClassName}`}
-              title={importanceTooltip || undefined}
-            >
-              {importanceBadgeText}
-            </span>
-          ) : null}
         </CardContent>
       </Card>
     );
@@ -907,15 +840,6 @@ export const ActivityCard = memo(function ActivityCard({
       onClick={onClick}
     >
       <CardContent className="px-3 py-2">
-        {importanceBadgeText ? (
-          <Badge
-            variant="secondary"
-            className={`absolute right-3 top-2 border-0 text-[10px] font-medium ${importanceBadgeClassName}`}
-            title={importanceTooltip || undefined}
-          >
-            {importanceBadgeText}
-          </Badge>
-        ) : null}
         <div className="flex min-w-0 items-start gap-2.5">
           <Avatar className="h-7 w-7 shrink-0">
             <AvatarImage src={getUserAvatar(user)} alt={user.name} />

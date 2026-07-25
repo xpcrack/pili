@@ -177,6 +177,48 @@ function buildTelegramMonitorLogicalTxKey(activity: Activity) {
   );
 }
 
+/**
+ * Once live-monitor owns a wallet+tx, telegram/xxyy rows for the same key are shadows
+ * (same-token dups or counter-flow wrong-token legs). Prefer live as authority.
+ */
+export function liveMonitorOwnsWalletTx(params: {
+  userId: string;
+  chain: string | null | undefined;
+  trackedAddress: string | null | undefined;
+  txHash: string | null | undefined;
+}): boolean {
+  const userId = (params.userId || '').trim();
+  const chain = normalize(params.chain);
+  const address = normalize(params.trackedAddress);
+  const txHash = normalize(params.txHash);
+  if (!userId || !chain || !address || !txHash) {
+    return false;
+  }
+
+  const row = getDb()
+    .prepare(
+      `SELECT 1 AS ok
+       FROM events
+       WHERE user_id = ?
+         AND source = 'blockchain'
+         AND chain = ?
+         AND address = ?
+         AND LOWER(COALESCE(tx_hash, '')) = ?
+         AND (
+           ingest_source LIKE 'live-monitor%'
+           OR event_id LIKE 'live-monitor:%'
+         )
+       LIMIT 1`
+    )
+    .get(userId, chain, address, txHash) as { ok: number } | undefined;
+
+  return Boolean(row);
+}
+
+function isTelegramMonitorIngestSource(ingestSource: string) {
+  return ingestSource.startsWith('telegram-monitor');
+}
+
 function repairMonitorEventActivity(
   user: User,
   activity: Activity,
@@ -422,7 +464,34 @@ function isExpectedMonitorAggregateCorrection(existing: Activity, incoming: Acti
 export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Activity }>, ingestSource: string) {
   if (rows.length === 0) return;
 
-  const rowsWithStableIds = rows.map((row, index) => ({
+  // Live-monitor already owns this wallet+tx → drop telegram/xxyy shadows (dups + counter-flow).
+  let candidateRows = rows;
+  if (isTelegramMonitorIngestSource(ingestSource)) {
+    candidateRows = rows.filter((row) => {
+      const owned = liveMonitorOwnsWalletTx({
+        userId: row.user.id,
+        chain: row.activity.metadata.chain,
+        trackedAddress: row.activity.metadata.trackedAddress,
+        txHash: row.activity.metadata.txHash,
+      });
+      if (owned) {
+        console.info('[eventsRepo] skip telegram shadow; live-monitor owns wallet+tx', {
+          ingestSource,
+          userId: row.user.id,
+          chain: row.activity.metadata.chain,
+          trackedAddress: row.activity.metadata.trackedAddress,
+          txHash: row.activity.metadata.txHash,
+          tokenAddress: row.activity.metadata.tokenAddress,
+          txAction: row.activity.metadata.txAction,
+        });
+        return false;
+      }
+      return true;
+    });
+    if (candidateRows.length === 0) return;
+  }
+
+  const rowsWithStableIds = candidateRows.map((row, index) => ({
     ...row,
     stableId: `input-${String(index).padStart(12, '0')}`,
   }));
@@ -431,10 +500,19 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
   const scoredByStableId = new Map(scoredRows.map((row) => [row.stableId || '', row] as const));
   const rowsForUpsert = rowsWithStableIds.map((row) => scoredByStableId.get(row.stableId || '') || row);
 
-  for (let index = 0; index < rows.length; index += 1) {
-    const scored = rowsForUpsert[index];
-    rows[index].user = scored.user;
-    rows[index].activity = scored.activity;
+  // Keep caller array in sync only for rows that were not filtered out.
+  if (candidateRows === rows) {
+    for (let index = 0; index < rows.length; index += 1) {
+      const scored = rowsForUpsert[index];
+      rows[index].user = scored.user;
+      rows[index].activity = scored.activity;
+    }
+  } else {
+    for (let index = 0; index < candidateRows.length; index += 1) {
+      const scored = rowsForUpsert[index];
+      candidateRows[index].user = scored.user;
+      candidateRows[index].activity = scored.activity;
+    }
   }
 
   withTransaction(() => {

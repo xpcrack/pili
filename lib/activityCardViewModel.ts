@@ -218,7 +218,7 @@ export function buildActivityCardViewModel(params: {
       ? activity.metadata.mergedTradeAverageMarketCapUsd
       : null;
   const mergedAverageMarketCapLabel = mergedAverageMarketCapUsd
-    ? `均市值 ${formatCompactMarketCap(mergedAverageMarketCapUsd)}`
+    ? formatCompactMarketCap(mergedAverageMarketCapUsd)
     : null;
   const counterpartyAddress = resolveTransferCounterpartyAddress({
     trackedAddress,
