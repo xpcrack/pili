@@ -127,6 +127,12 @@ function isCloseVariant(activity: Activity) {
   return variant === 'close' || label === '清仓';
 }
 
+function isExplicitAddVariant(activity: Activity) {
+  const variant = normalize(activity.metadata.txActionVariant).toLowerCase();
+  const label = normalize(activity.metadata.displayActionVariantLabel || activity.metadata.txActionLabel);
+  return variant === 'add' || label === '加仓';
+}
+
 function positionSeriesKey(activity: Activity) {
   const wallet = normalize(activity.metadata.trackedAddress);
   const chain = normalize(activity.metadata.chain);
@@ -207,8 +213,8 @@ export function fillPositionDeltaRatios<T extends { activity: Activity }>(
       if (isOpenVariant(row.item.activity) || (row.side === 'buy' && (balance == null || balance <= 0))) {
         if (row.amount != null) balance = row.amount;
         else if (balance == null || balance <= 0) balance = 0;
-        if (!isOpenVariant(row.item.activity) && row.side === 'buy') {
-          // first buy after flat on live data stored as add → treat as 建仓
+        if (!isOpenVariant(row.item.activity) && row.side === 'buy' && !isExplicitAddVariant(row.item.activity)) {
+          // Only unlabeled live buys can be upgraded; explicit 加仓 from GMGN/newone must not become 建仓 just because the client window is incomplete.
           patchByIndex.set(row.index, { ...(patchByIndex.get(row.index) || {}), open: true });
         }
         continue;
