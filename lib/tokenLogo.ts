@@ -5,6 +5,7 @@ import {
   type DexScreenerPair,
 } from '@/lib/server/dexscreener';
 import { fetchGmgnTokenInfo } from '@/lib/server/gmgnTokenInfo';
+import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
 import { findTelegramMonitorMarketCapAtTx } from '@/lib/server/telegramMonitorRepo';
 
 const DEXSCREENER_API_BASE = 'https://api.dexscreener.com';
@@ -42,6 +43,7 @@ export interface DexscreenerTokenInfo {
 export interface TokenLogoResult {
   logoUrl: string | null;
   marketCapUsd: number | null;
+  liquidityUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
   source: LogoSource;
@@ -242,59 +244,84 @@ export async function fetchTokenLogo(
   const txHash = typeof options?.txHash === 'string' ? options.txHash.trim() : '';
   const normalizedChain = chain.trim().toLowerCase();
   const isRobinhood = normalizedChain === 'robinhood' || normalizedChain === 'rh';
+  const gmgnAllowed = gmgnCooldownRemainingMs() <= 0;
 
   // Robinhood has no DexScreener / OKX logo coverage — go straight to GMGN.
   if (isRobinhood) {
-    const marketCapResolution = await resolveTransactionTimeMarketCap({
-      chain,
-      tokenAddress,
-      txHash: txHash || null,
-      txTimestampMs: txTimestampMs ?? null,
-    });
-    const fromGmgn = await fetchGmgnTokenInfo(chain, tokenAddress);
+    const monitorCap = findTelegramMonitorMarketCapAtTx({ chain, tokenAddress, txHash: txHash || null });
+    let marketCapAtTxUsd: number | null = null;
+    let marketCapAtTxEstimated = false;
+    let marketCapAtTxSource: 'telegram-monitor-exact' | 'estimated' | undefined;
+    if (monitorCap?.marketCapUsd && monitorCap.marketCapUsd > 0) {
+      marketCapAtTxUsd = monitorCap.marketCapUsd;
+      marketCapAtTxSource = 'telegram-monitor-exact';
+    }
+
+    let gmgnResult: Awaited<ReturnType<typeof fetchGmgnTokenInfo>> = null;
+    if (gmgnAllowed) {
+      gmgnResult = await fetchGmgnTokenInfo(chain, tokenAddress);
+    }
+
     return {
-      logoUrl: fromGmgn?.logoUrl ?? null,
-      marketCapUsd: fromGmgn?.marketCapUsd ?? marketCapResolution.currentMarketCapUsd,
-      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
-      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
-      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
-      source: fromGmgn?.logoUrl ? 'gmgn' : marketCapResolution.marketCapAtTxSource === 'telegram-monitor-exact'
-        ? 'telegram-monitor'
-        : null,
+      logoUrl: gmgnResult?.logoUrl ?? null,
+      marketCapUsd: gmgnResult?.marketCapUsd ?? null,
+      liquidityUsd: null,
+      marketCapAtTxUsd,
+      marketCapAtTxEstimated,
+      marketCapAtTxSource,
+      source: gmgnResult?.logoUrl ? 'gmgn' : marketCapAtTxSource === 'telegram-monitor-exact' ? 'telegram-monitor' : null,
     };
   }
 
-  const [valuationData, marketCapResolution] = await Promise.all([
-    resolveCurrentValuation(chain, tokenAddress),
-    resolveTransactionTimeMarketCap({
-      chain,
-      tokenAddress,
-      txHash: txHash || null,
-      txTimestampMs: txTimestampMs ?? null,
-    }),
-  ]);
+  // Single DexScreener call — shared for both current valuation and tx-time market cap.
+  const fromDexscreener = await fetchDexscreenerTokenInfo(chain, tokenAddress);
 
-  const currentMarketCapUsd =
-    valuationData.currentValuation?.marketCapUsd ??
-    marketCapResolution.currentMarketCapUsd ??
-    null;
+  const currentPriceUsd = fromDexscreener?.priceUsd ?? null;
+  const currentMarketCapUsd = fromDexscreener?.marketCapUsd ?? null;
+  const liquidityUsd = fromDexscreener?.liquidityUsd ?? null;
+
+  // Transaction-time market cap: prefer Telegram monitor exact, else estimate from current data.
+  const monitorCap = findTelegramMonitorMarketCapAtTx({ chain, tokenAddress, txHash: txHash || null });
+  let marketCapAtTxUsd: number | null = null;
+  let marketCapAtTxEstimated = false;
+  let marketCapAtTxSource: 'telegram-monitor-exact' | 'estimated' | undefined;
+
+  if (monitorCap?.marketCapUsd && monitorCap.marketCapUsd > 0) {
+    marketCapAtTxUsd = monitorCap.marketCapUsd;
+    marketCapAtTxSource = 'telegram-monitor-exact';
+  } else if (currentMarketCapUsd && currentPriceUsd && currentPriceUsd > 0 && txTimestampMs && txTimestampMs > 0) {
+    const txPricePoint = await fetchOkxTokenHistoricalPriceBeforeTimestamp(chain, tokenAddress, txTimestampMs);
+    const txPriceUsd = txPricePoint?.priceUsd ?? null;
+    if (txPriceUsd && txPriceUsd > 0) {
+      const effectiveSupply = currentMarketCapUsd / currentPriceUsd;
+      if (Number.isFinite(effectiveSupply) && effectiveSupply > 0) {
+        const estimated = effectiveSupply * txPriceUsd;
+        if (Number.isFinite(estimated) && estimated > 0) {
+          marketCapAtTxUsd = estimated;
+          marketCapAtTxEstimated = true;
+          marketCapAtTxSource = 'estimated';
+        }
+      }
+    }
+  }
 
   const preferredSource: LogoSource =
-    marketCapResolution.marketCapAtTxSource === 'telegram-monitor-exact'
+    marketCapAtTxSource === 'telegram-monitor-exact'
       ? 'telegram-monitor'
-      : valuationData.fromDexscreener
+      : fromDexscreener
         ? 'dexscreener'
         : null;
 
   // Dexscreener may return a valid pair set without token image metadata.
   // In that case, continue to OKX contract lookup instead of exiting early.
-  if (valuationData.fromDexscreener?.logoUrl) {
+  if (fromDexscreener?.logoUrl) {
     return {
-      logoUrl: valuationData.fromDexscreener.logoUrl,
+      logoUrl: fromDexscreener.logoUrl,
       marketCapUsd: currentMarketCapUsd,
-      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
-      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
-      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      liquidityUsd,
+      marketCapAtTxUsd,
+      marketCapAtTxEstimated,
+      marketCapAtTxSource,
       source: preferredSource,
     };
   }
@@ -304,32 +331,47 @@ export async function fetchTokenLogo(
     return {
       logoUrl: fromOkx,
       marketCapUsd: currentMarketCapUsd,
-      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
-      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
-      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+      liquidityUsd,
+      marketCapAtTxUsd,
+      marketCapAtTxEstimated,
+      marketCapAtTxSource,
       source: preferredSource ?? 'okx',
     };
   }
 
   // GMGN fills gaps when DexScreener/OKX have no image (and covers multi-chain).
-  const fromGmgn = await fetchGmgnTokenInfo(chain, tokenAddress);
-  if (fromGmgn?.logoUrl) {
+  // Skip entirely when in cooldown to avoid blocking the batch.
+  if (gmgnAllowed) {
+    const fromGmgn = await fetchGmgnTokenInfo(chain, tokenAddress);
+    if (fromGmgn?.logoUrl) {
+      return {
+        logoUrl: fromGmgn.logoUrl,
+        marketCapUsd: currentMarketCapUsd ?? fromGmgn.marketCapUsd,
+        liquidityUsd,
+        marketCapAtTxUsd,
+        marketCapAtTxEstimated,
+        marketCapAtTxSource,
+        source: preferredSource ?? 'gmgn',
+      };
+    }
     return {
-      logoUrl: fromGmgn.logoUrl,
-      marketCapUsd: currentMarketCapUsd ?? fromGmgn.marketCapUsd,
-      marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
-      marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
-      marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
-      source: preferredSource ?? 'gmgn',
+      logoUrl: null,
+      marketCapUsd: currentMarketCapUsd ?? fromGmgn?.marketCapUsd ?? null,
+      liquidityUsd,
+      marketCapAtTxUsd,
+      marketCapAtTxEstimated,
+      marketCapAtTxSource,
+      source: preferredSource,
     };
   }
 
   return {
     logoUrl: null,
-    marketCapUsd: currentMarketCapUsd ?? fromGmgn?.marketCapUsd ?? null,
-    marketCapAtTxUsd: marketCapResolution.marketCapAtTxUsd,
-    marketCapAtTxEstimated: marketCapResolution.marketCapAtTxEstimated,
-    marketCapAtTxSource: marketCapResolution.marketCapAtTxSource,
+    marketCapUsd: currentMarketCapUsd,
+    liquidityUsd,
+    marketCapAtTxUsd,
+    marketCapAtTxEstimated,
+    marketCapAtTxSource,
     source: preferredSource,
   };
 }
