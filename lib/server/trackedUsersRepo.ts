@@ -634,7 +634,19 @@ function purgeOrphanedAddressData() {
   ).run();
 }
 
+let trackedUsersCache: { data: User[]; ts: number } | null = null;
+const TRACKED_USERS_TTL_MS = 10_000;
+
+export function invalidateTrackedUsersCache() {
+  trackedUsersCache = null;
+}
+
 export function listTrackedUsers() {
+  const now = Date.now();
+  if (trackedUsersCache && now - trackedUsersCache.ts < TRACKED_USERS_TTL_MS) {
+    return trackedUsersCache.data;
+  }
+
   ensureExpandedTrackedAddressRows();
   const db = getDb();
   const userRows = db
@@ -686,7 +698,9 @@ export function listTrackedUsers() {
     addressMap.set(row.user_id, list);
   }
 
-  return userRows.map((row) => mapUserRow(row, addressMap.get(row.id) || []));
+  const result = userRows.map((row) => mapUserRow(row, addressMap.get(row.id) || []));
+  trackedUsersCache = { data: result, ts: Date.now() };
+  return result;
 }
 
 /**

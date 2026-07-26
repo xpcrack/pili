@@ -39,6 +39,8 @@ export interface EventFeedQuery {
   toMs?: number | null;
   /** When true (default), hide users with monitoring_enabled=0 unless userId/q pin a history view. */
   monitoredOnly?: boolean;
+  /** When false, skip COUNT query (for poll mode where total precision isn't needed). */
+  includeTotal?: boolean;
 }
 
 const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
@@ -1081,7 +1083,7 @@ export function readEventsFeed(query: EventFeedQuery) {
   // 动作词 LIKE 全表 COUNT 很贵；cursor 页的 COUNT 也会扫大段索引（实测 ~5s）。
   // 分页只依赖 hasMore=limit+1；客户端缺失 total 时已回退到 feed.length。
   const totalRow =
-    actionTerm || cursor
+    query.includeTotal === false || actionTerm || cursor
       ? null
       : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
 
@@ -1155,7 +1157,15 @@ export function readLatestBuyAtByToken(tokens: Array<{ chain: string; contractAd
   return latestByToken;
 }
 
+let latestActivityCache: { data: Record<string, number>; ts: number } | null = null;
+const LATEST_ACTIVITY_TTL_MS = 30_000;
+
 export function readLatestActivityAtByUser() {
+  const now = Date.now();
+  if (latestActivityCache && now - latestActivityCache.ts < LATEST_ACTIVITY_TTL_MS) {
+    return latestActivityCache.data;
+  }
+
   const db = getDb();
   const rows = db
     .prepare(
@@ -1179,6 +1189,7 @@ export function readLatestActivityAtByUser() {
     }
   }
 
+  latestActivityCache = { data: latestByUser, ts: now };
   return latestByUser;
 }
 

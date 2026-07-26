@@ -98,6 +98,26 @@ function buildFeedPayload(
   toMs?: number | null,
   pollMode?: boolean
 ) {
+  // poll mode: client already has users/assets from first load.
+  // 轻量路径：只做一次 SELECT（跳 COUNT）+ 一次缓存读取，避开锁竞争。
+  if (pollMode && !cursor) {
+    const snapshot = readEventsFeed({
+      limit: pageSize, userId, q: search, cursor, source, chain, fromMs, toMs,
+      includeTotal: false,
+    });
+    const latestActivityAtByUser = userId ? {} : readLatestActivityAtByUser();
+    return {
+      ok: true,
+      feed: snapshot.feed,
+      total: snapshot.total,
+      page: 1,
+      pageSize,
+      hasMore: snapshot.hasMore,
+      nextCursor: snapshot.nextCursor,
+      latestActivityAtByUser,
+    };
+  }
+
   const snapshot = readEventsFeed({
     limit: pageSize,
     userId,
@@ -207,22 +227,6 @@ function buildFeedPayload(
   });
 
   const latestActivityAtByUser = selectedUser ? {} : readLatestActivityAtByUser();
-
-  // poll mode: client already has users/assets from first load — skip the ~385KB payload
-  if (pollMode) {
-    return {
-      ok: true,
-      feed: snapshot.feed,
-      total: snapshot.total,
-      page: 1,
-      pageSize,
-      hasMore: snapshot.hasMore,
-      nextCursor: snapshot.nextCursor,
-      latestActivityAtByUser,
-      // skip: users, addressAssets, userAssets, prewarm, activityBreakdown,
-      //       completenessWindow, historyComplete, localQualifiedCount, summary
-    };
-  }
 
   return {
     ok: true,
