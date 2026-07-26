@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { getRequestListener, serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
 
@@ -88,6 +89,7 @@ export async function createServer(options: CreateServerOptions): Promise<Runtim
   await runtimeContext.tasks.startAll();
 
   const app = new Hono();
+  app.use(compress());
   registerApiRoutes(app);
   app.onError((error, c) => {
     const message = error instanceof Error ? error.stack || error.message : String(error);
