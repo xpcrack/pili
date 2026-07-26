@@ -27,11 +27,18 @@ export type PrimaryPoolTokenRef = {
   chain: string;
 };
 
+/** Lookup result for a bare ticker → address resolution. */
+export type PrimaryPoolSymbolLookup = {
+  address: string;
+  chain: string;
+};
+
 let cache: {
   loadedAtMs: number;
   symbols: Set<string>;
   addresses: Set<string>;
   officialTwitterByHandle: Map<string, PrimaryPoolTokenRef[]>;
+  symbolToAddress: Map<string, PrimaryPoolSymbolLookup>;
 } | null = null;
 
 export function resolveNewoneDbPath() {
@@ -94,13 +101,15 @@ function loadPrimaryPoolFromDb(newonePath: string): {
   symbols: Set<string>;
   addresses: Set<string>;
   officialTwitterByHandle: Map<string, PrimaryPoolTokenRef[]>;
+  symbolToAddress: Map<string, PrimaryPoolSymbolLookup>;
 } {
   const symbols = new Set<string>();
   const addresses = new Set<string>();
   const officialTwitterByHandle = new Map<string, PrimaryPoolTokenRef[]>();
+  const symbolToAddress = new Map<string, PrimaryPoolSymbolLookup>();
   if (!existsSync(newonePath)) {
     console.warn(`[primaryPoolSymbols] newone db missing: ${newonePath}`);
-    return { symbols, addresses, officialTwitterByHandle };
+    return { symbols, addresses, officialTwitterByHandle, symbolToAddress };
   }
 
   let db: NewoneSqlite | null = null;
@@ -115,7 +124,14 @@ function loadPrimaryPoolFromDb(newonePath: string): {
          FROM token_pool_memberships m
          JOIN tokens t ON t.id = m.token_id
          WHERE m.pool_type = 'primary'
-           AND m.state = 'active'`,
+           AND m.state = 'active'
+         ORDER BY CASE t.chain
+           WHEN 'solana' THEN 0
+           WHEN 'bsc' THEN 1
+           WHEN 'base' THEN 2
+           WHEN 'ethereum' THEN 3
+           ELSE 4
+         END, t.id ASC`,
       )
       .all() as Array<{
       symbol?: string;
@@ -130,6 +146,13 @@ function loadPrimaryPoolFromDb(newonePath: string): {
       const addr = (row.address || '').trim();
       const addrLower = addr.toLowerCase();
       if (addrLower) addresses.add(addrLower);
+      // Prefer first entry per symbol; prefer solana over others
+      if (key && addr && !symbolToAddress.has(key)) {
+        symbolToAddress.set(key, {
+          address: addr,
+          chain: (row.chain || '').trim() || 'solana',
+        });
+      }
       const handle = parseTwitterHandleFromUrl(row.twitter_url);
       if (handle && addr) {
         const list = officialTwitterByHandle.get(handle) || [];
@@ -155,7 +178,7 @@ function loadPrimaryPoolFromDb(newonePath: string): {
       // ignore
     }
   }
-  return { symbols, addresses, officialTwitterByHandle };
+  return { symbols, addresses, officialTwitterByHandle, symbolToAddress };
 }
 
 function getCached(opts?: { forceRefresh?: boolean; newonePath?: string }) {
@@ -186,6 +209,16 @@ export function getPrimaryPoolSymbolAllowlist(opts?: {
   newonePath?: string;
 }): Set<string> {
   return getCached(opts).symbols;
+}
+
+/** Look up a normalized symbol → {address, chain} from primary pool. Returns null if not found. */
+export function lookupPrimaryPoolAddressBySymbol(symbol: string, opts?: {
+  forceRefresh?: boolean;
+  newonePath?: string;
+}): PrimaryPoolSymbolLookup | null {
+  const key = normalizePoolSymbolKey(symbol);
+  if (!key) return null;
+  return getCached(opts).symbolToAddress.get(key) ?? null;
 }
 
 /** Lowercased primary-pool contract addresses. */

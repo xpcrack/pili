@@ -23,6 +23,7 @@ import {
 } from '@/lib/server/tweetSourceTexts';
 import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/server/visionEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
+import { fetchFromDexScreener } from '@/lib/server/dexscreener';
 import {
   barkOfficialTwitterCollisionOnce,
   ensurePrimaryPoolForAddress,
@@ -131,14 +132,34 @@ function extractMentionsFromTweet(tweet: StoredTwitterTweet) {
   });
 }
 
+/** Solana wallet addresses and token CAs share the same base58 format.
+ *  Use DexScreener to distinguish: wallets return 0 pairs. */
+async function isLikelyTokenAddress(address: string): Promise<boolean> {
+  // EVM addresses are always CAs (not wallets)
+  if (address.startsWith('0x')) return true;
+  // Already in primary pool = previously validated
+  const poolAddrs = getPrimaryPoolAddressSet();
+  if (poolAddrs.has(address.toLowerCase())) return true;
+  try {
+    const dex = await fetchFromDexScreener(address, 'solana');
+    return dex !== null && dex.ticker !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** CA not in primary pool → import (user rule). Best-effort, never throws. */
-function ensureExtractedCasInPrimaryPool(mentions: ExtractedTweetTokenMention[]) {
+async function ensureExtractedCasInPrimaryPool(mentions: ExtractedTweetTokenMention[]) {
   const poolAddrs = getPrimaryPoolAddressSet();
   for (const m of mentions) {
     const addr = (m.tokenAddress || '').trim();
     if (!addr) continue;
     if (poolAddrs.has(addr.toLowerCase())) continue;
     const chain = addr.startsWith('0x') ? null : 'solana';
+    // Validate Solana addresses: wallet addresses are base58 but not token CAs
+    if (chain === 'solana' && !await isLikelyTokenAddress(addr)) {
+      continue;
+    }
     const res = ensurePrimaryPoolForAddress({
       address: addr,
       symbol: m.tokenSymbol,
@@ -217,7 +238,7 @@ async function runEnrichmentForTweet(params: {
   }
 
   const mergedMentions = mergeMentions({ textMentions, imageMentions });
-  ensureExtractedCasInPrimaryPool(mergedMentions);
+  await ensureExtractedCasInPrimaryPool(mergedMentions);
 
   upsertTwitterTweetEnrichment({
     tweetId: params.tweet.tweetId,
@@ -274,10 +295,17 @@ async function runEnrichmentForTweet(params: {
     };
   });
 
-  const enrichedMentions = await enrichMentionsMarketData({
+  const enrichedMentions = (await enrichMentionsMarketData({
     mentions: withSentiment,
     tweetCreatedAtMs: params.tweet.createdAtMs,
     concurrency: 3,
+  })).filter((mention) => {
+    // Solana wallet addresses match the same base58 regex as token CAs.
+    // After DexScreener lookup, wallets have no chain → drop them.
+    if (mention.matchSource === 'ca' && !mention.chain && !mention.tokenSymbol) {
+      return false;
+    }
+    return true;
   });
 
   replaceTwitterTweetTokenMentions({
