@@ -85,9 +85,11 @@ function toNextRequest(request: Request, remoteAddress?: string | null) {
     return new NextRequest(request);
   }
 
-  const headers = new Headers(request.headers);
-  headers.set('x-real-ip', remoteAddress);
-  return new NextRequest(new Request(request, { headers }));
+  // Avoid new Request(request, { headers }) — Bun may consume the body stream,
+  // making subsequent request.json() hang forever.
+  const next = new NextRequest(request);
+  next.headers.set('x-real-ip', remoteAddress);
+  return next;
 }
 
 function buildContextParams(params: Record<string, string>) {

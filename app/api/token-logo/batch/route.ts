@@ -4,6 +4,7 @@ import { fetchTokenLogo } from '@/lib/tokenLogo';
 export const dynamic = 'force-dynamic';
 
 const MAX_BATCH_SIZE = 40;
+const PER_ITEM_TIMEOUT_MS = 5000;
 
 interface BatchItemInput {
   chain?: string;
@@ -15,9 +16,12 @@ interface BatchItemInput {
 
 interface BatchItemResult {
   key: string;
+  chain: string;
+  tokenAddress: string;
   ok: boolean;
   logoUrl: string | null;
   marketCapUsd: number | null;
+  liquidityUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
   marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
@@ -121,15 +125,23 @@ export async function POST(request: NextRequest) {
   const results: BatchItemResult[] = [];
   for (const [key, item] of unique) {
     try {
-      const result = await fetchTokenLogo(item.chain, item.tokenAddress, item.tokenSymbol, {
-        txTimestampMs: item.txTimestampMs ?? undefined,
-        txHash: item.txHash || undefined,
-      });
+      const result = await Promise.race([
+        fetchTokenLogo(item.chain, item.tokenAddress, item.tokenSymbol, {
+          txTimestampMs: item.txTimestampMs ?? undefined,
+          txHash: item.txHash || undefined,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`timeout ${PER_ITEM_TIMEOUT_MS}ms`)), PER_ITEM_TIMEOUT_MS)
+        ),
+      ]);
       results.push({
         key,
+        chain: item.chain,
+        tokenAddress: item.tokenAddress,
         ok: true,
         logoUrl: result.logoUrl,
         marketCapUsd: result.marketCapUsd,
+        liquidityUsd: result.liquidityUsd,
         marketCapAtTxUsd: result.marketCapAtTxUsd,
         marketCapAtTxEstimated: result.marketCapAtTxEstimated,
         marketCapAtTxSource: result.marketCapAtTxSource,
@@ -138,9 +150,12 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       results.push({
         key,
+        chain: item.chain,
+        tokenAddress: item.tokenAddress,
         ok: false,
         logoUrl: null,
         marketCapUsd: null,
+        liquidityUsd: null,
         marketCapAtTxUsd: null,
         marketCapAtTxEstimated: false,
         source: null,

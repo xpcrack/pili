@@ -28,6 +28,7 @@ export interface TokenInfoRequest {
 const TOKEN_INFO_CACHE_MAX = 2000;
 const TOKEN_AVATAR_CACHE_MAX = 1000;
 const BATCH_SIZE = 40;
+const BATCH_FETCH_TIMEOUT_MS = 20_000;
 
 const tokenInfoCache = new Map<string, TokenInfoSnapshot>();
 const tokenAvatarCache = new Map<string, string | null>();
@@ -123,19 +124,27 @@ export async function prefetchTokenInfo(requests: TokenInfoRequest[]): Promise<v
     for (let offset = 0; offset < pending.length; offset += BATCH_SIZE) {
       const chunk = pending.slice(offset, offset + BATCH_SIZE);
       try {
-        const response = await fetch('/api/token-logo/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: chunk.map((item) => ({
-              chain: item.chain,
-              tokenAddress: item.tokenAddress,
-              tokenSymbol: item.tokenSymbol || '',
-              txTimestamp: item.txTimestampMs ?? undefined,
-              txHash: item.txHash || undefined,
-            })),
-          }),
-        });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), BATCH_FETCH_TIMEOUT_MS);
+        let response: Response;
+        try {
+          response = await fetch('/api/token-logo/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: chunk.map((item) => ({
+                chain: item.chain,
+                tokenAddress: item.tokenAddress,
+                tokenSymbol: item.tokenSymbol || '',
+                txTimestamp: item.txTimestampMs ?? undefined,
+                txHash: item.txHash || undefined,
+              })),
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
 
         if (!response.ok) {
           // 失败时也要写空结果，避免无限重试
