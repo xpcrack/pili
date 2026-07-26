@@ -7,7 +7,6 @@ import { readPrewarmProgressSnapshot } from '@/lib/server/feedPrewarmService';
 import { computeTwitterBackfillWindowDays, readFeedViewMeta } from '@/lib/server/feedViewMeta';
 import { getSyncStatus, triggerSync, waitForSyncCompletion } from '@/lib/server/syncService';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
-import { scheduleTelegramMonitorRepairBatch } from '@/lib/server/telegramMonitorReconciler';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { readTelegramMonitorFeed } from '@/lib/server/telegramMonitorFeed';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
@@ -57,7 +56,7 @@ function parsePagination(request: NextRequest) {
   const from = request.nextUrl.searchParams.get('from');
   const to = request.nextUrl.searchParams.get('to');
   const normalizedPage = Number.isFinite(page) && page > 0 ? page : 1;
-  const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(400, pageSize) : 50;
+  const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.min(200, pageSize) : 50;
 
   const fromMs = from && Number.isFinite(Number(from)) ? Number(from) : null;
   const toMs = to && Number.isFinite(Number(to)) ? Number(to) : null;
@@ -96,7 +95,8 @@ function buildFeedPayload(
   source?: string | null,
   chain?: string | null,
   fromMs?: number | null,
-  toMs?: number | null
+  toMs?: number | null,
+  pollMode?: boolean
 ) {
   const snapshot = readEventsFeed({
     limit: pageSize,
@@ -155,12 +155,26 @@ function buildFeedPayload(
   const liveAddressCount = users.reduce((sum, user) => sum + user.addresses.length, 0);
   const selectedUser = userId ? users.find((user) => user.id === userId) || null : null;
   const historyState = readFeedBackfillWindowState();
-  const localQualifiedCount = selectedUser ? countQualifiedActivitiesByUser(selectedUser.id) : snapshot.total;
+  // 选中人物时：优先用 window 缓存计数，避免 events 全量 COUNT；
+  // 人物页也不需要全量 addressAssets / latestActivityAtByUser（sidebar 用全局快照即可）。
+  const cachedUserCount =
+    selectedUser && historyState?.perUserLocalQualifiedCount
+      ? historyState.perUserLocalQualifiedCount[selectedUser.id]
+      : undefined;
+  const localQualifiedCount = selectedUser
+    ? typeof cachedUserCount === 'number' && Number.isFinite(cachedUserCount)
+      ? cachedUserCount
+      : countQualifiedActivitiesByUser(selectedUser.id)
+    : snapshot.total;
   const historyComplete = selectedUser ? historyState?.perUserHistoryComplete[selectedUser.id] === true : null;
-  const { addressAssets, userAssets } = buildAssetSnapshotsFromUsers(users);
-  const diagnostics = selectedUser
+  const { addressAssets, userAssets } = selectedUser
+    ? { addressAssets: [], userAssets: [] }
+    : buildAssetSnapshotsFromUsers(users);
+  // 首页 UI 不用 diagnostics 明细；754 条约占 ~200KB，公网回「全部动态」时容易顶满 25s。
+  // summary 计数仍从 lastSuccessSnapshot.summary 取；人物页只算该用户地址成败。
+  const selectedDiagnostics = selectedUser
     ? (syncStatus.lastSuccessSnapshot?.diagnostics || []).filter((item) => item.userId === selectedUser.id)
-    : (syncStatus.lastSuccessSnapshot?.diagnostics || []);
+    : [];
   const globalSummary = syncStatus.lastSuccessSnapshot?.summary || {
     userCount: users.length,
     addressCount: liveAddressCount,
@@ -181,9 +195,9 @@ function buildFeedPayload(
         userCount: 1,
         addressCount: selectedUser.addresses.length,
         transactionCount: snapshot.total,
-        successfulAddressCount: diagnostics.filter((item) => item.ok).length,
-        failedAddressCount: diagnostics.filter((item) => !item.ok).length,
-        emptyAddressCount: diagnostics.filter((item) => item.ok && item.transactionCount === 0).length,
+        successfulAddressCount: selectedDiagnostics.filter((item) => item.ok).length,
+        failedAddressCount: selectedDiagnostics.filter((item) => !item.ok).length,
+        emptyAddressCount: selectedDiagnostics.filter((item) => item.ok && item.transactionCount === 0).length,
         completedAt: normalizedGlobalSummary.completedAt,
       }
     : normalizedGlobalSummary;
@@ -192,7 +206,23 @@ function buildFeedPayload(
     endMs: normalizedGlobalSummary.completedAt > 0 ? normalizedGlobalSummary.completedAt : Date.now(),
   });
 
-  const latestActivityAtByUser = readLatestActivityAtByUser();
+  const latestActivityAtByUser = selectedUser ? {} : readLatestActivityAtByUser();
+
+  // poll mode: client already has users/assets from first load — skip the ~385KB payload
+  if (pollMode) {
+    return {
+      ok: true,
+      feed: snapshot.feed,
+      total: snapshot.total,
+      page: 1,
+      pageSize,
+      hasMore: snapshot.hasMore,
+      nextCursor: snapshot.nextCursor,
+      latestActivityAtByUser,
+      // skip: users, addressAssets, userAssets, prewarm, activityBreakdown,
+      //       completenessWindow, historyComplete, localQualifiedCount, summary
+    };
+  }
 
   return {
     ok: true,
@@ -209,7 +239,8 @@ function buildFeedPayload(
     completenessWindow: feedViewMeta.completenessWindow,
     latestActivityAtByUser,
     summary,
-    diagnostics,
+    // 全局/人物页都不下发 diagnostics 明细（system 页另有接口）
+    diagnostics: [],
     addressAssets,
     userAssets,
     users,
@@ -350,17 +381,16 @@ function scheduleBackfillCompanionSyncs(options: {
 export async function GET(request: NextRequest) {
   try {
     const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
-    const prewarm = readPrewarmProgressSnapshot();
     const mode = getFeedMode(request);
+    // Revision check MUST come first — skip all reads when unchanged.
     const revision = readEventsRevision();
     if (mode === 'poll' && request.nextUrl.searchParams.get('revision') === revision) {
       return NextResponse.json({ ok: true, unchanged: true, revision });
     }
 
+    const prewarm = readPrewarmProgressSnapshot();
+
     if (shouldUseTelegramMonitorFeed(request)) {
-      void Promise.resolve().then(() => {
-        scheduleTelegramMonitorRepairBatch(5);
-      });
       const monitorFeed = await readTelegramMonitorFeed(Math.max(pageSize, 200));
       const filteredByUser = userId ? monitorFeed.filter((item) => item.user.id === userId) : monitorFeed;
       const paged = filteredByUser.slice(0, pageSize);
@@ -415,7 +445,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs),
+      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs, mode === 'poll'),
       revision,
     });
   } catch (error) {

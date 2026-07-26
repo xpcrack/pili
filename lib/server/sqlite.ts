@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const SQLITE_BUSY_TIMEOUT_MS = 30_000;
+// 必须 < 前端 feed 超时(25s)。30s 时请求会先被浏览器/前端掐死，只剩“超时”，看不到 locked。
+const SQLITE_BUSY_TIMEOUT_MS = 8_000;
 const SQLITE_INIT_BUSY_ATTEMPTS = 8;
 /** Bump when events_fts trigger SQL changes; gates DROP/CREATE on startup. */
 const EVENTS_FTS_TRIGGERS_FLAG = 'events_fts_triggers_v3';
@@ -1047,6 +1048,12 @@ ON feed_conflict_notifications(status, next_retry_at, id);
 
 ${COMPLETENESS_SCHEMA_SQL}
 
+CREATE TABLE IF NOT EXISTS feed_content_revision (
+  singleton_key TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   event_id UNINDEXED,
   content,
@@ -1613,21 +1620,23 @@ export function getDb() {
   mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = createDatabase(dbPath);
   initializeDb(db);
-  // PASSIVE is safe for multi-process; TRUNCATE only when explicitly requested
-  // (typically the long-lived web process) so workers don't fight over WAL.
-  const checkpointMode =
-    (process.env.PILIPILI_WAL_CHECKPOINT || '').trim().toUpperCase() === 'TRUNCATE'
-      ? 'TRUNCATE'
-      : 'PASSIVE';
-  setInterval(() => {
-    try {
-      if (typeof db.pragma === 'function') {
-        db.pragma(`wal_checkpoint(${checkpointMode})`);
+  // Web processes must NOT run checkpoint timers — the background worker owns it.
+  // Only non-web processes (background worker, CLI scripts) get the timer.
+  if (process.env.PILIPILI_WEB_PROCESS !== 'true') {
+    const checkpointMode =
+      (process.env.PILIPILI_WAL_CHECKPOINT || '').trim().toUpperCase() === 'TRUNCATE'
+        ? 'TRUNCATE'
+        : 'PASSIVE';
+    setInterval(() => {
+      try {
+        if (typeof db.pragma === 'function') {
+          db.pragma(`wal_checkpoint(${checkpointMode})`);
+        }
+      } catch (error) {
+        console.warn('[sqlite] wal_checkpoint failed:', error);
       }
-    } catch (error) {
-      console.warn('[sqlite] wal_checkpoint failed:', error);
-    }
-  }, 10 * 60 * 1000).unref();
+    }, 10 * 60 * 1000).unref();
+  }
   dbInstance = db;
   return db;
 }

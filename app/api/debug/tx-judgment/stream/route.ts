@@ -11,6 +11,11 @@ function toSseFrame(payload: object) {
 }
 
 export async function GET(request: Request) {
+  // Debug SSE is disabled by default — requires PILIPILI_DEBUG_SSE=true
+  if (process.env.PILIPILI_DEBUG_SSE !== 'true') {
+    return new Response('debug SSE disabled', { status: 404 });
+  }
+
   let closed = false;
   let timer: NodeJS.Timeout | null = null;
   let lastVersion = await readTxJudgmentStoreVersion();
@@ -62,4 +67,3 @@ export async function GET(request: Request) {
     },
   });
 }
-

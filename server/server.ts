@@ -8,7 +8,9 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
 
 import { registerApiRoutes } from '@/server/api';
-import { createRuntimeContext } from '@/server/runtime-context';
+import { createRuntimeContext, markReady, markDraining, markStopped, getRuntimeContext } from '@/server/runtime-context';
+
+const DRAIN_TIMEOUT_MS = 10_000;
 
 interface CreateServerOptions {
   mode: 'live' | 'prod';
@@ -95,119 +97,143 @@ export async function createServer(options: CreateServerOptions): Promise<Runtim
 
   let vite: ViteDevServer | null = null;
   let prodServer: ServerType | null = null;
+
+  if (options.mode === 'prod') {
+    app.use('/assets/*', serveStatic({ root: './dist/client' }));
+    app.use('/spa/*', serveStatic({ root: './dist/client' }));
+
+    app.get('*', async (c) => {
+      if (c.req.path.startsWith('/api/')) {
+        return c.notFound();
+      }
+
+      const distIndexPath = path.join(options.repoRoot, 'dist/client/index.html');
+      const html = await fs.promises.readFile(distIndexPath, 'utf8');
+      return c.html(html);
+    });
+
+    return {
+      async start() {
+        const server = serve({
+          fetch: app.fetch,
+          port: options.port,
+          hostname: '127.0.0.1',
+          overrideGlobalObjects: false,
+        }, () => {
+          console.log(`[runtime] mode=${options.mode} url=http://127.0.0.1:${options.port}`);
+        });
+
+        await new Promise<void>((resolve) => {
+          server.on('listening', () => {
+            resolve();
+          });
+        });
+
+        prodServer = server;
+        markReady();
+      },
+      async stop(signal?: string) {
+        markDraining();
+        // 1. Stop accepting new connections immediately
+        if (prodServer) {
+          prodServer.close();
+          prodServer = null;
+        }
+        // 2. Stop tasks with bounded deadline
+        const tasksPromise = runtimeContext.tasks.stopAll(signal);
+        const timeoutPromise = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            console.warn(`[runtime] drain timeout after ${DRAIN_TIMEOUT_MS}ms — tasks may not have exited cleanly`);
+            resolve();
+          }, DRAIN_TIMEOUT_MS).unref?.();
+        });
+        await Promise.race([tasksPromise, timeoutPromise]);
+        markStopped();
+      },
+    };
+  }
+
+  // dev mode
   const template = buildSpaHtmlTemplate(options.repoRoot);
   const honoListener = getRequestListener(app.fetch, {
     hostname: '127.0.0.1',
     overrideGlobalObjects: false,
   });
 
-  if (options.mode === 'prod') {
-    app.use('/assets/*', serveStatic({ root: './dist/client' }));
-    app.use('/spa/*', serveStatic({ root: './dist/client' }));
-  } else {
-    const httpServer = createHttpServer(async (request, response) => {
-      const pathname = getRequestPathname(request.url);
+  const httpServer = createHttpServer(async (request, response) => {
+    const pathname = getRequestPathname(request.url);
 
-      if (isApiRequestPath(pathname)) {
-        await honoListener(request, response);
+    if (isApiRequestPath(pathname)) {
+      await honoListener(request, response);
+      return;
+    }
+
+    try {
+      if (shouldServeSpaHtml(request)) {
+        const html = await vite!.transformIndexHtml(request.url || '/', template);
+        await sendHtmlResponse(response, html, request.method);
         return;
       }
 
-      try {
-        if (shouldServeSpaHtml(request)) {
-          const html = await vite!.transformIndexHtml(request.url || '/', template);
-          await sendHtmlResponse(response, html, request.method);
-          return;
-        }
-
-        await new Promise<void>((resolve, reject) => {
-          vite!.middlewares(request, response, (error?: Error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        });
-
-        if (!response.writableEnded) {
-          response.statusCode = 404;
-          response.end('not found');
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          vite?.ssrFixStacktrace(error);
-        }
-        response.statusCode = 500;
-        response.end(error instanceof Error ? error.stack || error.message : 'internal error');
-      }
-    });
-
-    vite = await createViteServer({
-      configFile: path.join(options.repoRoot, 'vite.config.ts'),
-      server: {
-        host: '127.0.0.1',
-        port: options.port,
-        strictPort: true,
-        middlewareMode: { server: httpServer },
-      },
-      appType: 'custom',
-    });
-
-    return {
-      async start() {
-        await new Promise<void>((resolve, reject) => {
-          httpServer.once('error', reject);
-          httpServer.listen(options.port, '127.0.0.1', () => {
-            httpServer.off('error', reject);
-            console.log(`[runtime] mode=${options.mode} url=http://127.0.0.1:${options.port}`);
-            resolve();
-          });
-        });
-      },
-      async stop(signal?: string) {
-        await runtimeContext.tasks.stopAll(signal);
-        await vite?.close();
-        await closeNodeServer(httpServer);
-      },
-    };
-  }
-
-  app.get('*', async (c) => {
-    if (c.req.path.startsWith('/api/')) {
-      return c.notFound();
-    }
-
-    const distIndexPath = path.join(options.repoRoot, 'dist/client/index.html');
-    const html = await fs.promises.readFile(distIndexPath, 'utf8');
-    return c.html(html);
-  });
-
-  return {
-    async start() {
-      const server = serve({
-        fetch: app.fetch,
-        port: options.port,
-        hostname: '127.0.0.1',
-        overrideGlobalObjects: false,
-      }, () => {
-        console.log(`[runtime] mode=${options.mode} url=http://127.0.0.1:${options.port}`);
-      });
-
-      await new Promise<void>((resolve) => {
-        server.on('listening', () => {
+      await new Promise<void>((resolve, reject) => {
+        vite!.middlewares(request, response, (error?: Error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
           resolve();
         });
       });
 
-      prodServer = server;
+      if (!response.writableEnded) {
+        response.statusCode = 404;
+        response.end('not found');
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        vite?.ssrFixStacktrace(error);
+      }
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.stack || error.message : 'internal error');
+    }
+  });
+
+  vite = await createViteServer({
+    configFile: path.join(options.repoRoot, 'vite.config.ts'),
+    server: {
+      host: '127.0.0.1',
+      port: options.port,
+      strictPort: true,
+      middlewareMode: { server: httpServer },
+    },
+    appType: 'custom',
+  });
+
+  return {
+    async start() {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once('error', reject);
+        httpServer.listen(options.port, '127.0.0.1', () => {
+          httpServer.off('error', reject);
+          console.log(`[runtime] mode=${options.mode} url=http://127.0.0.1:${options.port}`);
+          resolve();
+        });
+      });
+      markReady();
     },
     async stop(signal?: string) {
-      await runtimeContext.tasks.stopAll(signal);
-      if (prodServer) {
-        prodServer.close();
-        prodServer = null;
-      }
+      markDraining();
+      const tasksPromise = runtimeContext.tasks.stopAll(signal);
+      const timeoutPromise = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          console.warn(`[runtime] drain timeout after ${DRAIN_TIMEOUT_MS}ms — tasks may not have exited cleanly`);
+          resolve();
+        }, DRAIN_TIMEOUT_MS).unref?.();
+      });
+      await Promise.race([tasksPromise, timeoutPromise]);
+      await vite?.close();
+      await closeNodeServer(httpServer);
+      markStopped();
     },
   };
 }

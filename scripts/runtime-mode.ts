@@ -7,6 +7,9 @@ type Pm2Process = { name?: string };
 const repoRoot = process.cwd();
 const ecosystemPath = join(repoRoot, 'pm2', 'ecosystem.config.cjs');
 
+const READY_POLL_INTERVAL_MS = 2_000;
+const READY_POLL_MAX_ATTEMPTS = 30;
+
 function printUsage() {
   console.error('Usage: tsx scripts/runtime-mode.ts <status|dev-on|dev-off|refresh>');
 }
@@ -42,24 +45,8 @@ function stopIfPresent(processName: string) {
   runPm2(['stop', processName]);
 }
 
-function deleteIfPresent(processName: string) {
-  if (!hasPm2Process(processName)) {
-    return;
-  }
-
-  runPm2(['delete', processName]);
-}
-
-function startPm2Process(processName: string) {
-  runPm2(['start', ecosystemPath, '--only', processName]);
-}
-
 function restartPm2Process(processName: string) {
   runPm2(['restart', ecosystemPath, '--only', processName]);
-}
-
-function reloadPm2Process(processName: string) {
-  runPm2(['reload', ecosystemPath, '--only', processName]);
 }
 
 function startOrRestart(processName: string) {
@@ -68,16 +55,7 @@ function startOrRestart(processName: string) {
     return;
   }
 
-  startPm2Process(processName);
-}
-
-function startOrReload(processName: string) {
-  if (hasPm2Process(processName)) {
-    reloadPm2Process(processName);
-    return;
-  }
-
-  startPm2Process(processName);
+  runPm2(['start', ecosystemPath, '--only', processName]);
 }
 
 function runNpm(args: string[]) {
@@ -85,6 +63,37 @@ function runNpm(args: string[]) {
     cwd: repoRoot,
     stdio: 'inherit',
   });
+}
+
+function waitForReady(timeoutMs = READY_POLL_INTERVAL_MS * READY_POLL_MAX_ATTEMPTS) {
+  const start = Date.now();
+  const port = process.env.PORT || '3013';
+  const url = `http://127.0.0.1:${port}/api/runtime/ready`;
+
+  for (let attempt = 1; attempt <= READY_POLL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = execFileSync('curl', ['--silent', '--max-time', '1', url], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: READY_POLL_INTERVAL_MS + 500,
+      });
+      const json = JSON.parse(result);
+      if (json?.ok === true && json?.lifecycle === 'ready') {
+        console.log(`[runtime] ready after ${attempt} poll(s), ${Date.now() - start}ms`);
+        return true;
+      }
+    } catch {
+      // not ready yet or not running
+    }
+
+    if (Date.now() - start >= timeoutMs) break;
+    if (attempt < READY_POLL_MAX_ATTEMPTS) {
+      execFileSync('sleep', [(READY_POLL_INTERVAL_MS / 1000).toString()], { cwd: repoRoot });
+    }
+  }
+
+  console.error(`[runtime] readiness poll timed out after ${Date.now() - start}ms`);
+  return false;
 }
 
 function run(command: RuntimeModeCommand) {
@@ -101,10 +110,15 @@ function run(command: RuntimeModeCommand) {
   }
 
   if (command === 'refresh') {
-    stopIfPresent('pili');
-    deleteIfPresent('pili-web-prod');
+    // Build FIRST — if it fails the running web stays untouched.
     runNpm(['run', 'build']);
-    startPm2Process('pili-web-prod');
+    // build succeeded: replace the running production process
+    startOrRestart('pili-web-prod');
+    const ready = waitForReady();
+    if (!ready) {
+      console.error('[runtime] WARNING: pili-web-prod did not become ready within timeout');
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -112,6 +126,11 @@ function run(command: RuntimeModeCommand) {
   stopIfPresent('pili-web-dev');
   runNpm(['run', 'build']);
   startOrRestart('pili-web-prod');
+  const ready = waitForReady();
+  if (!ready) {
+    console.error('[runtime] WARNING: pili-web-prod did not become ready within timeout');
+    process.exitCode = 1;
+  }
 }
 
 const command = process.argv[2] as RuntimeModeCommand | undefined;
