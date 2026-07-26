@@ -24,6 +24,9 @@ import {
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { bumpFeedRevision } from '@/lib/server/feedRevision';
+
+export { readFeedRevision as readEventsRevision } from '@/lib/server/feedRevision';
 
 export interface EventFeedQuery {
   limit: number;
@@ -943,6 +946,8 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
     }
   });
 
+  bumpFeedRevision();
+
   if (ingestSource === 'telegram-monitor-ingest' || ingestSource === 'telegram-monitor-reconcile') {
     triggerBidFeedPush(rowsForUpsert);
   }
@@ -1014,12 +1019,23 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
-  // 默认时间序列表强制走 idx_events_timestamp。
+  // 全局时间线 SELECT 强制走 idx_events_timestamp。
   // 带 cursor 时 planner 会误选 idx_events_user_timestamp + TEMP B-TREE，page2 从 ~20ms 劣化到 6s+。
+  // 但按 userId 过滤时必须走 idx_events_user_timestamp；硬绑 timestamp 会全表扫，
+  // 稀有用户 LIMIT ~8s、COUNT ~6s，叠加后前端 25s 超时。
+  // COUNT 绝不能绑 idx_events_timestamp：LIMIT 查询靠它秒回，但 COUNT 会沿时间索引扫 10万+ 行（实测 ~6s），
+  // 首页并发一叠就 >25s 超时。COUNT 走 covering user 索引或让 planner 自选即可（~30–400ms）。
   // FTS join / 动作词 LIKE 路径不要 INDEXED BY，避免绑死错误索引。
-  const forceTimestampIndex = !joinSql && !actionTerm;
-  const fromSql = forceTimestampIndex
-    ? 'FROM events e INDEXED BY idx_events_timestamp'
+  const forceUserIndex = !joinSql && !actionTerm && Boolean(userId);
+  const forceTimestampIndex = !joinSql && !actionTerm && !userId;
+  const fromSql = forceUserIndex
+    ? 'FROM events e INDEXED BY idx_events_user_timestamp'
+    : forceTimestampIndex
+      ? 'FROM events e INDEXED BY idx_events_timestamp'
+      : 'FROM events e';
+  // COUNT 与 SELECT 拆开：全局首页 COUNT 绑 user covering 索引，避免 timestamp 全扫。
+  const countFromSql = forceUserIndex || forceTimestampIndex
+    ? 'FROM events e INDEXED BY idx_events_user_timestamp'
     : 'FROM events e';
 
   const baseSql = `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
@@ -1030,7 +1046,7 @@ export function readEventsFeed(query: EventFeedQuery) {
        LIMIT ?`;
 
   const countSql = `SELECT COUNT(1) AS count
-       ${fromSql}
+       ${countFromSql}
        ${joinSql}
        ${whereSql}`;
 
@@ -1053,42 +1069,14 @@ export function readEventsFeed(query: EventFeedQuery) {
       return [];
     }
   });
-  const monitorStatesByLogicalKey = listTelegramMonitorTxStatesByKeys(
-    parsedRows
-      .map(({ activity }) => {
-        const monitorLogicalKey = buildTelegramMonitorLogicalTxKey(activity);
-        if (!monitorLogicalKey) {
-          return null;
-        }
-
-        return {
-          chain: activity.metadata.chain || '',
-          trackedWalletAddress: activity.metadata.trackedAddress || '',
-          txHash: activity.metadata.txHash || '',
-          tokenAddress: activity.metadata.tokenAddress || null,
-        };
-      })
-      .filter(
-        (
-          key
-        ): key is {
-          chain: string;
-          trackedWalletAddress: string;
-          txHash: string;
-          tokenAddress: string | null;
-        } => Boolean(key)
-      )
-  );
   const feed: EventFeedRow[] = [];
   for (const { row, user, activity } of parsedRows) {
     feed.push({
       user,
-      activity: repairMonitorEventActivity(user, activity, monitorStatesByLogicalKey),
+      activity,
       cursor: encodeCursor(row.timestamp, row.event_id),
     });
   }
-
-  repairTelegramMonitorFeedRows(feed);
 
   // 动作词 LIKE 全表 COUNT 很贵；cursor 页的 COUNT 也会扫大段索引（实测 ~5s）。
   // 分页只依赖 hasMore=limit+1；客户端缺失 total 时已回退到 feed.length。
@@ -1103,21 +1091,6 @@ export function readEventsFeed(query: EventFeedQuery) {
     nextCursor: feed.length > 0 ? feed[feed.length - 1].cursor : null,
     total: totalRow?.count ?? feed.length,
   };
-}
-
-export function readEventsRevision() {
-  const db = getDb();
-  const row = db.prepare(
-    `SELECT
-       (SELECT MAX(updated_at) FROM events) AS events_revision,
-       (SELECT MAX(updated_at) FROM tracked_users) AS users_revision,
-       (SELECT MAX(updated_at) FROM tracked_addresses) AS addresses_revision`
-  ).get() as {
-    events_revision: number | null;
-    users_revision: number | null;
-    addresses_revision: number | null;
-  } | undefined;
-  return `${row?.events_revision || 0}:${row?.users_revision || 0}:${row?.addresses_revision || 0}`;
 }
 
 export function readEventStats() {
@@ -1216,9 +1189,12 @@ export function deleteTelegramMonitorEventsByTxHash(params: {
   oldTokenAddress: string;
 }) {
   const db = getDb();
-  db.prepare(
+  const result = db.prepare(
     `DELETE FROM events
      WHERE user_id = ? AND chain = ? AND tx_hash = ? AND token = ?
      AND source = 'telegram-monitor'`
   ).run(params.userId, params.chain, params.txHash, params.oldTokenAddress);
+  if (result.changes > 0) {
+    bumpFeedRevision();
+  }
 }

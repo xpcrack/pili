@@ -40,7 +40,6 @@ import { useUsersDataStore } from '@/store/usersDataStore';
 import { useFeedDebugBridge } from './useFeedDebugBridge';
 import { useActiveContextRefs } from './useActiveContextRefs';
 import { useFeedPrewarmTrigger } from './useFeedPrewarmTrigger';
-import { useFeedJudgmentStream } from './useFeedJudgmentStream';
 import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
 import { useFeedRefreshScheduler } from './useFeedRefreshScheduler';
 import { useFeedServerBackfill } from './useFeedServerBackfill';
@@ -333,6 +332,25 @@ export function useActivityPolling(
     isAttempted: isServerBackfillAttempted,
   } = useFeedServerBackfill();
 
+  // 进人物页前缓存全局 feed；回「全部动态」先秒开缓存，再 silent 刷新。
+  // 公网 pageSize=200 ~2MB / ~20s，硬重拉会贴 25s 超时。
+  type GlobalFeedCache = {
+    feed: { user: User; activity: Activity }[];
+    nextCursor: string | null;
+    hasMore: boolean;
+    historyComplete: boolean | null;
+    localQualifiedCount: number;
+    activityBreakdown: ActivityBreakdown | null;
+    completenessWindow: CompletenessWindow | null;
+    summary: ActivityFeedSummary | null;
+    diagnostics: AddressDiagnostic[];
+    prewarmLabel: string | null;
+    latestActivityAtByUser: Map<string, number>;
+    userActivities: Map<string, Activity[]>;
+    revision: string | null;
+  };
+  const globalFeedCacheRef = useRef<GlobalFeedCache | null>(null);
+
   // 获取并处理活动数据
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const fetchActivities = useCallback(async (
@@ -357,6 +375,89 @@ export function useActivityPolling(
     const selectedUserId = hasSelectedUserOption
       ? options?.selectedUserId ?? null
       : activeSelectedUserIdRef.current ?? null;
+
+    const previousSelectedUserId = activeSelectedUserIdRef.current ?? null;
+    // 从全局切到人物：先 stash 当前全局窗口
+    if (
+      selectedUserId &&
+      !previousSelectedUserId &&
+      !options?.append &&
+      !options?.silent &&
+      !options?.poll &&
+      feedRef.current.length > 0
+    ) {
+      globalFeedCacheRef.current = {
+        feed: feedRef.current.slice(),
+        nextCursor: feedNextCursorRef.current,
+        hasMore: stateRef.current.hasMore,
+        historyComplete: stateRef.current.historyComplete,
+        localQualifiedCount: stateRef.current.localQualifiedCount,
+        activityBreakdown: stateRef.current.activityBreakdown,
+        completenessWindow: stateRef.current.completenessWindow,
+        summary: stateRef.current.summary,
+        diagnostics: stateRef.current.diagnostics,
+        prewarmLabel: stateRef.current.prewarmLabel,
+        latestActivityAtByUser: new Map(stateRef.current.latestActivityAtByUser),
+        userActivities: new Map(stateRef.current.userActivities),
+        revision: feedRevisionRef.current ?? null,
+      };
+    }
+
+    // 从人物回全局：有缓存则立刻还原，再走 silent 顶窗刷新（不阻塞 UI）
+    if (
+      !selectedUserId &&
+      previousSelectedUserId &&
+      !options?.append &&
+      !options?.silent &&
+      !options?.poll &&
+      globalFeedCacheRef.current &&
+      globalFeedCacheRef.current.feed.length > 0
+    ) {
+      const cached = globalFeedCacheRef.current;
+      feedRef.current = cached.feed;
+      feedNextCursorRef.current = cached.nextCursor;
+      if (cached.revision) {
+        feedRevisionRef.current = cached.revision;
+      }
+      dispatch({
+        type: 'apply_success',
+        feed: cached.feed,
+        userActivities: cached.userActivities,
+        latestActivityAtByUser: cached.latestActivityAtByUser,
+        hasMore: cached.hasMore,
+        historyComplete: cached.historyComplete,
+        localQualifiedCount: cached.localQualifiedCount,
+        activityBreakdown: cached.activityBreakdown,
+        completenessWindow: cached.completenessWindow,
+        summary: cached.summary,
+        diagnostics: cached.diagnostics,
+        prewarmLabel: cached.prewarmLabel,
+        clearLoading: true,
+      });
+      // 后台 silent 刷新顶窗；失败也不影响已还原的全局视图
+      void fetchActivities({
+        silent: true,
+        poll: true,
+        targetCount: FEED_POLL_MAX_TARGET,
+        selectedUserId: null,
+        syncStrategy: 'local',
+      }).catch(() => undefined);
+      return {
+        feedLength: cached.feed.length,
+        selectedFeedLength: cached.feed.length,
+        totalAvailable: Math.max(
+          cached.feed.length,
+          cached.summary?.transactionCount ?? 0,
+          cached.localQualifiedCount
+        ),
+        success: true,
+        partialSyncWarning: false,
+        autoBackfillRounds: 0,
+        hasMore: cached.hasMore,
+        historyComplete: cached.historyComplete,
+        localQualifiedCount: cached.localQualifiedCount,
+      };
+    }
     const searchQuery =
       typeof options?.searchQuery === 'string' ? options.searchQuery.trim() : activeSearchQueryRef.current;
     const source =
@@ -576,24 +677,27 @@ export function useActivityPolling(
       }
 
       // Group address assets once instead of re-filtering the full list per user.
-      const addressAssetsByUser = new Map<string, typeof result.addressAssets>();
-      for (const addressAsset of result.addressAssets) {
-        const list = addressAssetsByUser.get(addressAsset.userId);
-        if (list) list.push(addressAsset);
-        else addressAssetsByUser.set(addressAsset.userId, [addressAsset]);
+      // Poll mode skips addressAssets/userAssets — guard against undefined.
+      if (result.addressAssets || result.userAssets) {
+        const addressAssetsByUser = new Map<string, typeof result.addressAssets>();
+        for (const addressAsset of (result.addressAssets ?? [])) {
+          const list = addressAssetsByUser.get(addressAsset.userId);
+          if (list) list.push(addressAsset);
+          else addressAssetsByUser.set(addressAsset.userId, [addressAsset]);
+        }
+        for (const userAsset of (result.userAssets ?? [])) {
+          const addresses = addressAssetsByUser.get(userAsset.userId) || [];
+          upsertUserAssetSnapshot(userAsset.userId, {
+            totalAssetUsd: userAsset.totalAssetUsd,
+            updatedAt: userAsset.updatedAt,
+            addresses: addresses.map((addressAsset) => ({
+              address: addressAsset.address,
+              totalAssetUsd: addressAsset.totalAssetUsd,
+              updatedAt: addressAsset.updatedAt,
+            })),
+          });
+        }
       }
-      result.userAssets.forEach((userAsset) => {
-        const addresses = addressAssetsByUser.get(userAsset.userId) || [];
-        upsertUserAssetSnapshot(userAsset.userId, {
-          totalAssetUsd: userAsset.totalAssetUsd,
-          updatedAt: userAsset.updatedAt,
-          addresses: addresses.map((addressAsset) => ({
-            address: addressAsset.address,
-            totalAssetUsd: addressAsset.totalAssetUsd,
-            updatedAt: addressAsset.updatedAt,
-          })),
-        });
-      });
 
       // 聚合每个用户的活动
       const activitiesByUser = buildActivitiesByUser(mergedFeed);
@@ -649,7 +753,7 @@ export function useActivityPolling(
 
       const localAddressCount = currentUsers.reduce((sum, user) => sum + user.addresses.length, 0);
       if (
-        result.summary.addressCount === 0 &&
+        result.summary?.addressCount === 0 &&
         localAddressCount > 0 &&
         !isServerBackfillAttempted()
       ) {
@@ -849,17 +953,6 @@ export function useActivityPolling(
     dispatch({ type: 'set_prewarm_label', prewarmLabel: label });
   }, []);
   useFeedPrewarmTrigger(setPrewarmLabel);
-
-  useFeedJudgmentStream(() =>
-    fetchActivities({
-      silent: true,
-      targetCount: FEED_POLL_MAX_TARGET,
-      selectedUserId: activeSelectedUserIdRef.current,
-      searchQuery: activeSearchQueryRef.current,
-      source: activeSourceRef.current,
-      syncStrategy: 'local',
-    })
-  );
 
   return {
     feed,

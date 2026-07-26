@@ -3,6 +3,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 
 import { EVM_CHAINS, expandTrackedAddresses, isEvmAddress, isEvmChain } from '@/lib/addressBook';
+import { bumpFeedRevision } from '@/lib/server/feedRevision';
 import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activityFeed';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
@@ -836,6 +837,7 @@ export function createTrackedUser(input: Omit<User, 'id'>) {
     upsertAddressRows(user.id, user.addresses, now, true);
   });
 
+  bumpFeedRevision();
   return user;
 }
 
@@ -862,6 +864,7 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
     }
 
     refreshPersistedUserSnapshots(next);
+    bumpFeedRevision();
     const refreshed = listTrackedUsers().find((user) => user.id === id);
     return refreshed || next;
   });
@@ -886,6 +889,9 @@ export function deleteTrackedUser(id: string) {
     db.prepare('DELETE FROM activity_feed WHERE user_id = ?').run(id);
     const result = db.prepare('DELETE FROM tracked_users WHERE id = ?').run(id);
 
+    if (result.changes > 0) {
+      bumpFeedRevision();
+    }
     return result.changes > 0;
   });
 }
