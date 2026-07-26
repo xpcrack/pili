@@ -12,6 +12,7 @@ import type {
   TweetMentionSentiment,
 } from '@/lib/server/twitterEnrichmentRepo';
 import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
+import { lookupPrimaryPoolAddressBySymbol } from '@/lib/server/primaryPoolSymbols';
 
 const EVM_CA_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 const SOL_CA_EXACT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -157,9 +158,17 @@ export async function enrichMentionMarketData(params: {
     resolvedAtMs: null,
   };
 
-  const address = (params.mention.tokenAddress || '').trim();
+  let address = (params.mention.tokenAddress || '').trim();
   if (!address) {
-    return base;
+    // Ticker-only mention → try primary pool lookup
+    const symbol = (params.mention.tokenSymbol || '').trim();
+    if (!symbol) return base;
+    const lookup = lookupPrimaryPoolAddressBySymbol(symbol);
+    if (!lookup) return base;
+    base.tokenAddress = lookup.address;
+    base.chain = lookup.chain;
+    base.matchSource = 'ticker';
+    address = lookup.address;
   }
 
   try {
