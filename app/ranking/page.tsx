@@ -22,6 +22,7 @@ type SortKey =
   | 'bigBuyWinRate'
   | 'winRate'
   | 'roundTrips'
+  | 'selectorScore'
   | 'realizedPnlUsd'
   | 'medianMultiple'
   | 'lastTradeAt';
@@ -96,6 +97,12 @@ const COLUMNS: Array<{ key: SortKey | null; label: string; align: 'left' | 'righ
   },
   { key: 'winRate', label: '胜率', align: 'right', hint: '盈利轮次 / 已平仓且历史完整的轮次' },
   { key: 'roundTrips', label: '次数', align: 'right', hint: '计入胜率的完整交易轮次数量' },
+  {
+    key: 'selectorScore',
+    label: '二段选币',
+    align: 'right',
+    hint: '入场市值在 200k–1M 的轮次，其 exit/entry 倍率的中位数；括号内为命中率（该市值段轮次占比）',
+  },
   { key: 'realizedPnlUsd', label: '已实现', align: 'right', hint: '所有已卖出部分的真实盈亏' },
   { key: null, label: '未实现', align: 'right', hint: '当前持仓的浮动盈亏，依赖持仓刷新时效' },
   { key: null, label: '可信度', align: 'right', hint: '历史完整的轮次占比，偏低说明只看到了这个人的后半段交易' },
@@ -271,6 +278,11 @@ export default function RankingPage() {
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-zinc-200">{percent(row.winRate)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-zinc-400">{row.roundTrips}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-zinc-300">
+                        {row.selectorScore != null
+                          ? `${row.selectorScore.toFixed(1)}x (${percent(row.selectorHitRate)})`
+                          : '—'}
+                      </td>
                       <td className={`px-3 py-2.5 text-right tabular-nums ${pnlColor(row.realizedPnlUsd)}`}>
                         {money(row.realizedPnlUsd)}
                       </td>

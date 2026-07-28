@@ -466,6 +466,65 @@ export function computeFollowability(
 }
 
 /**
+ * 二段抄底标的筛选人评分 — "does this person pick good coins in the 二段 range?"
+ *
+ * Unlike followability (which asks "is this person worth copying the whole trade"),
+ * selector score answers: "if this person identifies a coin worth watching in the
+ * 200k–1M market-cap range, does the coin usually run?"
+ *
+ * Two outputs:
+ *   - selectorScore:     median realizedMultiple of their 二段 closed+complete rounds
+ *   - selectorHitRate:   二段 rounds / total eligible rounds (context, not a gate)
+ *
+ * A hard MC gate is deliberately NOT used — the user's own example (ROP's believe
+ * entry at a high MC but still high multiple) shows that good pickers don't always
+ * enter in range. Hit rate shows the fit; score shows the quality.
+ */
+export interface SelectorScoreInput {
+  userId: string;
+  rounds: PnlRoundTrip[];
+}
+
+export interface SelectorScoreResult {
+  userId: string;
+  /** Median realizedMultiple for 二段 entries; null if < 3 qualifying rounds. */
+  selectorScore: number | null;
+  /** Fraction of eligible rounds that entered in the 二段 range. */
+  selectorHitRate: number | null;
+  /** Count of qualifying 二段 rounds. */
+  selectorRoundTrips: number;
+}
+
+const SELECTOR_MIN_ROUNDS = 3;
+const SELECTOR_MC_FLOOR = 200_000;
+const SELECTOR_MC_CEIL = 1_000_000;
+
+export function computeSelectorScore(inputs: SelectorScoreInput[]): SelectorScoreResult[] {
+  return inputs.map(({ userId, rounds }) => {
+    // Same filter as aggregateUserPnl's "scored" — closed, complete, non-transfer.
+    const eligible = rounds.filter(
+      (r) => r.status === 'closed' && r.confidence === 'complete' && !r.exitedByTransfer
+    );
+    const inRange = eligible.filter(
+      (r) =>
+        typeof r.entryMarketCapUsd === 'number' &&
+        r.entryMarketCapUsd >= SELECTOR_MC_FLOOR &&
+        r.entryMarketCapUsd <= SELECTOR_MC_CEIL
+    );
+    const multiples = inRange
+      .map((r) => r.realizedMultiple)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    return {
+      userId,
+      selectorScore: multiples.length >= SELECTOR_MIN_ROUNDS ? median(multiples) : null,
+      selectorHitRate: eligible.length > 0 ? inRange.length / eligible.length : null,
+      selectorRoundTrips: inRange.length,
+    };
+  });
+}
+
+/**
  * One leaderboard row. Lives here rather than in walletPnlService so the client
  * page can import the type without pulling a `server-only` module into the bundle.
  */
@@ -493,6 +552,10 @@ export interface UserPnlRankingRow {
   name: string | null;
   avatar: string | null;
   twitter: string | null;
+  selectorScore: number | null;
+  selectorHitRate: number | null;
+  selectorRoundTrips: number;
+
   realizedPnlUsd: number;
   unrealizedPnlUsd: number | null;
   roundTrips: number;

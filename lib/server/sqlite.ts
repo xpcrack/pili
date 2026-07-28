@@ -1576,6 +1576,9 @@ function ensureWalletPnlColumns(db: SqlDatabase) {
   ensureColumn(db, 'user_pnl_stats', 'avg_entry_market_cap_usd', 'REAL');
   ensureColumn(db, 'user_pnl_stats', 'followability_score', 'REAL');
   ensureColumn(db, 'user_pnl_stats', 'followability_parts_json', 'TEXT');
+  ensureColumn(db, 'user_pnl_stats', 'selector_score', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'selector_hit_rate', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'selector_round_trips', 'INTEGER NOT NULL', '0');
 }
 
 function ensureTelegramMonitorEventColumns(db: SqlDatabase) {
