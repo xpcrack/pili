@@ -4,6 +4,7 @@ import { getDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite
 import {
   aggregateUserPnl,
   computeFollowability,
+  computeSelectorScore,
   computeSeriesRoundTrips,
   DEFAULT_PNL_WINDOW,
   PNL_WINDOWS,
@@ -13,6 +14,7 @@ import {
   type PnlSeriesMeta,
   type PnlTradeInput,
   type PnlTradeVariant,
+  type SelectorScoreResult,
   type UserPnlRankingRow,
 } from '@/lib/walletPnl';
 
@@ -361,7 +363,17 @@ export function runWalletPnlFill(options: { dry?: boolean } = {}): WalletPnlRunR
       ).map((result) => [result.userId, result])
     );
 
-    return { windowKey: window.key as PnlWindowKey, userStats, followability };
+    const selectorMap = new Map(
+      computeSelectorScore(
+        userStats.map(({ userId }) => {
+          const allRounds = roundsByUser.get(userId) ?? [];
+          const windowed = cutoff === 0 ? allRounds : allRounds.filter((r) => r.lastTradeAt >= cutoff);
+          return { userId, rounds: windowed };
+        })
+      ).map((result) => [result.userId, result])
+    );
+
+    return { windowKey: window.key as PnlWindowKey, userStats, followability, selectorMap };
   });
 
   if (!options.dry) {
@@ -388,6 +400,7 @@ interface WindowResult {
   windowKey: PnlWindowKey;
   userStats: Array<{ userId: string; stats: ReturnType<typeof aggregateUserPnl> }>;
   followability: Map<string, ReturnType<typeof computeFollowability>[number]>;
+  selectorMap: Map<string, SelectorScoreResult>;
 }
 
 function writeResults(
@@ -461,12 +474,14 @@ function writeResults(
              open_positions, partial_round_trips, transfer_exit_rounds, median_max_single_buy_usd,
              big_buy_win_rate, big_buy_round_trips, coverage_ratio, first_trade_at, last_trade_at,
              distinct_tokens, total_buys, avg_hold_hours, avg_hold_hours_excl_swap, swap_closed_rounds,
-             avg_entry_market_cap_usd, followability_score, followability_parts_json, computed_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             avg_entry_market_cap_usd, followability_score, followability_parts_json,
+             selector_score, selector_hit_rate, selector_round_trips, computed_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
-        for (const { windowKey, userStats, followability } of perWindow) {
+        for (const { windowKey, userStats, followability, selectorMap } of perWindow) {
         for (const { userId, stats } of userStats) {
+          const sel = selectorMap.get(userId);
           insertStats.run(
             userId,
             windowKey,
@@ -498,6 +513,9 @@ function writeResults(
             stats.avgEntryMarketCapUsd,
             followability.get(userId)?.score ?? null,
             JSON.stringify(followability.get(userId)?.parts ?? null),
+            sel?.selectorScore ?? null,
+            sel?.selectorHitRate ?? null,
+            sel?.selectorRoundTrips ?? 0,
             computedAt
           );
         }
@@ -559,6 +577,9 @@ export function readUserPnlRanking(windowKey: PnlWindowKey = DEFAULT_PNL_WINDOW)
         return null;
       }
     })(),
+    selectorScore: toFiniteNumber(row.selector_score),
+    selectorHitRate: toFiniteNumber(row.selector_hit_rate),
+    selectorRoundTrips: Number(row.selector_round_trips) || 0,
     computedAt: Number(row.computed_at) || 0,
   }));
 }
