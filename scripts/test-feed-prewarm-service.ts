@@ -30,10 +30,22 @@ function run() {
   assert.equal(done.label, '近7天已补齐');
   assert.equal(done.done, true);
 
-  const uncovered = computePrewarmProgress({
+  // 全局窗已覆盖近 7 天时，即使部分人物缺 perUserEarliestMs，也不再触发 prewarm。
+  const globalCoveredUsersPartial = computePrewarmProgress({
     now,
     targetBeginMs: now - sevenDaysMs,
     globalEarliestMs: now - eightDaysMs,
+    usersTotal: 3,
+    usersCovered: 2,
+    running: false,
+  });
+  assert.equal(globalCoveredUsersPartial.done, true);
+  assert.equal(globalCoveredUsersPartial.label, '近7天已补齐');
+
+  const uncovered = computePrewarmProgress({
+    now,
+    targetBeginMs: now - sevenDaysMs,
+    globalEarliestMs: now - 2 * 24 * 60 * 60 * 1000,
     usersTotal: 3,
     usersCovered: 2,
     running: false,

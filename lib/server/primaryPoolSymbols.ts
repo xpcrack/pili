@@ -8,6 +8,8 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { pushBark } from '@/lib/server/barkNotify';
+
 const require = createRequire(import.meta.url);
 
 const CACHE_TTL_MS = 60_000;
@@ -364,22 +366,7 @@ export function ensurePrimaryPoolForAddress(params: {
 
 /** Best-effort Bark (dual device if BARK_URLS / default). */
 export async function barkPrimaryPoolAlert(title: string, body: string) {
-  const raw =
-    process.env.PILI_BARK_URLS ||
-    process.env.NEWONE_NOTIFY_BARK_URL ||
-    'https://api.day.app/kZdThYxm7DXZDvXtjyBsNV,https://api.day.app/sUE4eWUoGvY7jKuWUy9oVS';
-  const urls = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  await Promise.allSettled(
-    urls.map(async (base) => {
-      const u = new URL(base.replace(/\/$/, '') + '/' + encodeURIComponent(title));
-      u.searchParams.set('body', body.slice(0, 500));
-      u.searchParams.set('group', 'pili-pool');
-      await fetch(u.toString(), { method: 'GET' });
-    }),
-  );
+  await pushBark({ title, body, group: 'pili-pool' });
 }
 
 /**

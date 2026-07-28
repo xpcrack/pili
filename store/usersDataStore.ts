@@ -74,18 +74,12 @@ function buildUserWithAssetFields(userData: UserDraftInput): User {
     typeof userData.totalAssetUsd === 'number'
       ? normalizeAssetTotal(userData.totalAssetUsd)
       : normalizeAssetTotal(userData.currentChainAssetTotal);
-  const historicalMaxAssetUsd = Math.max(
-    totalAssetUsd,
-    typeof userData.historicalMaxAssetUsd === 'number'
-      ? normalizeAssetTotal(userData.historicalMaxAssetUsd)
-      : normalizeAssetTotal(userData.historicalMaxChainAssetTotal)
-  );
 
   return normalizeUser({
     ...userData,
     id: crypto.randomUUID(),
     totalAssetUsd,
-    historicalMaxAssetUsd,
+    historicalMaxAssetUsd: totalAssetUsd,
     assetUpdatedAt: userData.assetUpdatedAt ?? null,
   } as User);
 }
@@ -93,9 +87,7 @@ function buildUserWithAssetFields(userData: UserDraftInput): User {
 function applyUserUpdates(user: User, updates: Partial<User>): User {
   const mergedUser = { ...user, ...updates };
   const hasCurrentAssetInUpdates = Object.prototype.hasOwnProperty.call(updates, 'currentChainAssetTotal');
-  const hasHistoricalAssetInUpdates = Object.prototype.hasOwnProperty.call(updates, 'historicalMaxChainAssetTotal');
   const hasTotalAssetInUpdates = Object.prototype.hasOwnProperty.call(updates, 'totalAssetUsd');
-  const hasHistoricalMaxUsdInUpdates = Object.prototype.hasOwnProperty.call(updates, 'historicalMaxAssetUsd');
 
   const totalAssetUsd = hasTotalAssetInUpdates
     ? normalizeAssetTotal(updates.totalAssetUsd)
@@ -103,16 +95,10 @@ function applyUserUpdates(user: User, updates: Partial<User>): User {
       ? normalizeAssetTotal(updates.currentChainAssetTotal)
       : normalizeAssetTotal(mergedUser.totalAssetUsd);
 
-  const historicalCandidate = hasHistoricalMaxUsdInUpdates
-    ? normalizeAssetTotal(updates.historicalMaxAssetUsd)
-    : hasHistoricalAssetInUpdates
-      ? normalizeAssetTotal(updates.historicalMaxChainAssetTotal)
-      : normalizeAssetTotal(mergedUser.historicalMaxAssetUsd);
-
   return normalizeUser({
     ...mergedUser,
     totalAssetUsd,
-    historicalMaxAssetUsd: Math.max(totalAssetUsd, historicalCandidate),
+    historicalMaxAssetUsd: totalAssetUsd,
   });
 }
 
@@ -196,19 +182,14 @@ function getLatestAddressAssetUpdatedAt(addresses: readonly User['addresses'][nu
 function applyAddressCollectionUpdate(user: User, addresses: User['addresses']) {
   const normalizedAddresses = addresses.map((address, index) => normalizeAddress(address, index));
   const currentTotalAssetUsd = sumAddressAssetUsd(normalizedAddresses);
-  const historicalMaxAssetUsd = Math.max(
-    normalizeAssetTotal(user.historicalMaxAssetUsd),
-    normalizeAssetTotal(user.historicalMaxChainAssetTotal),
-    currentTotalAssetUsd
-  );
 
   return normalizeUser({
     ...user,
     addresses: normalizedAddresses,
     totalAssetUsd: currentTotalAssetUsd,
     currentChainAssetTotal: currentTotalAssetUsd,
-    historicalMaxAssetUsd,
-    historicalMaxChainAssetTotal: historicalMaxAssetUsd,
+    historicalMaxAssetUsd: currentTotalAssetUsd,
+    historicalMaxChainAssetTotal: currentTotalAssetUsd,
     assetUpdatedAt: getLatestAddressAssetUpdatedAt(normalizedAddresses),
   });
 }
@@ -230,18 +211,12 @@ function normalizeUser(user: User): User {
     typeof user.totalAssetUsd === 'number'
       ? normalizeAssetTotal(user.totalAssetUsd)
       : normalizeAssetTotal(user.currentChainAssetTotal);
-  const historicalMaxAssetUsd = Math.max(
-    totalAssetUsd,
-    typeof user.historicalMaxAssetUsd === 'number'
-      ? normalizeAssetTotal(user.historicalMaxAssetUsd)
-      : normalizeAssetTotal(user.historicalMaxChainAssetTotal)
-  );
   return {
     ...user,
     currentChainAssetTotal: totalAssetUsd,
-    historicalMaxChainAssetTotal: historicalMaxAssetUsd,
+    historicalMaxChainAssetTotal: totalAssetUsd,
     totalAssetUsd,
-    historicalMaxAssetUsd,
+    historicalMaxAssetUsd: totalAssetUsd,
     assetUpdatedAt: user.assetUpdatedAt ?? null,
     addresses: user.addresses.map((address, index) => normalizeAddress(address, index)),
   };
@@ -514,9 +489,9 @@ export const useUsersDataStore = create<UsersDataState>()(
               ...user,
               addresses: nextAddresses,
               currentChainAssetTotal: successfulTotal,
-              historicalMaxChainAssetTotal: Math.max(user.historicalMaxChainAssetTotal || 0, successfulTotal),
+              historicalMaxChainAssetTotal: successfulTotal,
               totalAssetUsd: successfulTotal,
-              historicalMaxAssetUsd: Math.max(user.historicalMaxAssetUsd || 0, successfulTotal),
+              historicalMaxAssetUsd: successfulTotal,
               assetUpdatedAt: payload.updatedAt,
             };
           }),

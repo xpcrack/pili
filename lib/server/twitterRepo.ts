@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { getDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite';
 import { isLikelyTwitterArtifactText } from '@/lib/twitterArtifactText';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 
@@ -180,46 +180,91 @@ export function listTrackedTwitterUsers() {
 
 export function acquireIngestionLease(lockKey: string, owner: string, nowMs: number, ttlMs: number) {
   const db = getDb();
-  const result = db
-    .prepare(
-      `INSERT INTO ingestion_leases (
-         lock_key,
-         owner,
-         expires_at_ms,
-         heartbeat_at_ms,
-         updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(lock_key) DO UPDATE SET
-         owner = excluded.owner,
-         expires_at_ms = excluded.expires_at_ms,
-         heartbeat_at_ms = excluded.heartbeat_at_ms,
-         updated_at_ms = excluded.updated_at_ms
-       WHERE ingestion_leases.expires_at_ms < excluded.updated_at_ms
-          OR ingestion_leases.owner = excluded.owner`
-    )
-    .run(lockKey, owner, nowMs + ttlMs, nowMs, nowMs);
-
-  return result.changes > 0;
+  try {
+    const result = withSqliteBusyRetry(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO ingestion_leases (
+               lock_key,
+               owner,
+               expires_at_ms,
+               heartbeat_at_ms,
+               updated_at_ms
+             ) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(lock_key) DO UPDATE SET
+               owner = excluded.owner,
+               expires_at_ms = excluded.expires_at_ms,
+               heartbeat_at_ms = excluded.heartbeat_at_ms,
+               updated_at_ms = excluded.updated_at_ms
+             WHERE ingestion_leases.expires_at_ms < excluded.updated_at_ms
+                OR ingestion_leases.owner = excluded.owner`
+          )
+          .run(lockKey, owner, nowMs + ttlMs, nowMs, nowMs),
+      { label: 'acquireIngestionLease' }
+    );
+    return result.changes > 0;
+  } catch (error) {
+    // Fail closed: not holding the lease makes the worker back off, whereas
+    // claiming it after an unknown write could run two owners at once.
+    console.warn(
+      '[twitterRepo] acquireIngestionLease failed, treating as not acquired:',
+      error instanceof Error ? error.message : error
+    );
+    return false;
+  }
 }
 
+/**
+ * Heartbeat and release must never take a worker down.
+ *
+ * These two lines crashed pili-telegram-channel-worker 363 times: a contended
+ * lease heartbeat threw SQLITE_BUSY out of a bare setInterval callback, which
+ * is an unhandled rejection and an immediate process exit. Losing a heartbeat
+ * just lets the lease expire and be re-acquired; losing the worker does not.
+ */
 export function heartbeatIngestionLease(lockKey: string, owner: string, nowMs: number, ttlMs: number) {
-  const db = getDb();
-  const result = db
-    .prepare(
-      `UPDATE ingestion_leases
-       SET expires_at_ms = ?,
-           heartbeat_at_ms = ?,
-           updated_at_ms = ?
-       WHERE lock_key = ?
-         AND owner = ?`
-    )
-    .run(nowMs + ttlMs, nowMs, nowMs, lockKey, owner);
-  return result.changes > 0;
+  try {
+    const result = withSqliteBusyRetry(
+      () =>
+        getDb()
+          .prepare(
+            `UPDATE ingestion_leases
+             SET expires_at_ms = ?,
+                 heartbeat_at_ms = ?,
+                 updated_at_ms = ?
+             WHERE lock_key = ?
+               AND owner = ?`
+          )
+          .run(nowMs + ttlMs, nowMs, nowMs, lockKey, owner),
+      { label: 'heartbeatIngestionLease' }
+    );
+    return result.changes > 0;
+  } catch (error) {
+    console.warn(
+      '[twitterRepo] heartbeatIngestionLease failed (non-fatal):',
+      error instanceof Error ? error.message : error
+    );
+    return false;
+  }
 }
 
 export function releaseIngestionLease(lockKey: string, owner: string) {
-  const db = getDb();
-  db.prepare('DELETE FROM ingestion_leases WHERE lock_key = ? AND owner = ?').run(lockKey, owner);
+  try {
+    withSqliteBusyRetry(
+      () =>
+        getDb()
+          .prepare('DELETE FROM ingestion_leases WHERE lock_key = ? AND owner = ?')
+          .run(lockKey, owner),
+      { label: 'releaseIngestionLease' }
+    );
+  } catch (error) {
+    // Shutdown path — an expired lease is reclaimed by TTL anyway.
+    console.warn(
+      '[twitterRepo] releaseIngestionLease failed (non-fatal):',
+      error instanceof Error ? error.message : error
+    );
+  }
 }
 
 export function readIngestionLease(lockKey: string) {

@@ -75,6 +75,7 @@ export function sanitizeUsersPayload(value: unknown): User[] {
         historicalMaxAssetUsd:
           typeof candidate.historicalMaxAssetUsd === 'number' ? candidate.historicalMaxAssetUsd : 0,
         assetUpdatedAt: toNumberOrNull(candidate.assetUpdatedAt),
+        monitoringEnabled: typeof candidate.monitoringEnabled === 'boolean' ? candidate.monitoringEnabled : undefined,
       },
     ];
   });

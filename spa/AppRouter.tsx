@@ -3,6 +3,7 @@ import { Route, Switch } from 'wouter';
 import AddressesPage from '@/app/addresses/page';
 import ManagePage from '@/app/manage/page';
 import HomePage from '@/app/page';
+import RankingPage from '@/app/ranking/page';
 import SystemPage from '@/app/system/page';
 import TokensPage from '@/app/tokens/page';
 
@@ -10,6 +11,7 @@ export function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={HomePage} />
+      <Route path="/ranking" component={RankingPage} />
       <Route path="/manage" component={ManagePage} />
       <Route path="/addresses" component={AddressesPage} />
       <Route path="/tokens" component={TokensPage} />

@@ -450,6 +450,8 @@ async function testDefaultTaskOrderIsStable() {
       'holder-snapshot',
       'live-monitor',
       'position-delta-fill',
+      'wallet-pnl',
+      'trade-signal',
       'telegram-bridge',
     ]
   );
@@ -507,7 +509,21 @@ async function testDefaultTaskOrderIsStable() {
     'holder-snapshot',
     'live-monitor',
     'position-delta-fill',
+    'wallet-pnl',
+    'trade-signal',
   ]);
+
+  // The web runtime opts out explicitly: PnL is a synchronous full-history walk
+  // and must not share an event loop with HTTP.
+  const webTasks = createDefaultRuntimeTasks({}, { embedTelegramTasks: false, includeWalletPnl: false });
+  assert.ok(
+    !webTasks.some((task) => task.key === 'wallet-pnl'),
+    'wallet-pnl must be absent when includeWalletPnl is false'
+  );
+  assert.ok(
+    !webTasks.some((task) => task.key === 'trade-signal'),
+    'trade-signal depends on wallet-pnl output and must opt out with it'
+  );
 }
 
 async function testRegistryUnknownTaskErrorIsStable() {

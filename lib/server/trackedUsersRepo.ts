@@ -10,6 +10,9 @@ import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
+const LIQUID_ASSET_MIN_LIQUIDITY_USD = 5_000;
+const LIQUID_ASSET_SYMBOLS = ['SOL', 'BNB', 'ETH', 'WETH', 'USDT', 'USDC'];
+const LIQUID_ASSET_SYMBOL_PLACEHOLDERS = LIQUID_ASSET_SYMBOLS.map(() => '?').join(', ');
 const TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY = 'tracked_address_evm_expansion_v1';
 
 interface TrackedUserRow {
@@ -26,6 +29,7 @@ interface TrackedUserRow {
   total_asset_usd: number;
   historical_max_asset_usd: number;
   asset_updated_at: number | null;
+  monitoring_enabled: number | null;
 }
 
 interface TrackedAddressRow {
@@ -90,6 +94,10 @@ function normalize(value: string | undefined) {
   return (value || '').trim().toLowerCase();
 }
 
+function liquidAssetWhereSql(alias: string) {
+  return `(COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
+}
+
 function parseTags(value: string | null | undefined) {
   if (!value) {
     return [] as string[];
@@ -147,6 +155,7 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
     totalAssetUsd,
     historicalMaxAssetUsd,
     assetUpdatedAt,
+    monitoringEnabled: row.monitoring_enabled == null ? true : row.monitoring_enabled !== 0,
     tags: parseTags(row.tags_json),
   };
 }
@@ -664,7 +673,8 @@ export function listTrackedUsers() {
         tags_json,
         total_asset_usd,
         historical_max_asset_usd,
-        asset_updated_at
+        asset_updated_at,
+        monitoring_enabled
       FROM tracked_users
       ORDER BY created_at ASC, name ASC`
     )
@@ -726,7 +736,8 @@ export function listMonitoredUsers() {
         tags_json,
         total_asset_usd,
         historical_max_asset_usd,
-        asset_updated_at
+        asset_updated_at,
+        monitoring_enabled
       FROM tracked_users
       WHERE COALESCE(monitoring_enabled, 1) = 1
       ORDER BY created_at ASC, name ASC`
@@ -1216,6 +1227,16 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
     const db = getDb();
     const affectedUpdatedAtByUserId = new Map<string, number>();
 
+    const liquidTotalByAddressStmt = db.prepare(
+      `SELECT COALESCE(SUM(ch.value_usd), 0) AS total_asset_usd,
+              COUNT(ws.tracked_address_lower) AS refreshed
+       FROM current_holdings_wallet_status ws
+       LEFT JOIN current_holdings ch
+         ON ch.chain = ws.chain
+        AND ch.tracked_address_lower = ws.tracked_address_lower
+        AND ${liquidAssetWhereSql('ch')}
+       WHERE ws.chain = ? AND ws.tracked_address_lower = ?`
+    );
     const addressStmt = db.prepare(
       `UPDATE tracked_addresses
        SET total_asset_usd = ?, asset_updated_at = ?, updated_at = ?
@@ -1232,8 +1253,19 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
 
       const previousUpdatedAt = affectedUpdatedAtByUserId.get(userId) || 0;
       affectedUpdatedAtByUserId.set(userId, Math.max(previousUpdatedAt, snapshot.updatedAt));
+      const liquidRow = liquidTotalByAddressStmt.get(...LIQUID_ASSET_SYMBOLS, chain, addressLower) as
+        | { total_asset_usd: number | null; refreshed: number | null }
+        | undefined;
+      const totalAssetUsd =
+        (liquidRow?.refreshed ?? 0) > 0
+          ? typeof liquidRow?.total_asset_usd === 'number'
+            ? liquidRow.total_asset_usd
+            : 0
+          : typeof snapshot.totalAssetUsd === 'number'
+            ? snapshot.totalAssetUsd
+            : null;
       addressStmt.run(
-        typeof snapshot.totalAssetUsd === 'number' ? snapshot.totalAssetUsd : null,
+        totalAssetUsd,
         snapshot.updatedAt,
         Date.now(),
         userId,
@@ -1255,7 +1287,7 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
     const userStmt = db.prepare(
       `UPDATE tracked_users
        SET total_asset_usd = ?,
-           historical_max_asset_usd = MAX(historical_max_asset_usd, total_asset_usd, ?),
+           historical_max_asset_usd = ?,
            asset_updated_at = ?,
            updated_at = ?
        WHERE id = ?`

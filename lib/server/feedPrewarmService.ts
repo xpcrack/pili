@@ -35,9 +35,10 @@ export interface FeedPrewarmProgressInput {
 export function computePrewarmProgress(input: FeedPrewarmProgressInput) {
   const globalCovered =
     typeof input.globalEarliestMs === 'number' && input.globalEarliestMs <= input.targetBeginMs;
-  const usersCoveredEnough = input.usersTotal <= 0 || input.usersCovered >= input.usersTotal;
-  const done = globalCovered && usersCoveredEnough;
-  if (done) {
+  // 近 7 天 prewarm 的目标是全局时间窗覆盖到 7 天前。
+  // 新人缺 perUserEarliestMs 条目不应再触发全局历史 backfill（会在 web 进程扫全量地址堵死 feed）。
+  // 缺窗用户交给 live monitor / completeness / wallet-activity backfill。
+  if (globalCovered) {
     return {
       done: true,
       label: '近7天已补齐',

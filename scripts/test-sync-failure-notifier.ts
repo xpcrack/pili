@@ -4,6 +4,7 @@ import './server-only-shim.cjs';
 
 import type { AddressDiagnostic } from '@/lib/activityFeed';
 import { buildSyncFailureAlertMessage, notifySyncAddressFetchFailures } from '@/lib/server/syncFailureNotifier';
+import { buildSystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 
 function makeFailure(input: {
   userName: string;
@@ -74,15 +75,11 @@ async function run() {
       ],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: '-100',
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: '-100',
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: () => true,
       markQuotaConsumed: () => {},
       sendMessage: async () => ({ ok: true as const }),
@@ -107,15 +104,11 @@ async function run() {
       ],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: '-100',
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: '-100',
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: () => true,
       markQuotaConsumed: () => {},
       sendMessage: async () => ({ ok: true as const }),
@@ -130,15 +123,11 @@ async function run() {
       diagnostics: [failureA],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: null,
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: null,
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: () => true,
       markQuotaConsumed: () => {},
       sendMessage: async () => ({ ok: true as const }),
@@ -153,15 +142,11 @@ async function run() {
       diagnostics: [failureA],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: '-100',
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: '-100',
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: () => false,
       markQuotaConsumed: () => {},
       sendMessage: async () => ({ ok: true as const }),
@@ -178,15 +163,11 @@ async function run() {
       diagnostics: [failureA, failureB],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: '-200',
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: '-100',
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: (key) => key.includes('0xaaa'),
       markQuotaConsumed: (key) => {
         consumedQuotaKeys.push(key);
@@ -215,15 +196,11 @@ async function run() {
       diagnostics: [failureA],
     },
     {
-      readConfig: () => ({
-        completenessStartMs: null,
+      readConfig: () =>
+        buildSystemConfigSnapshot({
         telegramUnknownPersonAlertChatId: '-100',
-        telegramTradeMonitorSourceChatId: null,
-        telegramTwitterMonitorSourceChatId: null,
         conflictNotificationTelegramChatId: '-100',
-        twitterRelayCoveredPollingIntervalMinutes: 360,
-        twitterUncoveredPollingIntervalMinutes: 30,
-      }),
+        }),
       isQuotaAvailable: () => true,
       markQuotaConsumed: (key) => {
         failedSendConsumedKeys.push(key);
