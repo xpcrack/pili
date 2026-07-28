@@ -19,14 +19,6 @@ type HoldingMetric = {
   marketCapUsd: number | null;
 };
 
-function chunkItems<T>(items: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
-}
-
 function toFiniteNumber(value: unknown) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
@@ -36,34 +28,6 @@ function toFiniteNumber(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function selectDexScreenerPair(
-  pairs: unknown[],
-  chain: string,
-  tokenAddress: string,
-) {
-  const normalizedChain = chain.toLowerCase();
-  const normalizedTokenAddress = tokenAddress.toLowerCase();
-
-  return pairs
-    .filter((pair): pair is {
-      chainId?: string;
-      baseToken?: { address?: string };
-      liquidity?: { usd?: unknown };
-      marketCap?: unknown;
-      fdv?: unknown;
-    } => typeof pair === 'object' && pair !== null)
-    .filter((pair) => {
-      const pairChain = pair.chainId?.toLowerCase();
-      const baseTokenAddress = pair.baseToken?.address?.toLowerCase();
-      return pairChain === normalizedChain && baseTokenAddress === normalizedTokenAddress;
-    })
-    .sort((left, right) => {
-      const rightLiquidity = toFiniteNumber(right.liquidity?.usd) ?? -1;
-      const leftLiquidity = toFiniteNumber(left.liquidity?.usd) ?? -1;
-      return rightLiquidity - leftLiquidity;
-    })[0] ?? null;
 }
 
 function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; liquidityUsd: number | null }[] | undefined) {
@@ -92,69 +56,37 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; l
       );
       const metricTargets = missingHoldings.filter((holding) => holding.chain !== 'robinhood');
 
-      const tokenLogoMarketCapMap: Record<string, number | null> = {};
-      await Promise.all(
-        metricTargets.map(async (holding) => {
-          const key = `${holding.chain}:${holding.tokenAddress}`;
-          try {
-            const res = await fetch(`/api/token-logo?chain=${encodeURIComponent(holding.chain)}&tokenAddress=${encodeURIComponent(holding.tokenAddress)}`);
-            const data = await res.json();
-            tokenLogoMarketCapMap[key] = toFiniteNumber(data?.marketCapUsd);
-          } catch {
-            tokenLogoMarketCapMap[key] = null;
-          }
-        }),
-      );
-
-      const dexTargets = metricTargets.filter((holding) => {
-        const key = `${holding.chain}:${holding.tokenAddress}`;
-        return holding.liquidityUsd == null || tokenLogoMarketCapMap[key] == null;
-      });
-
-      const dexMetricsMap: Record<string, HoldingMetric> = {};
-      await Promise.all(
-        chunkItems(dexTargets, 30).map(async (batch) => {
-          if (batch.length === 0) return;
-          try {
-            const addresses = batch.map((holding) => holding.tokenAddress).join(',');
-            const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addresses}`);
-            const data = await res.json();
-            const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-
-            for (const holding of batch) {
-              const key = `${holding.chain}:${holding.tokenAddress}`;
-              const pair = selectDexScreenerPair(pairs, holding.chain, holding.tokenAddress);
-              dexMetricsMap[key] = {
-                liquidityUsd: toFiniteNumber(pair?.liquidity?.usd),
-                marketCapUsd: toFiniteNumber(pair?.marketCap) ?? toFiniteNumber(pair?.fdv),
-              };
+      // Server proxy only — never call api.dexscreener.com from the browser (CORS + 429).
+      const nextEntries = Object.fromEntries(
+        await Promise.all(
+          metricTargets.map(async (holding) => {
+            const key = `${holding.chain}:${holding.tokenAddress}`;
+            try {
+              const res = await fetch(
+                `/api/token-logo?chain=${encodeURIComponent(holding.chain)}&tokenAddress=${encodeURIComponent(holding.tokenAddress)}`,
+              );
+              const data = await res.json().catch(() => null);
+              return [
+                key,
+                {
+                  liquidityUsd: holding.liquidityUsd ?? toFiniteNumber(data?.liquidityUsd),
+                  marketCapUsd: toFiniteNumber(data?.marketCapUsd),
+                },
+              ] as const;
+            } catch {
+              return [
+                key,
+                {
+                  liquidityUsd: holding.liquidityUsd,
+                  marketCapUsd: null,
+                },
+              ] as const;
             }
-          } catch {
-            for (const holding of batch) {
-              const key = `${holding.chain}:${holding.tokenAddress}`;
-              dexMetricsMap[key] = {
-                liquidityUsd: null,
-                marketCapUsd: null,
-              };
-            }
-          }
-        }),
+          }),
+        ),
       );
 
       if (!cancelled) {
-        const nextEntries = Object.fromEntries(
-          metricTargets.map((holding) => {
-            const key = `${holding.chain}:${holding.tokenAddress}`;
-            const dexMetrics = dexMetricsMap[key];
-            return [
-              key,
-              {
-                liquidityUsd: dexMetrics?.liquidityUsd ?? null,
-                marketCapUsd: tokenLogoMarketCapMap[key] ?? dexMetrics?.marketCapUsd ?? null,
-              },
-            ] as const;
-          }),
-        );
         setMap((prev) => ({ ...prev, ...robinhoodEntries, ...nextEntries }));
       }
     })();
@@ -271,7 +203,6 @@ export function SelectedUserDetailsPanel({
 
   const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
   const totalAssetUsd = details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd;
-  const historicalMaxAssetUsd = details?.user.historicalMaxAssetUsd ?? selectedUser.historicalMaxAssetUsd;
   const holdingsAge = getHoldingsAgeState(details?.holdingsUpdatedAt);
   const statusLine = [
     detailsRefreshing ? '正在后台刷新持仓明细...' : null,
@@ -316,8 +247,6 @@ export function SelectedUserDetailsPanel({
 
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] tabular-nums text-zinc-300">
           <span className="font-semibold text-zinc-100">{formatUsdCompact(totalAssetUsd)}</span>
-          <span className="text-zinc-600">·</span>
-          <span className="text-zinc-400">ATH {formatUsdCompact(historicalMaxAssetUsd)}</span>
           <span className="text-zinc-600">·</span>
           <span className={holdingsAge.className}>{holdingsAge.label}</span>
         </div>

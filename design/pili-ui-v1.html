@@ -1,0 +1,1131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pili UI v1 — 单行交易 Feed</title>
+  <style>
+    :root {
+      --bg: #0a0b0d;
+      --bg-panel: #111318;
+      --bg-row-hover: rgba(255, 255, 255, 0.035);
+      --bg-row-active: rgba(125, 211, 252, 0.07);
+      --border: rgba(255, 255, 255, 0.07);
+      --border-strong: rgba(255, 255, 255, 0.12);
+      --text: #f2f4f8;
+      --text-2: #a7afbf;
+      --text-3: #6a7285;
+      --buy: #34d399;
+      --buy-soft: rgba(52, 211, 153, 0.12);
+      --buy-border: rgba(52, 211, 153, 0.28);
+      --sell: #fb7185;
+      --sell-soft: rgba(251, 113, 133, 0.12);
+      --sell-border: rgba(251, 113, 133, 0.28);
+      --accent: #7dd3fc;
+      --red-dot: #ef4444;
+      --font: "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
+      --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+      /* 统一表头/行同一套列宽，避免错位 */
+      --cols:
+        28px
+        minmax(108px, 1.1fr)
+        minmax(88px, 0.9fr)
+        minmax(96px, 0.95fr)
+        minmax(72px, 0.7fr)
+        minmax(72px, 0.7fr)
+        44px
+        minmax(78px, 0.75fr)
+        118px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(1000px 420px at 8% -8%, rgba(56, 189, 248, 0.07), transparent 55%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input { font: inherit; color: inherit; }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 52px 1fr;
+    }
+
+    .topnav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 12px;
+      height: 52px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 11, 13, 0.9);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, #38bdf8, #6366f1);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .brand span {
+      color: var(--text-3);
+      font-size: 11px;
+      margin-left: 4px;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .nav-tab {
+      border: 0;
+      background: transparent;
+      color: var(--text-2);
+      padding: 6px 11px;
+      border-radius: 7px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .nav-tab.active {
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+    }
+
+    .top-right {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text-2);
+      font-size: 11.5px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--buy);
+      box-shadow: 0 0 0 3px rgba(52,211,153,0.14);
+    }
+
+    .shell {
+      width: min(1480px, 100%);
+      margin: 0 auto;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr) 280px;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      background: rgba(17, 19, 24, 0.95);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+
+    .panel-sub {
+      color: var(--text-3);
+      font-size: 11px;
+    }
+
+    /* Left */
+    .sidebar {
+      position: sticky;
+      top: 64px;
+      max-height: calc(100vh - 76px);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sort-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+      margin: 8px 8px 0;
+      padding: 3px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.22);
+    }
+
+    .sort-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text-3);
+      border-radius: 7px;
+      padding: 6px 6px;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .sort-btn.active {
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+    }
+
+    .person-list {
+      overflow: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .person {
+      width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      border-radius: 9px;
+      padding: 7px 8px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .person:hover { background: var(--bg-row-hover); }
+    .person.active {
+      background: var(--bg-row-active);
+      border-color: rgba(125, 211, 252, 0.16);
+    }
+
+    .avatar-wrap {
+      position: relative;
+      width: 28px;
+      height: 28px;
+      flex: 0 0 28px;
+    }
+
+    .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: white;
+      background: linear-gradient(145deg, #334155, #1e293b);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .avatar.a1 { background: linear-gradient(145deg, #0ea5e9, #2563eb); }
+    .avatar.a2 { background: linear-gradient(145deg, #10b981, #0f766e); }
+    .avatar.a3 { background: linear-gradient(145deg, #f59e0b, #b45309); }
+    .avatar.a4 { background: linear-gradient(145deg, #a855f7, #6d28d9); }
+    .avatar.a5 { background: linear-gradient(145deg, #f43f5e, #be123c); }
+    .avatar.a6 { background: linear-gradient(145deg, #64748b, #334155); }
+    .avatar.token {
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      font-size: 8px;
+      flex: 0 0 18px;
+    }
+
+    .red-dot {
+      position: absolute;
+      top: -1px;
+      right: -1px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--red-dot);
+      box-shadow: 0 0 0 2px #111318;
+    }
+
+    .person-main { min-width: 0; }
+    .person-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .person-meta {
+      margin-top: 1px;
+      color: var(--text-3);
+      font-size: 10.5px;
+    }
+    .person-time {
+      color: var(--text-3);
+      font-size: 10.5px;
+      white-space: nowrap;
+    }
+    .person.active .person-time { color: var(--accent); }
+
+    /* Feed */
+    .feed { min-width: 0; }
+
+    .feed-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px;
+    }
+
+    .search {
+      height: 34px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.25);
+      padding: 0 10px;
+      outline: none;
+      font-size: 12.5px;
+    }
+
+    .search::placeholder { color: var(--text-3); }
+    .search:focus { border-color: rgba(125, 211, 252, 0.35); }
+
+    .ghost-btn, .chip {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-2);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .ghost-btn {
+      height: 34px;
+      border-radius: 9px;
+      padding: 0 10px;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 4px 9px;
+    }
+
+    .chip.active {
+      color: var(--text);
+      background: rgba(125, 211, 252, 0.12);
+      border-color: rgba(125, 211, 252, 0.28);
+    }
+
+    .feed-scroll {
+      overflow-x: auto;
+    }
+
+    .feed-table {
+      min-width: 820px;
+    }
+
+    .col-head,
+    .trade-row {
+      display: grid;
+      grid-template-columns: var(--cols);
+      column-gap: 12px;
+      align-items: center;
+      padding: 0 12px;
+      min-height: 40px;
+    }
+
+    .col-head {
+      min-height: 30px;
+      color: var(--text-3);
+      font-size: 11px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(17, 19, 24, 0.98);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    .col-head > div,
+    .trade-row > div {
+      min-width: 0;
+    }
+
+    .trade-row {
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid rgba(255,255,255,0.035);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .trade-row:hover { background: var(--bg-row-hover); }
+
+    .cell {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 12.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .num {
+      text-align: right;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .head-num { text-align: right; }
+    .head-ops { text-align: right; }
+
+    .who-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .who-name {
+      font-size: 12.5px;
+      font-weight: 650;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .wallet {
+      color: var(--text-3);
+      font-size: 10.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ticker-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .ticker-symbol {
+      font-size: 12.5px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 动作 + 幅度 合并：颜色=方向，文案=幅度 */
+    .delta-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 64px;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .delta-pill.up {
+      color: var(--buy);
+      background: var(--buy-soft);
+      border-color: var(--buy-border);
+    }
+
+    .delta-pill.down {
+      color: var(--sell);
+      background: var(--sell-soft);
+      border-color: var(--sell-border);
+    }
+
+    .delta-pill.neutral {
+      color: var(--accent);
+      background: rgba(125, 211, 252, 0.1);
+      border-color: rgba(125, 211, 252, 0.28);
+    }
+
+    .delta-pill.muted {
+      color: var(--text-3);
+      background: rgba(255,255,255,0.04);
+      border-color: var(--border);
+      font-weight: 600;
+    }
+
+    .time {
+      color: var(--text-3);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .head-time { text-align: right; }
+
+    .links {
+      display: inline-flex;
+      gap: 4px;
+      justify-content: flex-end;
+      width: 100%;
+    }
+
+    .link-btn {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-2);
+      border-radius: 6px;
+      padding: 3px 6px;
+      font-size: 10.5px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .link-btn:hover {
+      color: var(--text);
+      background: rgba(255,255,255,0.06);
+    }
+
+    .feed-note {
+      padding: 8px 12px 10px;
+      color: var(--text-3);
+      font-size: 11px;
+      border-top: 1px solid var(--border);
+      line-height: 1.45;
+    }
+
+    /* Right */
+    .details {
+      position: sticky;
+      top: 64px;
+      max-height: calc(100vh - 76px);
+      overflow: auto;
+    }
+
+    .detail-hero {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 36px 1fr;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .detail-name {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .detail-sub {
+      margin-top: 2px;
+      color: var(--text-3);
+      font-size: 11px;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 10px;
+    }
+
+    .stat {
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.18);
+      border-radius: 9px;
+      padding: 8px;
+    }
+
+    .stat-label {
+      color: var(--text-3);
+      font-size: 10.5px;
+    }
+
+    .stat-value {
+      margin-top: 3px;
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .section {
+      padding: 2px 10px 10px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 6px 0;
+      color: var(--text-2);
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+
+    .holding {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      padding: 7px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .holding-name {
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+
+    .holding-meta {
+      margin-top: 1px;
+      color: var(--text-3);
+      font-size: 10.5px;
+    }
+
+    .holding-value {
+      text-align: right;
+      font-size: 12.5px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .holding-pct {
+      margin-top: 1px;
+      color: var(--text-3);
+      font-size: 10.5px;
+      text-align: right;
+    }
+
+    .note {
+      margin: 0 10px 12px;
+      padding: 9px 10px;
+      border-radius: 10px;
+      border: 1px dashed rgba(125, 211, 252, 0.22);
+      background: rgba(125, 211, 252, 0.05);
+      color: var(--text-2);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+
+    .all-feed {
+      border: 1px dashed var(--border-strong);
+      background: rgba(255,255,255,0.015);
+      margin-bottom: 2px;
+    }
+
+    @media (max-width: 1200px) {
+      .shell { grid-template-columns: 210px minmax(0, 1fr); }
+      .details { display: none; }
+    }
+
+    @media (max-width: 820px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: static;
+        max-height: none;
+      }
+      .person-list {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 140px;
+        overflow-x: auto;
+      }
+      .person-time { display: none; }
+      .topnav {
+        grid-template-columns: 1fr;
+        height: auto;
+        padding: 10px 12px;
+        gap: 8px;
+      }
+      .top-right { justify-content: flex-start; }
+      .search-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topnav">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <h1>PiliPili <span>单行交易 Feed</span></h1>
+      </div>
+      <nav class="nav-tabs">
+        <button class="nav-tab active">Feed</button>
+        <button class="nav-tab">人物</button>
+        <button class="nav-tab">地址</button>
+        <button class="nav-tab">代币</button>
+        <button class="nav-tab">系统</button>
+      </nav>
+      <div class="top-right">
+        <div class="status-pill"><span class="status-dot"></span>实时 · 42 人</div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="panel sidebar">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">聪明钱雷达</div>
+            <div class="panel-sub">历史资产高峰排序</div>
+          </div>
+          <div class="panel-sub">更新</div>
+        </div>
+
+        <div class="sort-switch">
+          <button class="sort-btn active">最高资产</button>
+          <button class="sort-btn">最近活跃</button>
+        </div>
+
+        <div class="person-list">
+          <button class="person all-feed">
+            <div class="avatar-wrap"><div class="avatar">All</div></div>
+            <div class="person-main">
+              <div class="person-name">全部动态</div>
+              <div class="person-meta">全局 Feed</div>
+            </div>
+            <div class="person-time">live</div>
+          </button>
+
+          <button class="person active">
+            <div class="avatar-wrap">
+              <div class="avatar a1">PN</div>
+              <span class="red-dot"></span>
+            </div>
+            <div class="person-main">
+              <div class="person-name">pnl#16</div>
+              <div class="person-meta">ATH $3.2M</div>
+            </div>
+            <div class="person-time">2m</div>
+          </button>
+
+          <button class="person">
+            <div class="avatar-wrap">
+              <div class="avatar a2">KX</div>
+              <span class="red-dot"></span>
+            </div>
+            <div class="person-main">
+              <div class="person-name">K线漂移#1</div>
+              <div class="person-meta">ATH $820K</div>
+            </div>
+            <div class="person-time">4m</div>
+          </button>
+
+          <button class="person">
+            <div class="avatar-wrap">
+              <div class="avatar a3">SE</div>
+            </div>
+            <div class="person-main">
+              <div class="person-name">sen#5</div>
+              <div class="person-meta">ATH $1.1M</div>
+            </div>
+            <div class="person-time">12m</div>
+          </button>
+
+          <button class="person">
+            <div class="avatar-wrap">
+              <div class="avatar a4">YR</div>
+              <span class="red-dot"></span>
+            </div>
+            <div class="person-main">
+              <div class="person-name">yry</div>
+              <div class="person-meta">ATH $2.4M</div>
+            </div>
+            <div class="person-time">18m</div>
+          </button>
+
+          <button class="person">
+            <div class="avatar-wrap">
+              <div class="avatar a5">HG</div>
+            </div>
+            <div class="person-main">
+              <div class="person-name">弘哥#2</div>
+              <div class="person-meta">ATH $640K</div>
+            </div>
+            <div class="person-time">41m</div>
+          </button>
+
+          <button class="person">
+            <div class="avatar-wrap">
+              <div class="avatar a6">PR</div>
+            </div>
+            <div class="person-main">
+              <div class="person-name">profit#3</div>
+              <div class="person-meta">ATH $510K</div>
+            </div>
+            <div class="person-time">1h</div>
+          </button>
+        </div>
+      </aside>
+
+      <section class="panel feed">
+        <div class="feed-toolbar">
+          <div class="search-row">
+            <input class="search" placeholder="搜索人物、Ticker、CA 或地址" />
+            <button class="ghost-btn">原生计价</button>
+            <button class="ghost-btn">相对时间</button>
+          </div>
+          <div class="chip-row">
+            <button class="chip active">全部</button>
+            <button class="chip">交易</button>
+            <button class="chip">推特</button>
+            <button class="chip">TG</button>
+            <button class="chip">加仓</button>
+            <button class="chip">减仓</button>
+          </div>
+        </div>
+
+        <div class="feed-scroll">
+          <div class="feed-table">
+            <div class="col-head">
+              <div></div>
+              <div>人物 / 钱包</div>
+              <div>Ticker</div>
+              <div class="head-num">成交</div>
+              <div class="head-num">USD</div>
+              <div class="head-num">MC</div>
+              <div class="head-time">时间</div>
+              <div>幅度</div>
+              <div class="head-ops">操作</div>
+            </div>
+
+            <!-- +34.8% = 加仓 -->
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a1">PN</div></div>
+              <div class="who-cell">
+                <div class="who-name">pnl#16</div>
+                <div class="wallet">Robinhood</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a2">HO</div>
+                <span class="ticker-symbol">HOOD</span>
+              </div>
+              <div class="cell num">0.0995 ETH</div>
+              <div class="cell num">$248</div>
+              <div class="cell num">$69.1K</div>
+              <div class="cell time">2m</div>
+              <div><span class="delta-pill up">+34.8%</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <!-- 新仓 = 建仓 -->
+            <button class="trade-row">
+              <div class="avatar-wrap">
+                <div class="avatar a1">PN</div>
+                <span class="red-dot"></span>
+              </div>
+              <div class="who-cell">
+                <div class="who-name">pnl#16</div>
+                <div class="wallet">Robinhood</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a5">MO</div>
+                <span class="ticker-symbol">MOMO</span>
+              </div>
+              <div class="cell num">0.4966 ETH</div>
+              <div class="cell num">$1,240</div>
+              <div class="cell num">$39.5K</div>
+              <div class="cell time">6m</div>
+              <div><span class="delta-pill neutral">新仓</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <!-- -18.2% = 减仓 -->
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a3">SE</div></div>
+              <div class="who-cell">
+                <div class="who-name">sen#5</div>
+                <div class="wallet">Robinhood</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a5">MO</div>
+                <span class="ticker-symbol">MOMO</span>
+              </div>
+              <div class="cell num">0.0764 ETH</div>
+              <div class="cell num">$191</div>
+              <div class="cell num">$44.5K</div>
+              <div class="cell time">12m</div>
+              <div><span class="delta-pill down">-18.2%</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <!-- -100% = 清仓 -->
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a4">YR</div></div>
+              <div class="who-cell">
+                <div class="who-name">yry</div>
+                <div class="wallet">主钱包</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a4">PO</div>
+                <span class="ticker-symbol">POSITIONS</span>
+              </div>
+              <div class="cell num">1.1982 SOL</div>
+              <div class="cell num">$186</div>
+              <div class="cell num">$69.5K</div>
+              <div class="cell time">18m</div>
+              <div><span class="delta-pill down">-100%</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <!-- 待补：只有方向未知/快照未就绪 -->
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a2">KX</div></div>
+              <div class="who-cell">
+                <div class="who-name">K线漂移#1</div>
+                <div class="wallet">EVM</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a3">VL</div>
+                <span class="ticker-symbol">VLAD</span>
+              </div>
+              <div class="cell num">0.495 ETH</div>
+              <div class="cell num">$1,236</div>
+              <div class="cell num">$906K</div>
+              <div class="cell time">4m</div>
+              <div><span class="delta-pill muted">待补</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a5">HG</div></div>
+              <div class="who-cell">
+                <div class="who-name">弘哥#2</div>
+                <div class="wallet">BSC</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a6">持</div>
+                <span class="ticker-symbol">持续构建</span>
+              </div>
+              <div class="cell num">0.1988 BNB</div>
+              <div class="cell num">$118</div>
+              <div class="cell num">$61.9K</div>
+              <div class="cell time">41m</div>
+              <div><span class="delta-pill down">-42.0%</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a6">PR</div></div>
+              <div class="who-cell">
+                <div class="who-name">profit#3</div>
+                <div class="wallet">SOL</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a4">PO</div>
+                <span class="ticker-symbol">POSITIONS</span>
+              </div>
+              <div class="cell num">8.1585 SOL</div>
+              <div class="cell num">$1,270</div>
+              <div class="cell num">$29.0K</div>
+              <div class="cell time">1h</div>
+              <div><span class="delta-pill neutral">新仓</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+
+            <button class="trade-row">
+              <div class="avatar-wrap"><div class="avatar a4">YR</div></div>
+              <div class="who-cell">
+                <div class="who-name">yry</div>
+                <div class="wallet">主钱包</div>
+              </div>
+              <div class="ticker-cell">
+                <div class="avatar token a4">PO</div>
+                <span class="ticker-symbol">POSITIONS</span>
+              </div>
+              <div class="cell num">2 SOL</div>
+              <div class="cell num">$311</div>
+              <div class="cell num">$115.9K</div>
+              <div class="cell time">1h</div>
+              <div><span class="delta-pill neutral">新仓</span></div>
+              <div class="links">
+                <span class="link-btn">CA</span>
+                <span class="link-btn">GMGN</span>
+                <span class="link-btn">TX</span>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <div class="feed-note">
+          动作并入幅度：<span style="color:var(--buy)">+34.8%</span> = 加仓，
+          <span style="color:var(--accent)">新仓</span> = 建仓，
+          <span style="color:var(--sell)">-18.2%</span> = 减仓，
+          <span style="color:var(--sell)">-100%</span> = 清仓。颜色表示方向，数字表示仓位变化。
+        </div>
+      </section>
+
+      <aside class="panel details">
+        <div class="detail-hero">
+          <div class="avatar a1" style="width:36px;height:36px;font-size:11px;">PN</div>
+          <div>
+            <div class="detail-name">pnl#16</div>
+            <div class="detail-sub">历史高峰排序 · 有新动态</div>
+          </div>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">历史峰值</div>
+            <div class="stat-value">$3.2M</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">当前资产</div>
+            <div class="stat-value">$860K</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">近 1h 交易</div>
+            <div class="stat-value">4</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">持仓更新</div>
+            <div class="stat-value" style="font-size:12px;">3 分钟前</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">
+            <span>主要持仓</span>
+            <span style="color:var(--text-3);font-weight:500;">前 4</span>
+          </div>
+          <div class="holding">
+            <div>
+              <div class="holding-name">MOMO</div>
+              <div class="holding-meta">MC $39.5K</div>
+            </div>
+            <div>
+              <div class="holding-value">$42.1K</div>
+              <div class="holding-pct">4.9%</div>
+            </div>
+          </div>
+          <div class="holding">
+            <div>
+              <div class="holding-name">HOOD</div>
+              <div class="holding-meta">刚加仓 +34.8%</div>
+            </div>
+            <div>
+              <div class="holding-value">$18.6K</div>
+              <div class="holding-pct">2.2%</div>
+            </div>
+          </div>
+          <div class="holding">
+            <div>
+              <div class="holding-name">SOL</div>
+              <div class="holding-meta">现金仓</div>
+            </div>
+            <div>
+              <div class="holding-value">$210K</div>
+              <div class="holding-pct">24.4%</div>
+            </div>
+          </div>
+          <div class="holding">
+            <div>
+              <div class="holding-name">其他</div>
+              <div class="holding-meta">12 个仓位</div>
+            </div>
+            <div>
+              <div class="holding-value">$589K</div>
+              <div class="holding-pct">68.5%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="note">
+          表头与内容共用同一套 <code style="color:var(--accent)">grid-template-columns</code>，数字列右对齐。
+          不再单独显示「加仓/减仓」，只看幅度列。
+        </div>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>

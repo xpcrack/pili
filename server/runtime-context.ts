@@ -35,7 +35,9 @@ export function createRuntimeContext(input: { repoRoot: string; mode: 'live' | '
   // Override with PILIPILI_EMBED_RUNTIME_TASKS=true for rollback.
   const embedTasks = process.env.PILIPILI_EMBED_RUNTIME_TASKS === 'true' || input.mode !== 'prod';
   const tasks = embedTasks
-    ? createTaskRegistry(createDefaultRuntimeTasks({}, taskOptions))
+    ? // Never in a process that serves HTTP, dev included: the PnL walk is a
+      // multi-second synchronous scan of the whole trade history.
+      createTaskRegistry(createDefaultRuntimeTasks({}, { ...taskOptions, includeWalletPnl: false }))
     : createTaskRegistry([]);
   const context: RuntimeContext = {
     repoRoot: input.repoRoot,

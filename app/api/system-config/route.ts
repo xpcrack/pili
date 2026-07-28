@@ -16,6 +16,16 @@ interface SystemConfigPatchBody {
   completenessStartMs?: number | string | null;
   twitterRelayCoveredPollingIntervalMinutes?: number | string | null;
   twitterUncoveredPollingIntervalMinutes?: number | string | null;
+  tradeSignalEnabled?: boolean;
+  tradeSignalMinWinRate?: number | string;
+  tradeSignalMinRoundTrips?: number | string;
+  tradeSignalMinFollowability?: number | string;
+  tradeSignalMinTradeUsd?: number | string;
+  tradeSignalMinMarketCapUsd?: number | string | null;
+  tradeSignalMaxMarketCapUsd?: number | string | null;
+  tradeSignalCoHitMinUsers?: number | string;
+  tradeSignalCoHitWindowMinutes?: number | string;
+  tradeSignalCooldownMinutes?: number | string;
 }
 
 /** null → null (clear), string → string (set), undefined / wrong type → undefined (no-op). */
@@ -34,6 +44,15 @@ function pickNumericOrNull(value: unknown): number | string | null | undefined {
 function pickNumericOrEmpty(value: unknown): number | string | undefined {
   if (value === null) return '';
   return typeof value === 'number' || typeof value === 'string' ? value : undefined;
+}
+
+/** number/string → as-is, anything else → undefined (no-op). */
+function pickNumeric(value: unknown): number | string | undefined {
+  return typeof value === 'number' || typeof value === 'string' ? value : undefined;
+}
+
+function pickBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 export async function GET(request: NextRequest) {
@@ -66,6 +85,17 @@ export async function PATCH(request: NextRequest) {
       completenessStartMs: pickNumericOrNull(body.completenessStartMs),
       twitterRelayCoveredPollingIntervalMinutes: pickNumericOrEmpty(body.twitterRelayCoveredPollingIntervalMinutes),
       twitterUncoveredPollingIntervalMinutes: pickNumericOrEmpty(body.twitterUncoveredPollingIntervalMinutes),
+      tradeSignalEnabled: pickBoolean(body.tradeSignalEnabled),
+      tradeSignalMinWinRate: pickNumeric(body.tradeSignalMinWinRate),
+      tradeSignalMinRoundTrips: pickNumeric(body.tradeSignalMinRoundTrips),
+      tradeSignalMinFollowability: pickNumeric(body.tradeSignalMinFollowability),
+      tradeSignalMinTradeUsd: pickNumeric(body.tradeSignalMinTradeUsd),
+      // null clears the bound (no limit on that side of the band).
+      tradeSignalMinMarketCapUsd: pickNumericOrNull(body.tradeSignalMinMarketCapUsd),
+      tradeSignalMaxMarketCapUsd: pickNumericOrNull(body.tradeSignalMaxMarketCapUsd),
+      tradeSignalCoHitMinUsers: pickNumeric(body.tradeSignalCoHitMinUsers),
+      tradeSignalCoHitWindowMinutes: pickNumeric(body.tradeSignalCoHitWindowMinutes),
+      tradeSignalCooldownMinutes: pickNumeric(body.tradeSignalCooldownMinutes),
     });
 
     if (previousConfig.completenessStartMs !== config.completenessStartMs) {

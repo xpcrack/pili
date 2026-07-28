@@ -18,6 +18,18 @@ interface UserBarProps {
   onSelectUser: (user: User | null) => void;
 }
 
+function latestActivityTextColor(timestamp: number, now: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'text-zinc-500';
+
+  const ageMs = Math.max(0, (now || Date.now()) - timestamp);
+  const hourMs = 60 * 60 * 1000;
+
+  if (ageMs < hourMs) return 'text-emerald-300';
+  if (ageMs < 6 * hourMs) return 'text-lime-300';
+  if (ageMs < 24 * hourMs) return 'text-amber-300';
+  return 'text-zinc-500';
+}
+
 export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelectUser }: UserBarProps) {
   const isAllSelected = selectedUserId === null;
   const hasNew = useUserStore((state) => state.hasNew);
@@ -85,7 +97,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
           <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3 py-2.5">
             <div>
               <div className="text-[12.5px] font-semibold text-zinc-100">聪明钱雷达</div>
-              <div className="text-[11px] text-zinc-500">历史资产高峰排序</div>
+              <div className="text-[11px] text-zinc-500">当前资产排序</div>
             </div>
             <div className="text-[11px] text-zinc-500">更新</div>
           </div>
@@ -116,6 +128,8 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
               const isSelected = selectedUserId === user.id;
               const latestActivityAt = latestActivityAtByUser.get(user.id) ?? 0;
               const latestActivityText = formatRelativeTimeCompact(latestActivityAt, now);
+              const latestActivityColor = latestActivityTextColor(latestActivityAt, now);
+              const isDisabled = user.monitoringEnabled === false;
 
               return (
                 <button
@@ -139,12 +153,19 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                     )}
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-[12.5px] font-semibold">{user.name}</div>
+                    <div className="flex min-w-0 items-center gap-1">
+                      <span className="truncate text-[12.5px] font-semibold">{user.name}</span>
+                      {isDisabled && (
+                        <span className="shrink-0 rounded bg-zinc-700/70 px-1 text-[9px] leading-3 text-zinc-300">
+                          停用
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-px truncate text-[10.5px] text-zinc-500">
-                      ATH {formatUsdCompact(user.historicalMaxAssetUsd)}
+                      当前 {formatUsdCompact(user.totalAssetUsd)}
                     </div>
                   </div>
-                  <div className={`shrink-0 text-[10.5px] ${isSelected ? 'text-sky-300' : 'text-zinc-500'}`}>
+                  <div className={`shrink-0 text-[10.5px] ${isSelected ? 'text-sky-300' : latestActivityColor}`}>
                     {latestActivityText}
                   </div>
                 </button>

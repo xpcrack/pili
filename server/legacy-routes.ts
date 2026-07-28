@@ -26,6 +26,7 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'DELETE', path: '/users/:id/addresses', load: () => import('@/app/api/users/[id]/addresses/route') },
   { method: 'GET', path: '/users/activity-stats', load: () => import('@/app/api/users/activity-stats/route') },
   { method: 'GET', path: '/addresses', load: () => import('@/app/api/addresses/route') },
+  { method: 'GET', path: '/ranking', load: () => import('@/app/api/ranking/route') },
   { method: 'GET', path: '/tokens', load: () => import('@/app/api/tokens/route') },
   { method: 'POST', path: '/tokens', load: () => import('@/app/api/tokens/route') },
   { method: 'DELETE', path: '/tokens', load: () => import('@/app/api/tokens/route') },

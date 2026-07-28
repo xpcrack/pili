@@ -184,17 +184,28 @@ export class WorkerLease {
   private startHeartbeat(ttlMs: number): void {
     this.stopHeartbeat();
     const intervalMs = this.resolveHeartbeatMs(ttlMs);
+    // Anything thrown from a bare setInterval callback is an unhandled
+    // rejection and kills the process. `onHeartbeat` reaches straight into
+    // SQLite, so this catch is the last line of defence between a contended
+    // write and a dead ingest worker.
     this.heartbeatTimer = setInterval(() => {
-      const now = Date.now();
-      if (!heartbeatIngestionLease(this.opts.workerKey, this.owner, now, ttlMs)) {
-        this.leaseLost = true;
-        this.opts.status.set('lease-lost', { lastError: 'worker lease heartbeat failed' });
-        return;
+      try {
+        const now = Date.now();
+        if (!heartbeatIngestionLease(this.opts.workerKey, this.owner, now, ttlMs)) {
+          this.leaseLost = true;
+          this.opts.status.set('lease-lost', { lastError: 'worker lease heartbeat failed' });
+          return;
+        }
+        if (this.opts.heartbeatStatus) {
+          this.opts.status.set(this.opts.heartbeatStatus);
+        }
+        this.opts.onHeartbeat?.();
+      } catch (error) {
+        console.warn(
+          `[worker-lifecycle] heartbeat failed for ${this.opts.workerKey} (non-fatal):`,
+          error instanceof Error ? error.message : error
+        );
       }
-      if (this.opts.heartbeatStatus) {
-        this.opts.status.set(this.opts.heartbeatStatus);
-      }
-      this.opts.onHeartbeat?.();
     }, intervalMs);
   }
 
@@ -237,6 +248,14 @@ export class WorkerLease {
   release(): void {
     this.stopHeartbeat();
     this.leaseOwned = false;
-    releaseIngestionLease(this.opts.workerKey, this.owner);
+    try {
+      releaseIngestionLease(this.opts.workerKey, this.owner);
+    } catch (error) {
+      // Runs during shutdown; the lease expires by TTL regardless.
+      console.warn(
+        `[worker-lifecycle] lease release failed for ${this.opts.workerKey} (non-fatal):`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 }

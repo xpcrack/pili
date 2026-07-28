@@ -5,12 +5,13 @@ export const dynamic = 'force-dynamic';
 
 const LOGO_CACHE_TTL_MS = 30 * 60 * 1000;
 const EMPTY_LOGO_CACHE_TTL_MS = 60 * 1000;
-const TOKEN_LOGO_CACHE_VERSION = 'v4';
+const TOKEN_LOGO_CACHE_VERSION = 'v5';
 const logoCache = new Map<
   string,
   {
     logoUrl: string | null;
     marketCapUsd: number | null;
+    liquidityUsd: number | null;
     marketCapAtTxUsd: number | null;
     marketCapAtTxEstimated: boolean;
     marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
@@ -59,6 +60,7 @@ export async function GET(request: NextRequest) {
       ok: true,
       logoUrl: cached.logoUrl,
       marketCapUsd: cached.marketCapUsd,
+      liquidityUsd: cached.liquidityUsd,
       marketCapAtTxUsd: cached.marketCapAtTxUsd,
       marketCapAtTxEstimated: cached.marketCapAtTxEstimated,
       marketCapAtTxSource: cached.marketCapAtTxSource,
@@ -74,6 +76,7 @@ export async function GET(request: NextRequest) {
   logoCache.set(cacheKey, {
     logoUrl: result.logoUrl,
     marketCapUsd: result.marketCapUsd,
+    liquidityUsd: result.liquidityUsd,
     marketCapAtTxUsd: result.marketCapAtTxUsd,
     marketCapAtTxEstimated: result.marketCapAtTxEstimated,
     marketCapAtTxSource: result.marketCapAtTxSource,
@@ -85,6 +88,7 @@ export async function GET(request: NextRequest) {
     ok: true,
     logoUrl: result.logoUrl,
     marketCapUsd: result.marketCapUsd,
+    liquidityUsd: result.liquidityUsd,
     marketCapAtTxUsd: result.marketCapAtTxUsd,
     marketCapAtTxEstimated: result.marketCapAtTxEstimated,
     marketCapAtTxSource: result.marketCapAtTxSource,

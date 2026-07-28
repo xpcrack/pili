@@ -99,6 +99,7 @@ export interface User {
   totalAssetUsd: number;
   historicalMaxAssetUsd: number;
   assetUpdatedAt: number | null;
+  monitoringEnabled?: boolean;
   tags: string[];
   relayCoverage?: {
     latestTweetId: string;

@@ -13,6 +13,7 @@ interface UserAvatarProps {
 
 export function UserAvatar({ user, isSelected, onClick }: UserAvatarProps) {
   const hasNew = useUserStore((state) => state.hasNew[user.id]);
+  const isDisabled = user.monitoringEnabled === false;
 
   return (
     <button
@@ -36,6 +37,11 @@ export function UserAvatar({ user, isSelected, onClick }: UserAvatarProps) {
         {/* 红点标记 */}
         {hasNew && !isSelected && (
           <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-red-500 ring-2 ring-zinc-950 animate-pulse" />
+        )}
+        {isDisabled && (
+          <span className="absolute -bottom-0.5 -right-1 rounded bg-zinc-700 px-1 text-[9px] leading-3 text-zinc-300 ring-1 ring-zinc-950">
+            停
+          </span>
         )}
       </div>
       

@@ -26,6 +26,8 @@ import {
   getRemoteFeedSource,
 } from '@/lib/smartSearch';
 import { buildAddressAliasMap, selectMatchedFeed } from '@/lib/feed/feedPageState';
+import { filterHighQualityOnly, sortFeedByQuality, type FeedSortMode } from '@/lib/feedQuality';
+import { useUserQuality } from '@/hooks/useUserQuality';
 import { FEED_LOAD_MORE_BATCH_SIZE, FEED_PAGE_BATCH_SIZE } from '@/lib/feed/feedQueryMode';
 import {
   normalizeTradeValueDisplayMode,
@@ -90,6 +92,9 @@ export default function Home() {
   const [searchFilters, setSearchFilters] = useState<FeedSearchFilters>(DEFAULT_FEED_SEARCH_FILTERS);
   const [timeDisplayMode, setTimeDisplayMode] = useState<FeedTimeDisplayMode>('relative');
   const [tradeValueDisplayMode, setTradeValueDisplayMode] = useState<TradeValueDisplayMode>('usd');
+  // 'latest' stays the default — realtime is what this feed is for.
+  const [feedSortMode, setFeedSortMode] = useState<FeedSortMode>('latest');
+  const [highQualityOnly, setHighQualityOnly] = useState(false);
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
@@ -185,10 +190,19 @@ export default function Home() {
     () => selectMatchedFeed({ feed, selectedUserId, searchFilters }),
     [feed, selectedUserId, searchFilters]
   );
+  // Quality ranking runs here, on the window already loaded — the server feed
+  // query is index-pinned and must not grow a computed ORDER BY.
+  const qualityIndex = useUserQuality();
+  const rankedFeed = useMemo(() => {
+    if (feedSortMode === 'latest' && !highQualityOnly) return matchedFeed;
+    const base = highQualityOnly ? filterHighQualityOnly(matchedFeed, qualityIndex) : matchedFeed;
+    return feedSortMode === 'quality' ? sortFeedByQuality(base, qualityIndex) : base;
+  }, [matchedFeed, feedSortMode, highQualityOnly, qualityIndex]);
+
   const visibleCount = selectedUserId ? selectedUserVisibleCount : globalVisibleCount;
   const filteredFeed = useMemo(
-    () => matchedFeed.slice(0, visibleCount),
-    [matchedFeed, visibleCount]
+    () => rankedFeed.slice(0, visibleCount),
+    [rankedFeed, visibleCount]
   );
   // 可见交易批量预取 token logo / 市值，避免每张卡各自打接口
   useTokenInfoPrefetch(filteredFeed);
@@ -200,9 +214,6 @@ export default function Home() {
 
     sorted.sort((a, b) => {
       if (sidebarSortMode === 'asset') {
-        const byHistoricalAsset = b.historicalMaxAssetUsd - a.historicalMaxAssetUsd;
-        if (byHistoricalAsset !== 0) return byHistoricalAsset;
-
         const byCurrentAsset = b.totalAssetUsd - a.totalAssetUsd;
         if (byCurrentAsset !== 0) return byCurrentAsset;
       } else {
@@ -307,14 +318,14 @@ export default function Home() {
 
     if (isSelectedMode) {
       setSelectedUserVisibleCount(nextVisibleCount);
-      if (matchedFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, matchedFeed.length)} 条动态`);
+      if (rankedFeed.length >= nextVisibleCount) {
+        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, rankedFeed.length)} 条动态`);
         return;
       }
     } else {
       setGlobalVisibleCount(nextVisibleCount);
-      if (matchedFeed.length >= nextVisibleCount) {
-        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, matchedFeed.length)} 条动态`);
+      if (rankedFeed.length >= nextVisibleCount) {
+        setExpandFeedback(`已加载 ${Math.min(nextVisibleCount, rankedFeed.length)} 条动态`);
         return;
       }
     }
@@ -356,7 +367,7 @@ export default function Home() {
     hasMore,
     isExpanding,
     loading,
-    matchedFeed.length,
+    rankedFeed.length,
     refetch,
     selectedUserId,
     selectedUserVisibleCount,
@@ -431,7 +442,7 @@ export default function Home() {
                     : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
-                最高资产
+                当前资产
               </button>
               <button
                 onClick={() => setSidebarSortMode('recent')}
@@ -564,14 +575,49 @@ export default function Home() {
                 <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-300">
                   请至少选择一种类型
                 </div>
-              ) : matchedFeed.length === 0 && hasActiveLocalFilters ? (
+              ) : rankedFeed.length === 0 && (hasActiveLocalFilters || highQualityOnly) ? (
                 <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/50 p-4 text-sm text-zinc-400">
                   {searchFilters.keyword.trim()
                     ? '没有匹配的人物、推文内容、CA 或地址'
-                    : '当前筛选条件下没有结果'}
+                    : highQualityOnly
+                      ? '当前窗口内没有高胜率人物的动态，可关掉「只看高手」或去「排行」页看统计口径'
+                      : '当前筛选条件下没有结果'}
                 </div>
               ) : filteredFeed.length > 0 ? (
                 <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setFeedSortMode((mode) => (mode === 'latest' ? 'quality' : 'latest'))}
+                      title={
+                        feedSortMode === 'latest'
+                          ? '当前按时间倒序，点击改为按人物胜率与交易质量排序'
+                          : '当前按质量排序，点击改回时间倒序'
+                      }
+                      className={`rounded-md px-2 py-1 transition-colors ${
+                        feedSortMode === 'quality'
+                          ? 'bg-emerald-500/15 text-emerald-300'
+                          : 'bg-zinc-800/60 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {feedSortMode === 'quality' ? '按质量' : '最新'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHighQualityOnly((value) => !value)}
+                      title="只保留胜率达标且样本足够的人物动态"
+                      className={`rounded-md px-2 py-1 transition-colors ${
+                        highQualityOnly
+                          ? 'bg-emerald-500/15 text-emerald-300'
+                          : 'bg-zinc-800/60 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      只看高手
+                    </button>
+                    {feedSortMode === 'quality' || highQualityOnly ? (
+                      <span className="text-zinc-600">仅对已加载的动态生效</span>
+                    ) : null}
+                  </div>
                   <div id="feed-list" className="rounded-xl border border-zinc-800/70 bg-zinc-950/70">
                     <div className={searchFilters.typeFilters.trade ? 'min-w-[700px]' : undefined}>
                       {searchFilters.typeFilters.trade ? (
@@ -649,7 +695,7 @@ export default function Home() {
                         ? '正在加载更多...'
                         : hasMore
                           ? '滚动到底部继续加载更多'
-                          : `已显示全部 ${matchedFeed.length} 条`}
+                          : `已显示全部 ${rankedFeed.length} 条`}
                     </span>
                   </div>
                 </div>

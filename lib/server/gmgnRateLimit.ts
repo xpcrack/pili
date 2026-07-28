@@ -20,6 +20,17 @@ export const DEFAULT_GMGN_HEAVY_JOB_LOCK = join(homedir(), '.config', 'gmgn', 'h
 const HEAVY_JOB_LOCK =
   process.env.GMGN_HEAVY_JOB_LOCK?.trim() || DEFAULT_GMGN_HEAVY_JOB_LOCK;
 
+/** signal 0 probes liveness without touching the process. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists but belongs to someone else — still alive.
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
 export function readGmgnHeavyJobLock(): { job: string; startedAt: string } | null {
   try {
     if (!existsSync(HEAVY_JOB_LOCK)) return null;
@@ -33,6 +44,11 @@ export function readGmgnHeavyJobLock(): { job: string; startedAt: string } | nul
     if (raw.startedAt) {
       const t = Date.parse(raw.startedAt);
       if (Number.isFinite(t) && Date.now() - t > 2 * 60 * 60 * 1000) return null;
+    }
+    // A killed holder leaves the file behind. Without this check the lock blocks
+    // every GMGN heavy job (including holdings-refresh) for the full 2h window.
+    if (typeof raw.pid === 'number' && raw.pid > 0 && !isProcessAlive(raw.pid)) {
+      return null;
     }
     return { job: raw.job, startedAt: raw.startedAt || '' };
   } catch {

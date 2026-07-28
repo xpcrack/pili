@@ -702,15 +702,12 @@ export function useActivityPolling(
       // 聚合每个用户的活动
       const activitiesByUser = buildActivitiesByUser(mergedFeed);
       let latestMap: Map<string, number> | null = null;
-      if (!append) {
+      const latestEntries = Object.entries(result.latestActivityAtByUser || {}).filter(
+        ([, ts]) => typeof ts === 'number' && Number.isFinite(ts) && ts > 0
+      );
+      if (!append && latestEntries.length > 0) {
         latestMap = new Map<string, number>();
-        if (result.latestActivityAtByUser) {
-          Object.entries(result.latestActivityAtByUser).forEach(([userId, ts]) => {
-            if (typeof ts === 'number' && Number.isFinite(ts) && ts > 0) {
-              latestMap!.set(userId, ts);
-            }
-          });
-        }
+        latestEntries.forEach(([userId, ts]) => latestMap!.set(userId, ts as number));
       }
 
       // 更新每个用户的红点状态

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, RefreshCw, Save, Send } from 'lucide-react';
+import { BarChart3, Bell, RefreshCw, Save, Send } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,80 @@ import { TopNav } from '@/components/TopNav';
 import { adminHeaders, readAdminTokenFromSession, writeAdminTokenToStorage } from '@/lib/adminClient';
 
 type StatusType = 'idle' | 'saving' | 'saved' | 'error';
+
+/**
+ * Trade-signal thresholds, held as strings so partially-typed input doesn't
+ * fight the controlled inputs. Blank market-cap bounds mean "no limit".
+ */
+interface TradeSignalForm {
+  enabled: boolean;
+  minWinRatePercent: string;
+  minRoundTrips: string;
+  minFollowabilityPercent: string;
+  minTradeUsd: string;
+  minMarketCapUsd: string;
+  maxMarketCapUsd: string;
+  coHitMinUsers: string;
+  coHitWindowMinutes: string;
+  cooldownMinutes: string;
+}
+
+const EMPTY_TRADE_SIGNAL_FORM: TradeSignalForm = {
+  enabled: false,
+  minWinRatePercent: '45',
+  minRoundTrips: '10',
+  minFollowabilityPercent: '60',
+  minTradeUsd: '500',
+  minMarketCapUsd: '200000',
+  maxMarketCapUsd: '1000000',
+  coHitMinUsers: '2',
+  coHitWindowMinutes: '180',
+  cooldownMinutes: '60',
+};
+
+function toTradeSignalForm(config: Record<string, unknown> | null | undefined): TradeSignalForm {
+  const value = config || {};
+  const numberOrBlank = (input: unknown, fallback: string) =>
+    typeof input === 'number' && Number.isFinite(input) ? String(input) : input === null ? '' : fallback;
+
+  return {
+    enabled: value.tradeSignalEnabled === true,
+    minWinRatePercent:
+      typeof value.tradeSignalMinWinRate === 'number'
+        ? String(Math.round(value.tradeSignalMinWinRate * 100))
+        : EMPTY_TRADE_SIGNAL_FORM.minWinRatePercent,
+    minRoundTrips: numberOrBlank(value.tradeSignalMinRoundTrips, EMPTY_TRADE_SIGNAL_FORM.minRoundTrips),
+    minFollowabilityPercent:
+      typeof value.tradeSignalMinFollowability === 'number'
+        ? String(Math.round(value.tradeSignalMinFollowability * 100))
+        : EMPTY_TRADE_SIGNAL_FORM.minFollowabilityPercent,
+    minTradeUsd: numberOrBlank(value.tradeSignalMinTradeUsd, EMPTY_TRADE_SIGNAL_FORM.minTradeUsd),
+    minMarketCapUsd: numberOrBlank(value.tradeSignalMinMarketCapUsd, EMPTY_TRADE_SIGNAL_FORM.minMarketCapUsd),
+    maxMarketCapUsd: numberOrBlank(value.tradeSignalMaxMarketCapUsd, EMPTY_TRADE_SIGNAL_FORM.maxMarketCapUsd),
+    coHitMinUsers: numberOrBlank(value.tradeSignalCoHitMinUsers, EMPTY_TRADE_SIGNAL_FORM.coHitMinUsers),
+    coHitWindowMinutes: numberOrBlank(
+      value.tradeSignalCoHitWindowMinutes,
+      EMPTY_TRADE_SIGNAL_FORM.coHitWindowMinutes
+    ),
+    cooldownMinutes: numberOrBlank(value.tradeSignalCooldownMinutes, EMPTY_TRADE_SIGNAL_FORM.cooldownMinutes),
+  };
+}
+
+function toTradeSignalPatch(form: TradeSignalForm) {
+  return {
+    tradeSignalEnabled: form.enabled,
+    tradeSignalMinWinRate: (Number(form.minWinRatePercent.trim() || '0') / 100).toString(),
+    tradeSignalMinRoundTrips: form.minRoundTrips.trim(),
+    tradeSignalMinFollowability: (Number(form.minFollowabilityPercent.trim() || '0') / 100).toString(),
+    tradeSignalMinTradeUsd: form.minTradeUsd.trim(),
+    // Blank means "no bound on this side", which the API models as null.
+    tradeSignalMinMarketCapUsd: form.minMarketCapUsd.trim() || null,
+    tradeSignalMaxMarketCapUsd: form.maxMarketCapUsd.trim() || null,
+    tradeSignalCoHitMinUsers: form.coHitMinUsers.trim(),
+    tradeSignalCoHitWindowMinutes: form.coHitWindowMinutes.trim(),
+    tradeSignalCooldownMinutes: form.cooldownMinutes.trim(),
+  };
+}
 
 type EventStatsPayload = {
   total: number;
@@ -148,6 +222,8 @@ export default function SystemPage() {
   const [completenessStartMs, setCompletenessStartMs] = useState('');
   const [relayCoveredPollingIntervalMinutes, setRelayCoveredPollingIntervalMinutes] = useState('360');
   const [uncoveredPollingIntervalMinutes, setUncoveredPollingIntervalMinutes] = useState('30');
+  // One object rather than nine useState calls — these always load and save together.
+  const [signalForm, setSignalForm] = useState<TradeSignalForm>(EMPTY_TRADE_SIGNAL_FORM);
   const [status, setStatus] = useState<StatusType>('idle');
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
@@ -205,6 +281,7 @@ export default function SystemPage() {
         );
         setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
         setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
+        setSignalForm(toTradeSignalForm(payload.config));
       })
       .catch(() => undefined);
 
@@ -329,6 +406,7 @@ export default function SystemPage() {
         completenessStartMs: completenessStartMs.trim() ? completenessStartMs.trim() : null,
         twitterRelayCoveredPollingIntervalMinutes: relayCoveredPollingIntervalMinutes.trim(),
         twitterUncoveredPollingIntervalMinutes: uncoveredPollingIntervalMinutes.trim(),
+        ...toTradeSignalPatch(signalForm),
       }),
     }).catch(() => null);
 
@@ -356,6 +434,7 @@ export default function SystemPage() {
     );
     setRelayCoveredPollingIntervalMinutes(String(payload.config?.twitterRelayCoveredPollingIntervalMinutes ?? 360));
     setUncoveredPollingIntervalMinutes(String(payload.config?.twitterUncoveredPollingIntervalMinutes ?? 30));
+    setSignalForm(toTradeSignalForm(payload.config));
     setStatus('saved');
     setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1500);
   };
@@ -463,6 +542,57 @@ export default function SystemPage() {
             >
               清空令牌
             </Button>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5">
+          <div className="mb-1 flex items-center gap-2">
+            <Bell className="h-4 w-4 text-zinc-400" />
+            <h2 className="text-sm font-medium">交易信号推送</h2>
+          </div>
+          <p className="mb-4 text-xs text-zinc-500">
+            达标的人建仓/加仓时推 Bark 到手机；多人在同一窗口买入同一个币时优先推送。
+            胜率来自「排行」页的统计，样本不足的人不会触发。改完点页面底部的保存。
+          </p>
+
+          <label className="mb-4 flex cursor-pointer items-center gap-2 text-sm text-zinc-200">
+            <input
+              type="checkbox"
+              checked={signalForm.enabled}
+              onChange={(event) => setSignalForm((current) => ({ ...current, enabled: event.target.checked }))}
+              className="h-4 w-4 accent-emerald-500"
+            />
+            开启推送
+            {!signalForm.enabled ? <span className="text-xs text-zinc-500">（当前关闭，不会发任何通知）</span> : null}
+          </label>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {(
+              [
+                ['minWinRatePercent', '最低胜率 %', '低于这个胜率的人不推送'],
+                ['minRoundTrips', '最少交易次数', '样本不足的人不推送，避免 1 战 1 胜'],
+                ['minFollowabilityPercent', '最低跟单分', '见「排行」页；挡掉高频难跟的钱包。填 0 关闭这一道'],
+                ['minTradeUsd', '最小成交额 USD', '小于这个金额的买入不推送'],
+                ['minMarketCapUsd', '最小市值 USD', '留空表示不限'],
+                ['maxMarketCapUsd', '最大市值 USD', '留空表示不限'],
+                ['coHitMinUsers', '撞车人数', '几个人买同一个币才算撞车'],
+                ['coHitWindowMinutes', '撞车窗口（分钟）', '在这个时间内买入才算同时'],
+                ['cooldownMinutes', '冷却（分钟）', '同一个人同一个币多久内不重复推'],
+              ] as const
+            ).map(([field, label, hint]) => (
+              <div key={field}>
+                <Label className="text-xs text-zinc-400">{label}</Label>
+                <Input
+                  value={signalForm[field]}
+                  onChange={(event) =>
+                    setSignalForm((current) => ({ ...current, [field]: event.target.value }))
+                  }
+                  inputMode="numeric"
+                  className="mt-1 border-zinc-700 bg-zinc-900 text-zinc-100"
+                />
+                <p className="mt-1 text-[11px] text-zinc-600">{hint}</p>
+              </div>
+            ))}
           </div>
         </section>
 

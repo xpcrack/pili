@@ -48,6 +48,7 @@ async function main() {
         upserted: 2,
         chainsOk: ['base'],
         chainsFailed: [],
+      chainsTruncated: [],
         stoppedOnBan: false,
       };
     },
@@ -97,6 +98,7 @@ async function main() {
       upserted: 0,
       chainsOk: ['base'],
       chainsFailed: [{ chain: 'eth', error: 'rate limited' }],
+      chainsTruncated: [],
       stoppedOnBan: true,
     }),
     markOk: (input) => marks.push({ kind: 'ok', address: input.address }),

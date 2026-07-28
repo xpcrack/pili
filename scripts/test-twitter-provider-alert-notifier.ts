@@ -7,6 +7,7 @@ import {
   notifyTwitterProviderFailures,
 } from '@/lib/server/twitterProviderAlertNotifier';
 import type { TwitterFetcherProvider } from '@/lib/server/twitterFetcher';
+import { buildSystemConfigSnapshot } from '@/lib/server/systemConfigRepo';
 
 async function run() {
   const baseInput = {
@@ -23,15 +24,11 @@ async function run() {
   };
 
   const missingChat = await notifyTwitterProviderFailures(baseInput, {
-    readConfig: () => ({
-      completenessStartMs: null,
-      telegramUnknownPersonAlertChatId: null,
-      telegramTradeMonitorSourceChatId: null,
-      telegramTwitterMonitorSourceChatId: null,
-      conflictNotificationTelegramChatId: null,
-      twitterRelayCoveredPollingIntervalMinutes: 360,
-      twitterUncoveredPollingIntervalMinutes: 30,
-    }),
+    readConfig: () =>
+        buildSystemConfigSnapshot({
+        telegramUnknownPersonAlertChatId: null,
+        conflictNotificationTelegramChatId: null,
+        }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: () => {},
     sendMessage: async () => ({ ok: true as const }),
@@ -40,15 +37,11 @@ async function run() {
   assert.equal(missingChat.reason, 'missing-chat-id');
 
   const rateLimited = await notifyTwitterProviderFailures(baseInput, {
-    readConfig: () => ({
-      completenessStartMs: null,
-      telegramUnknownPersonAlertChatId: '-200',
-      telegramTradeMonitorSourceChatId: null,
-      telegramTwitterMonitorSourceChatId: null,
-      conflictNotificationTelegramChatId: '-100',
-      twitterRelayCoveredPollingIntervalMinutes: 360,
-      twitterUncoveredPollingIntervalMinutes: 30,
-    }),
+    readConfig: () =>
+        buildSystemConfigSnapshot({
+        telegramUnknownPersonAlertChatId: '-200',
+        conflictNotificationTelegramChatId: '-100',
+        }),
     isQuotaAvailable: () => false,
     markQuotaConsumed: () => {},
     sendMessage: async () => ({ ok: true as const }),
@@ -59,15 +52,11 @@ async function run() {
   const sentRef: { current: { chatId: string; text: string } | null } = { current: null };
   const consumedKeys: string[] = [];
   const sent = await notifyTwitterProviderFailures(baseInput, {
-    readConfig: () => ({
-      completenessStartMs: null,
-      telegramUnknownPersonAlertChatId: '-200',
-      telegramTradeMonitorSourceChatId: null,
-      telegramTwitterMonitorSourceChatId: null,
-      conflictNotificationTelegramChatId: '-100',
-      twitterRelayCoveredPollingIntervalMinutes: 360,
-      twitterUncoveredPollingIntervalMinutes: 30,
-    }),
+    readConfig: () =>
+        buildSystemConfigSnapshot({
+        telegramUnknownPersonAlertChatId: '-200',
+        conflictNotificationTelegramChatId: '-100',
+        }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: (key) => {
       consumedKeys.push(key);
@@ -86,15 +75,11 @@ async function run() {
   assert.equal(consumedKeys.length, 1);
 
   const failedSend = await notifyTwitterProviderFailures(baseInput, {
-    readConfig: () => ({
-      completenessStartMs: null,
-      telegramUnknownPersonAlertChatId: null,
-      telegramTradeMonitorSourceChatId: null,
-      telegramTwitterMonitorSourceChatId: null,
-      conflictNotificationTelegramChatId: '-100',
-      twitterRelayCoveredPollingIntervalMinutes: 360,
-      twitterUncoveredPollingIntervalMinutes: 30,
-    }),
+    readConfig: () =>
+        buildSystemConfigSnapshot({
+        telegramUnknownPersonAlertChatId: null,
+        conflictNotificationTelegramChatId: '-100',
+        }),
     isQuotaAvailable: () => true,
     markQuotaConsumed: () => {},
     sendMessage: async () => ({

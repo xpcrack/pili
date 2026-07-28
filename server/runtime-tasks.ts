@@ -4,6 +4,8 @@ import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
 import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
 import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
 import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
+import { runTradeSignalCycle } from '@/lib/server/tradeSignalService';
+import { runWalletPnlCycle } from '@/lib/server/walletPnlService';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
 
@@ -64,6 +66,14 @@ export interface LoopTaskOptions {
 
 export interface DefaultRuntimeTaskOptions {
   embedTelegramTasks?: boolean;
+  /**
+   * Wallet PnL walks the full trade history synchronously. It must never run in
+   * a process that also serves HTTP — position-delta already showed what a
+   * multi-second synchronous scan does to the shared Bun event loop.
+   * Defaults to true so the background worker picks it up; the web runtime
+   * passes false explicitly.
+   */
+  includeWalletPnl?: boolean;
 }
 
 // --- options ---
@@ -291,6 +301,8 @@ interface DefaultRuntimeTaskDeps {
   runTelegramBridgeCycle?: typeof runTelegramBridgeCycle;
   runLiveMonitorCycle?: typeof runLiveMonitorCycle;
   runPositionDeltaCycle?: typeof runPositionDeltaCycle;
+  runWalletPnlCycle?: typeof runWalletPnlCycle;
+  runTradeSignalCycle?: typeof runTradeSignalCycle;
   syncFeishuEnablement?: typeof syncFeishuEnablementFromNewone;
 }
 
@@ -306,6 +318,8 @@ export function createDefaultRuntimeTasks(
   const runTelegramBridgeCycleImpl = deps.runTelegramBridgeCycle ?? runTelegramBridgeCycle;
   const runLiveMonitorCycleImpl = deps.runLiveMonitorCycle ?? runLiveMonitorCycle;
   const runPositionDeltaCycleImpl = deps.runPositionDeltaCycle ?? runPositionDeltaCycle;
+  const runWalletPnlCycleImpl = deps.runWalletPnlCycle ?? runWalletPnlCycle;
+  const runTradeSignalCycleImpl = deps.runTradeSignalCycle ?? runTradeSignalCycle;
   const syncEnablement = deps.syncFeishuEnablement ?? syncFeishuEnablementFromNewone;
 
   const tasks: TaskDefinition[] = [];
@@ -442,6 +456,40 @@ export function createDefaultRuntimeTasks(
       },
     })
   );
+
+  // 人物盈亏 / 胜率：只在后台进程跑，Web 进程一律不注册（见 includeWalletPnl 注释）。
+  if (options.includeWalletPnl !== false) {
+    tasks.push(
+      createLoopTask({
+        key: 'wallet-pnl',
+        label: 'Wallet PnL & Win Rate',
+        cycle: async () => {
+          const result = await runWalletPnlCycleImpl();
+          return {
+            sleepMs: result.sleepMs,
+            status: result.status,
+            detail: result.detail,
+          };
+        },
+      })
+    );
+
+    // 交易信号推送：依赖 wallet-pnl 产出的胜率，所以跟它同进程、同开关。
+    tasks.push(
+      createLoopTask({
+        key: 'trade-signal',
+        label: 'Trade Signal Push',
+        cycle: async () => {
+          const result = await runTradeSignalCycleImpl();
+          return {
+            sleepMs: result.sleepMs,
+            status: result.status,
+            detail: result.detail,
+          };
+        },
+      })
+    );
+  }
 
   if (options.embedTelegramTasks !== false) {
     tasks.push(

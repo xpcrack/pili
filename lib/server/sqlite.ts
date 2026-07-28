@@ -184,7 +184,15 @@ function sleepSync(ms: number) {
   }
 }
 
-function withSqliteBusyRetry<T>(fn: () => T, opts?: { attempts?: number; label?: string }): T {
+/**
+ * Retry a synchronous SQLite call while the DB reports SQLITE_BUSY.
+ *
+ * `busy_timeout` alone does not cover write-write upgrade conflicts
+ * (SQLITE_BUSY_SNAPSHOT) in WAL mode, and this repo runs 4+ writer processes
+ * against one file — so every write outside a transaction should go through
+ * here. Backoff is exponential with jitter, capped at 8s per attempt.
+ */
+export function withSqliteBusyRetry<T>(fn: () => T, opts?: { attempts?: number; label?: string }): T {
   const attempts = Math.max(1, opts?.attempts ?? SQLITE_INIT_BUSY_ATTEMPTS);
   const label = opts?.label || 'sqlite';
   let lastError: unknown;
@@ -336,6 +344,24 @@ ON current_holdings(chain, token_address_lower);
 
 CREATE INDEX IF NOT EXISTS idx_holdings_user
 ON current_holdings(user_id);
+
+-- Per-wallet holdings refresh bookkeeping. Was created lazily inside a GET
+-- handler (userHoldingsDetails), which meant a fresh DB did not have it until
+-- someone happened to read holdings. Declared here so every process can rely on
+-- it — the asset-peak guard needs it to tell "all junk" from "never fetched".
+CREATE TABLE IF NOT EXISTS current_holdings_wallet_status (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tracked_address TEXT NOT NULL,
+  tracked_address_lower TEXT NOT NULL,
+  user_id TEXT,
+  chain TEXT NOT NULL,
+  status TEXT NOT NULL,
+  refreshed_at INTEGER NOT NULL,
+  UNIQUE(tracked_address_lower, chain)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_wallet_status_user
+ON current_holdings_wallet_status(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_holdings_value
 ON current_holdings(value_usd);
@@ -1054,6 +1080,118 @@ CREATE TABLE IF NOT EXISTS feed_content_revision (
   updated_at INTEGER NOT NULL
 );
 
+-- Realized/unrealized PnL derived from events. One row per position round trip
+-- (a series segment from zero shares back to zero shares) per
+-- chain|wallet|token series. Derived data only: safe to DELETE and recompute.
+CREATE TABLE IF NOT EXISTS wallet_token_pnl (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  series_key TEXT NOT NULL,
+  round_index INTEGER NOT NULL,
+  user_id TEXT,
+  chain TEXT NOT NULL,
+  wallet_address TEXT NOT NULL,
+  wallet_address_lower TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_address_lower TEXT NOT NULL,
+  token_symbol TEXT,
+  opened_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  last_trade_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  buy_count INTEGER NOT NULL DEFAULT 0,
+  sell_count INTEGER NOT NULL DEFAULT 0,
+  buy_usd REAL NOT NULL DEFAULT 0,
+  sell_usd REAL NOT NULL DEFAULT 0,
+  cost_basis_sold_usd REAL NOT NULL DEFAULT 0,
+  realized_pnl_usd REAL NOT NULL DEFAULT 0,
+  realized_multiple REAL,
+  remaining_shares REAL NOT NULL DEFAULT 0,
+  remaining_cost_usd REAL NOT NULL DEFAULT 0,
+  avg_cost_price_usd REAL,
+  entry_market_cap_usd REAL,
+  -- 1 when the closing sell was a same-tx swap into another token (换仓),
+  -- not a deliberate exit. Keeps hold-time honest for 满仓换仓 traders.
+  closed_by_swap INTEGER NOT NULL DEFAULT 0,
+  -- Emptied by a transfer out rather than a sale; excluded from win rate.
+  exited_by_transfer INTEGER NOT NULL DEFAULT 0,
+  max_single_buy_usd REAL NOT NULL DEFAULT 0,
+  computed_at INTEGER NOT NULL,
+  UNIQUE(series_key, round_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_token_pnl_user
+ON wallet_token_pnl(user_id, status, confidence);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_token_pnl_token
+ON wallet_token_pnl(chain, token_address_lower);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_token_pnl_series
+ON wallet_token_pnl(series_key);
+
+-- Sent trade-signal alerts. Persisted (not in-memory) so a worker restart does
+-- not re-push signals the user already saw.
+CREATE TABLE IF NOT EXISTS trade_signal_alerts (
+  dedupe_key TEXT PRIMARY KEY,
+  signal_type TEXT NOT NULL,
+  user_id TEXT,
+  chain TEXT NOT NULL,
+  token_address_lower TEXT NOT NULL,
+  token_symbol TEXT,
+  trade_amount_usd REAL,
+  market_cap_usd REAL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  triggered_at INTEGER NOT NULL,
+  sent_at INTEGER,
+  delivered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_signal_alerts_recent
+ON trade_signal_alerts(triggered_at DESC);
+
+-- Per-person rollup of wallet_token_pnl. Rebuilt wholesale on each run.
+-- One row per (person, time window). A person's style changes: rop traded 504
+-- tokens over 2.5y but only 24 in the last 90 days, so an all-time aggregate
+-- hides what they are doing now.
+CREATE TABLE IF NOT EXISTS user_pnl_stats (
+  user_id TEXT NOT NULL,
+  window_key TEXT NOT NULL DEFAULT 'all',
+  realized_pnl_usd REAL NOT NULL DEFAULT 0,
+  unrealized_pnl_usd REAL,
+  round_trips INTEGER NOT NULL DEFAULT 0,
+  wins INTEGER NOT NULL DEFAULT 0,
+  losses INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL,
+  median_multiple REAL,
+  avg_win_usd REAL,
+  avg_loss_usd REAL,
+  profit_factor REAL,
+  median_entry_market_cap_usd REAL,
+  open_positions INTEGER NOT NULL DEFAULT 0,
+  partial_round_trips INTEGER NOT NULL DEFAULT 0,
+  transfer_exit_rounds INTEGER NOT NULL DEFAULT 0,
+  median_max_single_buy_usd REAL,
+  big_buy_win_rate REAL,
+  big_buy_round_trips INTEGER NOT NULL DEFAULT 0,
+  coverage_ratio REAL,
+  first_trade_at INTEGER,
+  last_trade_at INTEGER,
+  -- 可跟单性维度（口径见 LLMwiki「meme信息源管理 / 如何评价一个链上个体」）:
+  -- 出手币数越少越好、持仓越久越好、入场市值越高越好、胜率越高越好。
+  distinct_tokens INTEGER NOT NULL DEFAULT 0,
+  total_buys INTEGER NOT NULL DEFAULT 0,
+  avg_hold_hours REAL,
+  -- Excludes rounds closed by a swap, so 满仓换仓 does not read as short holding.
+  avg_hold_hours_excl_swap REAL,
+  swap_closed_rounds INTEGER NOT NULL DEFAULT 0,
+  -- Simple mean over buys (not amount-weighted), matching the wiki's 回填口径.
+  avg_entry_market_cap_usd REAL,
+  followability_score REAL,
+  followability_parts_json TEXT,
+  computed_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, window_key)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   event_id UNINDEXED,
   content,
@@ -1275,10 +1413,17 @@ function initializeDb(db: SqlDatabase) {
   }
 
   withSqliteBusyRetry(() => {
+    // user_pnl_stats is fully derived and its PK changed when time windows were
+    // added, which ALTER TABLE cannot do. Drop the pre-window shape so the
+    // CREATE below rebuilds it; the next PnL cycle repopulates it.
+    if (tableExists(db, 'user_pnl_stats') && !hasColumn(db, 'user_pnl_stats', 'window_key')) {
+      db.exec('DROP TABLE user_pnl_stats');
+    }
     db.exec(SCHEMA_SQL);
     ensureTelegramChannelSourceColumns(db);
     ensureTelegramChannelPostSchema(db);
     ensureTelegramMonitorEventColumns(db);
+    ensureWalletPnlColumns(db);
     ensureTelegramMonitorTxStatesTokenAwareSchema(db);
     ensureActivityJudgmentColumns(db);
     ensureTwitterSyncCursorColumns(db);
@@ -1292,6 +1437,13 @@ function initializeDb(db: SqlDatabase) {
     migrateLegacyJudgments(db);
   }, { label: 'initializeDb' });
   initialized = true;
+}
+
+function tableExists(db: SqlDatabase, tableName: string) {
+  const row = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`)
+    .get(tableName) as { name?: string } | undefined;
+  return Boolean(row?.name);
 }
 
 function hasColumn(db: SqlDatabase, tableName: string, columnName: string) {
@@ -1402,6 +1554,28 @@ FROM telegram_monitor_tx_states_legacy_v1;
     db.exec('DROP TABLE telegram_monitor_tx_states_legacy_v1');
   });
   migrate();
+}
+
+/**
+ * Both PnL tables are fully derived and rewritten wholesale each run, so new
+ * columns just need to exist — the next cycle backfills their values.
+ */
+function ensureWalletPnlColumns(db: SqlDatabase) {
+  ensureColumn(db, 'wallet_token_pnl', 'closed_by_swap', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'wallet_token_pnl', 'exited_by_transfer', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'wallet_token_pnl', 'max_single_buy_usd', 'REAL NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'transfer_exit_rounds', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'median_max_single_buy_usd', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'big_buy_win_rate', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'big_buy_round_trips', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'distinct_tokens', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'total_buys', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'avg_hold_hours', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'avg_hold_hours_excl_swap', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'swap_closed_rounds', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'avg_entry_market_cap_usd', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'followability_score', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'followability_parts_json', 'TEXT');
 }
 
 function ensureTelegramMonitorEventColumns(db: SqlDatabase) {

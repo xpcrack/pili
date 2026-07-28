@@ -6,10 +6,11 @@ import { Zap } from 'lucide-react';
 import { AppLink, useAppRouter } from '@/lib/appNavigation';
 import { isMainPageRoutePath } from '@/lib/mainPageSession';
 
-export const TOP_NAV_ACTIVE_VALUES = ['feed', 'manage', 'addresses', 'tokens', 'system'] as const;
+export const TOP_NAV_ACTIVE_VALUES = ['feed', 'ranking', 'manage', 'addresses', 'tokens', 'system'] as const;
 export type TopNavActive = (typeof TOP_NAV_ACTIVE_VALUES)[number];
 export const TOP_NAV_ITEMS = [
   { href: '/', label: 'Feed', active: 'feed' },
+  { href: '/ranking', label: '排行', active: 'ranking' },
   { href: '/manage', label: '人物', active: 'manage' },
   { href: '/addresses', label: '地址', active: 'addresses' },
   { href: '/tokens', label: '代币', active: 'tokens' },
