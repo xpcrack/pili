@@ -6,7 +6,7 @@
 
 ## 核心功能
 
-- **实时交易流**：WebSocket 推送链上交易事件（买入/卖出），支持自动重连
+- **实时交易流**：按 revision 轮询获取链上交易事件（买入/卖出），自动刷新
 - **人物画像**：地址关联真实人物，展示交易统计（胜率、盈亏比、热门代币）
 - **持仓明细**：当前持仓代币、数量、成本、浮盈亏
 - **代币详情**：K线、市值、持仓者网络（谁跟谁买了同一币）
@@ -17,13 +17,11 @@
 ## 数据流架构
 
 ```
-[数据源链上] → telegram-bridge(WS) → memory buffer(10s批量)
+[链上事件] → telegram-bridge 摄取(xxyy 信号/监控) → 后台写入器批量入库
     ↓
-[SQLite: trades/raw] → lib/server/eventsRepo.ts → 内存 200 条
+[SQLite: events / raw_transactions] → feedSnapshotRepo / eventsRepo
     ↓
-[Hono REST] → GET /api/feed → JSON: events[]
-    ↓
-[SSE] → GET /api/feed/stream → 实时推送
+[Hono REST] → GET /api/feed（前端按 revision 轮询）→ JSON: events[]
     ↓
 [前端 React] → /feed → 交易流 UI
 ```
@@ -32,18 +30,19 @@
 
 ## 数据源
 
-- **Telegram 桥**：链上事件通过 Telegram Bot API 实时推送
-- **WebSocket**：前端通过 SSE（Server-Sent Events）连接 `/api/feed/stream`
+- **Telegram 桥**：`pili-telegram-bridge` 摄取链上交易信号并入库
+- **前端拉取**：React 前端通过 `GET /api/feed` 按 revision 轮询获取动态（非 WebSocket/SSE）
 
 ---
 
 ## 数据存储
 
-- **SQLite**：`.data/web3-feed.sqlite`
-  - `trades` 表：交易事件（地址、代币、方向、金额、时间）
-  - `addresses` 表：地址标签（人物名、标签、社交链接）
-  - `persons` 表：人物画像统计（胜率、盈亏比、总 PnL）
-- **内存缓存**：最新 200 条事件常驻内存
+- **SQLite**：`.data/web3-feed.sqlite`（`.data/` 不入库）
+  - `events` / `raw_transactions`：链上交易与原始事件
+  - `tracked_users` / `tracked_addresses`：人物与地址标签
+  - `current_holdings`：当前持仓
+  - `activity_feed` / `activity_judgments`：动态流与判定
+  - 另有 pnl、twitter、completeness、holder_snapshot 等多张表
 
 ---
 
@@ -71,9 +70,11 @@ npm run runtime:refresh
 
 ```
 pm2 ecosystem:
-  pili-web-prod       → 生产 Web 服务（Bun/Hono，端口 3005）
-  pili-feed-writer    → 写入器（消费 telegram-bridge，批量写 SQLite）
-  pili-tg-forwarder   → Telegram 转发器
+  pili-web-prod                → 生产 Web/API（Bun/Hono，端口 3013）
+  pili-web-dev                 → 开发模式（端口 3005）
+  pili-background-worker       → 后台写入/资产同步/PnL
+  pili-telegram-bridge         → 链上信号摄取入库
+  pili-telegram-channel-worker → Telegram 频道监控
 ```
 
 ---
