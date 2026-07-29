@@ -210,7 +210,12 @@ export default function Home() {
   const hasAnyActiveFilter = Boolean(selectedUserId) || hasActiveLocalFilters;
 
   const sidebarUsers = useMemo(() => {
-    const sorted = [...users];
+    // 停用的聪明钱默认隐藏；但当前已选中的保留显示，避免选中后突然消失、切不回来。
+    const visible = users.filter(
+      (user) => user.monitoringEnabled !== false || user.id === selectedUserId
+    );
+
+    const sorted = [...visible];
 
     sorted.sort((a, b) => {
       if (sidebarSortMode === 'asset') {
@@ -229,7 +234,7 @@ export default function Home() {
     }
 
     return sorted;
-  }, [users, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds]);
+  }, [users, selectedUserId, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds]);
 
   const addressAliasMap = useMemo(() => buildAddressAliasMap(users), [users]);
 
