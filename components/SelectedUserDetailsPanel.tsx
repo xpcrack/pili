@@ -11,6 +11,7 @@ import {
   type UserDetailsSuccessPayload,
   USER_HOLDINGS_THRESHOLD_USD,
 } from '@/lib/userDetails';
+import { buildGmgnTokenUrl } from '@/lib/addressBook';
 import { getUserAvatar } from '@/lib/userProfile';
 import type { User } from '@/types';
 
@@ -170,7 +171,6 @@ export function SelectedUserDetailsPanel({
 }: SelectedUserDetailsPanelProps) {
   const holdingsThresholdUsd = details?.holdingsThresholdUsd ?? USER_HOLDINGS_THRESHOLD_USD;
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const holdingMetricsMap = useHoldingMetricsMap(details?.holdings);
 
   // Filter out dead coins with insufficient liquidity (client-side fallback).
@@ -202,7 +202,10 @@ export function SelectedUserDetailsPanel({
   const hasPendingLiquidityLookups = pendingLiquidityHoldingsCount > 0;
 
   const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
-  const totalAssetUsd = details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd;
+  // holdings 明细是从 current_holdings 实时读的，totalAssetUsd 是 tracked_users 缓存的；
+  // 缓存可能因 peak reset / refresh 不同步而为 0，此时用 holdings 合计兜底。
+  const holdingsTotalUsd = (details?.holdings ?? []).reduce((sum, h) => sum + h.valueUsd, 0);
+  const totalAssetUsd = (details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd) || holdingsTotalUsd;
   const holdingsAge = getHoldingsAgeState(details?.holdingsUpdatedAt);
   const statusLine = [
     detailsRefreshing ? '正在后台刷新持仓明细...' : null,
@@ -212,11 +215,13 @@ export function SelectedUserDetailsPanel({
     .filter(Boolean)
     .join(' · ') || null;
 
-  const handleCopyCa = useCallback((tokenAddress: string, key: string) => {
-    navigator.clipboard.writeText(tokenAddress).then(() => {
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 1500);
-    });
+  const handleCopyCa = useCallback((tokenAddress: string) => {
+    navigator.clipboard.writeText(tokenAddress).catch(() => {});
+  }, []);
+
+  const openGmgnToken = useCallback((chain: string, tokenAddress: string) => {
+    const url = buildGmgnTokenUrl(chain, tokenAddress);
+    if (url) window.open(url, '_blank', 'noopener,noreferrer');
   }, []);
 
   return (
@@ -347,13 +352,15 @@ export function SelectedUserDetailsPanel({
                         <button
                           type="button"
                           className="max-w-[12rem] truncate text-left font-semibold text-zinc-100 transition-colors hover:text-emerald-400"
-                          title="点击复制合约地址"
-                          onClick={() => handleCopyCa(holding.tokenAddress, rowKey)}
+                          title="左键复制合约地址，右键打开 GMGN"
+                          onClick={() => handleCopyCa(holding.tokenAddress)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openGmgnToken(holding.chain, holding.tokenAddress);
+                          }}
                         >
                           {holding.symbol}
-                          {copiedKey === rowKey ? (
-                            <span className="ml-1 text-[10px] font-normal text-emerald-400">已复制</span>
-                          ) : null}
                         </button>
                         {holding.name && holding.name !== holding.symbol ? (
                           <div className="truncate text-[10.5px] text-zinc-600">{holding.name}</div>

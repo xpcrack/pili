@@ -307,6 +307,14 @@ export async function validatePeakAssetSnapshots(params: {
     });
 
     if (blocked) {
+      // missing_liquidity 只是 DexScreener 没收录某个 token，不是污染证据：
+      // updateAssetSnapshots 写入时会用流动性行守卫重算总额，拿不到流动性的 token
+      // 自然被排除。 若在这里 block 整个用户，真实持仓（如 rune）会被永久卡成 $0。
+      // 只 block 真正可证的污染：detail_total_mismatch（原始总额与明细对不上）与
+      // liquidity_ratio_exceeded（持仓占比过大、卖不掉）。
+      if (blocked.status === 'missing_liquidity') {
+        continue;
+      }
       blockedUsers.push(blocked);
       blockedUserIds.add(user.id);
     }

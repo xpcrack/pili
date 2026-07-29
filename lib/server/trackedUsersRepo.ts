@@ -708,7 +708,36 @@ export function listTrackedUsers() {
     addressMap.set(row.user_id, list);
   }
 
-  const result = userRows.map((row) => mapUserRow(row, addressMap.get(row.id) || []));
+  // tracked_users.total_asset_usd 的多跳回填（holdings-refresh → peak 校验 → updateAssetSnapshots）
+  // 任何一环失败（OKX 超时、DexScreener 无流动性、failedUserIds 整个 user 被排除）就会卡住，
+  // 导致侧边栏/详情面板总资产长期显示 0，而 current_holdings 明细其实有值。
+  // 以 current_holdings 的流动性过滤汇总为真源；缓存值为 0 时必然用它，否则取较大值避免瞬态归零。
+  const liveTotalByUserStmt = db.prepare(
+    `SELECT ch.user_id AS user_id,
+            COALESCE(SUM(ch.value_usd), 0) AS total_asset_usd
+     FROM current_holdings ch
+     WHERE ${liquidAssetWhereSql('ch')}
+     GROUP BY ch.user_id`
+  );
+  const liveTotalByUser = new Map<string, number>();
+  for (const row of liveTotalByUserStmt.all() as Array<{ user_id: string; total_asset_usd: number }>) {
+    if (typeof row.total_asset_usd === 'number' && Number.isFinite(row.total_asset_usd)) {
+      liveTotalByUser.set(row.user_id, row.total_asset_usd);
+    }
+  }
+
+  const result = userRows.map((row) => {
+    const cachedTotal = typeof row.total_asset_usd === 'number' ? row.total_asset_usd : 0;
+    const cachedMax =
+      typeof row.historical_max_asset_usd === 'number' ? row.historical_max_asset_usd : cachedTotal;
+    const liveTotal = liveTotalByUser.get(row.id) ?? 0;
+    // liveTotal 为真源；取 max 避免缓存回填失败导致的 0；峰值至少不低于当前。
+    const totalAssetUsd = Math.max(cachedTotal, liveTotal);
+    return mapUserRow(
+      { ...row, total_asset_usd: totalAssetUsd, historical_max_asset_usd: Math.max(cachedMax, totalAssetUsd) },
+      addressMap.get(row.id) || []
+    );
+  });
   trackedUsersCache = { data: result, ts: Date.now() };
   return result;
 }
