@@ -5,7 +5,10 @@ import type {
   TweetEnrichmentModelInputMention,
   TweetEnrichmentModelOutputSentiment,
   TweetEnrichmentModelResult,
+  TweetEnrichmentAliasCandidate,
+  TweetEnrichmentAliasConfirmation,
 } from '@/lib/server/twitterEnrichmentModel';
+import type { TweetMentionSentiment } from '@/lib/server/twitterEnrichmentRepo';
 import { listPreserveTickerSymbols } from '@/lib/twitter/extractTweetTokenMentions';
 import {
   getPrimaryPoolOfficialTwitterMap,
@@ -286,6 +289,62 @@ export function parseModelOutput(raw: string): {
 
 const VALID_SENTIMENTS = new Set(['positive', 'negative', 'neutral']);
 
+/** Build the alias-resolution prompt. Chinese-capable; no English gate. */
+function buildAliasConfirmPrompt(text: string, candidates: TweetEnrichmentAliasCandidate[]): string {
+  const lines = candidates.map((c, i) => {
+    const parts = [`$${c.symbol}`];
+    if (c.name) parts.push(`项目名/全名: "${c.name}"`);
+    parts.push(`命中词: "${c.matchedAlias}"`);
+    if (c.chain) parts.push(`链: ${c.chain}`);
+    parts.push(`合约: ${c.address}`);
+    return `${i + 1}. ${parts.join('；')}`;
+  });
+  return [
+    '下面是一条推文（可能是中文或英文）：',
+    '"""',
+    text,
+    '"""',
+    '',
+    '针对下面每个"候选代币"，判断这条推文是否真的在谈【这个代币本身】（讨论/交易/推荐/点评该加密货币），',
+    '而不是把该词当成普通含义使用（例如 "Z世代/gen z" 指人群、"pepe" 指表情包 meme 而非币等）。',
+    '只有推文确实把该词当作一个加密货币来谈论时才确认；如果只是顺带提及人群、泛指、或与该币无关，不要确认。',
+    '',
+    '候选代币：',
+    lines.join('\n'),
+    '',
+    '只回复一个 JSON，不要任何解释或 markdown：',
+    '{"confirmed":[{"address":"<合约地址>","sentiment":"positive|negative|neutral"}]}',
+    '没有命中任何代币时返回 {"confirmed":[]}。',
+  ].join('\n');
+}
+
+export function parseAliasConfirmOutput(raw: string): TweetEnrichmentAliasConfirmation[] {
+  const text = (raw || '').trim();
+  if (!text) return [];
+  const tryParse = (s: string): { confirmed?: unknown } | null => {
+    try {
+      return JSON.parse(s) as { confirmed?: unknown };
+    } catch {
+      return null;
+    }
+  };
+  let obj = tryParse(text);
+  if (!obj) {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) obj = tryParse(m[0]);
+  }
+  if (!obj || !Array.isArray(obj.confirmed)) return [];
+  const out: TweetEnrichmentAliasConfirmation[] = [];
+  for (const item of obj.confirmed) {
+    if (!item || typeof item !== 'object') continue;
+    const address = String((item as { address?: unknown }).address || '').trim().toLowerCase();
+    const sentiment = String((item as { sentiment?: unknown }).sentiment || '').trim().toLowerCase();
+    if (!address || !VALID_SENTIMENTS.has(sentiment)) continue;
+    out.push({ address, sentiment: sentiment as TweetMentionSentiment });
+  }
+  return out;
+}
+
 export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
   private apiKey: string;
   private model: string;
@@ -418,6 +477,62 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     } catch (err) {
       console.error('[enrichment-model] Network/error:', err);
       return this.fallbackResult(mentions);
+    }
+  }
+
+  async confirmAliasReferences(input: {
+    text: string;
+    candidates: TweetEnrichmentAliasCandidate[];
+  }): Promise<TweetEnrichmentAliasConfirmation[]> {
+    const { text, candidates } = input;
+    if (!text.trim() || candidates.length === 0) return [];
+    const prompt = buildAliasConfirmPrompt(text, candidates);
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30_000);
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a JSON API. Reply with a single JSON object only. No markdown, no reasoning, no preface.',
+            },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0,
+          max_tokens: 1024,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => '');
+        console.warn(
+          `[enrichment-model] alias-confirm API error ${response.status}: ${errBody.slice(0, 200)}`,
+        );
+        return [];
+      }
+      const data = await response.json();
+      const message = data?.choices?.[0]?.message;
+      const content: string =
+        (typeof message?.content === 'string' && message.content) ||
+        (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
+        '';
+      if (!content) return [];
+      return parseAliasConfirmOutput(content);
+    } catch (err) {
+      console.warn(
+        '[enrichment-model] alias-confirm error:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
     }
   }
 
