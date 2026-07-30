@@ -720,7 +720,7 @@ export function listTrackedUsers() {
      GROUP BY ch.user_id`
   );
   const liveTotalByUser = new Map<string, number>();
-  for (const row of liveTotalByUserStmt.all() as Array<{ user_id: string; total_asset_usd: number }>) {
+  for (const row of liveTotalByUserStmt.all(...LIQUID_ASSET_SYMBOLS) as Array<{ user_id: string; total_asset_usd: number }>) {
     if (typeof row.total_asset_usd === 'number' && Number.isFinite(row.total_asset_usd)) {
       liveTotalByUser.set(row.user_id, row.total_asset_usd);
     }
