@@ -20,12 +20,39 @@ export interface TweetEnrichmentModelResult {
   sentiments: TweetEnrichmentModelOutputSentiment[];
 }
 
+export interface TweetEnrichmentAliasCandidate {
+  symbol: string;
+  name: string | null;
+  address: string;
+  chain: string | null;
+  /** the alias phrase that triggered the candidate (e.g. "Z世代") */
+  matchedAlias: string;
+}
+
+export interface TweetEnrichmentAliasConfirmation {
+  address: string;
+  sentiment: TweetMentionSentiment;
+  confidence?: number;
+}
+
 export interface TweetEnrichmentModel {
   enrichTweet(input: {
     tweetId: string;
     text: string;
     mentions: TweetEnrichmentModelInputMention[];
   }): Promise<TweetEnrichmentModelResult>;
+
+  /**
+   * Alias-resolution gate (Chinese-capable; enrichTweet is English-only).
+   * Given a tweet and candidate tokens matched by name/alias, decide which the
+   * tweet genuinely refers to as a crypto asset (not a generic phrase like a
+   * demographic "Z世代"). Returns confirmed tokens with sentiment. Optional —
+   * if absent, alias recall is skipped (fail safe).
+   */
+  confirmAliasReferences?(input: {
+    text: string;
+    candidates: TweetEnrichmentAliasCandidate[];
+  }): Promise<TweetEnrichmentAliasConfirmation[]>;
 }
 
 export function getDefaultTweetEnrichmentModel(): TweetEnrichmentModel {

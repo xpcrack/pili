@@ -5,7 +5,7 @@ import { getDb, withTransaction } from '@/lib/server/sqlite';
 export type TweetEnrichmentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'skipped';
 export type TweetMentionMatchSource = 'ticker' | 'ca' | 'both' | 'official_twitter';
 export type TweetMentionSentiment = 'positive' | 'negative' | 'neutral';
-export type TweetMentionOrigin = 'text' | 'image';
+export type TweetMentionOrigin = 'text' | 'image' | 'alias';
 export type EventTweetRefSource = 'telegram-monitor' | 'telegram-channel' | 'historical-backfill';
 export type TweetMentionMarketCapSource =
   | 'dexscreener'
@@ -132,7 +132,9 @@ function normalizeSentiment(value: string): TweetMentionSentiment {
 }
 
 function normalizeOrigin(value: string | null | undefined): TweetMentionOrigin {
-  return value === 'image' ? 'image' : 'text';
+  if (value === 'image') return 'image';
+  if (value === 'alias') return 'alias';
+  return 'text';
 }
 
 function normalizeMarketCapSource(value: string | null | undefined): TweetMentionMarketCapSource {
