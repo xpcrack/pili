@@ -15,7 +15,7 @@
  */
 
 import { extractTweetTokenMentions } from '../lib/twitter/extractTweetTokenMentions';
-import { getPrimaryPoolSymbolAllowlist } from '../lib/server/primaryPoolSymbols';
+import { getPrimaryPoolSymbolAllowlist, getPrimaryPoolOfficialTwitterMap } from '../lib/server/primaryPoolSymbols';
 import { getDb } from '../lib/server/sqlite';
 import { exitIfProdDbHeavyJobBlocked } from './lib/prodDbGuard';
 
@@ -126,12 +126,13 @@ function main() {
   let skipped = 0;
 
   const bareSymbolAllowlist = getPrimaryPoolSymbolAllowlist({ forceRefresh: true });
-  console.log(`primary-pool bare allowlist size=${bareSymbolAllowlist.size}`);
+  const officialTwitterByHandle = getPrimaryPoolOfficialTwitterMap({ forceRefresh: true });
+  console.log(`primary-pool bare allowlist size=${bareSymbolAllowlist.size} official_handles=${officialTwitterByHandle.size}`);
 
   const run = db.transaction(() => {
     for (const t of tweets) {
       scanned += 1;
-      const extracted = extractTweetTokenMentions(t.full_text || '', { bareSymbolAllowlist });
+      const extracted = extractTweetTokenMentions(t.full_text || '', { bareSymbolAllowlist, officialTwitterByHandle });
       if (!extracted.length) {
         skipped += 1;
         continue;
