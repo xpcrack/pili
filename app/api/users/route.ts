@@ -10,7 +10,7 @@ import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 import {
   mergeTwitterIdentityIntoUser,
-  resolveTwitterIdentityForHandle,
+  resolveTwitterIdentityForHandleFast,
 } from '@/lib/server/twitterIdentityService';
 import { listTwitterRelayCoverageByHandles } from '@/lib/server/twitterRepo';
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     const source = mergeTwitterIdentityIntoUser(
       users[0],
-      await resolveTwitterIdentityForHandle(users[0].twitter)
+      await resolveTwitterIdentityForHandleFast(users[0].twitter)
     );
     const created = createTrackedUser({
       name: source.name,

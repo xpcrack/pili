@@ -6,6 +6,7 @@ import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
 import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
 import { runTradeSignalCycle } from '@/lib/server/tradeSignalService';
 import { runWalletPnlCycle } from '@/lib/server/walletPnlService';
+import { runTwitterIdentityBackfillCycle } from '@/lib/server/twitterIdentityBackfillRuntime';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
 
@@ -303,6 +304,7 @@ interface DefaultRuntimeTaskDeps {
   runPositionDeltaCycle?: typeof runPositionDeltaCycle;
   runWalletPnlCycle?: typeof runWalletPnlCycle;
   runTradeSignalCycle?: typeof runTradeSignalCycle;
+  runTwitterIdentityBackfillCycle?: typeof runTwitterIdentityBackfillCycle;
   syncFeishuEnablement?: typeof syncFeishuEnablementFromNewone;
 }
 
@@ -320,6 +322,8 @@ export function createDefaultRuntimeTasks(
   const runPositionDeltaCycleImpl = deps.runPositionDeltaCycle ?? runPositionDeltaCycle;
   const runWalletPnlCycleImpl = deps.runWalletPnlCycle ?? runWalletPnlCycle;
   const runTradeSignalCycleImpl = deps.runTradeSignalCycle ?? runTradeSignalCycle;
+  const runTwitterIdentityBackfillCycleImpl =
+    deps.runTwitterIdentityBackfillCycle ?? runTwitterIdentityBackfillCycle;
   const syncEnablement = deps.syncFeishuEnablement ?? syncFeishuEnablementFromNewone;
 
   const tasks: TaskDefinition[] = [];
@@ -510,6 +514,23 @@ export function createDefaultRuntimeTasks(
       })
     );
   }
+
+  // 推特身份补全：保存推特时若网络反查超时，handle 会先入库、user_id/avatar 留空。
+  // 此任务定期扫这类用户，后台补上 user_id/avatar，保证推特流匹配（依赖 twitter_user_id）生效。
+  tasks.push(
+    createLoopTask({
+      key: 'twitter-identity-backfill',
+      label: 'Twitter Identity Backfill',
+      cycle: async () => {
+        const result = await runTwitterIdentityBackfillCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
+        };
+      },
+    })
+  );
 
   return tasks;
 }

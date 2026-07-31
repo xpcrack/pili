@@ -453,6 +453,7 @@ async function testDefaultTaskOrderIsStable() {
       'wallet-pnl',
       'trade-signal',
       'telegram-bridge',
+      'twitter-identity-backfill',
     ]
   );
 
@@ -511,6 +512,7 @@ async function testDefaultTaskOrderIsStable() {
     'position-delta-fill',
     'wallet-pnl',
     'trade-signal',
+    'twitter-identity-backfill',
   ]);
 
   // The web runtime opts out explicitly: PnL is a synchronous full-history walk
