@@ -90,7 +90,13 @@ export function parseTwitterHandleFromUrl(raw: string | null | undefined): strin
     if (host !== 'x.com' && host !== 'twitter.com' && host !== 'mobile.twitter.com') {
       return null;
     }
-    const seg = u.pathname.split('/').filter(Boolean)[0] || '';
+    const segs = u.pathname.split('/').filter(Boolean);
+    // 一条具体推文 (x.com/<user>/status/<id> 或 x.com/i/status/<id>) 不能作为账号主页
+    // 用来识别代币提及——否则会把推文里的 @<user> 误判成提及该代币。
+    if (segs.length >= 2 && (segs[1] === 'status' || (segs[0] === 'i' && segs[1] === 'status'))) {
+      return null;
+    }
+    const seg = segs[0] || '';
     const h = seg.trim().toLowerCase();
     if (!h || ['i', 'home', 'share', 'intent', 'search'].includes(h)) return null;
     return /^[a-z0-9_]{1,15}$/.test(h) ? h : null;
