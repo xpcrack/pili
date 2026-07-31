@@ -12,8 +12,6 @@ import type { User } from '@/types';
 export class UserHoldingsDetailsUnavailableError extends Error {}
 
 interface ReadUserHoldingsDetailsOptions {
-  /** @deprecated No longer used — holdings now read from current_holdings table. */
-  fetchAddressAssetDetails?: unknown;
   now?: () => number;
 }
 

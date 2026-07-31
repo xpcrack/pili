@@ -70,13 +70,6 @@ export function isQuoteLegToken(input: { symbol?: string | null; address?: strin
 }
 
 /**
- * A single trade leg cannot be worth more than the whole token was.
- *
- * 88 of 78,096 priced legs (0.11%) violate this — corrupt `tradeAmountUsdAtTx`
- * values, one of which was $17.5B. Rejecting the leg (rather than capping it)
- * keeps a single bad source row from dominating a person's totals.
- */
-/**
  * Reject absurd market caps before they reach any average.
  *
  * Same $100B ceiling `extractMarketCapUsd` uses in gmgnWalletActivity.ts, for
@@ -84,7 +77,7 @@ export function isQuoteLegToken(input: { symbol?: string | null; address?: strin
  * but one row of 2.9e36 was enough to hand two traders a top 入场市值 percentile
  * and push them up the followability ranking.
  */
-const MAX_PLAUSIBLE_MARKET_CAP_USD = 100_000_000_000;
+export const MAX_PLAUSIBLE_MARKET_CAP_USD = 100_000_000_000;
 
 export function plausibleMarketCap(value: number | null | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
@@ -92,6 +85,13 @@ export function plausibleMarketCap(value: number | null | undefined): number | n
   return value;
 }
 
+/**
+ * A single trade leg cannot be worth more than the whole token was.
+ *
+ * 88 of 78,096 priced legs (0.11%) violate this — corrupt `tradeAmountUsdAtTx`
+ * values, one of which was $17.5B. Rejecting the leg (rather than capping it)
+ * keeps a single bad source row from dominating a person's totals.
+ */
 export function isLegAmountPlausible(usd: number | null, marketCapUsd: number | null): boolean {
   if (usd == null || !Number.isFinite(usd)) return true;
   const marketCap = plausibleMarketCap(marketCapUsd);
@@ -162,8 +162,6 @@ export interface PnlRoundTrip {
   exitedByTransfer: boolean;
   /** Size of the biggest single buy — the conviction signal, unpolluted by 波段. */
   maxSingleBuyUsd: number;
-  /** USD of the first buy that opened this round. */
-  openBuyUsd: number | null;
 }
 
 const SHARE_EPSILON = 1e-12;
@@ -210,7 +208,6 @@ function newRound(roundIndex: number, trade: PnlTradeInput, confidence: PnlConfi
     sharesSold: 0,
     exitedByTransfer: false,
     maxSingleBuyUsd: 0,
-    openBuyUsd: null,
   };
 }
 
@@ -280,7 +277,6 @@ export function computeSeriesRoundTrips(trades: PnlTradeInput[]): PnlRoundTrip[]
       round.buyUsd += legUsd;
       round.sharesBought += legShares;
       if (legUsd > round.maxSingleBuyUsd) round.maxSingleBuyUsd = legUsd;
-      if (round.openBuyUsd == null) round.openBuyUsd = legUsd;
       if (round.entryMarketCapUsd == null) {
         round.entryMarketCapUsd = plausibleMarketCap(trade.marketCapUsd);
       }
@@ -525,6 +521,86 @@ export function computeSelectorScore(inputs: SelectorScoreInput[]): SelectorScor
 }
 
 /**
+ * 复合质量分 — "is this person a *proven* smart money worth copying", not just
+ * "did they rank well on style within this cohort".
+ *
+ * followability_score is a percentile within the cohort, so it cannot tell apart
+ * a small-sample fluke from a battle-tested record — the demo that motivated this
+ * score had 深大 at follow 0.815 off only 11 round trips / $2.3k realized, ranked
+ * above Rop at 0.650 with 376 round trips / $1.88M. @TendersAlt's playbook keeps
+ * repeating "持有越久越好、经过检验", neither of which the percentile captures.
+ *
+ * So compound_quality_score = followability_score × volume_factor × conviction_factor,
+ * where the two factors are ABSOLUTE saturation curves (not percentiles — those
+ * would re-rank on the same cohort and couple back into followability):
+ *   - volume_factor:     saturates from ~0 to 1 as round_trips reaches VOLUME_SAT_RT,
+ *                         so a tiny but stylish sample is held down until it earns trust
+ *   - conviction_factor: saturates from ~0 to 1 as avg_hold_hours_excl_swap reaches
+ *                         CONVICTION_SAT_HOURS (tendy: 持仓越久越好); null → 1 (neutral)
+ *
+ * Preserves followability's null semantics: a null followability (round_trips <
+ * minRoundTrips, "样本不足置灰") stays null here — we grey out, never rank noise.
+ * We never raise a score above followability, only dampen it, so the compound
+ * score ranks within [0, followability_score].
+ */
+export const VOLUME_SAT_ROUND_TRIPS = 50;
+export const CONVICTION_SAT_HOURS = 72;
+
+export interface CompoundQualityInput {
+  userId: string;
+  followabilityScore: number | null;
+  roundTrips: number;
+  avgHoldHoursExclSwap: number | null;
+}
+
+export interface CompoundQualityParts {
+  /** Saturation 0–1 by round_trips. null when followability itself is null. */
+  volumeFactor: number | null;
+  /** Saturation 0–1 by hold hours. null when followability itself is null. */
+  convictionFactor: number | null;
+}
+
+export interface CompoundQualityResult {
+  userId: string;
+  score: number | null;
+  parts: CompoundQualityParts;
+}
+
+/**
+ * Smoothstep-style saturation: 0 at 0, ~1 at `sat`, eased between.
+ * `x` clamped to [0, sat]; returns 1 for any x >= sat.
+ */
+function saturate(x: number, sat: number): number {
+  if (sat <= 0) return 1;
+  const t = Math.max(0, Math.min(1, x / sat));
+  return t * t * (3 - 2 * t); // smoothstep
+}
+
+export function computeCompoundQualityScore(inputs: CompoundQualityInput[]): CompoundQualityResult[] {
+  return inputs.map((input) => {
+    // Keep followability's "insufficient sample → grey out" semantics intact.
+    if (input.followabilityScore == null || !Number.isFinite(input.followabilityScore)) {
+      return {
+        userId: input.userId,
+        score: null,
+        parts: { volumeFactor: null, convictionFactor: null },
+      };
+    }
+    const volumeFactor = saturate(input.roundTrips, VOLUME_SAT_ROUND_TRIPS);
+    // Missing hold time is neutral, not a penalty (mirrors followability's missing-dim rule).
+    const convictionFactor =
+      input.avgHoldHoursExclSwap == null || !Number.isFinite(input.avgHoldHoursExclSwap)
+        ? 1
+        : saturate(input.avgHoldHoursExclSwap, CONVICTION_SAT_HOURS);
+    return {
+      userId: input.userId,
+      score: input.followabilityScore * volumeFactor * convictionFactor,
+      parts: { volumeFactor, convictionFactor },
+    };
+  });
+}
+
+/**
  * One leaderboard row. Lives here rather than in walletPnlService so the client
  * page can import the type without pulling a `server-only` module into the bundle.
  */
@@ -540,7 +616,7 @@ export const PNL_WINDOWS = [
 ] as const;
 
 export type PnlWindowKey = (typeof PNL_WINDOWS)[number]['key'];
-export const DEFAULT_PNL_WINDOW: PnlWindowKey = 'all';
+export const DEFAULT_PNL_WINDOW: PnlWindowKey = '90d';
 
 export function isPnlWindowKey(value: unknown): value is PnlWindowKey {
   return typeof value === 'string' && PNL_WINDOWS.some((w) => w.key === value);
@@ -584,6 +660,8 @@ export interface UserPnlRankingRow {
   avgEntryMarketCapUsd: number | null;
   followabilityScore: number | null;
   followabilityParts: FollowabilityParts | null;
+  compoundQualityScore: number | null;
+  compoundQualityParts: CompoundQualityParts | null;
   computedAt: number;
 }
 

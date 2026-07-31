@@ -21,6 +21,8 @@ export function useUserQuality() {
       .then((response) => response.json())
       .then((payload) => {
         if (cancelled || !payload?.ok || !Array.isArray(payload.rows)) return;
+        // UserPnlRankingRow has all the fields UserQualitySnapshot needs, so
+        // casting is safe — the compact readUserQualitySnapshots was removed as dead code.
         setIndex(buildQualityIndex(payload.rows as UserQualitySnapshot[]));
       })
       // A missing leaderboard must never break the feed — it just means no

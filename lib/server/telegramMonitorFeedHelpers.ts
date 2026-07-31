@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { isEvmChain } from '@/lib/addressBook';
 import type { Activity, User } from '@/types';
 
 export interface TelegramMonitorMatchedUser {
@@ -22,10 +23,6 @@ function normalizeAliasLabel(value: string | null | undefined) {
     .trim()
     .toLowerCase()
     .replace(/#/g, '');
-}
-
-function isEvmChain(chain: string | null | undefined) {
-  return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
 function isFeedCompatibleEvmChain(chain: string | null | undefined) {

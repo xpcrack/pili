@@ -27,6 +27,7 @@ import {
   parseTweetIdFromUrl,
   upsertEventTweetRefAndFetchMissing,
 } from '@/lib/server/twitterLinkRefs';
+import { isEvmChain } from '@/lib/addressBook';
 
 function getMonitorAuthConfig() {
   const relayToken = process.env.TELEGRAM_MONITOR_INGEST_TOKEN?.trim() || '';
@@ -163,10 +164,6 @@ function collectMessageLinks(message: TelegramMessageLike) {
   }
 
   return Array.from(links);
-}
-
-function isEvmChain(chain: string | null | undefined) {
-  return chain === 'bsc' || chain === 'ethereum' || chain === 'base';
 }
 
 function isFeedCompatibleEvmChain(chain: string | null | undefined) {

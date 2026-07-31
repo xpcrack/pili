@@ -10,6 +10,7 @@
 import './server-only-shim.cjs';
 
 /** Below this many scored round trips, a win rate is noise, not a signal. */
+// Matches QUALITY_MIN_ROUND_TRIPS in lib/feedQuality.ts — keep in sync.
 const DEFAULT_MIN_ROUND_TRIPS = 10;
 
 function money(value: number | null | undefined) {

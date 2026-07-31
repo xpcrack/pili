@@ -281,7 +281,6 @@ function testMaxSingleBuyIgnoresSwingAccumulation() {
   const conviction = computeSeriesRoundTrips([trade('open', 1000, 10_000), trade('close', 1000, 5_000)]);
   assert.equal(conviction[0]!.maxSingleBuyUsd, 10_000);
   assert.ok(conviction[0]!.maxSingleBuyUsd > swing[0]!.maxSingleBuyUsd);
-  assert.equal(conviction[0]!.openBuyUsd, 10_000);
 }
 
 function testBigBuyWinRateNeedsSample() {
