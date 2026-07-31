@@ -32,12 +32,13 @@ import {
   getPrimaryPoolSymbolAllowlist,
 } from '@/lib/server/primaryPoolSymbols';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
+import { findAddressesWithTrackedRiders } from '@/lib/server/trackedRiderRepo';
 import { normalizeTwitterHandle } from '@/lib/canonical';
 import { findAliasHits } from '@/lib/server/tokenAliases';
 import type { TweetEnrichmentAliasConfirmation } from '@/lib/server/twitterEnrichmentModel';
 
-/** rule-v8: + KOL-scoped name/alias recall (e.g. $Z ← "gen z"/"Z世代"), LLM-gated */
-const EXTRACTOR_VERSION = 'rule-v8';
+/** rule-v9: rule-v8 + 排除 newone 池内 MC<100K 且无 pili 同车的小币 */
+const EXTRACTOR_VERSION = 'rule-v9';
 const TRANSLATOR_VERSION = 'model-v4';
 
 function normalize(value: string | null | undefined) {
@@ -372,7 +373,7 @@ async function runEnrichmentForTweet(params: {
     };
   });
 
-  const enrichedMentions = (await enrichMentionsMarketData({
+  const enrichedMentionsRaw = (await enrichMentionsMarketData({
     mentions: withSentiment,
     tweetCreatedAtMs: params.tweet.createdAtMs,
     concurrency: 3,
@@ -383,6 +384,25 @@ async function runEnrichmentForTweet(params: {
       return false;
     }
     return true;
+  });
+
+  // 排除「在 newone 代币池里、MC<100K、且无 pili 监控地址同车」的小币。
+  // 三条同时成立才丢弃；任一未知(不在池/MC未解析)都保留，避免误杀。
+  // 候选地址 = 剩余 mentions 的落地地址，去重后一次 SQL 查谁仍有同车，再逐条判。
+  const poolAddresses = getPrimaryPoolAddressSet();
+  const candidateAddresses = enrichedMentionsRaw
+    .map((m) => m.tokenAddress)
+    .filter((v): v is string => Boolean(v && v.trim()));
+  const addressesWithRiders = findAddressesWithTrackedRiders(candidateAddresses);
+
+  const enrichedMentions = enrichedMentionsRaw.filter((mention) => {
+    const addr = (mention.tokenAddress || '').trim().toLowerCase();
+    const inPool = poolAddresses.has(addr);
+    if (!inPool) return true;
+    const mc = mention.marketCapUsd;
+    if (!(typeof mc === 'number' && mc > 0 && mc < 100_000)) return true;
+    // 有任意 pili 监控地址当前持仓即视为有同车 → 保留
+    return addressesWithRiders.has(addr);
   });
 
   replaceTwitterTweetTokenMentions({
