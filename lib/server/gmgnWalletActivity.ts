@@ -4,6 +4,7 @@
  * Fallback: gmgn-cli when PILI_GMGN_ACTIVITY_VIA=cli or openapi fails hard.
  */
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
+import { isOnchainStockToken } from '@/lib/onchainStockTokens';
 import {
   normalizeGmgnChainToPili,
   toGmgnChain as toGmgnChainOrNull,
@@ -319,6 +320,16 @@ export function normalizeGmgnActivityItems(
     if (
       isRobinhoodStockToken({
         chain,
+        tokenAddress: chain === 'solana' ? tokenAddr : tokenAddr.toLowerCase(),
+        tokenName,
+      })
+    ) {
+      continue;
+    }
+    // Drop on-chain stock tokens (tokenized stock: SPCXB/AAPLB/NVDAB/Ondo 系等) —
+    // 这类代币常作 swap 借道中间币被误判成买入,不是监控人物的 meme 意图。
+    if (
+      isOnchainStockToken({
         tokenAddress: chain === 'solana' ? tokenAddr : tokenAddr.toLowerCase(),
         tokenName,
       })
