@@ -47,6 +47,8 @@ export type FeishuEnablementSyncResult = {
   skippedNoPerson: number;
   /** existing users whose empty twitter was filled from feishu/newone meta */
   twittersBackfilled: number;
+  /** existing users whose twitter differed from feishu and was overwritten to match */
+  twittersCorrected: number;
   /** newly enabled / rostered addresses queued for 14d GMGN timeline backfill */
   timelineBackfillQueued?: number;
   error?: string;
@@ -283,55 +285,107 @@ function emptyResult(newonePath: string, error: string): FeishuEnablementSyncRes
     ownershipSkipped: 0,
     skippedNoPerson: 0,
     twittersBackfilled: 0,
+    twittersCorrected: 0,
     error,
   };
 }
 
 /**
- * Fill empty tracked_users.twitter from feishu/newone wallet meta.
- * Only writes when current twitter is empty — never overwrites manual edits.
+ * Align tracked_users.twitter with feishu/newone wallet meta. Feishu sheet is
+ * source of truth (newone's planFeishuWalletSync already upserts meta.twitter).
+ *
+ * Match a feishu person to a pili tracked_user by, in order:
+ *   1) person name (lowercase) — the pre-existing roster key
+ *   2) twitter handle — catches people whose name diverged after a feishu rename
+ *   3) wallet address ownership — catches people whose name AND twitter diverged
+ *
+ * Then write the feishu handle when pili's value differs (normalize-aware):
+ *   - empty pili twitter  → fill (counts as backfill)
+ *   - non-empty but != feishu (after normalize) → overwrite (counts as corrected)
+ *   - equal up to formatting (e.g. "@x" vs "x") → no write
+ *
+ * SQL-only writes: avoid updateTrackedUser which re-sanitizes all addresses.
  */
-function backfillTwitterFromEnabledWallets(wallets: EnabledWalletRow[]): number {
+function backfillTwitterFromEnabledWallets(wallets: EnabledWalletRow[]): {
+  backfilled: number;
+  corrected: number;
+} {
   const groups = groupEnabledWallets(wallets);
   const db = getDb();
+
   const userRows = db
-    .prepare(
-      `SELECT id, name, twitter
-       FROM tracked_users`
-    )
+    .prepare(`SELECT id, name, twitter FROM tracked_users`)
     .all() as Array<{ id: string; name: string; twitter: string | null }>;
 
+  const userById = new Map<string, { id: string; twitter: string }>();
   const userByNameKey = new Map<string, { id: string; twitter: string }>();
+  const userByTwitter = new Map<string, { id: string; twitter: string }>();
   for (const row of userRows) {
-    const key = String(row.name || '')
-      .trim()
-      .toLowerCase();
-    if (!key || userByNameKey.has(key)) continue;
-    userByNameKey.set(key, {
-      id: row.id,
-      twitter: String(row.twitter || '').trim(),
-    });
+    const id = String(row.id);
+    const twitter = String(row.twitter || '').trim();
+    const entry = { id, twitter };
+    userById.set(id, entry);
+    const nameKey = String(row.name || '').trim().toLowerCase();
+    if (nameKey && !userByNameKey.has(nameKey)) userByNameKey.set(nameKey, entry);
+    const twKey = normalizeTwitterHandle(twitter);
+    if (twKey && !userByTwitter.has(twKey)) userByTwitter.set(twKey, entry);
   }
 
-  // SQL-only: avoid updateTrackedUser which re-sanitizes all addresses
-  const setTwitter = db.prepare(
+  // 钱包地址 → pili user_id,用于按归属兜底匹配
+  const addrRows = db
+    .prepare(`SELECT address_lower, user_id FROM tracked_addresses`)
+    .all() as Array<{ address_lower: string; user_id: string }>;
+  const ownerIdByAddrLower = new Map<string, string>();
+  for (const row of addrRows) {
+    const lower = String(row.address_lower || '').trim().toLowerCase();
+    if (lower && !ownerIdByAddrLower.has(lower)) ownerIdByAddrLower.set(lower, row.user_id);
+  }
+
+  const upsertTwitter = db.prepare(
     `UPDATE tracked_users
      SET twitter = ?, updated_at = ?
-     WHERE id = ?
-       AND (twitter IS NULL OR trim(twitter) = '')`
+     WHERE id = ?`,
   );
   const now = Date.now();
-  let filled = 0;
+  let backfilled = 0;
+  let corrected = 0;
+
   for (const [personKey, group] of groups) {
     const want = normalizeTwitterHandle(group.twitter || '');
     if (!want) continue;
-    const user = userByNameKey.get(personKey);
+
+    // 回退链:名字 → 推特 → 钱包归属
+    const byName = userByNameKey.get(personKey);
+    const byTwitter = userByTwitter.get(want);
+    let user = byName || byTwitter || null;
+    if (!user) {
+      for (const wallet of group.wallets) {
+        const ownerId = ownerIdByAddrLower.get(wallet.addressLower);
+        if (ownerId) {
+          const owned = userById.get(ownerId);
+          if (owned) {
+            user = owned;
+            break;
+          }
+        }
+      }
+    }
     if (!user) continue;
-    if (normalizeTwitterHandle(user.twitter)) continue; // already has one
-    const result = setTwitter.run(want, now, user.id);
-    if (result.changes > 0) filled += 1;
+
+    const current = normalizeTwitterHandle(user.twitter);
+    if (current === want) continue; // 已一致(含纯格式差异如 @x vs x)
+    if (!current) {
+      // 空值回填
+      const result = upsertTwitter.run(want, now, user.id);
+      if (result.changes > 0) backfilled += 1;
+    } else {
+      // 非空但与飞书不一致 → 以飞书为准覆盖
+      const result = upsertTwitter.run(want, now, user.id);
+      if (result.changes > 0) corrected += 1;
+    }
   }
-  return filled;
+
+  return { backfilled, corrected };
 }
 
 function groupEnabledWallets(wallets: EnabledWalletRow[]): Map<string, PersonGroup> {
@@ -560,7 +614,9 @@ export function syncFeishuEnablementFromNewone(opts?: {
     }
 
     const roster = ensureRosterFromEnabledWallets(enabledWallets);
-    const twittersBackfilled = backfillTwitterFromEnabledWallets(enabledWallets);
+    const twitterSync = backfillTwitterFromEnabledWallets(enabledWallets);
+    const twittersBackfilled = twitterSync.backfilled;
+    const twittersCorrected = twitterSync.corrected;
 
     const db = getDb();
     const now = Date.now();
@@ -671,6 +727,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
         ownershipSkipped: roster.ownershipSkipped,
         skippedNoPerson,
         twittersBackfilled,
+        twittersCorrected,
         timelineBackfillQueued,
       }),
       now
@@ -691,6 +748,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
       ownershipSkipped: roster.ownershipSkipped,
       skippedNoPerson,
       twittersBackfilled,
+      twittersCorrected,
       timelineBackfillQueued,
     };
   } catch (error) {
