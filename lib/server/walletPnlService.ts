@@ -3,6 +3,7 @@ import 'server-only';
 import { getDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite';
 import {
   aggregateUserPnl,
+  computeCompoundQualityScore,
   computeFollowability,
   computeSelectorScore,
   computeSeriesRoundTrips,
@@ -10,6 +11,7 @@ import {
   PNL_WINDOWS,
   type PnlWindowKey,
   isQuoteLegToken,
+  type CompoundQualityResult,
   type PnlRoundTrip,
   type PnlSeriesMeta,
   type PnlTradeInput,
@@ -105,13 +107,28 @@ function loadSeries(): {
        FROM events
        WHERE source = 'blockchain'
          AND (
-           json_extract(activity_json, '$.metadata.txActionVariant') IN ('open', 'add', 'reduce', 'close')
-           OR json_extract(activity_json, '$.metadata.displayActionVariantLabel') IN ('建仓', '加仓', '减仓', '清仓')
-           OR json_extract(activity_json, '$.metadata.txActionLabel') IN ('建仓', '加仓', '减仓', '清仓')
+           lower(json_extract(activity_json, '$.metadata.txActionVariant')) IN ('open', 'add', 'reduce', 'close')
+           OR trim(json_extract(activity_json, '$.metadata.displayActionVariantLabel')) IN ('建仓', '加仓', '减仓', '清仓')
+           OR trim(json_extract(activity_json, '$.metadata.txActionLabel')) IN ('建仓', '加仓', '减仓', '清仓')
          )
        ORDER BY timestamp ASC, event_id ASC`
     )
     .all() as EventRow[];
+
+  // Parse all rows once upfront — both pre-pass and main loop need the metadata.
+  interface ParsedRow extends EventRow {
+    metadata: Record<string, unknown>;
+  }
+  const parsedRows: ParsedRow[] = [];
+  let parseFailed = 0;
+  for (const row of rows) {
+    try {
+      const activity = JSON.parse(row.activity_json) as { metadata?: Record<string, unknown> };
+      parsedRows.push({ ...row, metadata: activity.metadata || {} });
+    } catch {
+      parseFailed += 1;
+    }
+  }
 
   // Pre-pass: a (wallet, tx) that both buys and sells across >1 token is a swap.
   // The sell leg of such a tx ended the position because the money moved into
@@ -119,17 +136,11 @@ function loadSeries(): {
   const swapTxKeys = new Set<string>();
   {
     const legs = new Map<string, { tokens: Set<string>; buys: number; sells: number }>();
-    for (const row of rows) {
+    for (const row of parsedRows) {
       if (!row.tx_hash) continue;
-      let meta: Record<string, unknown>;
-      try {
-        meta = (JSON.parse(row.activity_json) as { metadata?: Record<string, unknown> }).metadata || {};
-      } catch {
-        continue;
-      }
-      const variant = resolveVariant(meta);
-      const wallet = normalizeLower(meta.trackedAddress);
-      const token = normalizeLower(meta.tokenAddress);
+      const variant = resolveVariant(row.metadata);
+      const wallet = normalizeLower(row.metadata.trackedAddress);
+      const token = normalizeLower(row.metadata.tokenAddress);
       if (!variant || !wallet || !token) continue;
       const key = `${wallet}|${row.tx_hash.toLowerCase()}`;
       const entry = legs.get(key) || { tokens: new Set<string>(), buys: 0, sells: 0 };
@@ -144,19 +155,11 @@ function loadSeries(): {
   }
 
   const buckets = new Map<string, SeriesBucket>();
-  let parseFailed = 0;
   let skippedNoSeries = 0;
   let skippedQuoteLeg = 0;
 
-  for (const row of rows) {
-    let metadata: Record<string, unknown>;
-    try {
-      const activity = JSON.parse(row.activity_json) as { metadata?: Record<string, unknown> };
-      metadata = activity.metadata || {};
-    } catch {
-      parseFailed += 1;
-      continue;
-    }
+  for (const row of parsedRows) {
+    const { metadata } = row;
 
     const variant = resolveVariant(metadata);
     if (!variant) {
@@ -373,7 +376,20 @@ export function runWalletPnlFill(options: { dry?: boolean } = {}): WalletPnlRunR
       ).map((result) => [result.userId, result])
     );
 
-    return { windowKey: window.key as PnlWindowKey, userStats, followability, selectorMap };
+    // 复合质量分：在 followability（素养相对位）之上乘体量/信念绝对饱和系数，
+    // 把「小样本假高」压下去、放「大样本真钱」上来。见 docs/smart-money-compound-score-plan.md。
+    const compoundMap = new Map(
+      computeCompoundQualityScore(
+        userStats.map(({ userId, stats }) => ({
+          userId,
+          followabilityScore: followability.get(userId)?.score ?? null,
+          roundTrips: stats.roundTrips,
+          avgHoldHoursExclSwap: stats.avgHoldHoursExclSwap,
+        }))
+      ).map((result) => [result.userId, result])
+    );
+
+    return { windowKey: window.key as PnlWindowKey, userStats, followability, selectorMap, compoundMap };
   });
 
   if (!options.dry) {
@@ -401,6 +417,7 @@ interface WindowResult {
   userStats: Array<{ userId: string; stats: ReturnType<typeof aggregateUserPnl> }>;
   followability: Map<string, ReturnType<typeof computeFollowability>[number]>;
   selectorMap: Map<string, SelectorScoreResult>;
+  compoundMap: Map<string, CompoundQualityResult>;
 }
 
 function writeResults(
@@ -475,13 +492,15 @@ function writeResults(
              big_buy_win_rate, big_buy_round_trips, coverage_ratio, first_trade_at, last_trade_at,
              distinct_tokens, total_buys, avg_hold_hours, avg_hold_hours_excl_swap, swap_closed_rounds,
              avg_entry_market_cap_usd, followability_score, followability_parts_json,
-             selector_score, selector_hit_rate, selector_round_trips, computed_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             selector_score, selector_hit_rate, selector_round_trips,
+             compound_quality_score, compound_quality_parts_json, computed_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
-        for (const { windowKey, userStats, followability, selectorMap } of perWindow) {
+        for (const { windowKey, userStats, followability, selectorMap, compoundMap } of perWindow) {
         for (const { userId, stats } of userStats) {
           const sel = selectorMap.get(userId);
+          const compound = compoundMap.get(userId);
           insertStats.run(
             userId,
             windowKey,
@@ -516,6 +535,8 @@ function writeResults(
             sel?.selectorScore ?? null,
             sel?.selectorHitRate ?? null,
             sel?.selectorRoundTrips ?? 0,
+            compound?.score ?? null,
+            JSON.stringify(compound?.parts ?? null),
             computedAt
           );
         }
@@ -577,42 +598,18 @@ export function readUserPnlRanking(windowKey: PnlWindowKey = DEFAULT_PNL_WINDOW)
         return null;
       }
     })(),
+    compoundQualityScore: toFiniteNumber(row.compound_quality_score),
+    compoundQualityParts: (() => {
+      try {
+        return row.compound_quality_parts_json ? JSON.parse(String(row.compound_quality_parts_json)) : null;
+      } catch {
+        return null;
+      }
+    })(),
     selectorScore: toFiniteNumber(row.selector_score),
     selectorHitRate: toFiniteNumber(row.selector_hit_rate),
     selectorRoundTrips: Number(row.selector_round_trips) || 0,
     computedAt: Number(row.computed_at) || 0,
-  }));
-}
-
-export interface UserQualitySnapshot {
-  userId: string;
-  winRate: number | null;
-  roundTrips: number;
-  realizedPnlUsd: number;
-  medianMultiple: number | null;
-}
-
-/**
- * Compact per-person quality for the feed payload — a handful of numbers for
- * ~90 people, small enough to ship with the feed and let the client rank the
- * window it already holds.
- *
- * The feed query itself is index-pinned (see eventsRepo's INDEXED BY comment:
- * a wrong plan there costs >25s), so ranking must NOT become a server ORDER BY.
- */
-export function readUserQualitySnapshots(): UserQualitySnapshot[] {
-  const db = getDb();
-  const rows = db
-    .prepare(`SELECT user_id, win_rate, round_trips, realized_pnl_usd, median_multiple FROM user_pnl_stats`)
-    .all() as Array<Record<string, unknown>>;
-
-  return rows.map((row) => ({
-    userId: String(row.user_id),
-    windowKey: String(row.window_key) as PnlWindowKey,
-    winRate: toFiniteNumber(row.win_rate),
-    roundTrips: Number(row.round_trips) || 0,
-    realizedPnlUsd: Number(row.realized_pnl_usd) || 0,
-    medianMultiple: toFiniteNumber(row.median_multiple),
   }));
 }
 

@@ -47,7 +47,8 @@ next-env.d.ts
 .data/
 .worktrees/
 .claude/
-data.sqlite
+*.sqlite
+scripts/_tmp_*
 /logs/
 skills-lock.json
 /pm2/*

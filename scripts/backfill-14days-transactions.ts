@@ -5,10 +5,12 @@ import { fetchOkxTransactionsByAddress } from '@/lib/okx';
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
 import { runAssetSyncPipeline } from '@/lib/server/assetSyncPipeline';
+import { exitIfProdDbHeavyJobBlocked } from './lib/prodDbGuard';
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
 async function backfill14DaysTransactions() {
+  exitIfProdDbHeavyJobBlocked({ jobName: '14-day transactions backfill' });
   console.log('开始补充所有地址近14天的交易动态...');
 
   // 获取所有被跟踪的用户和地址

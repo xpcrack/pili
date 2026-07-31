@@ -83,6 +83,7 @@ const CHAIN_MAP: Record<string, string> = {
 };
 
 function isEvmChain(chain: string) {
+  // Includes hyperevm (not in addressBook.ChainType) for key normalization only.
   return ['ethereum', 'bsc', 'base', 'hyperevm'].includes(chain.toLowerCase());
 }
 

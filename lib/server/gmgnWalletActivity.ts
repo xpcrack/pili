@@ -5,6 +5,7 @@
  */
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
 import { isOnchainStockToken } from '@/lib/onchainStockTokens';
+import { MAX_PLAUSIBLE_MARKET_CAP_USD } from '@/lib/walletPnl';
 import {
   normalizeGmgnChainToPili,
   toGmgnChain as toGmgnChainOrNull,
@@ -272,7 +273,7 @@ export function extractMarketCapUsd(item: GmgnActivityItem): number | null {
   ];
   for (const candidate of candidates) {
     const value = num(candidate as string | number | null | undefined);
-    if (value != null && value > 0 && value <= 100_000_000_000) {
+    if (value != null && value > 0 && value <= MAX_PLAUSIBLE_MARKET_CAP_USD) {
       return value;
     }
   }
@@ -285,7 +286,7 @@ export function extractMarketCapUsd(item: GmgnActivityItem): number | null {
   );
   if (price != null && price > 0 && supply != null && supply > 0) {
     const mcap = price * supply;
-    if (Number.isFinite(mcap) && mcap > 0 && mcap <= 100_000_000_000) {
+    if (Number.isFinite(mcap) && mcap > 0 && mcap <= MAX_PLAUSIBLE_MARKET_CAP_USD) {
       return mcap;
     }
   }

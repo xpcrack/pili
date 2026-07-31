@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, Info } from 'lucide-react';
+import { ArrowDown, Info } from 'lucide-react';
 
 import { TopNav } from '@/components/TopNav';
 import { formatRelativeTimeCompact } from '@/lib/timeFormat';
@@ -15,6 +15,7 @@ const MIN_ROUND_TRIPS = 10;
 const LOW_COVERAGE_THRESHOLD = 0.3;
 
 type SortKey =
+  | 'compoundQualityScore'
   | 'followabilityScore'
   | 'distinctTokens'
   | 'avgHoldHoursExclSwap'
@@ -71,6 +72,12 @@ function pnlColor(value: number | null | undefined) {
 const COLUMNS: Array<{ key: SortKey | null; label: string; align: 'left' | 'right'; hint?: string }> = [
   { key: null, label: '人物', align: 'left' },
   {
+    key: 'compoundQualityScore',
+    label: '复合分',
+    align: 'right',
+    hint: '在跟单分之上乘体量系数（round_trips 饱和到 50）与信念系数（持仓时长饱和到 72h），把小样本假高压下去、放大样本真钱。复合分 ≤ 跟单分',
+  },
+  {
     key: 'followabilityScore',
     label: '跟单分',
     align: 'right',
@@ -121,8 +128,10 @@ export default function RankingPage() {
   const [computedAt, setComputedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Default is 可跟单性, not PnL — see the note in report-wallet-pnl.ts.
-  const [sortKey, setSortKey] = useState<SortKey>('followabilityScore');
+  // Default is 复合分 (compound): same intent as 可跟单性 but damps small-sample
+  // false highs by multiplying body-of-work and conviction factors — see
+  // docs/smart-money-compound-score-plan.md.
+  const [sortKey, setSortKey] = useState<SortKey>('compoundQualityScore');
   // 90d by default: a person's style changes, and an all-time aggregate answers
   // "who were they" when the question is "who are they now".
   const [windowKey, setWindowKey] = useState<PnlWindowKey>(DEFAULT_PNL_WINDOW);
@@ -229,7 +238,7 @@ export default function RankingPage() {
 
         {ranked.length > 0 ? (
           <section className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/40">
-            <table className="w-full min-w-[900px] text-sm">
+            <table className="w-full min-w-[1000px] text-sm">
               <thead>
                 <tr className="border-b border-zinc-800 text-xs text-zinc-500">
                   {COLUMNS.map((column) => (
@@ -262,6 +271,9 @@ export default function RankingPage() {
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-medium text-emerald-300">
+                        {row.compoundQualityScore != null ? (row.compoundQualityScore * 100).toFixed(0) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-zinc-400">
                         {row.followabilityScore != null ? (row.followabilityScore * 100).toFixed(0) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-zinc-300">{row.distinctTokens}</td>
@@ -323,6 +335,11 @@ export default function RankingPage() {
               <span className="text-zinc-400">跟单分</span> 回答的是「这个人值不值得跟」，不是「谁赚得最多」——这两件事在数据里
               几乎是反的：赚最多的人平均入场市值 411M（跟不了），交易最频繁的人平均持仓 1.9 小时（跟不上）。
               口径按你在 wiki 里定的：币数越少、持仓越久、入场市值越高、胜率越高 → 越值得跟。
+            </p>
+            <p className="mt-1">
+              <span className="text-zinc-400">复合分</span> = 跟单分 × 体量系数 × 信念系数。跟单分是同批人里的分位，分不出「11 次的小样本」
+              和「376 次的老手」；复合分在它之上乘两个饱和系数——交易次数到 50 次、持仓时长到 72h 后系数才到 1，否则按比例压低。
+              所以复合分只往下压不往上抬（恒 ≤ 跟单分）：把「打了几把好牌就被捧上天」的人压下去，放经过检验的真钱上来。
             </p>
             <p className="mt-1">
               <span className="text-zinc-400">可信度</span> = 已平仓·历史完整·非转账退出的轮次 / 全部轮次。偏低（标黄）说明

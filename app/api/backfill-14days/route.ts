@@ -4,6 +4,7 @@ import { listTrackedUsers, markAddressesSynced } from '@/lib/server/trackedUsers
 import { buildActivityFeed } from '@/lib/activityFeed';
 import { upsertFeedSnapshot, deleteFeedSnapshotWindowForUsers } from '@/lib/server/feedSnapshotRepo';
 import { validateAndPersistPeakAssetSnapshots } from '@/lib/server/assetPeakValidation';
+import { assertProdDbHeavyJobAllowed } from '@/scripts/lib/prodDbGuard';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,15 @@ export async function POST(request: NextRequest) {
   const unauthorizedResponse = requireAdmin(request);
   if (unauthorizedResponse) {
     return unauthorizedResponse;
+  }
+
+  // Refuse to run against the production DB while live pili workers hold it.
+  const guard = assertProdDbHeavyJobAllowed({ jobName: '14-day transactions backfill' });
+  if (!guard.ok) {
+    return NextResponse.json(
+      { success: false, message: guard.message },
+      { status: 503 },
+    );
   }
 
   try {

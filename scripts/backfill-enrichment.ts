@@ -4,6 +4,7 @@
 import { getDb } from '../lib/server/sqlite';
 import { runTweetEnrichmentForTweetIds } from '../lib/server/twitterEnrichmentService';
 import { projectTwitterTweetsToFeed } from '../lib/server/twitterFeedMapper';
+import { exitIfProdDbHeavyJobBlocked } from './lib/prodDbGuard';
 
 const BATCH_SIZE = 10; // small batches to avoid rate limiting
 const DELAY_MS = 2000; // 2s between batches
@@ -13,6 +14,8 @@ function sleep(ms: number) {
 }
 
 async function main() {
+  exitIfProdDbHeavyJobBlocked({ jobName: 'enrichment backfill' });
+
   const apiKey = (process.env.NVIDIA_API_KEY || '').trim();
   if (!apiKey) {
     console.error('ERROR: NVIDIA_API_KEY not set. Aborting.');

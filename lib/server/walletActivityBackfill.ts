@@ -18,6 +18,7 @@ import {
   noteGmgnBan,
 } from '@/lib/server/gmgnRateLimit';
 import { upsertLiveMonitorTrades } from '@/lib/server/liveMonitorIngest';
+import { isSqliteBusyError } from '@/lib/server/sqlite';
 import type { User } from '@/types';
 
 export const DEFAULT_TIMELINE_DAYS = 14;
@@ -177,8 +178,7 @@ export async function upsertWalletActivityTrades(
         break;
       } catch (error) {
         lastError = error;
-        const msg = error instanceof Error ? error.message : String(error);
-        const busy = /database is locked|SQLITE_BUSY/i.test(msg);
+        const busy = isSqliteBusyError(error);
         if (!busy || attempt === 8) break;
         await new Promise((r) => setTimeout(r, 250 * attempt));
       }

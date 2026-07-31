@@ -150,7 +150,7 @@ function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }
 
-function isSqliteBusyError(error: unknown): boolean {
+export function isSqliteBusyError(error: unknown): boolean {
   if (!error || typeof error !== 'object') {
     return false;
   }
@@ -1188,6 +1188,11 @@ CREATE TABLE IF NOT EXISTS user_pnl_stats (
   avg_entry_market_cap_usd REAL,
   followability_score REAL,
   followability_parts_json TEXT,
+  -- 复合质量分 = followability_score × volume_factor × conviction_factor.
+  -- 修正 followability 百分位「不区分样本量」的病根（小样本假高 vs 大样本真钱），
+  -- 见 docs/smart-money-compound-score-plan.md。两 factor 为绝对饱和曲线，与百分位解耦。
+  compound_quality_score REAL,
+  compound_quality_parts_json TEXT,
   computed_at INTEGER NOT NULL,
   PRIMARY KEY (user_id, window_key)
 );
@@ -1579,6 +1584,8 @@ function ensureWalletPnlColumns(db: SqlDatabase) {
   ensureColumn(db, 'user_pnl_stats', 'selector_score', 'REAL');
   ensureColumn(db, 'user_pnl_stats', 'selector_hit_rate', 'REAL');
   ensureColumn(db, 'user_pnl_stats', 'selector_round_trips', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'user_pnl_stats', 'compound_quality_score', 'REAL');
+  ensureColumn(db, 'user_pnl_stats', 'compound_quality_parts_json', 'TEXT');
 }
 
 function ensureTelegramMonitorEventColumns(db: SqlDatabase) {
