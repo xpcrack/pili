@@ -11,7 +11,7 @@ import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import {
   mergeTwitterIdentityIntoUser,
-  resolveTwitterIdentityForHandle,
+  resolveTwitterIdentityForHandleFast,
 } from '@/lib/server/twitterIdentityService';
 
 export const runtime = 'nodejs';
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     const replaceExisting = body?.replaceExisting === true;
     const hydratedUsers = await Promise.all(
       users.map(async (user) =>
-        mergeTwitterIdentityIntoUser(user, await resolveTwitterIdentityForHandle(user.twitter))
+        mergeTwitterIdentityIntoUser(user, await resolveTwitterIdentityForHandleFast(user.twitter))
       )
     );
     const result = importTrackedUsers(hydratedUsers, { replaceExisting });

@@ -16,7 +16,7 @@ import { InvalidTrackedAddressError } from '@/lib/trackedAddressValidation';
 import { sanitizeUsersPayload } from '@/lib/server/userPayload';
 import {
   mergeTwitterIdentityIntoUser,
-  resolveTwitterIdentityForHandle,
+  resolveTwitterIdentityForHandleFast,
 } from '@/lib/server/twitterIdentityService';
 import { triggerBid2MirrorSync } from '@/lib/server/bidSyncNotifier';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
@@ -175,7 +175,7 @@ export async function PATCH(request: NextRequest, context: UserRouteContext) {
     const normalizedIncomingTwitter = normalizeTwitterHandle(updates.twitter || '').toLowerCase();
     const normalizedCurrentTwitter = normalizeTwitterHandle(currentUser?.twitter || '').toLowerCase();
     const twitterChanged = hasTwitterUpdate && normalizedIncomingTwitter !== normalizedCurrentTwitter;
-    const identity = hasTwitterUpdate && updates.twitter ? await resolveTwitterIdentityForHandle(updates.twitter) : null;
+    const identity = hasTwitterUpdate && updates.twitter ? await resolveTwitterIdentityForHandleFast(updates.twitter) : null;
     const resolvedUpdates =
       hasTwitterUpdate && updates.twitter
         ? identity

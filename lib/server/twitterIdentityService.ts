@@ -38,7 +38,7 @@ function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
 }
 
-async function lookupUserWithConfiguredProviders(handle: string) {
+export async function lookupUserWithConfiguredProviders(handle: string) {
   const xreadApiKey = process.env.TWITTER_XREAD_API_KEY?.trim() || '';
   if (xreadApiKey) {
     try {
@@ -131,6 +131,32 @@ export async function resolveTwitterIdentityForHandle(
   }
 
   return resolved;
+}
+
+/**
+ * Non-blocking variant of resolveTwitterIdentityForHandle for the user-facing
+ * save path (POST/PATCH/import). Caps the wait at timeoutMs so a slow/flaky
+ * twitter provider never blocks saving the handle the user typed. On timeout
+ * returns null — the raw handle is still persisted by the caller, and the
+ * background twitter-identity-backfill task fills userId/avatar later.
+ */
+export async function resolveTwitterIdentityForHandleFast(
+  inputHandle: string | undefined | null,
+  timeoutMs = 5000,
+  dependencies: TwitterIdentityServiceDependencies = {}
+): Promise<ResolvedTwitterIdentity | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      resolveTwitterIdentityForHandle(inputHandle, dependencies),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function mergeTwitterIdentityIntoUser<T extends Partial<User>>(
