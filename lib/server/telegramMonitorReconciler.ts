@@ -19,6 +19,7 @@ import { buildActivityFromSnapshotSync, repairCollapsedCanonicalActivity, type M
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { liveMonitorOwnsWalletTx, upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
+import { isOnchainStockToken } from '@/lib/onchainStockTokens';
 import {
   claimTelegramMonitorTxStatesForRepair,
   getTelegramMonitorTxState,
@@ -160,6 +161,11 @@ async function persistCounterFlowEvent(
   }
 
   const tokenAddress = (counterFlow.flow.tokenAddress || '').trim();
+  // Drop on-chain stock tokens (tokenized stock, e.g. SPCXB 借道 Routing) — 这条 counter-flow
+  // 常把 swap 借道的股票代币当成"另一腿"产出来,不是监控人物的 meme 意图,不进 feed。
+  if (isOnchainStockToken({ tokenAddress })) {
+    return false;
+  }
   const primaryTransactions = transactions.filter((tx) => {
     const txTokenAddr = (tx.tokenContractAddress || tx.tokenAddress || '').trim().toLowerCase();
     const txSymbol = (tx.symbol || '').trim().toLowerCase();

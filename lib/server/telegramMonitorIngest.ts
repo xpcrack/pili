@@ -9,6 +9,7 @@ import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonit
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
+import { isOnchainStockToken } from '@/lib/onchainStockTokens';
 import { enqueueLiveDoorbell } from '@/lib/server/liveDoorbellQueue';
 import { readXxyyFeedMode, shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
@@ -337,6 +338,28 @@ export async function ingestTelegramMonitorUpdate(
       ok: true,
       ignored: true,
       reason: 'robinhood-stock-token-filtered' as const,
+      parsed: {
+        chain: parsed.chain,
+        walletLabel: parsed.walletLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+        tokenAddress: parsed.tokenAddress,
+        tokenSymbol: parsed.tokenSymbol,
+      },
+    };
+  }
+
+  // Drop on-chain stock tokens (tokenized stock: SPCXB/AAPLB/NVDAB/Ondo 系等) —
+  // 蹭股票名/代币化股票,不是监控人物的 meme 意图。XXYY parser 无 tokenName,靠地址黑名单。
+  if (
+    isOnchainStockToken({
+      tokenAddress: parsed.tokenAddress,
+    })
+  ) {
+    return {
+      ok: true,
+      ignored: true,
+      reason: 'onchain-stock-token-filtered' as const,
       parsed: {
         chain: parsed.chain,
         walletLabel: parsed.walletLabel,
