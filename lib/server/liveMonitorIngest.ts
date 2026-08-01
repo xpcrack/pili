@@ -7,6 +7,7 @@ import 'server-only';
 import { buildActivityFromSnapshotSync } from '@/lib/server/telegramMonitorActivity';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { resolveAuthoritativePositionDelta } from '@/lib/server/positionDeltaService';
 import type { NormalizedLiveTrade } from '@/lib/server/gmgnWalletActivity';
 import type { Activity, User } from '@/types';
 
@@ -87,6 +88,9 @@ export function buildLiveMonitorActivity(params: {
   trade: NormalizedLiveTrade;
   /** When true, attach stub importance so eventsRepo skips DB history scoring. */
   skipImportanceScore?: boolean;
+  /** When true, compute an authoritative positionDeltaRatio from full history
+   * now, so the feed shows the real % immediately instead of a client estimate (`~`). */
+  resolvePositionDelta?: boolean;
 }): Activity {
   const { user, trade } = params;
   const { action, actionLabel, actionVariant } = sideToAction(trade.side, trade.isOpenOrClose);
@@ -128,13 +132,21 @@ export function buildLiveMonitorActivity(params: {
     eventTimeMs: trade.eventTimeMs,
   });
 
-  // open → 建仓 (no ratio); close → -100%
-  const positionDeltaRatio =
-    actionVariant === 'close'
-      ? -1
-      : typeof base.metadata.positionDeltaRatio === 'number'
-        ? base.metadata.positionDeltaRatio
-        : undefined;
+  // open → 建仓 (no ratio); close → -100%; add/reduce → compute from full
+  // history so the feed shows the real % immediately (no client `~` estimate).
+  // Failures fall back to undefined; the recurring backfill still catches it.
+  let positionDeltaRatio: number | undefined;
+  if (actionVariant === 'close') {
+    positionDeltaRatio = -1;
+  } else if (typeof base.metadata.positionDeltaRatio === 'number') {
+    positionDeltaRatio = base.metadata.positionDeltaRatio;
+  } else if (params.resolvePositionDelta) {
+    try {
+      positionDeltaRatio = resolveAuthoritativePositionDelta({ ...base, id: liveId }) ?? undefined;
+    } catch {
+      positionDeltaRatio = undefined;
+    }
+  }
 
   return {
     ...base,
@@ -180,6 +192,7 @@ export function upsertLiveMonitorTrades(params: {
       user: params.user,
       trade,
       skipImportanceScore: params.skipImportanceScore,
+      resolvePositionDelta: true,
     }),
   }));
   upsertEventsFromFeedRows(rows, LIVE_MONITOR_INGEST_SOURCE);
