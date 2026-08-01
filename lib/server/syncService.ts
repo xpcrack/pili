@@ -682,8 +682,11 @@ function getLatestRun() {
 }
 
 export function getSyncStatus() {
-  markOrphanedSyncRunsAsFailed();
-
+  // 一般不要在此做写。这曾调 markOrphanedSyncRunsAsFailed()，它在 GET /api/feed
+  // 的热路径上被每次请求触发；撞到写锁时裸 UPDATE 会在 C 层 busy 自旋满
+  // busy_timeout(8s)，把单 Bun 进程的事件循环整块冻住 → 瞬时把所有并发的 feed 读取
+  // 串行卡死、公网端表现为 9~12s 卡顿甚至 15s 超时的「网络错误」。孤儿清理改由
+  // triggerSync() 兜底（每次触发 sync 时清一次），本函数恢复纯只读。
   const latestRun = getLatestRun();
   const lastSuccess = readLastSuccessfulSnapshotState();
   const lastFailure = readLastFailedSyncState();
