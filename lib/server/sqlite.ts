@@ -146,6 +146,30 @@ function getLegacyJudgmentFilePath() {
 let dbInstance: SqlDatabase | null = null;
 let initialized = false;
 
+/**
+ * 独立的「快失败」写连接，busy_timeout = 0。
+ *
+ * 仅供可丢弃的非关键写（当前唯一用途：sync 的租约心跳 heartbeatIngestionLease）。
+ * 这些写撞到别人持有的写锁时，立即收到 SQLITE_BUSY 并在调用方被 catch 掉放弃本轮，
+ * 而**不在主事件循环上同步自旋阻塞**。反例：主连接 busy_timeout=8s，撞锁会同步自旋
+ * 最多 8s（再叠 withSqliteBusyRetry 的 sleepSync 退避可冻死单 Bun 进程的事件循环
+ * 近 20s），把同一进程里所有 GET /api/feed 读取瞬时堵成超时 → 手机端「网络错误」。
+ *
+ * WAL 下多写连接合法，SQLite 仍同一时刻只允许一个写者，本连接只是不等待锁而已。
+ * 新连接不需要重新建表（主连接已初始化 schema），只开库 + 设 PRAGMA。
+ */
+let fastFailWriteDbInstance: SqlDatabase | null = null;
+
+export function getFastFailWriteDb(): SqlDatabase {
+  if (fastFailWriteDbInstance) {
+    return fastFailWriteDbInstance;
+  }
+  const db = createDatabase(getDbPath());
+  db.exec('PRAGMA busy_timeout = 0');
+  fastFailWriteDbInstance = db;
+  return db;
+}
+
 function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }

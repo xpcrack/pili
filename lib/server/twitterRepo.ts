@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite';
+import { getDb, getFastFailWriteDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite';
 import { isLikelyTwitterArtifactText } from '@/lib/twitterArtifactText';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
 
@@ -225,20 +225,22 @@ export function acquireIngestionLease(lockKey: string, owner: string, nowMs: num
  */
 export function heartbeatIngestionLease(lockKey: string, owner: string, nowMs: number, ttlMs: number) {
   try {
-    const result = withSqliteBusyRetry(
-      () =>
-        getDb()
-          .prepare(
-            `UPDATE ingestion_leases
-             SET expires_at_ms = ?,
-                 heartbeat_at_ms = ?,
-                 updated_at_ms = ?
-             WHERE lock_key = ?
-               AND owner = ?`
-          )
-          .run(nowMs + ttlMs, nowMs, nowMs, lockKey, owner),
-      { label: 'heartbeatIngestionLease' }
-    );
+    // 心跳决定写使用 busy_timeout=0 的快失败连接，且不退避（attempts: 1）。
+    // sync 活跃时这条 heartbeat 每 30s 在 web 进程主线程跑；若沿甪主连接的
+    // 8s busy_timeout + withSqliteBusyRetry 8 次退避 sleepSync，撞到 telegram/worker
+    // 的写锁会同步冻死单 Bun 进程事件循环累计 ~20s，把并发的所有 GET /api/feed
+    // 堵成超时 → 手机端「网络错误」。心跳丢一两拍会被租约 TTL 容忍、重抢即可，
+    // 绝不该为续命一次心跳把整个 API 冻住。详见 sqlite.ts getFastFailWriteDb。
+    const result = getFastFailWriteDb()
+      .prepare(
+        `UPDATE ingestion_leases
+         SET expires_at_ms = ?,
+             heartbeat_at_ms = ?,
+             updated_at_ms = ?
+         WHERE lock_key = ?
+           AND owner = ?`
+      )
+      .run(nowMs + ttlMs, nowMs, nowMs, lockKey, owner);
     return result.changes > 0;
   } catch (error) {
     console.warn(
