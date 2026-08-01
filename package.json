@@ -12,6 +12,7 @@
     "build": "PATH=\"$HOME/.bun/bin:$PATH\" bun run build:client",
     "build:client": "vite build",
     "start": "PATH=\"$HOME/.bun/bin:$PATH\" bun server/runtime.ts prod",
+    "public-feed": "PATH=\"$HOME/.bun/bin:$PATH\" bun server/public-feed-server.ts",
     "lint": "eslint",
     "telegram:bridge": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge.ts",
     "telegram:bridge:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge-backfill.ts",
