@@ -1,4 +1,5 @@
 import { syncFeishuEnablementFromNewone } from '@/lib/server/feishuEnablementSync';
+import { syncTwitterFromGmgnForUnfilledUsers } from '@/lib/server/gmgnTwitterSync';
 import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completenessMaintenanceWorkerRuntime';
 import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
 import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
@@ -335,6 +336,27 @@ export function createDefaultRuntimeTasks(
       cycle: async () => {
         const result = syncEnablement();
         const envMs = Number(process.env.PILI_ENABLEMENT_SYNC_MS || DEFAULT_ENABLEMENT_SYNC_MS);
+        // 飞书同步跑完,顺手对"没推特的监控用户"查 gmgn 回填推特。
+        // 永不抛、失败静默 —— 不拖垮/不阻塞飞书同步本身。
+        let gmgnTwitter: Awaited<
+          ReturnType<typeof syncTwitterFromGmgnForUnfilledUsers>
+        > | null = null;
+        if (result.ok) {
+          try {
+            gmgnTwitter = await syncTwitterFromGmgnForUnfilledUsers();
+            if (gmgnTwitter.filled > 0) {
+              console.log(
+                `[feishu-sync] gmgn twitter filled=${gmgnTwitter.filled} queried=${gmgnTwitter.queried} notBound=${gmgnTwitter.notBound} failed=${gmgnTwitter.failed}`
+              );
+            }
+          } catch (error) {
+            console.warn(
+              `[feishu-sync] gmgn twitter sync failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
+        }
         return {
           sleepMs: Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_ENABLEMENT_SYNC_MS,
           status: result.ok ? ('idle' as const) : ('error' as const),
@@ -350,6 +372,7 @@ export function createDefaultRuntimeTasks(
             ownershipSkipped: result.ownershipSkipped,
             skippedNoPerson: result.skippedNoPerson,
             newonePath: result.newonePath,
+            gmgnTwitter,
           },
         };
       },
