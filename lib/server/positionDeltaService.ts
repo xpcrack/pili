@@ -264,6 +264,72 @@ export function runPositionDeltaFill(options: PositionDeltaFillOptions = {}): Po
   };
 }
 
+/**
+ * Authoritative positionDeltaRatio for a single trade, read from the full
+ * wallet×token history in the events table. The incoming trade is not in the
+ * DB yet, so we query its prior history then re-append it before running the
+ * balance math — the result is precise, so the UI shows no `~`.
+ *
+ * Realtime ingest calls this so a fresh trade lands with the real percentage
+ * immediately, instead of a client-guessed `~-XX%` that drifts until the
+ * 10-minute recurring backfill rewrites it.
+ *
+ * Returns null when it can't be computed (missing identity, no pre-balance,
+ * parse failure); the recurring backfill still catches it later.
+ */
+export function resolveAuthoritativePositionDelta(activity: Activity): number | null {
+  const chain = normalize(activity.metadata.chain);
+  const wallet = normalize(activity.metadata.trackedAddress);
+  const tokenAddress = normalize(activity.metadata.tokenAddress);
+  if (!chain || !wallet || !tokenAddress) return null;
+
+  const variant = normalize(activity.metadata.txActionVariant);
+  if (variant === 'open') return null;
+  if (variant === 'close') return -1;
+
+  const db = getDb();
+  // Prior history for this wallet×token×chain. The composite index serves
+  // (source, chain, LOWER(address), timestamp); tokenAddress (in metadata, no
+  // index — events.token stores the symbol) is filtered via json_extract on the
+  // already-indexed row set, so we only transfer/parse this token's rows.
+  const rows = db
+    .prepare(
+      `SELECT activity_json
+       FROM events
+       WHERE source = 'blockchain'
+         AND chain = ?
+         AND LOWER(address) = ?
+         AND timestamp < ?
+         AND LOWER(json_extract(activity_json, '$.metadata.tokenAddress')) = ?
+       ORDER BY timestamp ASC, event_id ASC`
+    )
+    .all(chain, wallet, activity.timestamp, tokenAddress) as { activity_json: string }[];
+
+  const series: { activity: Activity }[] = [];
+  for (const row of rows) {
+    try {
+      series.push({ activity: JSON.parse(row.activity_json) as Activity });
+    } catch {
+      continue;
+    }
+  }
+
+  // Re-append the incoming trade (ratio cleared) so the math recomputes it.
+  const selfMeta = { ...activity.metadata };
+  delete selfMeta.positionDeltaRatio;
+  series.push({ activity: { ...activity, metadata: selfMeta } });
+
+  const filled = fillPositionDeltaRatios(series);
+  const targetId = normalize(activity.id);
+  for (let index = filled.length - 1; index >= 0; index -= 1) {
+    if (normalize(filled[index]!.activity.id) === targetId) {
+      const ratio = filled[index]!.activity.metadata.positionDeltaRatio;
+      return typeof ratio === 'number' && Number.isFinite(ratio) ? ratio : null;
+    }
+  }
+  return null;
+}
+
 const CYCLE_INTERVAL_MS = 10 * 60_000;
 const CYCLE_WRITE_DAYS = 3;
 const CYCLE_LOOKBACK_DAYS = 60;
