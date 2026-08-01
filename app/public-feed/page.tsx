@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Activity, User } from '@/types';
 import { ActivityCard } from '@/components/ActivityCard';
+import { prepareGlobalFeed } from '@/lib/feedOrdering';
 
 type SourceFilter = 'blockchain' | 'twitter' | 'telegram';
 
@@ -104,7 +105,10 @@ export default function PublicFeedPage() {
     };
   }, [fetchFeed]);
 
-  const filteredFeed = feed.filter((item) => enabledSources.has(item.activity.source));
+  // 与主页一致：先对全量 feed 跑合并/去重/仓位推算，再按源过滤。
+  // 合并只作用于交易腿（推特/TG 透传），所以即便用户关掉交易源也不受影响。
+  const orderedFeed = useMemo(() => prepareGlobalFeed(feed), [feed]);
+  const filteredFeed = orderedFeed.filter((item) => enabledSources.has(item.activity.source));
   const displayedFeed = showAll ? filteredFeed : filteredFeed.slice(0, 50);
 
   const allDisabled = enabledSources.size === 0;
