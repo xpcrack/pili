@@ -38,6 +38,7 @@ import { acquireIngestionLease, releaseIngestionLease } from '@/lib/server/twitt
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 import { refreshCurrentHoldings } from '@/lib/server/holdingsRefreshRuntime';
 import { drainWalletActivityBackfillQueue } from '@/lib/server/walletActivityBackfillQueue';
+import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
 import { sweepStaleWalletTimelines } from '@/lib/server/walletTimelineSweep';
 
 const WORKER_KEY = 'completeness-maintenance';
@@ -45,6 +46,12 @@ const WORKER_TYPE = 'completeness-maintenance';
 const WORKER_LEASE_TTL_MS = 90_000;
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const BUSY_RETRY_DELAY_MS = 30_000;
+// When wallet-activity backfill hits a GMGN ban, hold off until the shared ban
+// cooldown (gmgnRateLimit.ts, ~5.5min, renewed on every hit) naturally expires.
+// Without this, the drain loop keeps hitting GMGN every cycle and renewing the
+// ban forever — which also starves live-monitor (shares the same cooldown) and
+// breaks the on-chain feed.
+const GMGN_BAN_BACKOFF_MARGIN_MS = 10_000;
 const HOLDINGS_REFRESH_INTERVAL_MS = process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS
   ? parseInt(process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS, 10)
   : 60 * 60_000; // 默认 1 小时
@@ -450,9 +457,18 @@ export function createCompletenessMaintenanceWorkerCycle(
       // Rolling 14d wallet timeline: re-enqueue stale monitored addrs, then drain queue
       const { walletBackfill } = await runWalletTimelineMaintenance();
 
+      // Backfill hit the shared GMGN ban → sleep until it expires so the next
+      // drain doesn't immediately renew it (which would lock out live-monitor).
+      const banBackoffMs = walletBackfill?.stoppedOnBan
+        ? gmgnCooldownRemainingMs() + GMGN_BAN_BACKOFF_MARGIN_MS
+        : 0;
+
       return {
         ...result,
-        sleepMs: result.busy ? BUSY_RETRY_DELAY_MS : retryDelayMs ?? DEFAULT_INTERVAL_MS,
+        sleepMs: Math.max(
+          banBackoffMs,
+          result.busy ? BUSY_RETRY_DELAY_MS : retryDelayMs ?? DEFAULT_INTERVAL_MS
+        ),
         claimedPokeCount: claimedIds.length,
         walletActivityBackfill: walletBackfill,
       };
