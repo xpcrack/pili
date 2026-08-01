@@ -39,18 +39,20 @@ function isLikelySolAddress(value: string) {
   return value.length >= 32 && value.length <= 44 && SOL_CA_EXACT_PATTERN.test(value);
 }
 
-async function fetchDexPairsByToken(address: string): Promise<DexScreenerPair[]> {
+// Returns null on transport/HTTP error (ambiguous), [] when the address has 0
+// DexScreener pairs (a wallet/EOA, not a token), or the pair list otherwise.
+async function fetchDexPairsByToken(address: string): Promise<DexScreenerPair[] | null> {
   try {
     const url = `${DEXSCREENER_API}/latest/dex/tokens/${address}`;
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const data = (await res.json()) as { pairs?: DexScreenerPair[] | null };
     return Array.isArray(data.pairs) ? data.pairs : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -74,11 +76,22 @@ export async function inferChainAndTickerForAddress(address: string): Promise<{
   }
 
   if (isLikelySolAddress(trimmed) && !EVM_CA_PATTERN.test(trimmed)) {
-    const dex = await fetchFromDexScreener(trimmed, 'solana');
+    // base58 shape fits both Solana mints AND wallets/EOAs. DexScreener tells them
+    // apart: a mint has ≥1 pair, a wallet has 0. Network failure (null) is ambiguous,
+    // so fail open (keep as solana) rather than risk dropping a real token.
+    const pairs = await fetchDexPairsByToken(trimmed);
+    if (pairs === null) {
+      return { chain: 'solana', ticker: null, marketCapUsd: null };
+    }
+    if (pairs.length === 0) {
+      return { chain: null, ticker: null, marketCapUsd: null };
+    }
+    const preferred = selectPreferredDexScreenerPair(trimmed, 'solana', pairs);
+    const mc = preferred?.marketCap || preferred?.fdv || 0;
     return {
       chain: 'solana',
-      ticker: dex?.ticker || null,
-      marketCapUsd: dex && dex.marketCap > 0 ? dex.marketCap : null,
+      ticker: preferred?.baseToken?.symbol || null,
+      marketCapUsd: mc > 0 ? mc : null,
     };
   }
 
@@ -87,7 +100,7 @@ export async function inferChainAndTickerForAddress(address: string): Promise<{
   }
 
   const pairs = await fetchDexPairsByToken(trimmed);
-  if (pairs.length === 0) {
+  if (!pairs || pairs.length === 0) {
     // Fallback: try common EVM chains one by one
     for (const chain of EVM_CHAIN_CANDIDATES) {
       const dex = await fetchFromDexScreener(trimmed, chain);
