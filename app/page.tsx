@@ -627,20 +627,16 @@ export default function Home() {
                     <div className={searchFilters.typeFilters.trade ? 'min-w-[700px]' : undefined}>
                       {searchFilters.typeFilters.trade ? (
                         <div
-                          className="sticky top-14 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)]"
-                          style={{
-                            gridTemplateColumns:
-                              '28px 100px 120px 48px 68px minmax(72px,1fr) 80px',
-                          }}
+                          className="sticky top-14 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)] grid-cols-[28px_100px_120px_48px_68px_minmax(72px,1fr)_80px] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
                         >
-                          <div />
-                          <div>人物 / 钱包</div>
-                          <div>Ticker</div>
-                          <div className="text-right">MC</div>
-                          <div className="text-right">幅度</div>
+                          <div className="md:order-2" />
+                          <div className="md:order-3">人物 / 钱包</div>
+                          <div className="md:order-4">Ticker</div>
+                          <div className="text-right md:order-5">MC</div>
+                          <div className="text-right md:order-6">幅度</div>
                           <button
                             type="button"
-                            className="text-left transition-colors hover:text-zinc-300"
+                            className="text-left transition-colors hover:text-zinc-300 md:order-7"
                             title={
                               tradeValueDisplayMode === 'usd'
                                 ? '当前 USD，点击切换为代币金额'
@@ -654,7 +650,7 @@ export default function Home() {
                           </button>
                           <button
                             type="button"
-                            className="text-right transition-colors hover:text-zinc-300"
+                            className="text-right transition-colors hover:text-zinc-300 md:order-1 md:text-left"
                             title={
                               timeDisplayMode === 'relative'
                                 ? '当前相对时间，点击切换为精确时间'

@@ -92,5 +92,20 @@ module.exports = {
       kill_timeout: 10000,
       max_memory_restart: '800M',
     },
+    {
+      name: 'pili-public-feed',
+      cwd: repoRoot,
+      script: 'npm',
+      args: ['run', 'public-feed'],
+      env: {
+        NODE_ENV: 'production',
+        PUBLIC_FEED_PORT: '3014',
+        PORT: '3013',
+        NO_PROXY: '127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12',
+      },
+      autorestart: true,
+      kill_timeout: 10000,
+      max_memory_restart: '200M',
+    },
   ],
 };

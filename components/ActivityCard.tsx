@@ -278,20 +278,16 @@ export const ActivityCard = memo(function ActivityCard({
       >
         <CardContent className="px-0 py-0">
           <div
-            className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
-            style={{
-              gridTemplateColumns:
-                '28px 100px 120px 48px 68px minmax(72px,1fr) 80px',
-            }}
+            className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[28px_100px_120px_48px_68px_minmax(72px,1fr)_80px] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
           >
-            <Avatar className="h-7 w-7 shrink-0">
+            <Avatar className="h-7 w-7 shrink-0 md:order-2">
               <AvatarImage src={getUserAvatar(user)} alt={user.name} />
               <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
                 {user.name.slice(0, 1).toUpperCase()}
               </AvatarFallback>
             </Avatar>
 
-            <div className="min-w-0">
+            <div className="min-w-0 md:order-3">
               <div className="truncate font-semibold leading-tight text-zinc-100">{user.name}</div>
               <div className="mt-0.5 min-w-0">
                 {trackedAddress ? (
@@ -317,7 +313,7 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 md:order-4">
               {canCopyTokenCa ? (
                 <button
                   type="button"
@@ -360,13 +356,13 @@ export const ActivityCard = memo(function ActivityCard({
             </div>
 
             <div
-              className="min-w-0 truncate text-right font-semibold text-zinc-300"
+              className="min-w-0 truncate text-right font-semibold text-zinc-300 md:order-5"
               title={marketCapTooltip}
             >
               {displayMarketCapText || '—'}
             </div>
 
-            <div className="min-w-0 truncate text-right font-semibold tabular-nums">
+            <div className="min-w-0 truncate text-right font-semibold tabular-nums md:order-6">
               <span
                 className={positionDeltaClassName}
                 title={
@@ -379,7 +375,7 @@ export const ActivityCard = memo(function ActivityCard({
               </span>
             </div>
 
-            <div className="relative min-w-0 self-stretch">
+            <div className="relative min-w-0 self-stretch md:order-7">
               {tradeUsdBarPct > 0 ? (
                 <div
                   aria-hidden
@@ -399,7 +395,7 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500">
+            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500 md:order-1 md:text-left">
               {activity.metadata.txHash ? (
                 <button
                   type="button"
@@ -451,20 +447,16 @@ export const ActivityCard = memo(function ActivityCard({
       >
         <CardContent className="px-0 py-0">
           <div
-            className="grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums"
-            style={{
-              gridTemplateColumns:
-                '28px minmax(108px,1.1fr) minmax(88px,0.9fr) minmax(96px,0.95fr) minmax(64px,0.65fr) minmax(96px,1fr) 80px 118px',
-            }}
+            className="grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[28px_minmax(108px,1.1fr)_minmax(88px,0.9fr)_minmax(96px,0.95fr)_minmax(64px,0.65fr)_minmax(96px,1fr)_80px_118px] md:grid-cols-[80px_28px_minmax(108px,1.1fr)_minmax(88px,0.9fr)_minmax(96px,0.95fr)_minmax(64px,0.65fr)_minmax(96px,1fr)_118px]"
           >
-            <Avatar className="h-7 w-7 shrink-0">
+            <Avatar className="h-7 w-7 shrink-0 md:order-2">
               <AvatarImage src={getUserAvatar(user)} alt={user.name} />
               <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
                 {user.name.slice(0, 1).toUpperCase()}
               </AvatarFallback>
             </Avatar>
 
-            <div className="min-w-0">
+            <div className="min-w-0 md:order-3">
               <div className="truncate font-semibold leading-tight text-zinc-100">{user.name}</div>
               <div className="mt-0.5 min-w-0">
                 {trackedAddress ? (
@@ -490,7 +482,7 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 md:order-4">
               {canCopyTokenCa ? (
                 <button
                   type="button"
@@ -528,7 +520,7 @@ export const ActivityCard = memo(function ActivityCard({
             </div>
 
             <div
-              className={`min-w-0 truncate text-right font-semibold ${
+              className={`min-w-0 truncate text-right font-semibold md:order-5 ${
                 shouldUseOutgoingAmountTone ? 'text-rose-300' : 'text-emerald-300'
               }`}
               title={displayTradeHeadlineText || undefined}
@@ -536,7 +528,7 @@ export const ActivityCard = memo(function ActivityCard({
               {displayTradeAmountText}
             </div>
 
-            <div>
+            <div className="md:order-6">
               <span
                 className={`inline-flex h-[22px] min-w-[48px] items-center justify-center rounded-full border px-2 text-[11px] font-semibold ${transferBadgeClass}`}
               >
@@ -544,7 +536,7 @@ export const ActivityCard = memo(function ActivityCard({
               </span>
             </div>
 
-            <div className="min-w-0">
+            <div className="min-w-0 md:order-7">
               {counterpartyAddress ? (
                 <button
                   type="button"
@@ -567,7 +559,7 @@ export const ActivityCard = memo(function ActivityCard({
               )}
             </div>
 
-            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500">
+            <div className="whitespace-nowrap text-right text-xs tabular-nums text-zinc-500 md:order-1 md:text-left">
               {activity.metadata.txHash ? (
                 <button
                   type="button"
@@ -599,7 +591,7 @@ export const ActivityCard = memo(function ActivityCard({
               )}
             </div>
 
-            <div className="flex w-full items-center justify-end gap-1">
+            <div className="flex w-full items-center justify-end gap-1 md:order-8">
               <button
                 type="button"
                 disabled={!canCopyTokenCa}
@@ -668,14 +660,14 @@ export const ActivityCard = memo(function ActivityCard({
       >
         <CardContent className="px-0 py-0">
           <div className="flex min-h-10 items-start gap-2.5 border-b border-white/[0.035] px-3 py-2">
-            <Avatar className="mt-0.5 h-7 w-7 shrink-0">
+            <Avatar className="mt-0.5 h-7 w-7 shrink-0 md:order-2">
               <AvatarImage src={getUserAvatar(user)} alt={personLabel} />
               <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
                 {personLabel.slice(0, 1).toUpperCase()}
               </AvatarFallback>
             </Avatar>
 
-            <div className="w-[108px] shrink-0 min-w-0">
+            <div className="w-[108px] shrink-0 min-w-0 md:order-3">
               <div className="truncate text-[12.5px] font-semibold leading-tight text-zinc-100">{personLabel}</div>
               <div className="mt-1 flex items-center gap-1">
                 <span
@@ -687,7 +679,7 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="min-w-0 flex-1 space-y-1">
+            <div className="min-w-0 flex-1 space-y-1 md:order-4">
               {socialPrimary ? (
                 <p className="line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] leading-[1.35] text-zinc-100">
                   {highlightSocialContent(socialPrimary, activity.metadata.tokenSentiments)}
@@ -747,11 +739,11 @@ export const ActivityCard = memo(function ActivityCard({
               ) : null}
             </div>
 
-            <div className="flex w-20 shrink-0 flex-col items-end gap-1 pt-0.5">
+            <div className="flex w-20 shrink-0 flex-col items-end gap-1 pt-0.5 md:order-1 md:items-start">
               {socialPostUrl ? (
                 <button
                   type="button"
-                  className="rounded px-0.5 text-right text-xs tabular-nums whitespace-nowrap text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                  className="rounded px-0.5 text-right text-xs tabular-nums whitespace-nowrap text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:text-left"
                   title={isTwitter ? '左键复制推文链接，右键打开推文' : '左键复制频道原帖链接，右键打开原帖'}
                   onClick={async (event) => {
                     event.stopPropagation();
@@ -791,17 +783,17 @@ export const ActivityCard = memo(function ActivityCard({
     >
       <CardContent className="px-3 py-2">
         <div className="flex min-w-0 items-start gap-2.5">
-          <Avatar className="h-7 w-7 shrink-0">
+          <Avatar className="h-7 w-7 shrink-0 md:order-2">
             <AvatarImage src={getUserAvatar(user)} alt={user.name} />
             <AvatarFallback className="bg-zinc-800 text-[10px] text-zinc-400">
               {user.name.slice(0, 1).toUpperCase()}
             </AvatarFallback>
           </Avatar>
-          <div className="min-w-0 flex-1">
+          <span className="w-20 shrink-0 max-md:ml-auto whitespace-nowrap text-right text-xs tabular-nums text-zinc-500 md:order-1 md:text-left">{timeAgo}</span>
+          <div className="min-w-0 flex-1 md:order-3">
             <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
               <span className="truncate font-semibold text-zinc-100">{user.name}</span>
               {typeLabel ? <span className="shrink-0 text-[11px] text-zinc-500">{typeLabel}</span> : null}
-              <span className="ml-auto w-20 shrink-0 text-right text-xs tabular-nums whitespace-nowrap text-zinc-500">{timeAgo}</span>
             </div>
             {primaryText ? (
               <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-zinc-300">{primaryText}</p>
