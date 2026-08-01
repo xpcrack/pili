@@ -101,7 +101,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
             </div>
             <div className="text-[11px] text-zinc-500">更新</div>
           </div>
-          <div className="max-h-[calc(100vh-9rem)] space-y-0.5 overflow-y-auto p-2">
+          <div className="space-y-0.5 p-2">
             <button
               onClick={() => onSelectUser(null)}
               className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
