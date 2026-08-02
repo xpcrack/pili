@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  acquireGmgnGlobalToken,
   assertGmgnAllowed,
   isGmgnBanMessage,
   noteGmgnBan,
@@ -471,6 +472,7 @@ export class GmgnOpenApiClient {
     opts: { signed: boolean }
   ): Promise<T> {
     assertGmgnAllowed();
+    await acquireGmgnGlobalToken();
     const key = await this.pool.acquire({ primaryOnly: opts.signed });
     let released = false;
     const markSuccess = () => {

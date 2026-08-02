@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  acquireGmgnGlobalToken,
   assertGmgnAllowed,
   isGmgnBanMessage,
   noteGmgnBan,
@@ -120,6 +121,7 @@ export async function runGmgnCliAsync(opts: {
   env?: NodeJS.ProcessEnv;
 }): Promise<string> {
   assertGmgnAllowed();
+  await acquireGmgnGlobalToken();
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);
 

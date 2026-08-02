@@ -3,7 +3,7 @@
  * After RATE_LIMIT_BANNED, further requests extend the ban — fail closed.
  * File path lets web + backfill scripts share one cooldown.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -198,4 +198,112 @@ export function assertGmgnAllowed(nowMs = Date.now()): void {
       `GMGN_COOLDOWN ${Math.ceil(left / 1000)}s remaining (after RATE_LIMIT_BANNED)`
     );
   }
+}
+
+// ============================================================================
+// Cross-process global rate limit (file token bucket) — preventive.
+// pilipili / newone / wrapper 共享一个桶，把聚合 GMGN qps 钉在 rps+burst 之下，
+// 而不是被封后才靠冷却文件反应。两个 repo 的协议一字不差，靠同一桶文件协调。
+//   bucket: ~/.config/gmgn/global-bucket.json = { tokens, lastMs }
+//   mutex:  ~/.config/gmgn/global-bucket.json.lock (lockdir; macOS 无 flock)
+// ============================================================================
+
+const GLOBAL_BUCKET_FILE =
+  process.env.GMGN_GLOBAL_BUCKET_FILE?.trim() || join(homedir(), '.config', 'gmgn', 'global-bucket.json');
+const GLOBAL_BUCKET_LOCK = GLOBAL_BUCKET_FILE + '.lock';
+const GLOBAL_RPS = Math.max(0.1, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 3.0);
+const GLOBAL_BURST = Math.max(1, Number(process.env.GMGN_GLOBAL_BURST?.trim()) || 6);
+
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+type BucketState = { tokens: number; lastMs: number };
+
+function readBucket(): BucketState {
+  const fallback: BucketState = { tokens: GLOBAL_BURST, lastMs: Date.now() };
+  try {
+    if (!existsSync(GLOBAL_BUCKET_FILE)) return fallback;
+    const raw = JSON.parse(readFileSync(GLOBAL_BUCKET_FILE, 'utf8')) as Partial<BucketState>;
+    const tokens = Number(raw.tokens);
+    const lastMs = Number(raw.lastMs);
+    return {
+      tokens: Number.isFinite(tokens) ? tokens : fallback.tokens,
+      lastMs: Number.isFinite(lastMs) ? lastMs : fallback.lastMs,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBucket(s: BucketState): void {
+  try {
+    mkdirSync(dirname(GLOBAL_BUCKET_FILE), { recursive: true });
+    writeFileSync(GLOBAL_BUCKET_FILE, JSON.stringify(s), 'utf8');
+  } catch {
+    /* non-fatal: in-process pacing still works */
+  }
+}
+
+/** lockdir 互斥（mkdir 原子；macOS 无 flock）。stale guard 30s 清理被 kill 的持有者。 */
+async function tryAcquireBucketLock(): Promise<boolean> {
+  for (let i = 0; i < 100; i++) {
+    try {
+      mkdirSync(GLOBAL_BUCKET_LOCK);
+      try {
+        writeFileSync(join(GLOBAL_BUCKET_LOCK, 'ts'), String(Date.now()));
+      } catch {
+        /* ignore */
+      }
+      return true;
+    } catch {
+      try {
+        const ts = Number(readFileSync(join(GLOBAL_BUCKET_LOCK, 'ts'), 'utf8'));
+        if (Number.isFinite(ts) && Date.now() - ts > 30_000) {
+          rmSync(GLOBAL_BUCKET_LOCK, { recursive: true, force: true });
+        }
+      } catch {
+        /* ignore */
+      }
+      await sleepMs(20);
+    }
+  }
+  return false;
+}
+
+function releaseBucketLock(): void {
+  try {
+    rmSync(GLOBAL_BUCKET_LOCK, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 发起 GMGN 请求前从共享全局桶扣 cost 个令牌；不够则异步等到够为止。
+ * 锁耗尽时 best-effort 放行（罕见，优于卡死流水线）。
+ */
+export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    let waitMs = 0;
+    let got = false;
+    if (await tryAcquireBucketLock()) {
+      try {
+        const now = Date.now();
+        const s = readBucket();
+        const elapsed = Math.max(0, now - s.lastMs);
+        const tokens = Math.min(GLOBAL_BURST, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
+        if (tokens >= cost) {
+          writeBucket({ tokens: tokens - cost, lastMs: now });
+          got = true;
+        } else {
+          const deficit = cost - tokens;
+          waitMs = Math.ceil((deficit / GLOBAL_RPS) * 1000) + 10;
+        }
+      } finally {
+        releaseBucketLock();
+      }
+    }
+    if (got) return;
+    await sleepMs(waitMs > 0 ? waitMs : 20);
+  }
+  /* exhausted — serve best-effort */
 }
