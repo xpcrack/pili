@@ -23,6 +23,7 @@ import { normalizeTwitterHandle } from '@/lib/canonical';
 import { getDb } from '@/lib/server/sqlite';
 import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
 import { inferChainFromAddress } from '@/lib/addressBook';
+import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
 
 /** 单次反查最多查多少个地址。防配额突刺、防拖卡飞书同步周期。 */
 const MAX_ADDRESSES_PER_CYCLE = Number(process.env.PILI_GMGN_TWITTER_SYNC_MAX || 40);
@@ -75,6 +76,10 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
     };
   }
   if (candidates.length === 0) return empty;
+
+  // 冷却期内整轮跳过：否则每个 candidate 的 runGmgnCliAsync 都会撞 assertGmgnAllowed
+  // 抛 GMGN_COOLDOWN，一次刷 ~40 行 error（不发任何 HTTP，纯噪音）。
+  if (gmgnCooldownRemainingMs() > 0) return empty;
 
   const upsertTwitter = getDb().prepare(
     `UPDATE tracked_users

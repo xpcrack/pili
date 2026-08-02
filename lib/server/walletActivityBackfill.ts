@@ -71,7 +71,8 @@ export async function fetchWalletActivitySince(
   params: FetchWalletActivitySinceParams
 ): Promise<FetchWalletActivitySinceResult> {
   const pageLimit = params.pageLimit ?? 100;
-  const maxPages = params.maxPages ?? 80;
+  // 80→40：削单地址突发（L2 全局令牌桶已兜底聚合 qps，此处双保险）
+  const maxPages = params.maxPages ?? 40;
   const sleepMs = params.sleepMs ?? DEFAULT_PAGE_SLEEP_MS;
   const pageAttempts = Math.max(1, params.pageAttempts ?? DEFAULT_PAGE_ATTEMPTS);
   const allItems: Awaited<ReturnType<typeof fetchGmgnWalletActivityAsync>>['items'] = [];
