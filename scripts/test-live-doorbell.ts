@@ -45,6 +45,9 @@ async function main() {
     const {
       enqueueLiveDoorbell,
       claimDueLiveDoorbells,
+      ackLiveDoorbells,
+      nackLiveDoorbells,
+      reclaimStaleLiveDoorbells,
       countPendingLiveDoorbells,
       resetLiveDoorbellQueueForTests,
     } = await import('@/lib/server/liveDoorbellQueue');
@@ -76,8 +79,64 @@ async function main() {
     assert.equal(due.length, 1);
     assert.equal(due[0]?.address.toLowerCase(), wallet.toLowerCase());
     assert.deepEqual(due[0]?.chains.sort(), ['base', 'robinhood']);
-    assert.equal(countPendingLiveDoorbells(), 0, 'claim deletes');
-    console.log('PASS doorbell queue coalesce/claim');
+    // Claim now stamps a lease instead of deleting — confirmed-consume semantics.
+    assert.ok(due[0]?.leaseToken, 'claim returns a lease token');
+    assert.equal(due[0]?.walletLower, wallet.toLowerCase(), 'claim returns walletLower');
+    assert.equal(countPendingLiveDoorbells(), 1, 'claim holds row under lease');
+    // A second claim at the same instant finds nothing new (row already leased).
+    const dueAgain = claimDueLiveDoorbells({ nowMs: 10_000 });
+    assert.equal(dueAgain.length, 0, 'leased row is not re-claimed');
+    console.log('PASS doorbell queue coalesce/claim/lease');
+
+    // ack (success) deletes the leased row.
+    ackLiveDoorbells([
+      { walletLower: due[0]!.walletLower, leaseToken: due[0]!.leaseToken },
+    ]);
+    assert.equal(countPendingLiveDoorbells(), 0, 'ack deletes claimed row');
+    // ack with a wrong token is a no-op (row already gone, but guard holds anyway).
+    ackLiveDoorbells([{ walletLower: due[0]!.walletLower, leaseToken: 'bogus' }]);
+    console.log('PASS doorbell ack');
+
+    // nack (failure) clears the lease + reschedules due_at_ms.
+    enqueueLiveDoorbell({
+      address: wallet,
+      userId: 'user-finn',
+      chain: 'base',
+      source: 'xxyy',
+      debounceMs: 0,
+      nowMs: 20_000,
+    });
+    const due2 = claimDueLiveDoorbells({ nowMs: 20_000 });
+    assert.equal(due2.length, 1);
+    nackLiveDoorbells(
+      [{ walletLower: due2[0]!.walletLower, leaseToken: due2[0]!.leaseToken }],
+      { retryAfterMs: 60_000, nowMs: 20_000 }
+    );
+    // Rescheduled to 80_000; not due at 70_000, due at 80_000.
+    assert.equal(claimDueLiveDoorbells({ nowMs: 70_000 }).length, 0, 'nack reschedules into the future');
+    const due3 = claimDueLiveDoorbells({ nowMs: 80_000 });
+    assert.equal(due3.length, 1, 'nacked row becomes claimable again after retry');
+    // nack with a wrong token is a no-op (guard).
+    const beforeBogus = countPendingLiveDoorbells();
+    nackLiveDoorbells(
+      [{ walletLower: due3[0]!.walletLower, leaseToken: 'bogus' }],
+      { retryAfterMs: 999_000, nowMs: 80_000 }
+    );
+    assert.equal(countPendingLiveDoorbells(), beforeBogus, 'nack with wrong token is a no-op');
+    console.log('PASS doorbell nack reschedule + token guard');
+
+    // Stale lease from a crashed cycle is reclaimed at the next claim.
+    // due3 holds a lease expiring at 80_000 + 90_000 = 170_000.
+    assert.equal(claimDueLiveDoorbells({ nowMs: 100_000 }).length, 0, 'still leased mid-window');
+    const reclaimed = reclaimStaleLiveDoorbells(200_000);
+    assert.ok(reclaimed >= 1, 'stale lease past expiry is reclaimed');
+    const due4 = claimDueLiveDoorbells({ nowMs: 200_000 });
+    assert.equal(due4.length, 1, 'reclaimed row is claimable again');
+    ackLiveDoorbells([
+      { walletLower: due4[0]!.walletLower, leaseToken: due4[0]!.leaseToken },
+    ]);
+    assert.equal(countPendingLiveDoorbells(), 0, 'queue drained after reclaim+ack');
+    console.log('PASS doorbell stale lease reclaim');
 
     const { runLiveMonitorCycle } = await import('@/lib/server/liveMonitorRuntime');
     const user = {
@@ -157,6 +216,7 @@ async function main() {
         return { upserted: trades.length };
       },
       enqueueHoldingsRefresh: () => ({ enqueued: true, key: 'x' }),
+      gmgnCooldownRemainingMs: () => 0,
     });
 
     assert.equal(result.summary.xxyyDoorbells, 1);
@@ -165,6 +225,8 @@ async function main() {
       scanned.some((s) => s.chain === 'robinhood'),
       `expected robinhood scan, got ${JSON.stringify(scanned)}`
     );
+    // Cycle ack'd the doorbell after the successful scan → queue drained.
+    assert.equal(countPendingLiveDoorbells(), 0, 'cycle acks doorbell on success');
     console.log('PASS live cycle drains xxyy doorbell via GMGN');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
