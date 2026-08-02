@@ -596,7 +596,12 @@ CREATE TABLE IF NOT EXISTS live_doorbell_queue (
   source TEXT NOT NULL DEFAULT 'xxyy',
   due_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
-  created_at_ms INTEGER NOT NULL
+  created_at_ms INTEGER NOT NULL,
+  -- Confirmed-consume lease: claim stamps these, ack (success) deletes the row,
+  -- nack (scan failure) clears them + reschedules due_at_ms. NULL ⇒ available.
+  claim_lease_token TEXT,
+  claimed_at_ms INTEGER,
+  lease_expires_at_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_doorbell_queue_due
@@ -1452,6 +1457,7 @@ function initializeDb(db: SqlDatabase) {
     ensureTelegramChannelSourceColumns(db);
     ensureTelegramChannelPostSchema(db);
     ensureTelegramMonitorEventColumns(db);
+    ensureLiveDoorbellColumns(db);
     ensureWalletPnlColumns(db);
     ensureTelegramMonitorTxStatesTokenAwareSchema(db);
     ensureActivityJudgmentColumns(db);
@@ -1493,6 +1499,25 @@ function ensureColumn(
 
   const defaultSql = defaultClause ? ` DEFAULT ${defaultClause}` : '';
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}${defaultSql}`);
+}
+
+/**
+ * Confirmed-consume lease columns for live_doorbell_queue. The two partial
+ * indexes must be created here (after ensureColumn adds the columns), NOT in
+ * SCHEMA_SQL: db.exec(SCHEMA_SQL) runs before the ensure* chain, so on a
+ * pre-existing DB the columns don't exist yet and a SCHEMA_SQL index referencing
+ * them would throw "no such column" at startup.
+ */
+function ensureLiveDoorbellColumns(db: SqlDatabase) {
+  ensureColumn(db, 'live_doorbell_queue', 'claim_lease_token', 'TEXT');
+  ensureColumn(db, 'live_doorbell_queue', 'claimed_at_ms', 'INTEGER');
+  ensureColumn(db, 'live_doorbell_queue', 'lease_expires_at_ms', 'INTEGER');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_live_doorbell_queue_claim ON live_doorbell_queue(due_at_ms ASC) WHERE lease_expires_at_ms IS NULL`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_live_doorbell_queue_lease ON live_doorbell_queue(lease_expires_at_ms ASC) WHERE lease_expires_at_ms IS NOT NULL`
+  );
 }
 
 function ensureTelegramMonitorTxStatesTokenAwareSchema(db: SqlDatabase) {

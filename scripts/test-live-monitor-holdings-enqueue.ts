@@ -72,6 +72,7 @@ async function run() {
       enqueued.push(input);
       return { enqueued: true, key: `${input.chain}:${input.address}` };
     },
+    gmgnCooldownRemainingMs: () => 0,
   });
 
   assert.ok(result.summary.tradesUpserted >= 1, `expected trades upserted, got ${result.summary.tradesUpserted}`);
@@ -104,6 +105,7 @@ async function run() {
       enqueued.push(input);
       return { enqueued: true, key: `${input.chain}:${input.address}` };
     },
+    gmgnCooldownRemainingMs: () => 0,
   });
   assert.equal(enqueued.length, 0, 'no trades should not enqueue holdings refresh');
 

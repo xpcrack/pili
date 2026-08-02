@@ -32,9 +32,13 @@ import {
   type NormalizedLiveTrade,
 } from '@/lib/server/gmgnWalletActivity';
 import {
+  ackLiveDoorbells,
   claimDueLiveDoorbells,
+  nackLiveDoorbells,
+  type DoorbellClaim,
   type LiveDoorbellRow,
 } from '@/lib/server/liveDoorbellQueue';
+import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
 import {
   readLiveSourceMode,
   type EnvMap,
@@ -129,6 +133,12 @@ export type LiveMonitorDeps = {
   pullInbox?: typeof pullAlchemyInbox;
   syncWatchlist?: typeof syncAlchemyWatchlist;
   claimDoorbells?: typeof claimDueLiveDoorbells;
+  /** Ack claimed doorbells after a successful scan (delete rows). */
+  ackDoorbells?: (claims: DoorbellClaim[]) => number;
+  /** Nack claimed doorbells after a failed scan (clear lease + reschedule). */
+  nackDoorbells?: (claims: DoorbellClaim[], opts: { retryAfterMs: number }) => number;
+  /** GMGN ban cooldown remaining (ms). >0 ⇒ skip the whole cycle to hold doorbells. */
+  gmgnCooldownRemainingMs?: () => number;
   fetchActivity?: (
     options: Parameters<typeof fetchGmgnWalletActivity>[0]
   ) => ReturnType<typeof fetchGmgnWalletActivity> | ReturnType<typeof fetchGmgnWalletActivityAsync>;
@@ -235,6 +245,9 @@ export async function runLiveMonitorCycle(
   const listUsers = deps.listUsers ?? listMonitoredUsers;
   const pullInbox = deps.pullInbox ?? pullAlchemyInbox;
   const claimDoorbells = deps.claimDoorbells ?? claimDueLiveDoorbells;
+  const ackDoorbells = deps.ackDoorbells ?? ackLiveDoorbells;
+  const nackDoorbellsDep = deps.nackDoorbells ?? nackLiveDoorbells;
+  const cooldownRemaining = deps.gmgnCooldownRemainingMs ?? gmgnCooldownRemainingMs;
   const syncWatchlistFn = deps.syncWatchlist ?? syncAlchemyWatchlist;
   const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivityAsync;
   const upsertTrades = deps.upsertTrades ?? upsertLiveMonitorTrades;
@@ -278,6 +291,21 @@ export async function runLiveMonitorCycle(
   let gmgnErrors = 0;
 
   try {
+    // GMGN is the sole trade-detail source. While a ban is active every scan would
+    // fail at assertGmgnAllowed; rather than claim+drop doorbells (consuming the
+    // ring and losing the signal) or pull+advance the Alchemy inbox cursor (consuming
+    // on-chain events we then can't scan), hold everything and idle until it clears.
+    const banRemainingMs = cooldownRemaining(now());
+    if (banRemainingMs > 0) {
+      const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
+      return {
+        sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
+        status: 'idle',
+        lastError: `GMGN_COOLDOWN ${Math.ceil(banRemainingMs / 1000)}s remaining — doorbells held, no pull/scan`,
+        summary: emptySummary,
+      };
+    }
+
     let alchemyWallets: string[] = [];
     if (inboxCfg) {
       const pulled = await pullInbox({
@@ -387,6 +415,40 @@ export async function runLiveMonitorCycle(
             });
           }
         }
+      }
+    }
+
+    // Confirmed-consume write-back for doorbells. A wallet's doorbell is ack'd
+    // (deleted) only when every one of its chain scans completed without error —
+    // an empty GMGN response (trades:[] but error:null) counts as "scanned, nothing
+    // new" and is ack'd so we don't nack-loop forever. Any error → nack with a
+    // retry after max(ban remaining, 30s); the cooldown file is already updated by
+    // noteGmgnBan during the scan, so this reads the latest ban window.
+    if (doorbells.length > 0) {
+      const leaseByWalletLower = new Map<string, string>();
+      for (const d of doorbells) leaseByWalletLower.set(d.walletLower, d.leaseToken);
+      // Collect which target keys had any scan error.
+      const erroredKeys = new Set<string>();
+      for (const result of scanResults) {
+        if (result.error) erroredKeys.add(result.key);
+      }
+      const ackClaims: DoorbellClaim[] = [];
+      const nackClaims: DoorbellClaim[] = [];
+      for (const target of targets) {
+        const leaseToken = leaseByWalletLower.get(target.address.toLowerCase());
+        if (!leaseToken) continue; // Alchemy-only target, no doorbell lease.
+        const claim = { walletLower: target.address.toLowerCase(), leaseToken };
+        if (erroredKeys.has(target.key)) {
+          nackClaims.push(claim);
+        } else {
+          ackClaims.push(claim);
+        }
+      }
+      if (ackClaims.length > 0) ackDoorbells(ackClaims);
+      if (nackClaims.length > 0) {
+        nackDoorbellsDep(nackClaims, {
+          retryAfterMs: Math.max(cooldownRemaining(now()), 30_000),
+        });
       }
     }
   } catch (error) {
