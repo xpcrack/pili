@@ -130,12 +130,17 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
               const latestActivityText = formatRelativeTimeCompact(latestActivityAt, now);
               const latestActivityColor = latestActivityTextColor(latestActivityAt, now);
               const isDisabled = user.monitoringEnabled === false;
+              // 主流占比 = 原生代币+稳定币 / 总资产。高=现金多(等机会)，低=满仓 alt。
+              const mainstreamPct =
+                user.totalAssetUsd > 0
+                  ? Math.min(100, (user.mainstreamAssetUsd / user.totalAssetUsd) * 100)
+                  : null;
 
               return (
                 <button
                   key={user.id}
                   onClick={() => onSelectUser(user)}
-                  className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
+                  className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
                     isSelected
                       ? 'border-sky-400/20 bg-sky-400/[0.07] text-sky-100'
                       : 'border-transparent text-zinc-300 hover:bg-white/[0.035]'
@@ -165,6 +170,32 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                       当前 {formatUsdCompact(user.totalAssetUsd)}
                     </div>
                   </div>
+                  {mainstreamPct != null && (
+                    <span
+                      className="flex shrink-0 items-center tabular-nums"
+                      title="主流资产占比（原生代币+稳定币 / 总资产）"
+                    >
+                      {(() => {
+                        const pct = Math.round(mainstreamPct);
+                        const low = pct < 20;
+                        const fillColor = low ? 'bg-red-500' : 'bg-emerald-400';
+                        return (
+                          <>
+                            <span className="relative flex h-3.5 w-7 items-center justify-center overflow-hidden rounded-[3px] border border-zinc-600/70 bg-zinc-800">
+                              <span
+                                className={`absolute inset-y-0 left-0 ${fillColor}`}
+                                style={{ width: `${pct}%` }}
+                              />
+                              <span className="relative z-10 text-[9px] font-medium leading-none text-white mix-blend-difference">
+                                {pct}%
+                              </span>
+                            </span>
+                            <span className="ml-px h-1.5 w-[3px] rounded-r-sm bg-zinc-600/70" />
+                          </>
+                        );
+                      })()}
+                    </span>
+                  )}
                   <div className={`shrink-0 text-[10.5px] ${isSelected ? 'text-sky-300' : latestActivityColor}`}>
                     {latestActivityText}
                   </div>
