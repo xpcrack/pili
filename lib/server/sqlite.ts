@@ -761,6 +761,11 @@ CREATE TABLE IF NOT EXISTS activity_feed (
 CREATE INDEX IF NOT EXISTS idx_activity_feed_timestamp
 ON activity_feed(timestamp DESC, id DESC);
 
+-- person-page feed: readActivityBreakdownByUser does SUM(CASE WHEN source=...) WHERE user_id=?,
+-- which was a full SCAN of activity_feed (~1.8s per click) before this index existed.
+CREATE INDEX IF NOT EXISTS idx_activity_feed_user
+ON activity_feed(user_id, source);
+
 CREATE TABLE IF NOT EXISTS twitter_tweets (
   tweet_id TEXT PRIMARY KEY,
   author_user_id TEXT,
