@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { isStableOrNativeSymbol } from '@/lib/assetSymbols';
 import { formatUsd, formatUsdCompact } from '@/lib/assetFormat';
 import { formatCompactMarketCap } from '@/lib/tradeDisplay';
 const LIQUIDITY_THRESHOLD_USD = 5_000;
@@ -31,7 +32,7 @@ function toFiniteNumber(value: unknown) {
   return null;
 }
 
-function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; liquidityUsd: number | null }[] | undefined) {
+function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; symbol: string; liquidityUsd: number | null }[] | undefined) {
   const [map, setMap] = useState<Record<string, HoldingMetric>>({});
 
   useEffect(() => {
@@ -55,7 +56,9 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; l
             { liquidityUsd: holding.liquidityUsd, marketCapUsd: null },
           ]),
       );
-      const metricTargets = missingHoldings.filter((holding) => holding.chain !== 'robinhood');
+      const metricTargets = missingHoldings.filter(
+        (holding) => holding.chain !== 'robinhood' && !isStableOrNativeSymbol(holding.symbol),
+      );
 
       // Server proxy only — never call api.dexscreener.com from the browser (CORS + 429).
       const nextEntries = Object.fromEntries(
@@ -175,7 +178,13 @@ export function SelectedUserDetailsPanel({
 
   // Filter out dead coins with insufficient liquidity (client-side fallback).
   // Robinhood uses server-side GMGN liquidity only — no DexScreener for that chain.
+  // Stablecoins / native gas tokens (USDT/USDC/SOL/BNB/ETH/WETH) are always shown —
+  // DexScreener reports no liquidity for them, but they are unambiguously liquid and
+  // are counted into totalAssetUsd via the same LIQUID_ASSET_SYMBOLS list.
   const visibleHoldings = (details?.holdings ?? []).filter((holding) => {
+    if (isStableOrNativeSymbol(holding.symbol)) {
+      return true;
+    }
     if (holding.chain === 'robinhood') {
       return holding.liquidityUsd == null || holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
     }
@@ -194,6 +203,9 @@ export function SelectedUserDetailsPanel({
 
   const pendingLiquidityHoldingsCount = (details?.holdings ?? []).filter((holding) => {
     if (holding.chain === 'robinhood' || holding.liquidityUsd != null) {
+      return false;
+    }
+    if (isStableOrNativeSymbol(holding.symbol)) {
       return false;
     }
     const key = `${holding.chain}:${holding.tokenAddress}`;

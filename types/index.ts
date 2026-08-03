@@ -98,6 +98,8 @@ export interface User {
   addresses: AddressInfo[];
   totalAssetUsd: number;
   historicalMaxAssetUsd: number;
+  /** Native gas tokens + stablecoins (SOL/BNB/ETH/WETH/USDT/USDC) — the liquid cash slice. */
+  mainstreamAssetUsd: number;
   assetUpdatedAt: number | null;
   monitoringEnabled?: boolean;
   tags: string[];

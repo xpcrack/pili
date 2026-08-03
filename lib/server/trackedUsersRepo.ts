@@ -3,6 +3,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 
 import { EVM_CHAINS, expandTrackedAddresses, isEvmAddress, isEvmChain } from '@/lib/addressBook';
+import { LIQUID_ASSET_SYMBOLS } from '@/lib/assetSymbols';
 import { bumpFeedRevision } from '@/lib/server/feedRevision';
 import { type AddressAssetSnapshot, type UserAssetSnapshot } from '@/lib/activityFeed';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
@@ -11,7 +12,6 @@ import { type AddressInfo, type ChainType, type User } from '@/types';
 
 const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
 const LIQUID_ASSET_MIN_LIQUIDITY_USD = 5_000;
-const LIQUID_ASSET_SYMBOLS = ['SOL', 'BNB', 'ETH', 'WETH', 'USDT', 'USDC'];
 const LIQUID_ASSET_SYMBOL_PLACEHOLDERS = LIQUID_ASSET_SYMBOLS.map(() => '?').join(', ');
 const TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY = 'tracked_address_evm_expansion_v1';
 
@@ -28,6 +28,8 @@ interface TrackedUserRow {
   tags_json: string;
   total_asset_usd: number;
   historical_max_asset_usd: number;
+  /** Not a DB column — injected from a current_holdings rollup in listTrackedUsers. */
+  mainstream_asset_usd?: number;
   asset_updated_at: number | null;
   monitoring_enabled: number | null;
 }
@@ -139,6 +141,7 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
   const historicalMaxAssetUsd =
     typeof row.historical_max_asset_usd === 'number' ? row.historical_max_asset_usd : totalAssetUsd;
   const assetUpdatedAt = typeof row.asset_updated_at === 'number' ? row.asset_updated_at : null;
+  const mainstreamAssetUsd = typeof row.mainstream_asset_usd === 'number' ? row.mainstream_asset_usd : 0;
   return {
     id: row.id,
     name: row.name,
@@ -154,6 +157,7 @@ function mapUserRow(row: TrackedUserRow, addresses: AddressInfo[]): User {
     historicalMaxChainAssetTotal: historicalMaxAssetUsd,
     totalAssetUsd,
     historicalMaxAssetUsd,
+    mainstreamAssetUsd,
     assetUpdatedAt,
     monitoringEnabled: row.monitoring_enabled == null ? true : row.monitoring_enabled !== 0,
     tags: parseTags(row.tags_json),
@@ -726,6 +730,24 @@ export function listTrackedUsers() {
     }
   }
 
+  // Mainstream slice = native gas tokens + stablecoins (the LIQUID_ASSET_SYMBOLS list),
+  // summed regardless of liquidity_usd (DexScreener reports NULL for them). This is the
+  // "cash / dry powder" portion — surfaced as a ratio in the sidebar so a $3M total that
+  // is 89% USDC reads as "保守等机会" rather than looking like a huge alt bag.
+  const mainstreamByUserStmt = db.prepare(
+    `SELECT ch.user_id AS user_id,
+            COALESCE(SUM(ch.value_usd), 0) AS mainstream_asset_usd
+     FROM current_holdings ch
+     WHERE upper(COALESCE(ch.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS})
+     GROUP BY ch.user_id`
+  );
+  const mainstreamByUser = new Map<string, number>();
+  for (const row of mainstreamByUserStmt.all(...LIQUID_ASSET_SYMBOLS) as Array<{ user_id: string; mainstream_asset_usd: number }>) {
+    if (typeof row.mainstream_asset_usd === 'number' && Number.isFinite(row.mainstream_asset_usd)) {
+      mainstreamByUser.set(row.user_id, row.mainstream_asset_usd);
+    }
+  }
+
   const result = userRows.map((row) => {
     const cachedTotal = typeof row.total_asset_usd === 'number' ? row.total_asset_usd : 0;
     const cachedMax =
@@ -734,7 +756,12 @@ export function listTrackedUsers() {
     // liveTotal 为真源；取 max 避免缓存回填失败导致的 0；峰值至少不低于当前。
     const totalAssetUsd = Math.max(cachedTotal, liveTotal);
     return mapUserRow(
-      { ...row, total_asset_usd: totalAssetUsd, historical_max_asset_usd: Math.max(cachedMax, totalAssetUsd) },
+      {
+        ...row,
+        total_asset_usd: totalAssetUsd,
+        historical_max_asset_usd: Math.max(cachedMax, totalAssetUsd),
+        mainstream_asset_usd: mainstreamByUser.get(row.id) ?? 0,
+      },
       addressMap.get(row.id) || []
     );
   });
