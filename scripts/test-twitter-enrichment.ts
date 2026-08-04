@@ -470,6 +470,24 @@ async function testMediaUrlExtraction() {
   assert.deepEqual(urls, ['https://pbs.twimg.com/media/abc.jpg']);
 }
 
+async function testVisionOcrPoolMatching() {
+  const { extractPoolMentionsFromOcrTexts } = await import('../lib/server/visionEnrichmentModel');
+
+  const mentions = extractPoolMentionsFromOcrTexts(
+    [
+      'CASHCAT / Tether PERPETUAL FUTURES - 1h - MEXC',
+      'Sold all my $CASHCAT at a 50% loss today',
+      '市有/SPYB（Market C...',
+    ],
+    new Set(['cashcat', '币有', 'usdc'])
+  );
+
+  assert.deepEqual(
+    mentions.map((item) => item.tokenSymbol),
+    ['CASHCAT', '币有']
+  );
+}
+
 async function run() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-twitter-enrichment-'));
   process.env.PILIPILI_DATA_DIR = tempDir;
@@ -482,6 +500,7 @@ async function run() {
     await testQuoteRelayProjectionMetadata();
     await testQuotedTranslationAndMcFields();
     await testMediaUrlExtraction();
+    await testVisionOcrPoolMatching();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

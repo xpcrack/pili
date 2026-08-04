@@ -1,124 +1,159 @@
 import 'server-only';
 
-import { extractTweetTokenMentions, type ExtractedTweetTokenMention } from '@/lib/twitter/extractTweetTokenMentions';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 
-const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
-export const DEFAULT_NVIDIA_VISION_MODEL = 'meta/llama-3.2-90b-vision-instruct';
+import { isStableOrNativeSymbol } from '@/lib/assetSymbols';
+import { type ExtractedTweetTokenMention } from '@/lib/twitter/extractTweetTokenMentions';
+import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
 
-export function resolveNvidiaVisionModel() {
-  return (process.env.NVIDIA_VISION_MODEL || '').trim() || DEFAULT_NVIDIA_VISION_MODEL;
-}
+const execFileAsync = promisify(execFile);
+const OCR_SCRIPT = path.resolve(process.cwd(), 'scripts/macos-vision-ocr.swift');
 
-function parseVisionOutput(raw: string): { tickers: string[]; addresses: string[] } {
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const jsonStr = fenceMatch ? fenceMatch[1].trim() : raw.trim();
-
-  const tryParse = (text: string) => {
-    try {
-      const parsed = JSON.parse(text);
-      if (typeof parsed !== 'object' || parsed === null) return null;
-      const tickers = Array.isArray(parsed.tickers)
-        ? parsed.tickers.filter((v: unknown) => typeof v === 'string').map((v: string) => v.trim())
-        : [];
-      const addresses = Array.isArray(parsed.addresses)
-        ? parsed.addresses.filter((v: unknown) => typeof v === 'string').map((v: string) => v.trim())
-        : [];
-      return { tickers, addresses };
-    } catch {
-      return null;
-    }
-  };
-
-  const direct = tryParse(jsonStr);
-  if (direct) return direct;
-
-  const braceMatch = raw.match(/\{[\s\S]*\}/);
-  if (braceMatch) {
-    const nested = tryParse(braceMatch[0]);
-    if (nested) return nested;
-  }
-
-  return { tickers: [], addresses: [] };
-}
-
-function mentionsFromVisionResult(result: { tickers: string[]; addresses: string[] }): ExtractedTweetTokenMention[] {
-  // Reuse text extractor by synthesizing a pseudo-text blob
-  const pieces: string[] = [];
-  for (const ticker of result.tickers) {
-    const cleaned = ticker.replace(/^\$/, '').trim();
-    if (cleaned) pieces.push(`$${cleaned}`);
-  }
-  for (const address of result.addresses) {
-    if (address.trim()) pieces.push(address.trim());
-  }
-  if (pieces.length === 0) return [];
-  return extractTweetTokenMentions(pieces.join(' '));
-}
+type OcrOutput = { texts?: unknown };
 
 export interface VisionEnrichmentModel {
   extractMentionsFromImageUrl(url: string): Promise<ExtractedTweetTokenMention[]>;
 }
 
-class NvidiaVisionEnrichmentModel implements VisionEnrichmentModel {
-  private apiKey: string;
-  private model: string;
+function normalizeOcrText(value: string) {
+  return value
+    .trim()
+    .replace(/^[$#]+/, '')
+    .replace(/[​-‍﻿]/g, '')
+    .toLowerCase();
+}
 
-  constructor({ apiKey, model }: { apiKey: string; model?: string }) {
-    this.apiKey = apiKey;
-    this.model = (model || '').trim() || resolveNvidiaVisionModel();
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hasAsciiSymbol(text: string, symbol: string) {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(symbol.toLowerCase())}([^a-z0-9]|$)`, 'i').test(text);
+}
+
+function editDistanceAtMostOne(a: string, b: string) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (a.length > b.length) i += 1;
+    else if (b.length > a.length) j += 1;
+    else {
+      i += 1;
+      j += 1;
+    }
   }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
 
-  async extractMentionsFromImageUrl(url: string): Promise<ExtractedTweetTokenMention[]> {
-    const prompt =
-      'You extract crypto token tickers and contract addresses from an image. ' +
-      'Return ONLY JSON: {"tickers":["FOO"],"addresses":["0x... or Solana base58"]}. ' +
-      'Tickers without $. Empty arrays if none. No extra text.';
+function likelyTokenSymbol(symbol: string) {
+  if (!symbol || isStableOrNativeSymbol(symbol)) return false;
+  if (/^[a-z0-9]+$/i.test(symbol)) return symbol.length >= 4;
+  if (/^[一-鿿]+$/.test(symbol)) return symbol.length >= 2;
+  return symbol.length >= 2;
+}
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15_000);
+function isNearPairSlash(text: string, index: number, length: number) {
+  const before = text.slice(Math.max(0, index - 2), index);
+  const after = text.slice(index + length, index + length + 2);
+  return before.includes('/') || after.includes('/');
+}
 
-      const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: prompt },
-                { type: 'image_url', image_url: { url } },
-              ],
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 256,
-        }),
-        signal: controller.signal,
-      });
+function mentionSymbolFromPoolKey(symbol: string) {
+  return /^[a-z0-9]+$/i.test(symbol) ? symbol.toUpperCase() : symbol;
+}
 
-      clearTimeout(timeoutId);
+export function extractPoolMentionsFromOcrTexts(
+  texts: string[],
+  poolSymbols: Iterable<string> = getPrimaryPoolSymbolAllowlist()
+): ExtractedTweetTokenMention[] {
+  const symbols = Array.from(poolSymbols).filter(likelyTokenSymbol);
+  if (symbols.length === 0 || texts.length === 0) return [];
 
-      if (!response.ok) {
-        console.warn(`[vision] API error ${response.status} for ${url.slice(0, 80)}`);
-        return [];
+  const normalizedTexts = texts.map(normalizeOcrText).filter(Boolean);
+  const found = new Set<string>();
+
+  for (const symbol of symbols) {
+    const s = normalizeOcrText(symbol);
+    if (!s) continue;
+
+    for (const text of normalizedTexts) {
+      const exact = /^[a-z0-9]+$/i.test(s) ? hasAsciiSymbol(text, s) : text.includes(s);
+      if (exact) {
+        found.add(symbol);
+        break;
       }
 
-      const data = await response.json();
-      const content: string | undefined = data?.choices?.[0]?.message?.content;
-      if (!content) return [];
+      // Vision often confuses one CJK glyph in tiny chart headers: 币有 → 市有.
+      if (/^[一-鿿]{2,8}$/.test(s)) {
+        const hanRuns = text.match(/[一-鿿]{2,8}/g) || [];
+        if (hanRuns.some((run) => {
+          const index = text.indexOf(run);
+          return index >= 0 && isNearPairSlash(text, index, run.length) && editDistanceAtMostOne(run, s);
+        })) {
+          found.add(symbol);
+          break;
+        }
+      }
+    }
+  }
 
-      return mentionsFromVisionResult(parseVisionOutput(content));
+  return Array.from(found).map((tokenSymbol, index) => ({
+    tokenAddress: null,
+    tokenSymbol: mentionSymbolFromPoolKey(tokenSymbol),
+    matchSource: 'ticker',
+    rankInTweet: index + 1,
+  }));
+}
+
+async function downloadImage(url: string, filePath: string) {
+  const response = await fetch(url, {
+    headers: { Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return false;
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('image') && !contentType.includes('octet-stream')) return false;
+  await writeFile(filePath, Buffer.from(await response.arrayBuffer()));
+  return true;
+}
+
+class MacosVisionEnrichmentModel implements VisionEnrichmentModel {
+  async extractMentionsFromImageUrl(url: string): Promise<ExtractedTweetTokenMention[]> {
+    if (process.platform !== 'darwin') return [];
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'pili-vision-'));
+    try {
+      const imagePath = path.join(dir, 'image');
+      if (!await downloadImage(url, imagePath)) return [];
+
+      const { stdout } = await execFileAsync('swift', [OCR_SCRIPT, imagePath], {
+        timeout: 20_000,
+        maxBuffer: 1024 * 1024,
+      });
+      const parsed = JSON.parse(stdout) as OcrOutput;
+      const texts = Array.isArray(parsed.texts)
+        ? parsed.texts.filter((v): v is string => typeof v === 'string')
+        : [];
+      return extractPoolMentionsFromOcrTexts(texts);
     } catch (err) {
-      console.warn(
-        '[vision] extract failed:',
-        err instanceof Error ? err.message : err
-      );
+      console.warn('[vision] macOS Vision failed:', err instanceof Error ? err.message : err);
       return [];
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   }
 }
@@ -130,11 +165,8 @@ class NoopVisionEnrichmentModel implements VisionEnrichmentModel {
 }
 
 export function getDefaultVisionEnrichmentModel(): VisionEnrichmentModel {
-  const apiKey = (process.env.NVIDIA_API_KEY || '').trim();
-  if (!apiKey) {
-    return new NoopVisionEnrichmentModel();
-  }
-  return new NvidiaVisionEnrichmentModel({ apiKey });
+  if (process.platform !== 'darwin') return new NoopVisionEnrichmentModel();
+  return new MacosVisionEnrichmentModel();
 }
 
 export async function extractMentionsFromImageUrls(
@@ -144,7 +176,7 @@ export async function extractMentionsFromImageUrls(
   if (urls.length === 0) return [];
   const vision = model || getDefaultVisionEnrichmentModel();
   const collected: ExtractedTweetTokenMention[] = [];
-  // Sequential to keep rate modest; max 4 urls upstream
+  // Sequential to keep Twitter/media fetches modest; max 4 urls upstream.
   for (const url of urls) {
     const mentions = await vision.extractMentionsFromImageUrl(url);
     collected.push(...mentions);
