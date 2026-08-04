@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { pushBark } from '@/lib/server/barkNotify';
+import { resolveDexScreenerChainForAddress } from '@/lib/server/dexscreener';
 
 const require = createRequire(import.meta.url);
 
@@ -252,18 +253,37 @@ export function getPrimaryPoolOfficialTwitterMap(opts?: {
  * Ensure CA is an active primary-pool member in newone.
  * Returns true if newly entered or reactivated; false if already active / failed.
  */
-export function ensurePrimaryPoolForAddress(params: {
+export async function ensurePrimaryPoolForAddress(params: {
   address: string;
   symbol?: string | null;
   chain?: string | null;
   reason?: string;
-}): { ok: boolean; entered: boolean; tokenId?: number; error?: string } {
+}): Promise<{ ok: boolean; entered: boolean; tokenId?: number; error?: string }> {
   const address = (params.address || '').trim();
   if (!address) return { ok: false, entered: false, error: 'empty_address' };
   const addressLower = address.toLowerCase();
-  const chain =
-    (params.chain || '').trim() ||
-    (addressLower.startsWith('0x') ? 'bsc' : 'solana');
+  // Solana addresses are unambiguous. An EVM 0x address is shared across
+  // bsc/ethereum/base/etc. as independent contracts — `0x → bsc` was a wrong
+  // guess that mislabeled every base/ethereum token as bsc (e.g. QUID on base).
+  // When the caller did not pin a chain, resolve the real one from DexScreener's
+  // highest-liquidity pair; only fall back to the old default if that lookup fails
+  // (unresolved EVM stays a soft `bsc` for legacy compat — logged below).
+  const callerChain = (params.chain || '').trim();
+  const isEvm = addressLower.startsWith('0x');
+  let chain = callerChain;
+  if (!chain) {
+    if (isEvm) {
+      const resolved = await resolveDexScreenerChainForAddress(address);
+      chain = resolved || 'bsc';
+      if (!resolved) {
+        console.warn(
+          `[primary-pool] EVM chain unresolved for ${addressLower}; defaulting to bsc (may mislabel base/eth)`,
+        );
+      }
+    } else {
+      chain = 'solana';
+    }
+  }
   const symbol = (params.symbol || '').trim() || null;
   const newonePath = resolveNewoneDbPath();
   if (!existsSync(newonePath)) {
@@ -290,6 +310,24 @@ export function ensurePrimaryPoolForAddress(params: {
         db.prepare(
           `UPDATE tokens SET symbol = COALESCE(?, symbol) WHERE id = ?`,
         ).run(symbol, tokenId);
+      }
+      // Correct legacy mislabeled EVM rows: the old `0x → bsc` default wrote many
+      // base/ethereum tokens into the table as bsc. If DexScreener says the real
+      // dominant chain is something else, repoint this row's chain so downstream
+      // market refresh / GMGN kline hit the right chain. (Solana rows are never
+      // touched — address is unambiguous there.)
+      if (
+        isEvm &&
+        !callerChain &&
+        existing.chain !== chain &&
+        chain !== 'bsc'
+      ) {
+        db.prepare(
+          `UPDATE tokens SET chain = ? WHERE id = ?`,
+        ).run(chain, tokenId);
+        console.log(
+          `[primary-pool] corrected chain ${existing.chain}→${chain} for ${addressLower}`,
+        );
       }
     } else {
       db.prepare(
