@@ -181,7 +181,7 @@ async function ensureExtractedCasInPrimaryPool(mentions: ExtractedTweetTokenMent
     if (chain === 'solana' && !await isLikelyTokenAddress(addr)) {
       continue;
     }
-    const res = ensurePrimaryPoolForAddress({
+    const res = await ensurePrimaryPoolForAddress({
       address: addr,
       symbol: m.tokenSymbol,
       chain,

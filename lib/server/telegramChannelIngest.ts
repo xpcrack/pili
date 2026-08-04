@@ -15,7 +15,7 @@ export async function ingestTelegramChannelPost(params: {
   post: TelegramChannelPost;
   fetchTweetsByIds: (ids: string[]) => Promise<{ provider: string; tweets: UpsertTwitterTweetInput[] }>;
 }) {
-  const projected = projectTelegramChannelPostToFeed({
+  const projected = await projectTelegramChannelPostToFeed({
     source: params.source,
     post: params.post,
   });

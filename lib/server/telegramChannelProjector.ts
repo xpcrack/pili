@@ -32,7 +32,7 @@ function requireUser(userId: string): User {
   return user;
 }
 
-export function projectTelegramChannelPostToFeed(params: {
+export async function projectTelegramChannelPostToFeed(params: {
   source: TelegramChannelSource;
   post: TelegramChannelPost;
 }) {
@@ -59,7 +59,7 @@ export function projectTelegramChannelPostToFeed(params: {
   for (const m of mentions) {
     const addr = (m.tokenAddress || '').trim();
     if (!addr || poolAddrs.has(addr.toLowerCase())) continue;
-    ensurePrimaryPoolForAddress({
+    await ensurePrimaryPoolForAddress({
       address: addr,
       symbol: m.tokenSymbol,
       chain: addr.startsWith('0x') ? null : 'solana',

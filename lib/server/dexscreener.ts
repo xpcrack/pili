@@ -232,6 +232,60 @@ export async function fetchFromDexScreener(
   }
 }
 
+/**
+ * Resolve the real chain for an address whose chain is unknown/ambiguous.
+ *
+ * DexScreener's `/latest/dex/tokens/{addr}` returns every pair across every
+ * chain that shares that address. An EVM address is NOT chain-specific (the
+ * same 0x hash exists on bsc/ethereum/base/arbitrum as independent contracts),
+ * so guessing `0x → bsc` is wrong for any token that actually lives on base/eth.
+ * This picks the highest-liquidity reasonable pair and returns its real chain,
+ * mapped to the pili internal chain id. Returns null when DexScreener has no
+ * pair or the fetch fails — callers should then fall back, never assume bsc.
+ *
+ * Used by primary-pool ingestion (pili-social-ca) to stop mislabeling
+ * base/ethereum tokens as bsc before they are written into newone's tokens table.
+ */
+export async function resolveDexScreenerChainForAddress(
+  address: string,
+): Promise<string | null> {
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+  try {
+    const url = `${DEXSCREENER_API}/latest/dex/tokens/${trimmed}`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data: DexScreenerResponse = await res.json();
+    if (!data.pairs || data.pairs.length === 0) return null;
+
+    // Drop unreasonable-price pairs first (the same garbage-pool filter the
+    // per-chain path uses) so a dead/wrong pool with a big fake liquidity number
+    // cannot win over the real dominant pool.
+    const reasonable = data.pairs.filter(isReasonableDexPairPrice);
+    const candidates = reasonable.length ? reasonable : data.pairs;
+
+    const best = [...candidates].sort(
+      (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0),
+    )[0];
+    if (!best?.chainId) return null;
+
+    // Map dexscreener chainId → pili chain id. Unknown ids pass through as-is
+    // (newone's normalizeChain will keep whatever string this is).
+    const cid = best.chainId.toLowerCase();
+    return (
+      CHAIN_MAP[cid] ??
+      // dexscreener sometimes uses 'arbitrum'/'avalanche'/'polygon' etc.; keep
+      // the raw id so downstream GMGN/dexscreener calls still address the right chain.
+      cid
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function batchFetchFromDexScreener(
   tokens: Array<{ contractAddress: string; chain: string }>
 ): Promise<

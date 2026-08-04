@@ -15,6 +15,16 @@ export function isEvmAddress(address: string) {
   return normalize(address).startsWith('0x');
 }
 
+/**
+ * Coarse address → chain guess: Solana vs EVM. EVM can't be resolved from the
+ * address alone (one 0x hash exists on bsc/ethereum/base/… as separate contracts),
+ * so this returns the bsc default only as a legacy placeholder — NOT a real chain.
+ *
+ * DO NOT use this to stamp a token's chain for persistence. For real EVM chain
+ * resolution use resolveDexScreenerChainForAddress() (highest-liquidity pair).
+ * Left in place for the few call sites that only need "is this EVM or Solana?"
+ * (wallet/portfol io lookups); replacing them is tracked separately.
+ */
 export function inferChainFromAddress(address: string): ChainType {
   return isEvmAddress(address) ? 'bsc' : 'solana';
 }

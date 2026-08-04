@@ -141,7 +141,7 @@ async function run() {
     assert.notEqual(typeof channelEntityRef, 'string');
     assert.equal((channelEntityRef as { className?: string } | null)?.className, 'InputPeerChannel');
 
-    const projected = projectTelegramChannelPostToFeed({
+    const projected = await projectTelegramChannelPostToFeed({
       source: readySource,
       post,
     });
