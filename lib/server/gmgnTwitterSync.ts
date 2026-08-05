@@ -110,6 +110,8 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
         const stdout = await runGmgnCliAsync({
           args: ['portfolio', 'stats', '--chain', gmgnChain, '--wallet', c.address, '--period', '30d', '--raw'],
           timeoutMs: STATS_TIMEOUT_MS,
+          // portfolio = signed 路由，3 倍加权扣令牌防打爆单 IP
+          cost: 3,
         });
         const data = JSON.parse(stdout) as {
           common?: { twitter_bind?: boolean; twitter_username?: string };

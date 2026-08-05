@@ -199,11 +199,12 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
   const recentBan = Number(prev.untilMs || 0) > nowMs - 5 * 60_000;
   const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
   // 信任 GMGN 服务器 reset_at；无 reset_at 时用 60s 缓冲。
-  // 不再使用阶梯升级（5.5m→15m→30m→60m）——GMGN 真实封禁只有 30~50s，
-  // 阶梯只会自锁自（signed 路由固定单 key+单 IP，连封把它推到 60min，写进共享
-  // 文件后 newone 也被拖累，持仓页 stale 一个钟）。consecutiveBans 仍计数
-  // （监控/恢复期慢启动用），不再决定冷却时长。
-  let until = nowMs + GMGN_BAN_COOLDOWN_MS;
+  // 不再使用阶梯升级（5.5m→15m→30m→60m）——那 stale 一个钟。
+  // 但连封时 GMGN 滚动惩罚每次撞墙延 5s（上限 5min），60s 平地正好踩进滚动
+  // 窗口反复触发（实测 +1 ban/60s 死循环）。温和爬坡：按 consecutiveBans 加
+  // 30s/次，cap 240s（总上限 5min = GMGN 惩罚天花板）。cb 间隔超 5min 自动归零。
+  const RAMP_MS = Math.min(240_000, Math.max(0, consecutiveBans - 1) * 30_000);
+  let until = nowMs + GMGN_BAN_COOLDOWN_MS + RAMP_MS;
 
   if (resetAtUnix != null && Number.isFinite(resetAtUnix)) {
     if (resetAtUnix > 1e12) until = Math.max(until, resetAtUnix + 5_000);
