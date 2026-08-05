@@ -94,6 +94,11 @@ export function releaseGmgnHeavyJob(job: string): void {
 let memoryUntilMs = 0;
 
 export function isGmgnBanMessage(msg: string): boolean {
+  // GmgnOutageError / assertGmgnAllowed 抛的消息以 "GMGN_COOLDOWN" 开头——它描述的是
+  // 本地已有冷却，不是新的服务端封禁。后缀 "(after RATE_LIMIT_BANNED)" 只是说明性的，
+  // 绝不能重新触发冷却（否则一次真封禁被自己的冷却错误消息无限自激、cb 只增不减）。
+  // 与 newone 守卫一致（commit 19aa8db）。
+  if (/^GMGN_COOLDOWN/i.test(msg)) return false;
   return /RATE_LIMIT_BANNED|IP is temporarily banned|account is temporarily banned|error=RATE_LIMIT_BANNED|ERROR_RATE_LIMIT_BLOCKED/i.test(
     msg
   );
