@@ -199,6 +199,10 @@ export function resetGmgnCooldown(): void {
 }
 
 export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: number | null): number {
+  // 兜底防线：任何 ^GMGN_COOLDOWN 消息（assertGmgnAllowed 抛的本地冷却错误）都不是
+  // 新封禁，绝不能记——否则 cb 只增不减、自激死循环。即便调用方漏过 isGmgnBanMessage
+  // 守卫，这里也拦住。与 newone 一致。
+  if (/^GMGN_COOLDOWN/i.test(msg)) return readFileUntilMs();
   const prev = readFileCooldownState();
   const prevConsecutive = Math.max(0, Number(prev.consecutiveBans || 0));
   const recentBan = Number(prev.untilMs || 0) > nowMs - 5 * 60_000;
