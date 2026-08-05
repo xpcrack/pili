@@ -334,7 +334,8 @@ function parseGmgnHoldingsList(stdout: string): { assets: RobinhoodHoldingAsset[
 
 async function runGmgnCli(args: string[], signal?: AbortSignal): Promise<string> {
   try {
-    return await runGmgnCliAsync({ args, signal });
+    // portfolio holdings = signed 路由，3 倍加权扣令牌防打爆单 IP
+    return await runGmgnCliAsync({ args, signal, cost: 3 });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (/aborted/i.test(msg)) throw new Error('gmgn-cli aborted');

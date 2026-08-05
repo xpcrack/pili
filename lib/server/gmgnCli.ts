@@ -119,9 +119,12 @@ export async function runGmgnCliAsync(opts: {
   signal?: AbortSignal;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** 全局桶令牌成本：signed 路由（portfolio/holdings/swap）传 3，其余默认 1。
+   *  与 newone 对齐——signed 固定单 key+单 IP，3 倍加权防打爆 ban 死循环。 */
+  cost?: number;
 }): Promise<string> {
   assertGmgnAllowed();
-  await acquireGmgnGlobalToken();
+  await acquireGmgnGlobalToken(opts.cost);
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);
 
@@ -198,6 +201,8 @@ export function runGmgnCliSync(opts: {
   bin?: string;
   maxBuffer?: number;
   env?: NodeJS.ProcessEnv;
+  /** 全局桶令牌成本：signed 路由传 3，其余默认 1（同 runGmgnCliAsync）。 */
+  cost?: number;
 }): SpawnSyncReturns<string> {
   assertGmgnAllowed();
   const bin = resolveGmgnCliBin(opts.bin);

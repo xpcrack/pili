@@ -472,7 +472,10 @@ export class GmgnOpenApiClient {
     opts: { signed: boolean }
   ): Promise<T> {
     assertGmgnAllowed();
-    await acquireGmgnGlobalToken();
+    // signed 路由（wallet_holdings 等）固定单 key+单 IP，按 3 倍加权扣令牌，
+    // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
+    // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
+    await acquireGmgnGlobalToken(opts.signed ? 3 : 1);
     const key = await this.pool.acquire({ primaryOnly: opts.signed });
     let released = false;
     const markSuccess = () => {
