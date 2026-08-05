@@ -109,12 +109,53 @@ function readFileUntilMs(): number {
   }
 }
 
+/**
+ * 保留 newone 侧写入的扩展字段（consecutiveBans / lastBanAt / source / state /
+ * lastReason）。newone 的恢复期慢启动 getGmgnRecoveryFactor 依赖 lastBanAt；
+ * 本文件只写 {untilMs, updatedAt} 会把它们抹掉，绕过慢启动 → 冷却一结束就
+ * 全速撞墙再封。读写同一共享文件，必须保留对方字段。
+ */
+function readFileCooldownState(): { untilMs: number; consecutiveBans?: number; lastBanAt?: string; lastReason?: string; source?: string; state?: string } {
+  try {
+    if (!existsSync(COOLDOWN_FILE)) return { untilMs: 0 };
+    const raw = JSON.parse(readFileSync(COOLDOWN_FILE, 'utf8')) as {
+      untilMs?: unknown; consecutiveBans?: unknown; lastBanAt?: string;
+      lastReason?: string; source?: string; state?: string;
+    };
+    const n = Number(raw.untilMs);
+    return {
+      untilMs: Number.isFinite(n) ? n : 0,
+      consecutiveBans: Number.isFinite(Number(raw.consecutiveBans)) ? Number(raw.consecutiveBans) : undefined,
+      lastBanAt: raw.lastBanAt || undefined,
+      lastReason: raw.lastReason || undefined,
+      source: raw.source || undefined,
+      state: raw.state || undefined,
+    };
+  } catch {
+    return { untilMs: 0 };
+  }
+}
+
 function writeFileUntilMs(untilMs: number) {
   try {
     mkdirSync(dirname(COOLDOWN_FILE), { recursive: true });
+    const prev = readFileCooldownState();
     writeFileSync(
       COOLDOWN_FILE,
-      JSON.stringify({ untilMs, updatedAt: new Date().toISOString() }, null, 2),
+      JSON.stringify(
+        {
+          untilMs,
+          updatedAt: new Date().toISOString(),
+          // 保留 newone 的连续封禁计数与最后封禁时间（慢启动依赖）
+          ...(prev.consecutiveBans != null ? { consecutiveBans: prev.consecutiveBans } : {}),
+          ...(prev.lastBanAt != null ? { lastBanAt: prev.lastBanAt } : {}),
+          ...(prev.lastReason != null ? { lastReason: prev.lastReason } : {}),
+          ...(prev.source != null ? { source: prev.source } : {}),
+          ...(prev.state != null ? { state: prev.state } : {}),
+        },
+        null,
+        2
+      ),
       'utf8'
     );
   } catch {
