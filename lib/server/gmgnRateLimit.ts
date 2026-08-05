@@ -2,12 +2,17 @@
  * Process + file-shared GMGN ban cooldown.
  * After RATE_LIMIT_BANNED, further requests extend the ban — fail closed.
  * File path lets web + backfill scripts share one cooldown.
+ *
+ * 三方共写协议：本文件是 ban-cooldown.json 的三个写入者之一（另两个是
+ * newone packages/adapters/src/gmgn-rate-limit.ts、tools/web3-sheet-backfill/keypool.py）。
+ * 三家必须遵守同一协议——冷却时长=max(60s, reset_at+5s)、不 ratchet 陈旧 untilMs、
+ * 保留彼此的扩展字段。完整约定见 keypool.py 文件头。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export const GMGN_BAN_COOLDOWN_MS = 5.5 * 60 * 1000;
+export const GMGN_BAN_COOLDOWN_MS = 60 * 1000;
 
 /** Global shared path — pili / wrapper / python tools all use this. */
 export const DEFAULT_GMGN_BAN_COOLDOWN_FILE = join(homedir(), '.config', 'gmgn', 'ban-cooldown.json');
@@ -164,7 +169,14 @@ function writeFileUntilMs(untilMs: number) {
 }
 
 export function gmgnCooldownUntilMs(): number {
-  return Math.max(memoryUntilMs, readFileUntilMs());
+  const fileUntil = readFileUntilMs();
+  const now = Date.now();
+  // 共享文件是跨进程事实源。memoryUntilMs 只增不减（noteGmgnBan 的 max 累加），
+  // 若 newone 等写入者把文件值覆盖得更小且已过期，内存残留会把本进程锁死
+  // （文件已过期但 max() 仍取内存大值 → 冷却永不解）。信任文件：
+  // 文件已过期 → 冷却解除；文件未过期 → 取两者较大（本进程刚记的 ban 优先）。
+  if (fileUntil <= now) return 0;
+  return Math.max(memoryUntilMs, fileUntil);
 }
 
 export function gmgnCooldownRemainingMs(nowMs = Date.now()): number {
@@ -182,6 +194,15 @@ export function resetGmgnCooldown(): void {
 }
 
 export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: number | null): number {
+  const prev = readFileCooldownState();
+  const prevConsecutive = Math.max(0, Number(prev.consecutiveBans || 0));
+  const recentBan = Number(prev.untilMs || 0) > nowMs - 5 * 60_000;
+  const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
+  // 信任 GMGN 服务器 reset_at；无 reset_at 时用 60s 缓冲。
+  // 不再使用阶梯升级（5.5m→15m→30m→60m）——GMGN 真实封禁只有 30~50s，
+  // 阶梯只会自锁自（signed 路由固定单 key+单 IP，连封把它推到 60min，写进共享
+  // 文件后 newone 也被拖累，持仓页 stale 一个钟）。consecutiveBans 仍计数
+  // （监控/恢复期慢启动用），不再决定冷却时长。
   let until = nowMs + GMGN_BAN_COOLDOWN_MS;
 
   if (resetAtUnix != null && Number.isFinite(resetAtUnix)) {
@@ -220,8 +241,36 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
     }
   }
 
-  memoryUntilMs = Math.max(memoryUntilMs, until, readFileUntilMs());
+  // 不 ratchet 跨进程陈旧文件值：服务器 reset 信号已捕获本次 ban 的真实解除
+  // 时间，再 max(readFileUntilMs()) 只会把 newone/旧代码残留的 60min 长值无条件
+  // 保留（35s 真封禁被本地大值覆盖 → 锁一个钟）。短 ban 用短值覆盖陈旧长值。
+  memoryUntilMs = Math.max(memoryUntilMs, until);
   writeFileUntilMs(memoryUntilMs);
+  // 与 newone 对齐：把 consecutiveBans/lastBanAt/lastReason/state 写进共享文件，
+  // 否则这些字段一旦被抹空（旧极简格式）就永远无法自愈，恢复期慢启动被绕过。
+  try {
+    const full = readFileCooldownState();
+    writeFileSync(
+      COOLDOWN_FILE,
+      JSON.stringify(
+        {
+          untilMs: memoryUntilMs,
+          updatedAt: new Date(nowMs).toISOString(),
+          source: 'pili',
+          state: 'open',
+          consecutiveBans,
+          lastBanAt: new Date(nowMs).toISOString(),
+          lastReason: msg.slice(0, 500),
+          ...(full.source != null && full.source !== 'pili' ? { source: full.source } : {}),
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // non-fatal
+  }
   return memoryUntilMs;
 }
 
@@ -319,10 +368,41 @@ function releaseBucketLock(): void {
 }
 
 /**
+ * 恢复期慢启动因子：连封后冷却刚过期时不要满速恢复到全量并发。
+ * 与 newone getGmgnRecoveryFactor 语义一致：consecutiveBans >= 2 且
+ * 最后一次封禁在 5 分钟内时，因子从 0.3 线性回归到 1.0。
+ * 基于 lastBanAt（而非 untilMs）——即使手动清冷却，只要封禁刚发生慢启动仍生效。
+ */
+export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
+  const prev = readFileCooldownState();
+  let bans = Math.max(0, Number(prev.consecutiveBans || 0));
+  // 防御：consecutiveBans 被第二写入者抹掉，但剩余冷却仍明显长于单次 60s 地板时
+  // 推断连封，避免慢启动被绕过、冷却一结束就全速撞墙再封。
+  if (bans < 2 && prev.untilMs != null && prev.untilMs > 0) {
+    const remaining = Math.max(0, prev.untilMs - nowMs);
+    if (remaining > GMGN_BAN_COOLDOWN_MS + 60_000) bans = 2;
+  }
+  if (bans < 2) return 1.0;
+  const lastBanAt = prev.lastBanAt ? Date.parse(prev.lastBanAt) : 0;
+  const sinceMs =
+    Number.isFinite(lastBanAt) && lastBanAt > 0
+      ? nowMs - lastBanAt
+      : Math.max(0, nowMs - (Number(prev.untilMs) || nowMs));
+  const RECOVERY_WINDOW_MS = 5 * 60_000;
+  if (sinceMs >= RECOVERY_WINDOW_MS) return 1.0;
+  return 0.3 + 0.7 * Math.max(0, sinceMs / RECOVERY_WINDOW_MS);
+}
+
+/**
  * 发起 GMGN 请求前从共享全局桶扣 cost 个令牌；不够则异步等到够为止。
  * 锁耗尽时 best-effort 放行（罕见，优于卡死流水线）。
+ * 恢复期慢启动：连封后冷却刚过 5 分钟内，令牌成本按 1/factor 放大
+ * （factor=0.3 → cost≈3.3x → 聚合 qps 压低到 30%），防止 pili 全速突进
+ * 撞墙再封。这是跨进程共享桶，压制同时作用于所有走此桶的进程。
  */
 export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
+  const factor = getGmgnRecoveryFactor();
+  const effectiveCost = factor < 1.0 ? cost / factor : cost;
   for (let attempt = 0; attempt < 300; attempt++) {
     let waitMs = 0;
     let got = false;
@@ -332,11 +412,11 @@ export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
         const s = readBucket();
         const elapsed = Math.max(0, now - s.lastMs);
         const tokens = Math.min(GLOBAL_BURST, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
-        if (tokens >= cost) {
-          writeBucket({ tokens: tokens - cost, lastMs: now });
+        if (tokens >= effectiveCost) {
+          writeBucket({ tokens: tokens - effectiveCost, lastMs: now });
           got = true;
         } else {
-          const deficit = cost - tokens;
+          const deficit = effectiveCost - tokens;
           waitMs = Math.ceil((deficit / GLOBAL_RPS) * 1000) + 10;
         }
       } finally {
