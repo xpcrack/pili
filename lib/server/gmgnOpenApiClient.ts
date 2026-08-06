@@ -119,6 +119,26 @@ export function loadPrimaryApiKey(): string | null {
   return null;
 }
 
+/** 加载 key → 私钥 pem 映射（signed 路由多 key 轮询）。与 newone gmgn-client.ts 相同。 */
+export function loadPrivateKeysByKey(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const p = process.env.GMGN_KEYS_TO_PRIVS_FILE?.trim() || join(homedir(), '.config/gmgn/keys-to-privs.json');
+  try {
+    if (existsSync(p)) {
+      const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, string>;
+      for (const [k, v] of Object.entries(raw)) {
+        if (!k || !v) continue;
+        const path = v.startsWith('~/') ? join(homedir(), v.slice(2)) : v;
+        try {
+          const pem = readFileSync(path, 'utf8').trim();
+          if (pem.includes('PRIVATE KEY')) out[k] = pem;
+        } catch { /* skip orphan */ }
+      }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
 export function buildSignedMessage(
   subPath: string,
   queryParams: Record<string, string | string[] | number | boolean>,
@@ -183,6 +203,8 @@ export class GmgnKeyPool {
   private readonly maxInflight: number;
   /** Prefer this key for signed auth (pairs with private key). */
   primaryKey: string | null;
+  /** Signed 路由可轮询的 key 集合（有配对私钥的 key）。 */
+  private signedKeys: string[];
   stats = {
     acquire: 0,
     rate_limited: 0,
@@ -200,6 +222,8 @@ export class GmgnKeyPool {
     cooldownMax?: number;
     maxInflight?: number;
     primaryKey?: string | null;
+    /** Signed 路由轮询池：有配对私钥的 key 子集 */
+    signedKeys?: string[] | null;
   }) {
     this.keys = opts?.keys ?? loadGmgnOpenApiKeys();
     this.rpsMin = opts?.rpsMin ?? 0.2;
@@ -208,6 +232,12 @@ export class GmgnKeyPool {
     this.cooldownMax = opts?.cooldownMax ?? 180;
     this.maxInflight = opts?.maxInflight ?? 1;
     this.primaryKey = opts?.primaryKey ?? loadPrimaryApiKey();
+    // signed 池：显式传入 > 默认 = 全 keys（兼容旧行为）+ primaryKey 必在
+    const sk = opts?.signedKeys ?? this.keys;
+    this.signedKeys = sk.filter((k) => this.keys.includes(k));
+    if (this.primaryKey && !this.signedKeys.includes(this.primaryKey)) {
+      this.signedKeys.unshift(this.primaryKey);
+    }
     const rps = opts?.rpsPerKey ?? Number(process.env.PILI_GMGN_RPS_PER_KEY || 0.8);
     const base = Date.now() / 1000;
     const gap = 1 / Math.max(rps, 0.05) / Math.max(this.keys.length, 1);
@@ -237,9 +267,13 @@ export class GmgnKeyPool {
     timeoutMs?: number;
     preferPrimary?: boolean;
     primaryOnly?: boolean;
+    /** Signed 路由：在 signedKeys（有配对私钥的 key）池中轮询 */
+    signed?: boolean;
   }): Promise<string> {
     const preferPrimary = opts?.preferPrimary === true;
     const primaryOnly = opts?.primaryOnly === true;
+    const signed = opts?.signed === true;
+    const pool = signed ? this.signedKeys : this.keys;
     if (primaryOnly && (!this.primaryKey || !this.keys.includes(this.primaryKey))) {
       // signed routes need the primary key; if missing from pool, try inject
       if (primaryOnly && this.primaryKey) {
@@ -256,6 +290,9 @@ export class GmgnKeyPool {
       } else {
         throw new Error('GMGN primary API key required for signed routes');
       }
+    }
+    if (signed && pool.length === 0) {
+      throw new Error('GMGN private key required for signed routes');
     }
     const deadline =
       opts?.timeoutMs != null ? Date.now() + opts.timeoutMs : Date.now() + 60_000;
@@ -290,12 +327,13 @@ export class GmgnKeyPool {
           continue;
         }
       }
-      const n = primaryOnly ? 0 : this.keys.length;
+      const n = pool.length;
       for (let i = 0; i < n; i++) {
         const idx = this.cycle % n;
         this.cycle++;
-        const k = this.keys[idx]!;
-        const st = this.state.get(k)!;
+        const k = pool[idx]!;
+        const st = this.state.get(k);
+        if (!st) continue;
         if (st.inFlight >= this.maxInflight) continue;
         if (st.cooldownUntil > now) continue;
         if (st.nextAllowed > now) continue;
@@ -306,8 +344,9 @@ export class GmgnKeyPool {
         return k;
       }
       let earliest = now + 0.5;
-      const states =
-        primaryOnly && this.primaryKey
+      const states = signed
+        ? pool.map((k) => this.state.get(k)).filter((s): s is KeyState => !!s)
+        : primaryOnly && this.primaryKey
           ? [this.state.get(this.primaryKey)!]
           : [...this.state.values()];
       for (const st of states) {
@@ -418,6 +457,8 @@ export class GmgnOpenApiClient {
   host: string;
   pool: GmgnKeyPool;
   privateKeyPem: string | null;
+  /** key → 配对私钥 pem（signed 路由按 key 签名）。 */
+  private privateKeysByKey: Record<string, string>;
   private timeoutMs: number;
 
   constructor(opts?: {
@@ -427,20 +468,38 @@ export class GmgnOpenApiClient {
     maxInflight?: number;
     timeoutMs?: number;
     privateKeyPem?: string | null;
+    /** key → 私钥 pem 映射（signed 多 key 轮询） */
+    privateKeysByKey?: Record<string, string> | null;
     primaryKey?: string | null;
   }) {
     this.host = (opts?.host ?? process.env.GMGN_OPENAPI_HOST ?? DEFAULT_HOST).replace(
       /\/$/,
       ''
     );
+    // key → 私钥映射：显式传入 > 环境文件 > 兼容旧的单私钥
+    const mapInput =
+      opts?.privateKeysByKey !== undefined
+        ? opts.privateKeysByKey
+        : loadPrivateKeysByKey();
+    this.privateKeysByKey = mapInput ?? {};
+    this.privateKeyPem =
+      opts?.privateKeyPem !== undefined ? opts.privateKeyPem : loadGmgnPrivateKey();
+    // signed 池 = 有配对私钥的 key。无映射时退化为 primaryKey 单 key（旧行为）。
+    let signedKeys: string[] | null = null;
+    const mapKeys = Object.keys(this.privateKeysByKey);
+    if (mapKeys.length > 0) {
+      signedKeys = mapKeys;
+    } else if (this.privateKeyPem) {
+      const primary = opts?.primaryKey !== undefined ? opts.primaryKey : loadPrimaryApiKey();
+      signedKeys = primary ? [primary] : null;
+    }
     this.pool = new GmgnKeyPool({
       keys: opts?.keys,
       rpsPerKey: opts?.rpsPerKey,
       maxInflight: opts?.maxInflight ?? 1,
       primaryKey: opts?.primaryKey,
+      signedKeys,
     });
-    this.privateKeyPem =
-      opts?.privateKeyPem !== undefined ? opts.privateKeyPem : loadGmgnPrivateKey();
     const timeoutMs =
       opts?.timeoutMs ?? Number(process.env.GMGN_FETCH_TIMEOUT_MS ?? 20_000);
     this.timeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20_000;
@@ -459,7 +518,9 @@ export class GmgnOpenApiClient {
     subPath: string,
     query: GmgnQuery = {}
   ): Promise<T> {
-    if (!this.privateKeyPem) {
+    const hasAnyKey =
+      Object.keys(this.privateKeysByKey).length > 0 || !!this.privateKeyPem;
+    if (!hasAnyKey) {
       throw new Error('GMGN_PRIVATE_KEY required for signed routes (holdings/…)');
     }
     return this.request<T>(method, subPath, query, { signed: true });
@@ -472,11 +533,11 @@ export class GmgnOpenApiClient {
     opts: { signed: boolean }
   ): Promise<T> {
     assertGmgnAllowed();
-    // signed 路由（wallet_holdings 等）固定单 key+单 IP，按 3 倍加权扣令牌，
+    // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
     // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
     // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
     await acquireGmgnGlobalToken(opts.signed ? 3 : 1);
-    const key = await this.pool.acquire({ primaryOnly: opts.signed });
+    const key = await this.pool.acquire(opts.signed ? { signed: true } : {});
     let released = false;
     const markSuccess = () => {
       released = true;
@@ -506,10 +567,22 @@ export class GmgnOpenApiClient {
         'X-APIKEY': key,
         'Content-Type': 'application/json',
         'User-Agent': USER_AGENT,
+        // 禁止 keep-alive：每个请求新建 TCP 连接 → Clash GMGN轮询 给不同节点
+        // → 不同出口 IP → 避免 IP 级限速（实测 load-balance 每连接轮询有效）
+        'Connection': 'close',
       };
-      if (opts.signed && this.privateKeyPem) {
+      if (opts.signed) {
+        // 每把 key 用自己配对的私钥签名（GMGN key↔公钥 1:1 绑定）。
+        // 优先 per-key 映射；无映射（兼容旧配置）回退统一 privateKeyPem。
+        const keyPem =
+          this.privateKeysByKey[key] ?? this.privateKeyPem ?? null;
+        if (!keyPem) {
+          throw new Error(
+            `GMGN private key missing for signed key ${key.slice(0, 8)}…`
+          );
+        }
         const message = buildSignedMessage(subPath, q, '', timestamp);
-        headers['X-Signature'] = signMessage(message, this.privateKeyPem);
+        headers['X-Signature'] = signMessage(message, keyPem);
       }
       const url = buildUrl(this.host, subPath, q);
       // Node undici only honors HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1
