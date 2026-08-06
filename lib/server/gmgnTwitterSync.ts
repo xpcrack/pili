@@ -26,7 +26,7 @@ import { inferChainFromAddress } from '@/lib/addressBook';
 import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
 
 /** 单次反查最多查多少个地址。防配额突刺、防拖卡飞书同步周期。 */
-const MAX_ADDRESSES_PER_CYCLE = Number(process.env.PILI_GMGN_TWITTER_SYNC_MAX || 40);
+const MAX_ADDRESSES_PER_CYCLE = Number(process.env.PILI_GMGN_TWITTER_SYNC_MAX || 8);
 /** gmgn stats 批量的并发数。小批量并发省墙钟,不宜高以免砸配额。 */
 const CONCURRENCY = Math.min(3, Math.max(1, Number(process.env.PILI_GMGN_TWITTER_SYNC_CONCURRENCY || 2)));
 /** 单次 gmgn-cli stats spawn 超时(ms)。 */
@@ -134,6 +134,8 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
         continue;
       }
       const v = settled.value;
+        // 无论成功失败，记入已查地址避免下一周期再打
+        checkedThisProcess.add(batch[j]!.address.toLowerCase());
       switch (v.kind) {
         case 'alreadyFilled':
           skippedAlreadyFilled += 1;
@@ -176,10 +178,11 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
     failed,
   };
 }
+/** 本进程本轮已查过推特身份的地址(避免 notBound/nocommon 每周期反复打同一批)。 */
+const checkedThisProcess = new Set<string>();
 
 /**
- * 收集"推特为空 + 有监控地址"的用户的全部监控地址。
- * 按用户 updated_at 升序(新进 pili 的优先),同一用户的地址相邻排列。
+ * 收集"推特为空 + 有监控地址"的用户的全部地址。 * 按用户 updated_at 升序(新进 pili 的优先),同一用户的地址相邻排列。
  * 限 MAX_ADDRESSES_PER_CYCLE 条(地址数,非用户数)。
  */
 function collectUnfilledCandidates(): Candidate[] {
@@ -192,10 +195,11 @@ function collectUnfilledCandidates(): Candidate[] {
         WHERE (u.twitter IS NULL OR u.twitter = '')
           AND a.monitoring_enabled = 1
           AND a.address IS NOT NULL AND a.address != ''
+        AND a.address NOT IN (SELECT value FROM json_each(?))
         ORDER BY u.updated_at ASC, a.address ASC
         LIMIT ?`
     )
-    .all(MAX_ADDRESSES_PER_CYCLE) as Array<{ user_id: string; address: string }>;
+    .all(MAX_ADDRESSES_PER_CYCLE, JSON.stringify([...checkedThisProcess])) as Array<{ user_id: string; address: string }>;
 
   return rows.map((row) => ({
     userId: String(row.user_id || ''),
