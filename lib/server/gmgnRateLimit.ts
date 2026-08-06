@@ -313,8 +313,11 @@ export function assertGmgnAllowed(nowMs = Date.now()): void {
 const GLOBAL_BUCKET_FILE =
   process.env.GMGN_GLOBAL_BUCKET_FILE?.trim() || join(homedir(), '.config', 'gmgn', 'global-bucket.json');
 const GLOBAL_BUCKET_LOCK = GLOBAL_BUCKET_FILE + '.lock';
-const GLOBAL_RPS = Math.max(0.1, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 3.0);
-const GLOBAL_BURST = Math.max(1, Number(process.env.GMGN_GLOBAL_BURST?.trim()) || 6);
+// GMGN IP 级限速窗口实测 ~25-30 请求/分钟（35 请求/63s 即被封，0.56rps 都超）。
+// 全局桶是跨进程聚合入口，容量必须压到 IP 窗口之下（与 newone 对齐）。
+// 0.4rps × 60 = 24/min，留余量；burst 3 防安静期攒满瞬间放行。
+const GLOBAL_RPS = Math.max(0.1, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 0.4);
+const GLOBAL_BURST = Math.max(1, Number(process.env.GMGN_GLOBAL_BURST?.trim()) || 3);
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
