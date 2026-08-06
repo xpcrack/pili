@@ -209,11 +209,13 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
   const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
   // 信任 GMGN 服务器 reset_at；无 reset_at 时用 60s 缓冲。
   // 不再使用阶梯升级（5.5m→15m→30m→60m）——那 stale 一个钟。
-  // 但连封时 GMGN 滚动惩罚每次撞墙延 5s（上限 5min），60s 平地正好踩进滚动
-  // 窗口反复触发（实测 +1 ban/60s 死循环）。温和爬坡：按 consecutiveBans 加
-  // 30s/次，cap 240s（总上限 5min = GMGN 惩罚天花板）。cb 间隔超 5min 自动归零。
+  // 连封对齐滚动窗口：GMGN 滚动惩罚每次撞墙延 5s（上限 5min），本地冷却若
+  // 短于 5min 会提前放行 → 第一个请求撞还在生效的惩罚 → 再封 → cb 只涨不降
+  // （实测 cb=25 就是这么来的）。连封（recentBan）时强制 until ≥ now + 5min，
+  // 给 GMGN 完整清窗；reset_at 若更长则覆盖。单次封（cb=1）仍 60s 试错。
   const RAMP_MS = Math.min(240_000, Math.max(0, consecutiveBans - 1) * 30_000);
   let until = nowMs + GMGN_BAN_COOLDOWN_MS + RAMP_MS;
+  if (recentBan) until = Math.max(until, nowMs + 5 * 60_000);
 
   if (resetAtUnix != null && Number.isFinite(resetAtUnix)) {
     if (resetAtUnix > 1e12) until = Math.max(until, resetAtUnix + 5_000);
@@ -421,7 +423,11 @@ export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
         const now = Date.now();
         const s = readBucket();
         const elapsed = Math.max(0, now - s.lastMs);
-        const tokens = Math.min(GLOBAL_BURST, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
+        // 恢复期（连封后慢启动窗口内）burst 压缩：burst 上限 6→2，避免冷却
+        // 一解除桶里瞬间攒满 6 token → 6 连发同毫秒放行撞 IP 限速再封。
+        // 三层闸门都控平均速率，burst 上限才是瞬时峰值；IP 级限速罚瞬时峰值。
+        const burstCap = factor >= 1.0 ? GLOBAL_BURST : Math.min(GLOBAL_BURST, 2);
+        const tokens = Math.min(burstCap, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
         if (tokens >= effectiveCost) {
           writeBucket({ tokens: tokens - effectiveCost, lastMs: now });
           got = true;
