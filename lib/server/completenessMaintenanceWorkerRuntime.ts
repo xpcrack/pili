@@ -64,10 +64,20 @@ function walletTimelineMaintenanceEnabled() {
 function walletTimelineDrainMaxJobs() {
   // With openapi key pool, default higher than the old serial cli path.
   const n = Number(process.env.PILI_WALLET_TIMELINE_DRAIN_MAX_JOBS);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 6;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 2;
 }
 
 async function runWalletTimelineMaintenance() {
+  // 冷却守卫：GMGN 冷却期完全不 drain（sweep 也跳过——sweep 只是入队，
+  // 入队无请求，但跳过可以避免恢复瞬间队列里攒一批货全速打）。
+  // 冷却解除后下一轮循环自然恢复，backfill 翻页自身另有 1.2s 间隔兜底。
+  const coolRemaining = gmgnCooldownRemainingMs();
+  if (coolRemaining > 0) {
+    console.log(
+      `[completeness-worker] wallet-timeline-maintenance skip (GMGN cooldown ${Math.ceil(coolRemaining / 1000)}s)`
+    );
+    return { sweep: null, walletBackfill: null };
+  }
   // Sweep (re-enqueue all stale monitored wallets) is opt-in only.
   // Drain always runs so enablement / admin / manual seeds still process.
   let sweep: ReturnType<typeof sweepStaleWalletTimelines> | null = null;

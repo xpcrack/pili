@@ -53,8 +53,10 @@ const PAGE_RETRY_BASE_DELAY_MS = 800;
  * Pacing between pages. The wrapper round-robins one API key per spawn and all
  * traffic shares ~35 Clash nodes; hammering with zero delay is what produced the
  * `Client network socket disconnected` failures.
+ * 1200ms: 对齐全局桶 0.8rps 配额，翻页循环不再全速（250ms 在冷却恢复期
+ * 相当于持续水流，GMGN 滚动惩罚窗口里连续踩线 → 9 连发就 banned 的元凶）。
  */
-const DEFAULT_PAGE_SLEEP_MS = 250;
+const DEFAULT_PAGE_SLEEP_MS = 1200;
 
 /**
  * A dropped connection / timeout is worth retrying. A ban or rate-limit is not —
