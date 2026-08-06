@@ -207,15 +207,13 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
   const prevConsecutive = Math.max(0, Number(prev.consecutiveBans || 0));
   const recentBan = Number(prev.untilMs || 0) > nowMs - 5 * 60_000;
   const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
-  // 信任 GMGN 服务器 reset_at；无 reset_at 时用 60s 缓冲。
-  // 不再使用阶梯升级（5.5m→15m→30m→60m）——那 stale 一个钟。
-  // 连封对齐滚动窗口：GMGN 滚动惩罚每次撞墙延 5s（上限 5min），本地冷却若
-  // 短于 5min 会提前放行 → 第一个请求撞还在生效的惩罚 → 再封 → cb 只涨不降
-  // （实测 cb=25 就是这么来的）。连封（recentBan）时强制 until ≥ now + 5min，
-  // 给 GMGN 完整清窗；reset_at 若更长则覆盖。单次封（cb=1）仍 60s 试错。
+  // GMGN 每次撞墙都是 5min 滚动惩罚（与 cb 无关，单次封也 5min）。
+  // 本地冷却短于 5min 提前放行 → 第一个请求撞还在生效的惩罚 → 再封
+  // （实测 cb=1 单次封 60s，服务器到 15:48:05 还在罚，1 请求就 429）。
+  // 所有 ban 强制 until ≥ now + 5min 完整清窗，reset_at 若更长则覆盖。
   const RAMP_MS = Math.min(240_000, Math.max(0, consecutiveBans - 1) * 30_000);
   let until = nowMs + GMGN_BAN_COOLDOWN_MS + RAMP_MS;
-  if (recentBan) until = Math.max(until, nowMs + 5 * 60_000);
+  until = Math.max(until, nowMs + 5 * 60_000);
 
   if (resetAtUnix != null && Number.isFinite(resetAtUnix)) {
     if (resetAtUnix > 1e12) until = Math.max(until, resetAtUnix + 5_000);
@@ -391,11 +389,12 @@ function releaseBucketLock(): void {
 export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
   const prev = readFileCooldownState();
   let bans = Math.max(0, Number(prev.consecutiveBans || 0));
-  // 防御：consecutiveBans 被第二写入者抹掉，但剩余冷却仍明显长于单次 60s 地板时
+  // 防御：consecutiveBans 被第二写入者抹掉，但剩余冷却仍明显长于
+  // 「所有 ban 强制 5min」地板（6.5min+，只可能是旧阶梯/真连封残留）时
   // 推断连封，避免慢启动被绕过、冷却一结束就全速撞墙再封。
   if (bans < 2 && prev.untilMs != null && prev.untilMs > 0) {
     const remaining = Math.max(0, prev.untilMs - nowMs);
-    if (remaining > GMGN_BAN_COOLDOWN_MS + 60_000) bans = 2;
+    if (remaining > 6.5 * 60_000) bans = 2;
   }
   if (bans < 2) return 1.0;
   const lastBanAt = prev.lastBanAt ? Date.parse(prev.lastBanAt) : 0;
