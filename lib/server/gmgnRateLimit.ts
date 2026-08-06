@@ -207,13 +207,13 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
   const prevConsecutive = Math.max(0, Number(prev.consecutiveBans || 0));
   const recentBan = Number(prev.untilMs || 0) > nowMs - 5 * 60_000;
   const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
-  // GMGN 每次撞墙都是 5min 滚动惩罚（与 cb 无关，单次封也 5min）。
-  // 本地冷却短于 5min 提前放行 → 第一个请求撞还在生效的惩罚 → 再封
-  // （实测 cb=1 单次封 60s，服务器到 15:48:05 还在罚，1 请求就 429）。
-  // 所有 ban 强制 until ≥ now + 5min 完整清窗，reset_at 若更长则覆盖。
+  // 尊重服务器 reset_at；有服务器明确解除时间时信任它（只加 5s buffer 防时钟偏差）。
+  // 只有无 reset_at 时 fallback 到本地短冷却：GMGN 单次撞墙通常 60s 解除，
+  // 双倍 120s 防时钟偏差。连封（cb>=2）再适当延长。
+  // 关键教训：不要强制 5min 地板——服务器 reset_at 可能只差 60s 就解除，
+  // 强行 5min 让持仓页白等 4 分钟。有 reset_at → 信任它 +5s；无 reset_at → 逐步爬坡。
   const RAMP_MS = Math.min(240_000, Math.max(0, consecutiveBans - 1) * 30_000);
-  let until = nowMs + GMGN_BAN_COOLDOWN_MS + RAMP_MS;
-  until = Math.max(until, nowMs + 5 * 60_000);
+  let until = nowMs + Math.max(GMGN_BAN_COOLDOWN_MS, 5_000) + RAMP_MS;
 
   if (resetAtUnix != null && Number.isFinite(resetAtUnix)) {
     if (resetAtUnix > 1e12) until = Math.max(until, resetAtUnix + 5_000);
