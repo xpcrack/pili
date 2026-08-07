@@ -317,7 +317,23 @@ const GLOBAL_BUCKET_LOCK = GLOBAL_BUCKET_FILE + '.lock';
 const GLOBAL_RPS = Math.max(0.1, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 0.4);
 const GLOBAL_BURST = Math.max(1, Number(process.env.GMGN_GLOBAL_BURST?.trim()) || 3);
 
-const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const sleepMs = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('GMGN request aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error('GMGN request aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 type BucketState = { tokens: number; lastMs: number };
 
@@ -407,6 +423,30 @@ export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
   return 0.3 + 0.7 * Math.max(0, sinceMs / RECOVERY_WINDOW_MS);
 }
 
+export function gmgnEffectiveCost(cost: number, recoveryFactor: number): number {
+  const safeCost = Math.max(0, Number.isFinite(cost) ? cost : 1);
+  const safeFactor = Math.max(
+    0.01,
+    Math.min(1, Number.isFinite(recoveryFactor) ? recoveryFactor : 1)
+  );
+  return safeFactor < 1 ? safeCost / safeFactor : safeCost;
+}
+
+/**
+ * Recovery still limits the bucket to one request's worth of tokens, but that
+ * one request must fit. Otherwise a signed cost=3 request at factor=0.3 costs
+ * 10 tokens while a hard cap of 2 makes acquisition mathematically impossible.
+ */
+export function gmgnBucketCapacity(
+  configuredBurst: number,
+  effectiveCost: number,
+  recoveryFactor: number
+): number {
+  const burst = Math.max(1, Number.isFinite(configuredBurst) ? configuredBurst : 1);
+  if (recoveryFactor >= 1) return burst;
+  return Math.max(Math.min(burst, 2), effectiveCost);
+}
+
 /**
  * 发起 GMGN 请求前从共享全局桶扣 cost 个令牌；不够则异步等到够为止。
  * 锁耗尽时 best-effort 放行（罕见，优于卡死流水线）。
@@ -414,10 +454,11 @@ export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
  * （factor=0.3 → cost≈3.3x → 聚合 qps 压低到 30%），防止 pili 全速突进
  * 撞墙再封。这是跨进程共享桶，压制同时作用于所有走此桶的进程。
  */
-export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
+export async function acquireGmgnGlobalToken(cost = 1, signal?: AbortSignal): Promise<void> {
   const factor = getGmgnRecoveryFactor();
-  const effectiveCost = factor < 1.0 ? cost / factor : cost;
+  const effectiveCost = gmgnEffectiveCost(cost, factor);
   for (let attempt = 0; attempt < 300; attempt++) {
+    if (signal?.aborted) throw new Error('GMGN request aborted');
     let waitMs = 0;
     let got = false;
     if (await tryAcquireBucketLock()) {
@@ -428,7 +469,7 @@ export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
         // 恢复期（连封后慢启动窗口内）burst 压缩：burst 上限 6→2，避免冷却
         // 一解除桶里瞬间攒满 6 token → 6 连发同毫秒放行撞 IP 限速再封。
         // 三层闸门都控平均速率，burst 上限才是瞬时峰值；IP 级限速罚瞬时峰值。
-        const burstCap = factor >= 1.0 ? GLOBAL_BURST : Math.min(GLOBAL_BURST, 2);
+        const burstCap = gmgnBucketCapacity(GLOBAL_BURST, effectiveCost, factor);
         const tokens = Math.min(burstCap, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
         if (tokens >= effectiveCost) {
           writeBucket({ tokens: tokens - effectiveCost, lastMs: now });
@@ -442,7 +483,7 @@ export async function acquireGmgnGlobalToken(cost = 1): Promise<void> {
       }
     }
     if (got) return;
-    await sleepMs(waitMs > 0 ? waitMs : 20);
+    await sleepMs(waitMs > 0 ? waitMs : 20, signal);
   }
   /* exhausted — serve best-effort */
 }

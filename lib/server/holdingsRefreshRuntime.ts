@@ -20,6 +20,7 @@ import {
   readGmgnHeavyJobLock,
   releaseGmgnHeavyJob,
 } from '@/lib/server/gmgnRateLimit';
+import { countPendingLiveDoorbells } from '@/lib/server/liveDoorbellQueue';
 
 const MIN_HOLDING_USD = 5;
 const MIN_LIQUIDITY_USD = 5_000;
@@ -114,6 +115,10 @@ export interface HoldingsRefreshRunResult {
   status: 'idle' | 'partial' | 'error' | 'missing-credentials';
   summary: HoldingsRefreshSummary;
   lastError: string | null;
+}
+
+export function shouldDeferHoldingsRefreshForLiveFeed(pendingLiveDoorbells: number) {
+  return Number.isFinite(pendingLiveDoorbells) && pendingLiveDoorbells > 0;
 }
 
 interface RunHoldingsRefreshOptions {
@@ -1201,6 +1206,25 @@ export async function refreshCurrentHoldings(
 }
 
 export async function runHoldingsRefreshCycle(options: RunHoldingsRefreshOptions = {}) {
+  const pendingLiveDoorbells = countPendingLiveDoorbells();
+  if (shouldDeferHoldingsRefreshForLiveFeed(pendingLiveDoorbells)) {
+    return {
+      sleepMs: Math.min(getHoldingsRefreshIntervalMs(), 30_000),
+      status: 'idle' as const,
+      summary: {
+        trackedAddressCount: 0,
+        uniqueTrackedAddressCount: 0,
+        refreshedWalletCount: 0,
+        failedWalletCount: 0,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        robinhoodWalletCount: 0,
+        refreshedAtMs: Date.now(),
+      },
+      lastError: `skipped: ${pendingLiveDoorbells} live Feed doorbell(s) pending`,
+    };
+  }
+
   if (!acquireGmgnHeavyJob('holdings-refresh')) {
     const other = readGmgnHeavyJobLock()?.job;
     return {

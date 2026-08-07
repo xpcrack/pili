@@ -6,7 +6,7 @@ export type LiveSourceMode = 'dual' | 'alchemy' | 'xxyy';
 /**
  * How XXYY TG trades enter the system:
  * - project: parse + write xxyy-monitor feed (legacy)
- * - doorbell: parse + audit row + ring live-monitor → GMGN is sole feed writer
+ * - doorbell: parse + write provisional feed + ring live-monitor → GMGN enriches/reconciles
  * - off: drop
  */
 export type XxyyFeedMode = 'project' | 'doorbell' | 'off';
@@ -25,7 +25,7 @@ export function readLiveSourceMode(env: EnvMap = process.env): LiveSourceMode {
 }
 
 /**
- * Default: alchemy/dual → doorbell (GMGN sole parser); xxyy-only → project.
+ * Default: alchemy/dual → doorbell (XXYY provisional + GMGN enrichment); xxyy-only → project.
  * Override: PILI_XXYY_FEED=project|doorbell|off
  */
 export function readXxyyFeedMode(env: EnvMap = process.env): XxyyFeedMode {

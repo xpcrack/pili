@@ -14,6 +14,8 @@
  *   PILI_LIVE_WATCHLIST_EVERY_MS (default 15m)
  *   PILI_LIVE_CYCLE_MS (default 15s)
  *   PILI_LIVE_DOORBELL_DEBOUNCE_MS (default 2000)
+ *   PILI_LIVE_DOORBELL_CLAIM_LIMIT (default 8)
+ *   PILI_LIVE_ACTIVITY_TIMEOUT_MS (default 20000)
  */
 import 'server-only';
 
@@ -24,7 +26,6 @@ import {
   syncAlchemyWatchlist,
 } from '@/lib/server/alchemyWatchlist';
 import {
-  fetchGmgnWalletActivity,
   fetchGmgnWalletActivityAsync,
   inferChainsForAddress,
   normalizeGmgnActivityItems,
@@ -61,6 +62,41 @@ const DEFAULT_CYCLE_MS = 15_000;
 const DEFAULT_IDLE_MS = 30_000;
 const DEFAULT_WATCHLIST_EVERY_MS = 15 * 60_000;
 const DEFAULT_LOOKBACK_SEC = 2 * 60 * 60;
+const DEFAULT_DOORBELL_CLAIM_LIMIT = 8;
+const DEFAULT_ACTIVITY_TIMEOUT_MS = 20_000;
+
+function readPositiveEnvNumber(env: EnvMap, key: string, fallback: number) {
+  const value = Number(env[key] || fallback);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+async function fetchActivityWithTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (error: unknown, value?: T) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(value as T);
+    };
+
+    timer = setTimeout(() => {
+      controller.abort();
+      finish(new Error(`GMGN activity timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(() => run(controller.signal))
+      .then((value) => finish(null, value), (error) => finish(error));
+  });
+}
 
 function readAlchemyInboxConfig(env: EnvMap = process.env) {
   const base_url = (
@@ -103,13 +139,6 @@ function collectWatchedAddresses(users: User[]): {
   return { addresses: [...byLower.values()].map((v) => v.address), byLower };
 }
 
-type LiveScanResult = {
-  key: string;
-  user: User;
-  trades: NormalizedLiveTrade[];
-  error: string | null;
-};
-
 export type LiveMonitorCycleResult = {
   sleepMs: number;
   status: 'idle' | 'busy' | 'partial' | 'error' | 'disabled';
@@ -139,9 +168,11 @@ export type LiveMonitorDeps = {
   nackDoorbells?: (claims: DoorbellClaim[], opts: { retryAfterMs: number }) => number;
   /** GMGN ban cooldown remaining (ms). >0 ⇒ skip the whole cycle to hold doorbells. */
   gmgnCooldownRemainingMs?: () => number;
+  /** Recovery factor override for tests / alternate GMGN policy owners. */
+  gmgnRecoveryFactor?: (nowMs: number) => number;
   fetchActivity?: (
-    options: Parameters<typeof fetchGmgnWalletActivity>[0]
-  ) => ReturnType<typeof fetchGmgnWalletActivity> | ReturnType<typeof fetchGmgnWalletActivityAsync>;
+    options: Parameters<typeof fetchGmgnWalletActivityAsync>[0]
+  ) => ReturnType<typeof fetchGmgnWalletActivityAsync>;
   upsertTrades?: typeof upsertLiveMonitorTrades;
   /** Trade-triggered per-wallet holdings refresh (debounced). */
   enqueueHoldingsRefresh?: typeof enqueueHoldingsRefresh;
@@ -248,6 +279,9 @@ export async function runLiveMonitorCycle(
   const ackDoorbells = deps.ackDoorbells ?? ackLiveDoorbells;
   const nackDoorbellsDep = deps.nackDoorbells ?? nackLiveDoorbells;
   const cooldownRemaining = deps.gmgnCooldownRemainingMs ?? gmgnCooldownRemainingMs;
+  const recoveryFactor =
+    deps.gmgnRecoveryFactor ??
+    (deps.gmgnCooldownRemainingMs ? () => 1 : getGmgnRecoveryFactor);
   const syncWatchlistFn = deps.syncWatchlist ?? syncAlchemyWatchlist;
   const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivityAsync;
   const upsertTrades = deps.upsertTrades ?? upsertLiveMonitorTrades;
@@ -301,7 +335,7 @@ export async function runLiveMonitorCycle(
     // factor < 1.0 说明 lastBanAt 在 5min 内，继续 hold 门铃不扫，给窗口清空时间。
     // （acquireGmgnGlobalToken 的慢启动已压 RPS，但 live-monitor 的并发请求
     // 仍可能撞窗口。全量跳过 5min 恢复期最干净。）
-    if (banRemainingMs > 0 || getGmgnRecoveryFactor(now()) < 1.0) {
+    if (banRemainingMs > 0 || recoveryFactor(now()) < 1.0) {
       const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
       return {
         sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
@@ -325,7 +359,14 @@ export async function runLiveMonitorCycle(
       lastError = 'missing PILI_ALCHEMY_INBOX_URL / PULL_TOKEN (xxyy doorbells still scanned)';
     }
 
-    const doorbells = claimDoorbells({ nowMs: now() });
+    const claimLimit = Math.max(
+      1,
+      Math.min(
+        200,
+        Math.floor(readPositiveEnvNumber(env, 'PILI_LIVE_DOORBELL_CLAIM_LIMIT', DEFAULT_DOORBELL_CLAIM_LIMIT))
+      )
+    );
+    const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
     xxyyDoorbells = doorbells.length;
 
     const targets = buildScanTargets({
@@ -342,129 +383,109 @@ export async function runLiveMonitorCycle(
     const minCost = Number(env.PILI_LIVE_MIN_COST_USD || 0);
 
     // Quiet both doorbells → idle; otherwise scan only wallets that rang.
-    // 并发 3→2：多钱包同时拉 wallet_activity 触发 GMGN IP 窗口限速（00:39 实测
-    // 11 个请求 3 秒内打出 → 429）。并发 2 + 500ms 间隔 = 瞬时峰值压到 ~1/2s。
-    const maxConcurrentScansRaw = Number(env.PILI_LIVE_MAX_CONCURRENCY || 2);
+    // Each target is committed independently. A single slow GMGN request must not
+    // hold all successful wallets in memory until the whole batch finishes.
+    const maxConcurrentScansRaw = Number(env.PILI_LIVE_MAX_CONCURRENCY || 1);
     const maxConcurrentScans = Number.isFinite(maxConcurrentScansRaw)
-      ? Math.max(1, Math.min(3, Math.floor(maxConcurrentScansRaw)))
-      : 2;
-    const scanTasks = targets.flatMap((target) =>
-      target.chains.map((chain) => async () => {
+      ? Math.max(1, Math.min(2, Math.floor(maxConcurrentScansRaw)))
+      : 1;
+    const enqueueRefresh = deps.enqueueHoldingsRefresh ?? enqueueHoldingsRefresh;
+    const activityTimeoutMs = readPositiveEnvNumber(
+      env,
+      'PILI_LIVE_ACTIVITY_TIMEOUT_MS',
+      DEFAULT_ACTIVITY_TIMEOUT_MS
+    );
+    const leaseByWalletLower = new Map<string, string>();
+    for (const doorbell of doorbells) {
+      leaseByWalletLower.set(doorbell.walletLower, doorbell.leaseToken);
+    }
+
+    const processTarget = async (target: ScanTarget) => {
+      const trades: NormalizedLiveTrade[] = [];
+      let targetError: string | null = null;
+
+      for (let index = 0; index < target.chains.length; index += 1) {
+        const chain = target.chains[index]!;
+        walletsScanned += 1;
         try {
-          const response = await fetchActivity({
-            chain,
-            wallet: target.address,
-            limit: 30,
-            type: ['buy', 'sell'],
-          });
-          const { items } = await response;
-          return {
-            key: target.key,
-            user: target.user,
-            trades: normalizeGmgnActivityItems(items, {
+          const response = await fetchActivityWithTimeout(
+            (signal) =>
+              fetchActivity({
+                chain,
+                wallet: target.address,
+                limit: 30,
+                type: ['buy', 'sell'],
+                signal,
+              }),
+            activityTimeoutMs
+          );
+          trades.push(
+            ...normalizeGmgnActivityItems(response.items, {
               wallet: target.address,
               chain,
               min_cost_usd: Number.isFinite(minCost) ? minCost : 0,
               after_ts: afterTs,
-            }),
-            error: null,
-          };
+            })
+          );
         } catch (error) {
-          return {
-            key: target.key,
-            user: target.user,
-            trades: [],
-            error: error instanceof Error ? error.message : String(error),
-          };
+          gmgnErrors += 1;
+          targetError = targetError || (error instanceof Error ? error.message : String(error));
+          lastError = error instanceof Error ? error.message : String(error);
         }
-      })
-    );
 
-    const scanResults: LiveScanResult[] = [];
-    let nextScan = 0;
-    const workers = Array.from({ length: Math.min(maxConcurrentScans, scanTasks.length) }, async () => {
-      while (nextScan < scanTasks.length) {
-        const index = nextScan++;
-        scanResults.push(await scanTasks[index]!());
-        // 每次 wallet_activity 扫描间加 500ms 间隔，避免多个钱包同时拉取
-        // 触发 GMGN IP 窗口限速。实测 00:39-00:40 11 个 wallet_activity 在
-        // 3 秒内打出 → 立即 429 封禁（cb 从 48→50）。500ms 让 11 个钱包
-        // 的扫描铺开在 ~5 秒内，显著降低瞬时峰值。
-        if (nextScan < scanTasks.length) {
-          await new Promise((r) => setTimeout(r, 500));
+        // Keep a small gap between requests from the same worker. The default
+        // concurrency is one, so this also spreads requests across wallets.
+        if (index < target.chains.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
+      }
+
+      if (trades.length > 0) {
+        trades.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
+        try {
+          const result = upsertTrades({ user: target.user, trades });
+          tradesUpserted += result.upserted;
+          if (result.upserted > 0) {
+            const seenWalletChains = new Set<string>();
+            for (const trade of trades) {
+              const wallet = (trade.wallet || '').trim();
+              const chain = (trade.chain || '').trim();
+              if (!wallet || !chain) continue;
+              const key = `${chain.toLowerCase()}:${wallet.toLowerCase()}`;
+              if (seenWalletChains.has(key)) continue;
+              seenWalletChains.add(key);
+              enqueueRefresh({ address: wallet, chain, userId: target.user.id });
+            }
+          }
+        } catch (error) {
+          targetError = targetError || (error instanceof Error ? error.message : String(error));
+          lastError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      const leaseToken = leaseByWalletLower.get(target.address.toLowerCase());
+      if (!leaseToken) return;
+      const claim: DoorbellClaim = {
+        walletLower: target.address.toLowerCase(),
+        leaseToken,
+      };
+      if (targetError) {
+        nackDoorbellsDep([claim], {
+          retryAfterMs: Math.max(cooldownRemaining(now()), 30_000),
+        });
+      } else {
+        ackDoorbells([claim]);
+      }
+    };
+
+    let nextTarget = 0;
+    const workers = Array.from({ length: Math.min(maxConcurrentScans, targets.length) }, async () => {
+      while (nextTarget < targets.length) {
+        const index = nextTarget++;
+        await processTarget(targets[index]!);
       }
     });
     await Promise.all(workers);
-    walletsScanned = scanTasks.length;
-    const tradesByOwner = new Map<string, { user: User; trades: NormalizedLiveTrade[] }>();
-    for (const result of scanResults) {
-      if (result.error) {
-        gmgnErrors += 1;
-        lastError = result.error;
-      }
-      const current = tradesByOwner.get(result.key) || { user: result.user, trades: [] };
-      current.trades.push(...result.trades);
-      tradesByOwner.set(result.key, current);
-    }
-    const enqueueRefresh = deps.enqueueHoldingsRefresh ?? enqueueHoldingsRefresh;
-    for (const { user, trades } of tradesByOwner.values()) {
-      if (trades.length > 0) {
-        trades.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
-        const result = upsertTrades({ user, trades });
-        tradesUpserted += result.upserted;
-        if (result.upserted > 0) {
-          const seenWalletChains = new Set<string>();
-          for (const trade of trades) {
-            const wallet = (trade.wallet || '').trim();
-            const chain = (trade.chain || '').trim();
-            if (!wallet || !chain) continue;
-            const key = `${chain.toLowerCase()}:${wallet.toLowerCase()}`;
-            if (seenWalletChains.has(key)) continue;
-            seenWalletChains.add(key);
-            enqueueRefresh({
-              address: wallet,
-              chain,
-              userId: user.id,
-            });
-          }
-        }
-      }
-    }
-
-    // Confirmed-consume write-back for doorbells. A wallet's doorbell is ack'd
-    // (deleted) only when every one of its chain scans completed without error —
-    // an empty GMGN response (trades:[] but error:null) counts as "scanned, nothing
-    // new" and is ack'd so we don't nack-loop forever. Any error → nack with a
-    // retry after max(ban remaining, 30s); the cooldown file is already updated by
-    // noteGmgnBan during the scan, so this reads the latest ban window.
-    if (doorbells.length > 0) {
-      const leaseByWalletLower = new Map<string, string>();
-      for (const d of doorbells) leaseByWalletLower.set(d.walletLower, d.leaseToken);
-      // Collect which target keys had any scan error.
-      const erroredKeys = new Set<string>();
-      for (const result of scanResults) {
-        if (result.error) erroredKeys.add(result.key);
-      }
-      const ackClaims: DoorbellClaim[] = [];
-      const nackClaims: DoorbellClaim[] = [];
-      for (const target of targets) {
-        const leaseToken = leaseByWalletLower.get(target.address.toLowerCase());
-        if (!leaseToken) continue; // Alchemy-only target, no doorbell lease.
-        const claim = { walletLower: target.address.toLowerCase(), leaseToken };
-        if (erroredKeys.has(target.key)) {
-          nackClaims.push(claim);
-        } else {
-          ackClaims.push(claim);
-        }
-      }
-      if (ackClaims.length > 0) ackDoorbells(ackClaims);
-      if (nackClaims.length > 0) {
-        nackDoorbellsDep(nackClaims, {
-          retryAfterMs: Math.max(cooldownRemaining(now()), 30_000),
-        });
-      }
-    }
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
     const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);

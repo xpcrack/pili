@@ -9,6 +9,7 @@ import {
   type RefreshWalletHoldingsParams,
   type RefreshWalletHoldingsResult,
 } from '@/lib/server/holdingsRefreshRuntime';
+import { countPendingLiveDoorbells } from '@/lib/server/liveDoorbellQueue';
 
 const DEFAULT_DEBOUNCE_MS = 50_000;
 const DEFAULT_MAX_CONCURRENT = 1;
@@ -76,6 +77,13 @@ export function createHoldingsRefreshQueue(deps: HoldingsRefreshQueueDeps = {}) 
     }
     if (inFlight.has(key)) {
       // Already running; re-enqueue so a trailing trade still refreshes after.
+      enqueue(job);
+      return;
+    }
+
+    if (countPendingLiveDoorbells() > 0) {
+      // Feed is the source of truth for the alert. Keep trade-triggered holdings
+      // work from competing for GMGN capacity while any doorbell is outstanding.
       enqueue(job);
       return;
     }

@@ -533,29 +533,31 @@ export class GmgnOpenApiClient {
   async requestExist<T = unknown>(
     method: string,
     subPath: string,
-    query: GmgnQuery = {}
+    query: GmgnQuery = {},
+    signal?: AbortSignal
   ): Promise<T> {
-    return this.request<T>(method, subPath, query, { signed: false });
+    return this.request<T>(method, subPath, query, { signed: false, signal });
   }
 
   async requestSigned<T = unknown>(
     method: string,
     subPath: string,
-    query: GmgnQuery = {}
+    query: GmgnQuery = {},
+    signal?: AbortSignal
   ): Promise<T> {
     const hasAnyKey =
       Object.keys(this.privateKeysByKey).length > 0 || !!this.privateKeyPem;
     if (!hasAnyKey) {
       throw new Error('GMGN_PRIVATE_KEY required for signed routes (holdings/…)');
     }
-    return this.request<T>(method, subPath, query, { signed: true });
+    return this.request<T>(method, subPath, query, { signed: true, signal });
   }
 
   private async request<T = unknown>(
     method: string,
     subPath: string,
     query: GmgnQuery = {},
-    opts: { signed: boolean }
+    opts: { signed: boolean; signal?: AbortSignal }
   ): Promise<T> {
     try {
       assertGmgnAllowed();
@@ -566,7 +568,7 @@ export class GmgnOpenApiClient {
     // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
     // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
     // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
-    await acquireGmgnGlobalToken(opts.signed ? 3 : 1);
+    await acquireGmgnGlobalToken(opts.signed ? 3 : 1, opts.signal);
     const key = await this.pool.acquire(opts.signed ? { signed: true } : {});
     let released = false;
     const markSuccess = () => {
@@ -624,7 +626,9 @@ export class GmgnOpenApiClient {
         const fetchInit: Record<string, unknown> = {
           method,
           headers,
-          signal: AbortSignal.timeout(this.timeoutMs),
+          signal: opts.signal
+            ? AbortSignal.any([opts.signal, AbortSignal.timeout(this.timeoutMs)])
+            : AbortSignal.timeout(this.timeoutMs),
         };
         if (effectiveProxy) {
           fetchInit.dispatcher = new ProxyAgent(effectiveProxy);
@@ -724,6 +728,7 @@ export class GmgnOpenApiClient {
     cursor?: string;
     token?: string;
     type?: string | string[];
+    signal?: AbortSignal;
   }) {
     const q: GmgnQuery = {
       chain: params.chain,
@@ -733,7 +738,7 @@ export class GmgnOpenApiClient {
     if (params.cursor) q.cursor = params.cursor;
     if (params.token) q.token_address = params.token;
     if (params.type) q.type = params.type;
-    return this.requestExist('GET', '/v1/user/wallet_activity', q);
+    return this.requestExist('GET', '/v1/user/wallet_activity', q, params.signal);
   }
 
   walletHoldings(params: {
