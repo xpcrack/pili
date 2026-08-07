@@ -20,11 +20,28 @@ import {
   noteGmgnBan,
   noteGmgnError,
 } from '@/lib/server/gmgnRateLimit';
+import { recordGmgnRequest } from '@/lib/server/gmgnMetrics';
 import { loadGmgnApiKeys } from '@/lib/server/gmgnCli';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 
 const DEFAULT_HOST = 'https://openapi.gmgn.ai';
 const DEFAULT_PROXY = 'http://127.0.0.1:7897';
 const USER_AGENT = 'pili-gmgn-openapi/1.0';
+
+/** 加载 key → 独立代理端口映射（signed/unsigned 路由按 key 选出口 IP）。与 newone gmgn-client.ts 相同。 */
+export function loadProxyByKey(): Record<string, string> {
+  const out: Record<string, string> = {};
+  const p = process.env.GMGN_KEYS_TO_PROXIES_FILE?.trim() || join(homedir(), '.config/gmgn/keys-to-proxies.json');
+  try {
+    if (existsSync(p)) {
+      const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, string>;
+      for (const [k, v] of Object.entries(raw)) {
+        if (k && typeof v === 'string' && v.startsWith('http')) out[k] = v;
+      }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
 
 export type GmgnQuery = Record<
   string,
@@ -459,6 +476,8 @@ export class GmgnOpenApiClient {
   privateKeyPem: string | null;
   /** key → 配对私钥 pem（signed 路由按 key 签名）。 */
   private privateKeysByKey: Record<string, string>;
+  /** key → 独立代理端口（按 key 选出口 IP，避免共享 IP 被窗口截胡）。 */
+  private proxyByKey: Record<string, string>;
   private timeoutMs: number;
 
   constructor(opts?: {
@@ -470,6 +489,8 @@ export class GmgnOpenApiClient {
     privateKeyPem?: string | null;
     /** key → 私钥 pem 映射（signed 多 key 轮询） */
     privateKeysByKey?: Record<string, string> | null;
+    /** key → 代理端口映射（按 key 选独立出口 IP） */
+    proxyByKey?: Record<string, string> | null;
     primaryKey?: string | null;
   }) {
     this.host = (opts?.host ?? process.env.GMGN_OPENAPI_HOST ?? DEFAULT_HOST).replace(
@@ -482,6 +503,10 @@ export class GmgnOpenApiClient {
         ? opts.privateKeysByKey
         : loadPrivateKeysByKey();
     this.privateKeysByKey = mapInput ?? {};
+    // key → 代理端口映射：显式传入 > 环境文件 > 空
+    const proxyInput =
+      opts?.proxyByKey !== undefined ? opts.proxyByKey : loadProxyByKey();
+    this.proxyByKey = proxyInput ?? {};
     this.privateKeyPem =
       opts?.privateKeyPem !== undefined ? opts.privateKeyPem : loadGmgnPrivateKey();
     // signed 池 = 有配对私钥的 key。无映射时退化为 primaryKey 单 key（旧行为）。
@@ -532,7 +557,12 @@ export class GmgnOpenApiClient {
     query: GmgnQuery = {},
     opts: { signed: boolean }
   ): Promise<T> {
-    assertGmgnAllowed();
+    try {
+      assertGmgnAllowed();
+    } catch (e) {
+      recordGmgnRequest({ ok: false, path: subPath, error: 'cooldown-blocked', blocked: true });
+      throw e;
+    }
     // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
     // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
     // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
@@ -585,23 +615,24 @@ export class GmgnOpenApiClient {
         headers['X-Signature'] = signMessage(message, keyPem);
       }
       const url = buildUrl(this.host, subPath, q);
-      // Node undici only honors HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1
-      process.env.NODE_USE_ENV_PROXY = process.env.NODE_USE_ENV_PROXY || '1';
-      if (!process.env.HTTPS_PROXY && !process.env.https_proxy) {
-        process.env.HTTPS_PROXY = DEFAULT_PROXY;
-        process.env.HTTP_PROXY = DEFAULT_PROXY;
-        process.env.https_proxy = DEFAULT_PROXY;
-        process.env.http_proxy = DEFAULT_PROXY;
-      }
       let res: Response;
       try {
-        res = await fetch(url, {
+        // per-key 代理：按 key 选独立出口 IP（17890-17894），避免所有 key 共享
+        // 同一 Clash 出口被 GMGN IP 窗口截胡。无映射走默认 env proxy（Node
+        // undici 的全局 fetch 不支持 dispatcher，统一用 undici.fetch）。
+        const effectiveProxy = this.proxyByKey[key] ?? null;
+        const fetchInit: Record<string, unknown> = {
           method,
           headers,
           signal: AbortSignal.timeout(this.timeoutMs),
-        });
+        };
+        if (effectiveProxy) {
+          fetchInit.dispatcher = new ProxyAgent(effectiveProxy);
+        }
+        res = (await undiciFetch(url, fetchInit as never)) as unknown as Response;
       } catch (e) {
         markError();
+        recordGmgnRequest({ ok: false, path: subPath, error: 'network' });
         throw e;
       }
 
@@ -638,6 +669,7 @@ export class GmgnOpenApiClient {
           isGmgnBanMessage(msg) ||
           /IP is temporarily banned/i.test(msg)
         ) {
+          recordGmgnRequest({ ok: false, status: 429, path: subPath, error: 'rate-limit-banned' });
           noteGmgnBan(reset ? `${msg} reset_at=${reset}` : msg);
           markRateLimit(
             reset ? Math.max(5, reset - Math.floor(Date.now() / 1000)) : undefined
@@ -652,6 +684,7 @@ export class GmgnOpenApiClient {
         }
         const wait =
           reset != null ? Math.max(5, reset - Math.floor(Date.now() / 1000)) : undefined;
+        recordGmgnRequest({ ok: false, status: 429, path: subPath, error: 'rate-limited' });
         markRateLimit(wait);
         noteGmgnError(msg);
         throw new GmgnApiError({
@@ -664,6 +697,7 @@ export class GmgnOpenApiClient {
       }
 
       if (apiCode != null && apiCode !== 0) {
+        recordGmgnRequest({ ok: false, status: res.status, path: subPath, error: String(apiError ?? apiCode) });
         markError();
         noteGmgnError(String(json.message || apiError || apiCode));
         throw new GmgnApiError({
@@ -676,6 +710,7 @@ export class GmgnOpenApiClient {
       }
 
       markSuccess();
+      recordGmgnRequest({ ok: true, status: res.status, path: subPath });
       return (json.data !== undefined ? json.data : json) as T;
     } finally {
       if (!released) this.pool.release(key);
