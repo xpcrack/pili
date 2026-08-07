@@ -29,8 +29,10 @@ const TOKEN_INFO_CACHE_MAX = 2000;
 const TOKEN_AVATAR_CACHE_MAX = 1000;
 const BATCH_SIZE = 40;
 const BATCH_FETCH_TIMEOUT_MS = 20_000;
+const TOKEN_INFO_TTL_MS = 10 * 60 * 1000;
+const TOKEN_INFO_FAILURE_TTL_MS = 60 * 1000;
 
-const tokenInfoCache = new Map<string, TokenInfoSnapshot>();
+const tokenInfoCache = new Map<string, { value: TokenInfoSnapshot; expiresAt: number }>();
 const tokenAvatarCache = new Map<string, string | null>();
 const inFlightKeys = new Set<string>();
 const listeners = new Set<() => void>();
@@ -75,7 +77,13 @@ export function buildTokenAvatarKey(chain: string, tokenAddress: string) {
 }
 
 export function getCachedTokenInfo(key: string): TokenInfoSnapshot | undefined {
-  return tokenInfoCache.get(key);
+  const cached = tokenInfoCache.get(key);
+  if (!cached) return undefined;
+  if (cached.expiresAt <= Date.now()) {
+    tokenInfoCache.delete(key);
+    return undefined;
+  }
+  return cached.value;
 }
 
 export function getCachedTokenAvatar(key: string): string | null | undefined {
@@ -83,7 +91,18 @@ export function getCachedTokenAvatar(key: string): string | null | undefined {
 }
 
 function putResult(key: string, avatarKey: string, info: TokenInfoSnapshot) {
-  lruSet(tokenInfoCache, key, info, TOKEN_INFO_CACHE_MAX);
+  const usable = Boolean(
+    info.logoUrl ||
+      info.marketCapUsd != null ||
+      info.marketCapAtTxUsd != null ||
+      info.source,
+  );
+  lruSet(
+    tokenInfoCache,
+    key,
+    { value: info, expiresAt: Date.now() + (usable ? TOKEN_INFO_TTL_MS : TOKEN_INFO_FAILURE_TTL_MS) },
+    TOKEN_INFO_CACHE_MAX,
+  );
   if (info.logoUrl) {
     lruSet(tokenAvatarCache, avatarKey, info.logoUrl, TOKEN_AVATAR_CACHE_MAX);
   } else if (!tokenAvatarCache.has(avatarKey)) {
@@ -106,7 +125,7 @@ export async function prefetchTokenInfo(requests: TokenInfoRequest[]): Promise<v
     const key = buildTokenInfoKey(req);
     if (seen.has(key)) continue;
     seen.add(key);
-    if (tokenInfoCache.has(key) || inFlightKeys.has(key)) continue;
+    if (getCachedTokenInfo(key) || inFlightKeys.has(key)) continue;
     pending.push({
       ...req,
       chain,

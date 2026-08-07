@@ -7,6 +7,28 @@ import { fetchUserDetails } from '@/lib/userDetailsApi';
 
 /** Poll interval while a user is selected so trade-triggered holdings updates show up. */
 export const SELECTED_USER_DETAILS_POLL_MS = 20_000;
+const SELECTED_USER_DETAILS_CACHE_TTL_MS = 10_000;
+const selectedUserDetailsCache = new Map<string, { payload: UserDetailsSuccessPayload; expiresAt: number }>();
+const selectedUserDetailsInFlight = new Map<string, Promise<UserDetailsSuccessPayload>>();
+
+function fetchSharedUserDetails(userId: string): Promise<UserDetailsSuccessPayload> {
+  const cached = selectedUserDetailsCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.payload);
+  if (cached) selectedUserDetailsCache.delete(userId);
+  const inFlight = selectedUserDetailsInFlight.get(userId);
+  if (inFlight) return inFlight;
+  const request = fetchUserDetails(userId).then((payload) => {
+    selectedUserDetailsCache.set(userId, {
+      payload,
+      expiresAt: Date.now() + SELECTED_USER_DETAILS_CACHE_TTL_MS,
+    });
+    return payload;
+  }).finally(() => {
+    if (selectedUserDetailsInFlight.get(userId) === request) selectedUserDetailsInFlight.delete(userId);
+  });
+  selectedUserDetailsInFlight.set(userId, request);
+  return request;
+}
 
 interface UseSelectedUserDetailsResult {
   details: UserDetailsSuccessPayload | null;
@@ -74,6 +96,7 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const selectedUserIdRef = useRef(selectedUserId);
+  const lastLoadedAtRef = useRef(0);
   selectedUserIdRef.current = selectedUserId;
 
   const loadUser = useCallback(async (userId: string, mode: 'initial' | 'poll') => {
@@ -91,10 +114,11 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
     }
 
     try {
-      const payload = await fetchUserDetails(userId);
+      const payload = await fetchSharedUserDetails(userId);
       if (selectedUserIdRef.current !== userId) {
         return;
       }
+      lastLoadedAtRef.current = Date.now();
       cacheRef.current.set(userId, payload);
       const successState = createSelectedUserDetailsSuccessState(payload);
       setDetails(successState.details);
@@ -129,6 +153,8 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
       return;
     }
 
+    if (typeof document !== 'undefined' && document.hidden) return;
+
     void loadUser(selectedUserId, 'initial');
   }, [selectedUserId, retryCount, loadUser]);
 
@@ -140,11 +166,20 @@ export function useSelectedUserDetails(selectedUserId: string | null): UseSelect
 
     const userId = selectedUserId;
     const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       void loadUser(userId, 'poll');
     }, SELECTED_USER_DETAILS_POLL_MS);
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      if (Date.now() - lastLoadedAtRef.current >= SELECTED_USER_DETAILS_POLL_MS) {
+        void loadUser(userId, 'poll');
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [selectedUserId, loadUser]);
 
