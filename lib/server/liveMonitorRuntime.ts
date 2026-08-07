@@ -38,7 +38,7 @@ import {
   type DoorbellClaim,
   type LiveDoorbellRow,
 } from '@/lib/server/liveDoorbellQueue';
-import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
+import { gmgnCooldownRemainingMs, getGmgnRecoveryFactor } from '@/lib/server/gmgnRateLimit';
 import {
   readLiveSourceMode,
   type EnvMap,
@@ -296,7 +296,12 @@ export async function runLiveMonitorCycle(
     // ring and losing the signal) or pull+advance the Alchemy inbox cursor (consuming
     // on-chain events we then can't scan), hold everything and idle until it clears.
     const banRemainingMs = cooldownRemaining(now());
-    if (banRemainingMs > 0) {
+    // 冷却期当然跳过。但冷却解除后 GMGN 滚动惩罚窗口（5min）还没完全清空，
+    // 立即恢复 wallet_activity 扫描会续杯再封。利用慢启动因子判断是否在恢复期：
+    // factor < 1.0 说明 lastBanAt 在 5min 内，继续 hold 门铃不扫，给窗口清空时间。
+    // （acquireGmgnGlobalToken 的慢启动已压 RPS，但 live-monitor 的并发请求
+    // 仍可能撞窗口。全量跳过 5min 恢复期最干净。）
+    if (banRemainingMs > 0 || getGmgnRecoveryFactor(now()) < 1.0) {
       const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
       return {
         sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
@@ -337,10 +342,12 @@ export async function runLiveMonitorCycle(
     const minCost = Number(env.PILI_LIVE_MIN_COST_USD || 0);
 
     // Quiet both doorbells → idle; otherwise scan only wallets that rang.
-    const maxConcurrentScansRaw = Number(env.PILI_LIVE_MAX_CONCURRENCY || 3);
+    // 并发 3→2：多钱包同时拉 wallet_activity 触发 GMGN IP 窗口限速（00:39 实测
+    // 11 个请求 3 秒内打出 → 429）。并发 2 + 500ms 间隔 = 瞬时峰值压到 ~1/2s。
+    const maxConcurrentScansRaw = Number(env.PILI_LIVE_MAX_CONCURRENCY || 2);
     const maxConcurrentScans = Number.isFinite(maxConcurrentScansRaw)
       ? Math.max(1, Math.min(3, Math.floor(maxConcurrentScansRaw)))
-      : 3;
+      : 2;
     const scanTasks = targets.flatMap((target) =>
       target.chains.map((chain) => async () => {
         try {
@@ -379,6 +386,13 @@ export async function runLiveMonitorCycle(
       while (nextScan < scanTasks.length) {
         const index = nextScan++;
         scanResults.push(await scanTasks[index]!());
+        // 每次 wallet_activity 扫描间加 500ms 间隔，避免多个钱包同时拉取
+        // 触发 GMGN IP 窗口限速。实测 00:39-00:40 11 个 wallet_activity 在
+        // 3 秒内打出 → 立即 429 封禁（cb 从 48→50）。500ms 让 11 个钱包
+        // 的扫描铺开在 ~5 秒内，显著降低瞬时峰值。
+        if (nextScan < scanTasks.length) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
       }
     });
     await Promise.all(workers);

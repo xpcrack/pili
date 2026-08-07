@@ -402,7 +402,7 @@ export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
     Number.isFinite(lastBanAt) && lastBanAt > 0
       ? nowMs - lastBanAt
       : Math.max(0, nowMs - (Number(prev.untilMs) || nowMs));
-  const RECOVERY_WINDOW_MS = 5 * 60_000;
+  const RECOVERY_WINDOW_MS = 6 * 60_000;
   if (sinceMs >= RECOVERY_WINDOW_MS) return 1.0;
   return 0.3 + 0.7 * Math.max(0, sinceMs / RECOVERY_WINDOW_MS);
 }
