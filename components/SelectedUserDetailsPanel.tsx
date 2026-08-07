@@ -60,35 +60,48 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
         (holding) => holding.chain !== 'robinhood' && !isStableOrNativeSymbol(holding.symbol),
       );
 
-      // Server proxy only — never call api.dexscreener.com from the browser (CORS + 429).
-      const nextEntries = Object.fromEntries(
-        await Promise.all(
-          metricTargets.map(async (holding) => {
-            const key = `${holding.chain}:${holding.tokenAddress}`;
-            try {
-              const res = await fetch(
-                `/api/token-logo?chain=${encodeURIComponent(holding.chain)}&tokenAddress=${encodeURIComponent(holding.tokenAddress)}`,
-              );
-              const data = await res.json().catch(() => null);
-              return [
-                key,
-                {
-                  liquidityUsd: holding.liquidityUsd ?? toFiniteNumber(data?.liquidityUsd),
-                  marketCapUsd: toFiniteNumber(data?.marketCapUsd),
-                },
-              ] as const;
-            } catch {
-              return [
-                key,
-                {
-                  liquidityUsd: holding.liquidityUsd,
-                  marketCapUsd: null,
-                },
-              ] as const;
-            }
-          }),
-        ),
+      // Server proxy only — never call api.dexscreener.com from the browser.
+      // The batch endpoint keeps a details panel with 40 holdings to one
+      // browser request per 40 tokens instead of one request per holding.
+      const nextEntries: Record<string, HoldingMetric> = {};
+      const byKey = new Map<string, (typeof metricTargets)[number]>(
+        metricTargets.map((holding) => [`${holding.chain}:${holding.tokenAddress}`, holding]),
       );
+      for (let offset = 0; offset < metricTargets.length; offset += 40) {
+        const chunk = metricTargets.slice(offset, offset + 40);
+        try {
+          const res = await fetch('/api/token-logo/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: chunk.map((holding) => ({
+                chain: holding.chain,
+                tokenAddress: holding.tokenAddress,
+                tokenSymbol: holding.symbol,
+              })),
+            }),
+          });
+          const payload = await res.json().catch(() => null);
+          for (const row of Array.isArray(payload?.results) ? payload.results : []) {
+            const key = `${row.chain}:${row.tokenAddress}`;
+            const holding = byKey.get(key);
+            if (!holding) continue;
+            nextEntries[key] = {
+              liquidityUsd: holding.liquidityUsd ?? toFiniteNumber(row.liquidityUsd),
+              marketCapUsd: toFiniteNumber(row.marketCapUsd),
+            };
+          }
+        } catch {
+          // Fill fallback entries below so one failed chunk does not leave the
+          // panel in a permanent loading state.
+        }
+      }
+      for (const holding of metricTargets) {
+        const key = `${holding.chain}:${holding.tokenAddress}`;
+        if (!(key in nextEntries)) {
+          nextEntries[key] = { liquidityUsd: holding.liquidityUsd, marketCapUsd: null };
+        }
+      }
 
       if (!cancelled) {
         setMap((prev) => ({ ...prev, ...robinhoodEntries, ...nextEntries }));

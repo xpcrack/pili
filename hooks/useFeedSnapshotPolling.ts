@@ -21,6 +21,7 @@ export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let failCount = 0;
+    let lastSuccessfulTickAt = 0;
 
     function scheduleNext(delay: number) {
       if (cancelled) return;
@@ -37,6 +38,7 @@ export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
       try {
         await tickRef.current();
         failCount = 0;
+        lastSuccessfulTickAt = Date.now();
         scheduleNext(BASE_INTERVAL_MS);
       } catch {
         failCount += 1;
@@ -46,12 +48,15 @@ export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
 
     function onVisibilityChange() {
       if (!cancelled && typeof document !== 'undefined' && !document.hidden) {
-        // page just came back: run immediately
+        // A short tab switch should not create an extra request; a stale tab
+        // gets exactly one catch-up poll and then returns to the normal cadence.
+        const stale = lastSuccessfulTickAt === 0 || Date.now() - lastSuccessfulTickAt >= BASE_INTERVAL_MS;
         if (timer) {
           clearTimeout(timer);
           timer = null;
         }
-        void runTick();
+        if (stale) void runTick();
+        else scheduleNext(Math.max(0, BASE_INTERVAL_MS - (Date.now() - lastSuccessfulTickAt)));
       }
     }
 
