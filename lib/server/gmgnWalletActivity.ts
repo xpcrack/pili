@@ -121,9 +121,14 @@ function buildActivityArgs(opts: {
   return args;
 }
 
-async function runGmgnActivityCli(bin: string, args: string[], signal?: AbortSignal): Promise<string> {
+async function runGmgnActivityCli(
+  bin: string,
+  args: string[],
+  signal?: AbortSignal,
+  timeoutMs?: number
+): Promise<string> {
   try {
-    return await runGmgnCliAsync({ args, bin, signal });
+    return await runGmgnCliAsync({ args, bin, signal, timeoutMs });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (/aborted/i.test(msg)) throw new Error('gmgn-cli activity aborted');
@@ -164,6 +169,13 @@ export async function fetchGmgnWalletActivityAsync(opts: {
   /** force openapi | cli; default from PILI_GMGN_ACTIVITY_VIA */
   via?: 'openapi' | 'cli';
 }): Promise<{ items: GmgnActivityItem[]; next: string | null; raw: unknown }> {
+  const activityTimeoutMs = Number(
+    process.env.PILI_GMGN_ACTIVITY_TIMEOUT_MS ||
+      process.env.PILI_LIVE_ACTIVITY_TIMEOUT_MS ||
+      process.env.GMGN_FETCH_TIMEOUT_MS ||
+      20_000
+  );
+  const timeoutMs = Number.isFinite(activityTimeoutMs) && activityTimeoutMs > 0 ? activityTimeoutMs : 20_000;
   const via = opts.via ?? (preferOpenApiActivity() ? 'openapi' : 'cli');
   if (via === 'openapi') {
     try {
@@ -180,6 +192,7 @@ export async function fetchGmgnWalletActivityAsync(opts: {
         cursor: opts.cursor,
         token: opts.token,
         type: types,
+        signal: opts.signal,
       });
       const parsed = data ?? null;
       if (!parsed) return { items: [], next: null, raw: null };
@@ -199,7 +212,7 @@ export async function fetchGmgnWalletActivityAsync(opts: {
   }
 
   const bin = resolveGmgnCliBin(opts.bin);
-  const raw = await runGmgnActivityCli(bin, buildActivityArgs(opts), opts.signal);
+  const raw = await runGmgnActivityCli(bin, buildActivityArgs(opts), opts.signal, timeoutMs);
   return parseActivityOutput(raw);
 }
 

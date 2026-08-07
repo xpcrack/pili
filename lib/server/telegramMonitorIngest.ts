@@ -28,6 +28,7 @@ import {
   upsertEventTweetRefAndFetchMissing,
 } from '@/lib/server/twitterLinkRefs';
 import { isEvmChain } from '@/lib/addressBook';
+import { withSqliteBusyRetry } from '@/lib/server/sqlite';
 
 function getMonitorAuthConfig() {
   const relayToken = process.env.TELEGRAM_MONITOR_INGEST_TOKEN?.trim() || '';
@@ -422,7 +423,9 @@ export async function ingestTelegramMonitorUpdate(
 
   const xxyyFeedMode = readXxyyFeedMode();
 
-  // Dual-doorbell: XXYY only rings live-monitor; GMGN is the sole trade parser/writer.
+  let doorbellEnqueued: boolean | undefined;
+
+  // Ring first so a local projection failure never prevents the GMGN follow-up.
   if (xxyyFeedMode === 'doorbell') {
     const ringAddress =
       (trackedMatch.address.address || '').trim() ||
@@ -433,26 +436,7 @@ export async function ingestTelegramMonitorUpdate(
       chain: parsed.chain,
       source: 'xxyy',
     });
-    return {
-      ok: true,
-      saved,
-      projected: false,
-      doorbell: Boolean(doorbell.enqueued),
-      feedMode: 'doorbell' as const,
-      parsed: {
-        chain: parsed.chain,
-        tokenAddress: parsed.tokenAddress,
-        txHash: parsed.txHash,
-        marketCapUsd: parsed.marketCapUsd,
-        action: parsed.action,
-        actionLabel: parsed.actionLabel,
-        actionVariant: parsed.actionVariant,
-        walletLabel: parsed.walletLabel,
-        walletGroupLabel: parsed.walletGroupLabel,
-        walletAliasLabel: parsed.walletAliasLabel,
-        trackedWalletAddress: parsed.trackedWalletAddress,
-      },
-    };
+    doorbellEnqueued = Boolean(doorbell.enqueued);
   }
 
   if (xxyyFeedMode === 'off') {
@@ -479,8 +463,10 @@ export async function ingestTelegramMonitorUpdate(
     };
   }
 
-  // Legacy project path: XXYY text → xxyy-monitor feed (+ optional OKX reconcile).
+  // XXYY text → provisional xxyy-monitor feed. In doorbell mode GMGN later
+  // enriches/rekeys the same logical trade onto live-monitor without a duplicate.
   // Same-tx multi-token legs stay separate (token-aware aggregate key + summarize filter).
+  try {
 
   const provisionalSummary =
     parsed.txHash && parsed.trackedWalletAddress
@@ -494,7 +480,7 @@ export async function ingestTelegramMonitorUpdate(
 
   const txState =
     provisionalSummary
-      ? upsertTelegramMonitorTxStateProvisional({
+      ? withSqliteBusyRetry(() => upsertTelegramMonitorTxStateProvisional({
           userId: trackedMatch.user.id,
           chain: provisionalSummary.chain,
           trackedWalletAddress: provisionalSummary.trackedWalletAddress,
@@ -516,7 +502,7 @@ export async function ingestTelegramMonitorUpdate(
           provisionalWalletGroupLabel: provisionalSummary.walletGroupLabel,
           provisionalWalletAliasLabel: provisionalSummary.walletAliasLabel,
           eventTimeMs: provisionalSummary.eventTimeMs,
-        })
+        }), { attempts: 3, label: 'telegram-doorbell-tx-state' })
       : null;
 
   const projected = txState
@@ -554,27 +540,32 @@ export async function ingestTelegramMonitorUpdate(
   const scoredProjected = projected ? scoreFeedRowsAgainstDatabase([projected])[0] || null : null;
 
   if (scoredProjected && txState) {
-    setTelegramMonitorTxStateCanonicalActivity({
+    withSqliteBusyRetry(() => setTelegramMonitorTxStateCanonicalActivity({
       chain: txState.chain,
       trackedWalletAddress: txState.trackedWalletAddress,
       txHash: txState.txHash,
       tokenAddress: txState.tokenAddress,
       activity: scoredProjected.activity,
-    });
+    }), { attempts: 3, label: 'telegram-doorbell-canonical-state' });
   }
 
   if (scoredProjected && !txState) {
-    updateTelegramMonitorEventProjectedActivity({
+    withSqliteBusyRetry(() => updateTelegramMonitorEventProjectedActivity({
       sourceChatId,
       sourceMessageId,
       txHash: parsed.txHash,
       activity: scoredProjected.activity,
-    });
+    }), { attempts: 3, label: 'telegram-doorbell-event-projection' });
   }
 
   if (scoredProjected) {
-    upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest');
-    const tweetUrls = messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)));
+    withSqliteBusyRetry(
+      () => upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest'),
+      { attempts: 3, label: 'telegram-doorbell-feed-upsert' }
+    );
+    const tweetUrls = xxyyFeedMode === 'project'
+      ? messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)))
+      : [];
     if (tweetUrls.length > 0) {
       await upsertEventTweetRefAndFetchMissing({
         eventId: scoredProjected.activity.id,
@@ -591,6 +582,7 @@ export async function ingestTelegramMonitorUpdate(
   // Robinhood is feed-only; OKX reconciliation has no reliable support for this chain.
   if (
     txState
+    && xxyyFeedMode === 'project'
     && (txState.chain || '').trim().toLowerCase() !== 'robinhood'
     && shouldAutoTriggerTelegramMonitorReconciliation()
   ) {
@@ -605,7 +597,8 @@ export async function ingestTelegramMonitorUpdate(
     ok: true,
     saved,
     projected: Boolean(scoredProjected),
-    feedMode: 'project' as const,
+    doorbell: doorbellEnqueued,
+    feedMode: xxyyFeedMode,
     parsed: {
       chain: parsed.chain,
       tokenAddress: parsed.tokenAddress,
@@ -620,4 +613,35 @@ export async function ingestTelegramMonitorUpdate(
       trackedWalletAddress: parsed.trackedWalletAddress,
     },
   };
+  } catch (error) {
+    if (xxyyFeedMode !== 'doorbell') throw error;
+    console.error('[telegram-monitor-ingest] provisional doorbell projection failed', {
+      sourceChatId,
+      sourceMessageId,
+      chain: parsed.chain,
+      trackedWalletAddress: parsed.trackedWalletAddress,
+      txHash: parsed.txHash,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      ok: true,
+      saved,
+      projected: false,
+      doorbell: doorbellEnqueued,
+      feedMode: 'doorbell' as const,
+      parsed: {
+        chain: parsed.chain,
+        tokenAddress: parsed.tokenAddress,
+        txHash: parsed.txHash,
+        marketCapUsd: parsed.marketCapUsd,
+        action: parsed.action,
+        actionLabel: parsed.actionLabel,
+        actionVariant: parsed.actionVariant,
+        walletLabel: parsed.walletLabel,
+        walletGroupLabel: parsed.walletGroupLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
+  }
 }

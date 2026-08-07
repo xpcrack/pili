@@ -124,7 +124,28 @@ export async function runGmgnCliAsync(opts: {
   cost?: number;
 }): Promise<string> {
   assertGmgnAllowed();
-  await acquireGmgnGlobalToken(opts.cost);
+  const tokenController = new AbortController();
+  const forwardAbort = () => tokenController.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) throw new Error('gmgn-cli aborted');
+    opts.signal.addEventListener('abort', forwardAbort, { once: true });
+  }
+  const tokenTimer =
+    opts.timeoutMs && opts.timeoutMs > 0
+      ? setTimeout(() => tokenController.abort(), opts.timeoutMs)
+      : null;
+  try {
+    await acquireGmgnGlobalToken(opts.cost, tokenController.signal);
+  } catch (error) {
+    if (tokenTimer) clearTimeout(tokenTimer);
+    opts.signal?.removeEventListener('abort', forwardAbort);
+    if (tokenController.signal.aborted && !opts.signal?.aborted && opts.timeoutMs && opts.timeoutMs > 0) {
+      throw new Error(`gmgn-cli timed out after ${opts.timeoutMs}ms`);
+    }
+    throw error;
+  }
+  if (tokenTimer) clearTimeout(tokenTimer);
+  opts.signal?.removeEventListener('abort', forwardAbort);
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import './server-only-shim.cjs';
 
 import { createHoldingsRefreshQueue } from '@/lib/server/holdingsRefreshQueue';
+import { enqueueLiveDoorbell, resetLiveDoorbellQueueForTests } from '@/lib/server/liveDoorbellQueue';
 
 function flushTimers(timers: Array<{ cb: () => void; ms: number }>) {
   const snapshot = [...timers];
@@ -19,6 +20,7 @@ async function flushMicrotasks(times = 20) {
 }
 
 async function run() {
+  resetLiveDoorbellQueueForTests();
   const calls: Array<{ address: string; chain: string; userId: string }> = [];
   const timers: Array<{ cb: () => void; ms: number }> = [];
 
@@ -77,7 +79,22 @@ async function run() {
   const bad = queue.enqueue({ address: '', chain: 'solana', userId: 'u1' });
   assert.equal(bad.enqueued, false);
 
+  // A pending live Feed doorbell takes priority over trade-triggered holdings work.
+  enqueueLiveDoorbell({
+    address: '0xfeed-priority',
+    userId: 'u1',
+    chain: 'base',
+    debounceMs: 0,
+    nowMs: Date.now(),
+  });
+  queue.enqueue({ address: 'WalletB', chain: 'base', userId: 'u1' });
+  flushTimers(timers);
+  await flushMicrotasks();
+  assert.equal(calls.length, 2, 'holdings must yield while a live Feed doorbell is pending');
+  assert.equal(queue.pendingCount(), 1);
+
   queue.resetForTests();
+  resetLiveDoorbellQueueForTests();
   console.log('holdings refresh queue tests: ok');
 }
 
