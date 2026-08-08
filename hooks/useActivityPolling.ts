@@ -44,6 +44,8 @@ import { useFeedSnapshotPolling } from './useFeedSnapshotPolling';
 import { useFeedRefreshScheduler } from './useFeedRefreshScheduler';
 import { useFeedServerBackfill } from './useFeedServerBackfill';
 import { toLatestActivityAtByUserMap, toLatestActivityAtByUserRecord } from '@/lib/mainPageSession';
+import { captureGlobalFeedCache, restoreGlobalFeedCache } from './feedPollingCache';
+import type { FetchActivitiesOptions, GlobalFeedCache } from './feedPollingTypes';
 import {
   createInitialFeedPollingState,
   feedPollingReducer,
@@ -84,21 +86,6 @@ interface UseActivityPollingReturn {
   summary: ActivityFeedSummary | null;
   diagnostics: AddressDiagnostic[];
   prewarmLabel: string | null;
-}
-
-interface FetchActivitiesOptions {
-  targetCount?: number;
-  selectedUserId?: string | null;
-  searchQuery?: string;
-  source?: Activity['source'] | null;
-  replace?: boolean;
-  /** 从 feedNextCursor 追加一页，而不是从顶部重拉 */
-  append?: boolean;
-  silent?: boolean;
-  poll?: boolean;
-  revision?: string;
-  syncStrategy?: FeedSyncStrategy;
-  backfillScope?: 'global' | 'user';
 }
 
 function buildFeedFetchReason(params: {
@@ -334,21 +321,6 @@ export function useActivityPolling(
 
   // 进人物页前缓存全局 feed；回「全部动态」先秒开缓存，再 silent 刷新。
   // 公网 pageSize=200 ~2MB / ~20s，硬重拉会贴 25s 超时。
-  type GlobalFeedCache = {
-    feed: { user: User; activity: Activity }[];
-    nextCursor: string | null;
-    hasMore: boolean;
-    historyComplete: boolean | null;
-    localQualifiedCount: number;
-    activityBreakdown: ActivityBreakdown | null;
-    completenessWindow: CompletenessWindow | null;
-    summary: ActivityFeedSummary | null;
-    diagnostics: AddressDiagnostic[];
-    prewarmLabel: string | null;
-    latestActivityAtByUser: Map<string, number>;
-    userActivities: Map<string, Activity[]>;
-    revision: string | null;
-  };
   const globalFeedCacheRef = useRef<GlobalFeedCache | null>(null);
 
   // 获取并处理活动数据
@@ -386,7 +358,7 @@ export function useActivityPolling(
       !options?.poll &&
       feedRef.current.length > 0
     ) {
-      globalFeedCacheRef.current = {
+      globalFeedCacheRef.current = captureGlobalFeedCache({
         feed: feedRef.current.slice(),
         nextCursor: feedNextCursorRef.current,
         hasMore: stateRef.current.hasMore,
@@ -400,7 +372,7 @@ export function useActivityPolling(
         latestActivityAtByUser: new Map(stateRef.current.latestActivityAtByUser),
         userActivities: new Map(stateRef.current.userActivities),
         revision: feedRevisionRef.current ?? null,
-      };
+      });
     }
 
     // 从人物回全局：有缓存则立刻还原，再走 silent 顶窗刷新（不阻塞 UI）
@@ -419,21 +391,7 @@ export function useActivityPolling(
       if (cached.revision) {
         feedRevisionRef.current = cached.revision;
       }
-      dispatch({
-        type: 'apply_success',
-        feed: cached.feed,
-        userActivities: cached.userActivities,
-        latestActivityAtByUser: cached.latestActivityAtByUser,
-        hasMore: cached.hasMore,
-        historyComplete: cached.historyComplete,
-        localQualifiedCount: cached.localQualifiedCount,
-        activityBreakdown: cached.activityBreakdown,
-        completenessWindow: cached.completenessWindow,
-        summary: cached.summary,
-        diagnostics: cached.diagnostics,
-        prewarmLabel: cached.prewarmLabel,
-        clearLoading: true,
-      });
+      dispatch(restoreGlobalFeedCache(cached));
       // 后台 silent 刷新顶窗；失败也不影响已还原的全局视图
       void fetchActivities({
         silent: true,
