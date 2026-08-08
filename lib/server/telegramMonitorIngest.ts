@@ -1,14 +1,7 @@
 import 'server-only';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
-import {
-  upsertEventsFromFeedRows,
-  upsertTelegramMonitorProvisionalEventFast,
-} from '@/lib/server/eventsRepo';
-import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
-import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
-import { triggerTelegramMonitorReconciliation } from '@/lib/server/telegramMonitorReconciler';
 import { readSystemConfig } from '@/lib/server/systemConfigRepo';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { isRobinhoodStockToken } from '@/lib/robinhoodStockTokens';
@@ -16,27 +9,13 @@ import { isOnchainStockToken } from '@/lib/onchainStockTokens';
 import { enqueueLiveDoorbell } from '@/lib/server/liveDoorbellQueue';
 import { readXxyyFeedMode, shouldAcceptXxyyChain } from '@/lib/server/liveMonitorConfig';
 import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
-import {
-  summarizeTelegramMonitorTxProvisional,
-  updateTelegramMonitorEventProjectedActivity,
-  upsertTelegramMonitorEvent,
-} from '@/lib/server/telegramMonitorRepo';
-import {
-  setTelegramMonitorTxStateCanonicalActivity,
-  upsertTelegramMonitorTxStateProvisional,
-} from '@/lib/server/telegramMonitorTxStateRepo';
-import { createTwitterFetcher } from '@/lib/server/twitterFetcher';
-import {
-  parseTweetIdFromUrl,
-  upsertEventTweetRefAndFetchMissing,
-} from '@/lib/server/twitterLinkRefs';
+import { upsertTelegramMonitorEvent } from '@/lib/server/telegramMonitorRepo';
 import { isEvmChain } from '@/lib/addressBook';
-import { withSqliteBusyRetry } from '@/lib/server/sqlite';
+import { projectAndPersistTelegramMonitorUpdate } from '@/lib/server/telegramMonitorProjectionService';
 import {
   collectTelegramMessageLinks,
   extractTelegramMessage,
   extractTelegramMessageText,
-  type TelegramMessageLike,
   type TelegramUpdateLike,
 } from '@/lib/server/telegramMonitorUpdateHelpers';
 
@@ -410,170 +389,44 @@ export async function ingestTelegramMonitorUpdate(
     };
   }
 
-  // XXYY text → provisional xxyy-monitor feed. In doorbell mode GMGN later
-  // enriches/rekeys the same logical trade onto live-monitor without a duplicate.
-  // Same-tx multi-token legs stay separate (token-aware aggregate key + summarize filter).
   try {
-
-  const provisionalSummary =
-    parsed.txHash && parsed.trackedWalletAddress
-      ? summarizeTelegramMonitorTxProvisional({
-          chain: parsed.chain,
-          trackedWalletAddress: parsed.trackedWalletAddress,
-          txHash: parsed.txHash,
-          tokenAddress: parsed.tokenAddress,
-        })
-      : null;
-
-  const txState =
-    provisionalSummary
-      ? withSqliteBusyRetry(() => upsertTelegramMonitorTxStateProvisional({
-          userId: trackedMatch.user.id,
-          chain: provisionalSummary.chain,
-          trackedWalletAddress: provisionalSummary.trackedWalletAddress,
-          txHash: provisionalSummary.txHash,
-          tokenAddress: provisionalSummary.tokenAddress,
-          tokenSymbol: provisionalSummary.tokenSymbol,
-          provisionalAction: provisionalSummary.action,
-          provisionalActionLabel: provisionalSummary.actionLabel,
-          provisionalActionVariant: provisionalSummary.actionVariant,
-          provisionalQuoteAmount: provisionalSummary.quoteAmount,
-          provisionalQuoteSymbol: provisionalSummary.quoteSymbol,
-          provisionalTokenAmount: provisionalSummary.tokenAmount,
-          provisionalTokenSymbol: provisionalSummary.tokenSymbol,
-          provisionalPriceUsd: provisionalSummary.priceUsd,
-          provisionalMarketCapUsd: provisionalSummary.marketCapUsd,
-          provisionalRawText: provisionalSummary.rawText,
-          provisionalMessageLinks: provisionalSummary.messageLinks,
-          provisionalWalletLabel: provisionalSummary.walletLabel,
-          provisionalWalletGroupLabel: provisionalSummary.walletGroupLabel,
-          provisionalWalletAliasLabel: provisionalSummary.walletAliasLabel,
-          eventTimeMs: provisionalSummary.eventTimeMs,
-        }), { attempts: 3, label: 'telegram-doorbell-tx-state' })
-      : null;
-
-  const projected = txState
-    ? await projectTelegramMonitorTxState({
-        state: txState,
-        users: [trackedMatch.user],
-        projectionOptions: { resolveTradeAmountUsdAtTx: false },
-      })
-    : await projectTelegramMonitorEvent({
-        event: {
-          sourceChatId,
-          sourceMessageId,
-          chain: parsed.chain,
-          tokenAddress: parsed.tokenAddress,
-          tokenSymbol: parsed.tokenSymbol,
-          txHash: parsed.txHash,
-          marketCapUsd: parsed.marketCapUsd,
-          priceUsd: parsed.priceUsd,
-          quoteAmount: parsed.quoteAmount,
-          quoteSymbol: parsed.quoteSymbol,
-          action: parsed.action,
-          actionLabel: parsed.actionLabel,
-          actionVariant: parsed.actionVariant,
-          walletLabel: parsed.walletLabel,
-          walletGroupLabel: parsed.walletGroupLabel,
-          walletAliasLabel: parsed.walletAliasLabel,
-          trackedWalletAddress: parsed.trackedWalletAddress,
-          eventTimeMs,
-          rawText: text,
-          messageLinks,
-          updatedAt: Date.now(),
-        },
-        users: [trackedMatch.user],
-        projectionOptions: { resolveTradeAmountUsdAtTx: false },
-      });
-
-  const scoredProjected =
-    projected && xxyyFeedMode === 'doorbell'
-      ? projected
-      : projected
-        ? scoreFeedRowsAgainstDatabase([projected])[0] || null
-        : null;
-
-  if (scoredProjected && txState) {
-    withSqliteBusyRetry(() => setTelegramMonitorTxStateCanonicalActivity({
-      chain: txState.chain,
-      trackedWalletAddress: txState.trackedWalletAddress,
-      txHash: txState.txHash,
-      tokenAddress: txState.tokenAddress,
-      activity: scoredProjected.activity,
-    }), { attempts: 3, label: 'telegram-doorbell-canonical-state' });
-  }
-
-  if (scoredProjected && !txState) {
-    withSqliteBusyRetry(() => updateTelegramMonitorEventProjectedActivity({
+    const projection = await projectAndPersistTelegramMonitorUpdate({
+      parsed: {
+        ...parsed,
+        chain: parsed.chain,
+        tokenAddress: parsed.tokenAddress,
+        action: parsed.action,
+      },
+      user: trackedMatch.user,
       sourceChatId,
       sourceMessageId,
-      txHash: parsed.txHash,
-      activity: scoredProjected.activity,
-    }), { attempts: 3, label: 'telegram-doorbell-event-projection' });
-  }
-
-  if (scoredProjected) {
-    if (xxyyFeedMode === 'doorbell') {
-      withSqliteBusyRetry(
-        () => upsertTelegramMonitorProvisionalEventFast(scoredProjected),
-        { attempts: 3, label: 'telegram-doorbell-fast-feed-upsert' }
-      );
-    } else {
-      withSqliteBusyRetry(
-        () => upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest'),
-        { attempts: 3, label: 'telegram-doorbell-feed-upsert' }
-      );
-    }
-    const tweetUrls = xxyyFeedMode === 'project'
-      ? messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)))
-      : [];
-    if (tweetUrls.length > 0) {
-      await upsertEventTweetRefAndFetchMissing({
-        eventId: scoredProjected.activity.id,
-        tweetUrls,
-        refSource: 'telegram-monitor',
-        fetchTweetsByIds: async (ids) => {
-          const fetcher = createTwitterFetcher();
-          return fetcher.fetchTweetsByIds({ ids, intent: 'detail' });
-        },
-      });
-    }
-  }
-
-  // Robinhood is feed-only; OKX reconciliation has no reliable support for this chain.
-  if (
-    txState
-    && xxyyFeedMode === 'project'
-    && (txState.chain || '').trim().toLowerCase() !== 'robinhood'
-    && shouldAutoTriggerTelegramMonitorReconciliation()
-  ) {
-    void triggerTelegramMonitorReconciliation({
-      chain: txState.chain,
-      trackedWalletAddress: txState.trackedWalletAddress,
-      txHash: txState.txHash,
+      eventTimeMs,
+      rawText: text,
+      messageLinks,
+      feedMode: xxyyFeedMode,
+      autoReconcile: shouldAutoTriggerTelegramMonitorReconciliation(),
     });
-  }
 
-  return {
-    ok: true,
-    saved,
-    projected: Boolean(scoredProjected),
-    doorbell: doorbellEnqueued,
-    feedMode: xxyyFeedMode,
-    parsed: {
-      chain: parsed.chain,
-      tokenAddress: parsed.tokenAddress,
-      txHash: parsed.txHash,
-      marketCapUsd: parsed.marketCapUsd,
-      action: parsed.action,
-      actionLabel: parsed.actionLabel,
-      actionVariant: parsed.actionVariant,
-      walletLabel: parsed.walletLabel,
-      walletGroupLabel: parsed.walletGroupLabel,
-      walletAliasLabel: parsed.walletAliasLabel,
-      trackedWalletAddress: parsed.trackedWalletAddress,
-    },
-  };
+    return {
+      ok: true,
+      saved,
+      projected: projection.projected,
+      doorbell: doorbellEnqueued,
+      feedMode: xxyyFeedMode,
+      parsed: {
+        chain: parsed.chain,
+        tokenAddress: parsed.tokenAddress,
+        txHash: parsed.txHash,
+        marketCapUsd: parsed.marketCapUsd,
+        action: parsed.action,
+        actionLabel: parsed.actionLabel,
+        actionVariant: parsed.actionVariant,
+        walletLabel: parsed.walletLabel,
+        walletGroupLabel: parsed.walletGroupLabel,
+        walletAliasLabel: parsed.walletAliasLabel,
+        trackedWalletAddress: parsed.trackedWalletAddress,
+      },
+    };
   } catch (error) {
     if (xxyyFeedMode !== 'doorbell') throw error;
     console.error('[telegram-monitor-ingest] provisional doorbell projection failed', {
