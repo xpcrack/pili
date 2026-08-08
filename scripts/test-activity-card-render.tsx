@@ -148,6 +148,25 @@ function run() {
   assert.match(telegramMarkup, /频道更新：关注/, 'telegram body should render');
   assert.match(telegramMarkup, />TG</, 'telegram kind badge should render');
 
+  const telegramRailMarkup = renderToStaticMarkup(
+    <ActivityCard
+      activity={{
+        id: 'telegram:rail-test',
+        userId: 'user-1',
+        source: 'telegram',
+        type: 'post',
+        title: 'TG',
+        content: 'rail test',
+        timestamp: 1777912752444,
+        metadata: {
+          telegramPostUrl: 'https://t.me/channel/rail-test',
+        },
+      }}
+      user={makeUser()}
+    />
+  );
+  assertFeedSourceRail(telegramRailMarkup, '#1D9BF0', 'telegram cards');
+
   const transferMarkup = renderToStaticMarkup(
     <ActivityCard
       activity={{
@@ -180,6 +199,25 @@ function run() {
   assert.match(transferMarkup, /USDC/, 'transfer token symbol should render');
   assert.doesNotMatch(transferMarkup, /data-trade-row/, 'pure send should not use trade row');
   assertFeedSourceRail(transferMarkup, '#9945FF', 'solana transfer cards');
+
+  const robinhoodMarkup = renderToStaticMarkup(
+    <ActivityCard
+      activity={{
+        id: 'robinhood:rail-test',
+        userId: 'user-1',
+        source: 'blockchain',
+        type: 'swap',
+        title: 'swap',
+        content: 'rail test',
+        timestamp: 1777912752555,
+        metadata: {
+          chain: 'robinhood',
+        },
+      }}
+      user={makeUser()}
+    />
+  );
+  assertFeedSourceRail(robinhoodMarkup, '#CCFF00', 'robinhood cards');
 
   console.log('activity card render tests: ok');
 }
