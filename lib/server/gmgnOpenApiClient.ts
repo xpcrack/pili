@@ -565,11 +565,23 @@ export class GmgnOpenApiClient {
       recordGmgnRequest({ ok: false, path: subPath, error: 'cooldown-blocked', blocked: true });
       throw e;
     }
-    // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
-    // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
-    // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
-    await acquireGmgnGlobalToken(opts.signed ? 3 : 1, opts.signal);
     const key = await this.pool.acquire(opts.signed ? { signed: true } : {});
+    // Pick the key before taking a token so each configured proxy endpoint
+    // gets its own cross-process bucket instead of all keys sharing one quota.
+    const effectiveProxy = this.proxyByKey[key] ?? null;
+    try {
+      // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
+      // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
+      // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
+      await acquireGmgnGlobalToken(
+        opts.signed ? 3 : 1,
+        opts.signal,
+        effectiveProxy ?? 'default',
+      );
+    } catch (error) {
+      this.pool.markError(key);
+      throw error;
+    }
     let released = false;
     const markSuccess = () => {
       released = true;
@@ -622,7 +634,6 @@ export class GmgnOpenApiClient {
         // per-key 代理：按 key 选独立出口 IP（17890-17894），避免所有 key 共享
         // 同一 Clash 出口被 GMGN IP 窗口截胡。无映射走默认 env proxy（Node
         // undici 的全局 fetch 不支持 dispatcher，统一用 undici.fetch）。
-        const effectiveProxy = this.proxyByKey[key] ?? null;
         const fetchInit: Record<string, unknown> = {
           method,
           headers,

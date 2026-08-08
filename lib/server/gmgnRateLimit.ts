@@ -8,6 +8,7 @@
  * 三家必须遵守同一协议——冷却时长=max(60s, reset_at+5s)、不 ratchet 陈旧 untilMs、
  * 保留彼此的扩展字段。完整约定见 keypool.py 文件头。
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -302,15 +303,25 @@ export function assertGmgnAllowed(nowMs = Date.now()): void {
 
 // ============================================================================
 // Cross-process global rate limit (file token bucket) — preventive.
-// pilipili / newone / wrapper 共享一个桶，把聚合 GMGN qps 钉在 rps+burst 之下，
-// 而不是被封后才靠冷却文件反应。两个 repo 的协议一字不差，靠同一桶文件协调。
-//   bucket: ~/.config/gmgn/global-bucket.json = { tokens, lastMs }
-//   mutex:  ~/.config/gmgn/global-bucket.json.lock (lockdir; macOS 无 flock)
+// pilipili / newone / wrapper share the same bucket-file protocol. Requests
+// using different configured proxy endpoints get isolated buckets; callers
+// without a proxy identity keep the legacy shared bucket.
+//   bucket: ~/.config/gmgn/global-bucket[.<proxy-hash>].json = { tokens, lastMs }
+//   mutex:  same path + .lock (lockdir; macOS 无 flock)
 // ============================================================================
 
-const GLOBAL_BUCKET_FILE =
+const GLOBAL_BUCKET_ROOT_FILE =
   process.env.GMGN_GLOBAL_BUCKET_FILE?.trim() || join(homedir(), '.config', 'gmgn', 'global-bucket.json');
-const GLOBAL_BUCKET_LOCK = GLOBAL_BUCKET_FILE + '.lock';
+
+function globalBucketFile(bucketKey?: string): string {
+  if (!bucketKey) return GLOBAL_BUCKET_ROOT_FILE;
+  const digest = createHash('sha256').update(bucketKey).digest('hex').slice(0, 16);
+  return GLOBAL_BUCKET_ROOT_FILE.replace(/\.json$/i, `.${digest}.json`);
+}
+
+function globalBucketLock(bucketKey?: string): string {
+  return globalBucketFile(bucketKey) + '.lock';
+}
 // GMGN IP 级限速窗口实测 ~25-30 请求/分钟（35 请求/63s 即被封，0.56rps 都超）。
 // 全局桶是跨进程聚合入口，容量必须压到 IP 窗口之下（与 newone 对齐）。
 // 0.4rps × 60 = 24/min，留余量；burst 3 防安静期攒满瞬间放行。
@@ -337,11 +348,12 @@ const sleepMs = (ms: number, signal?: AbortSignal) =>
 
 type BucketState = { tokens: number; lastMs: number };
 
-function readBucket(): BucketState {
+function readBucket(bucketKey?: string): BucketState {
   const fallback: BucketState = { tokens: GLOBAL_BURST, lastMs: Date.now() };
   try {
-    if (!existsSync(GLOBAL_BUCKET_FILE)) return fallback;
-    const raw = JSON.parse(readFileSync(GLOBAL_BUCKET_FILE, 'utf8')) as Partial<BucketState>;
+    const file = globalBucketFile(bucketKey);
+    if (!existsSync(file)) return fallback;
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<BucketState>;
     const tokens = Number(raw.tokens);
     const lastMs = Number(raw.lastMs);
     return {
@@ -353,31 +365,33 @@ function readBucket(): BucketState {
   }
 }
 
-function writeBucket(s: BucketState): void {
+function writeBucket(s: BucketState, bucketKey?: string): void {
   try {
-    mkdirSync(dirname(GLOBAL_BUCKET_FILE), { recursive: true });
-    writeFileSync(GLOBAL_BUCKET_FILE, JSON.stringify(s), 'utf8');
+    const file = globalBucketFile(bucketKey);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(s), 'utf8');
   } catch {
     /* non-fatal: in-process pacing still works */
   }
 }
 
 /** lockdir 互斥（mkdir 原子；macOS 无 flock）。stale guard 30s 清理被 kill 的持有者。 */
-async function tryAcquireBucketLock(): Promise<boolean> {
+async function tryAcquireBucketLock(bucketKey?: string): Promise<boolean> {
+  const lock = globalBucketLock(bucketKey);
   for (let i = 0; i < 100; i++) {
     try {
-      mkdirSync(GLOBAL_BUCKET_LOCK);
+      mkdirSync(lock);
       try {
-        writeFileSync(join(GLOBAL_BUCKET_LOCK, 'ts'), String(Date.now()));
+        writeFileSync(join(lock, 'ts'), String(Date.now()));
       } catch {
         /* ignore */
       }
       return true;
     } catch {
       try {
-        const ts = Number(readFileSync(join(GLOBAL_BUCKET_LOCK, 'ts'), 'utf8'));
+        const ts = Number(readFileSync(join(lock, 'ts'), 'utf8'));
         if (Number.isFinite(ts) && Date.now() - ts > 30_000) {
-          rmSync(GLOBAL_BUCKET_LOCK, { recursive: true, force: true });
+          rmSync(lock, { recursive: true, force: true });
         }
       } catch {
         /* ignore */
@@ -388,9 +402,9 @@ async function tryAcquireBucketLock(): Promise<boolean> {
   return false;
 }
 
-function releaseBucketLock(): void {
+function releaseBucketLock(bucketKey?: string): void {
   try {
-    rmSync(GLOBAL_BUCKET_LOCK, { recursive: true, force: true });
+    rmSync(globalBucketLock(bucketKey), { recursive: true, force: true });
   } catch {
     /* ignore */
   }
@@ -454,17 +468,21 @@ export function gmgnBucketCapacity(
  * （factor=0.3 → cost≈3.3x → 聚合 qps 压低到 30%），防止 pili 全速突进
  * 撞墙再封。这是跨进程共享桶，压制同时作用于所有走此桶的进程。
  */
-export async function acquireGmgnGlobalToken(cost = 1, signal?: AbortSignal): Promise<void> {
+export async function acquireGmgnGlobalToken(
+  cost = 1,
+  signal?: AbortSignal,
+  bucketKey?: string,
+): Promise<void> {
   const factor = getGmgnRecoveryFactor();
   const effectiveCost = gmgnEffectiveCost(cost, factor);
   for (let attempt = 0; attempt < 300; attempt++) {
     if (signal?.aborted) throw new Error('GMGN request aborted');
     let waitMs = 0;
     let got = false;
-    if (await tryAcquireBucketLock()) {
+    if (await tryAcquireBucketLock(bucketKey)) {
       try {
         const now = Date.now();
-        const s = readBucket();
+        const s = readBucket(bucketKey);
         const elapsed = Math.max(0, now - s.lastMs);
         // 恢复期（连封后慢启动窗口内）burst 压缩：burst 上限 6→2，避免冷却
         // 一解除桶里瞬间攒满 6 token → 6 连发同毫秒放行撞 IP 限速再封。
@@ -472,14 +490,14 @@ export async function acquireGmgnGlobalToken(cost = 1, signal?: AbortSignal): Pr
         const burstCap = gmgnBucketCapacity(GLOBAL_BURST, effectiveCost, factor);
         const tokens = Math.min(burstCap, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
         if (tokens >= effectiveCost) {
-          writeBucket({ tokens: tokens - effectiveCost, lastMs: now });
+          writeBucket({ tokens: tokens - effectiveCost, lastMs: now }, bucketKey);
           got = true;
         } else {
           const deficit = effectiveCost - tokens;
           waitMs = Math.ceil((deficit / GLOBAL_RPS) * 1000) + 10;
         }
       } finally {
-        releaseBucketLock();
+        releaseBucketLock(bucketKey);
       }
     }
     if (got) return;

@@ -345,20 +345,6 @@ export async function runLiveMonitorCycle(
       };
     }
 
-    let alchemyWallets: string[] = [];
-    if (inboxCfg) {
-      const pulled = await pullInbox({
-        base_url: inboxCfg.base_url,
-        token: inboxCfg.token,
-        watched_addresses: addresses,
-        limit: 100,
-      });
-      inboxEvents = pulled.events;
-      alchemyWallets = pulled.wallets;
-    } else if (!lastError) {
-      lastError = 'missing PILI_ALCHEMY_INBOX_URL / PULL_TOKEN (xxyy doorbells still scanned)';
-    }
-
     const claimLimit = Math.max(
       1,
       Math.min(
@@ -368,6 +354,29 @@ export async function runLiveMonitorCycle(
     );
     const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
     xxyyDoorbells = doorbells.length;
+
+    // Claim the local XXYY doorbells before touching the optional Alchemy inbox.
+    // The inbox is a complementary source: a transient CF/network failure must
+    // not prevent already queued XXYY rings from reaching GMGN. pullInbox only
+    // advances its cursor after a successful response, so a failed pull is safe
+    // to report as partial while the local doorbells continue below.
+    let alchemyWallets: string[] = [];
+    if (inboxCfg) {
+      try {
+        const pulled = await pullInbox({
+          base_url: inboxCfg.base_url,
+          token: inboxCfg.token,
+          watched_addresses: addresses,
+          limit: 100,
+        });
+        inboxEvents = pulled.events;
+        alchemyWallets = pulled.wallets;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    } else if (!lastError) {
+      lastError = 'missing PILI_ALCHEMY_INBOX_URL / PULL_TOKEN (xxyy doorbells still scanned)';
+    }
 
     const targets = buildScanTargets({
       alchemyWallets,
