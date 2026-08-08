@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 
+import * as activityCardSocial from '@/lib/activityCardSocial';
 import {
   cleanTwitterDisplayText,
   collapseActivityCardText,
@@ -7,8 +8,34 @@ import {
   getTelegramCardPrimaryText,
   usesSocialBodyLayout,
 } from '@/lib/activityCardSocial';
+import type { Activity } from '@/types';
+
+type FeedSourceColorResolver = (activity: Pick<Activity, 'source' | 'metadata'>) => string;
+
+function getFeedSourceColorForTest() {
+  const candidate = (activityCardSocial as Record<string, unknown>).getFeedSourceColor;
+  assert.equal(typeof candidate, 'function', 'getFeedSourceColor should be exported');
+  return candidate as FeedSourceColorResolver;
+}
 
 function run() {
+  const makeActivity = (source: Activity['source'], chain?: string): Pick<Activity, 'source' | 'metadata'> => ({
+    source,
+    metadata: chain === undefined ? {} : { chain },
+  });
+  const getFeedSourceColor = getFeedSourceColorForTest();
+
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'solana')), '#9945FF');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'ethereum')), '#627EEA');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'bsc')), '#F3BA2F');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'base')), '#0052FF');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'robinhood')), '#CCFF00');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'SOL')), '#9945FF');
+  assert.equal(getFeedSourceColor(makeActivity('twitter')), '#1D9BF0');
+  assert.equal(getFeedSourceColor(makeActivity('telegram')), '#1D9BF0');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain', 'unknown')), '#71717A');
+  assert.equal(getFeedSourceColor(makeActivity('blockchain')), '#71717A');
+
   assert.equal(usesSocialBodyLayout('telegram'), true, 'telegram cards should use the social body layout');
   assert.equal(usesSocialBodyLayout('twitter'), true, 'twitter cards should use the social body layout');
   assert.equal(usesSocialBodyLayout('blockchain'), false, 'blockchain cards should keep the existing layout');
