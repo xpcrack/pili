@@ -10,6 +10,7 @@ import { buildActivityCardViewModel } from '@/lib/activityCardViewModel';
 import {
   cleanTwitterDisplayText,
   collapseActivityCardText,
+  getFeedSourceColor,
   getActivityCardTypeLabel,
   getTelegramCardPrimaryText,
   usesSocialBodyLayout,
@@ -64,6 +65,17 @@ function useTokenInfo(key: string, avatarKey: string) {
   };
 }
 
+function FeedSourceRail({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden='true'
+      data-feed-source-rail
+      className='pointer-events-none absolute inset-y-0 left-0 z-10 w-1'
+      style={{ backgroundColor: color }}
+    />
+  );
+}
+
 export const ActivityCard = memo(function ActivityCard({
   activity,
   user,
@@ -72,6 +84,7 @@ export const ActivityCard = memo(function ActivityCard({
   onClick,
   addressAliasMap,
 }: ActivityCardProps) {
+  const feedSourceColor = getFeedSourceColor(activity);
   const [now, setNow] = useState(activity.timestamp);
   const { label: relativeTimeAgo, nextUpdateInMs } = getRelativeTimeState(activity.timestamp, now);
   const timeAgo =
@@ -276,6 +289,7 @@ export const ActivityCard = memo(function ActivityCard({
         className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
+        <FeedSourceRail color={feedSourceColor} />
         <CardContent className="px-0 py-0">
           <div
             className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[28px_100px_120px_48px_68px_minmax(72px,1fr)_80px] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
@@ -445,6 +459,7 @@ export const ActivityCard = memo(function ActivityCard({
         className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
+        <FeedSourceRail color={feedSourceColor} />
         <CardContent className="px-0 py-0">
           <div
             className="grid min-h-10 items-center gap-x-3 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[28px_minmax(108px,1.1fr)_minmax(88px,0.9fr)_minmax(96px,0.95fr)_minmax(64px,0.65fr)_minmax(96px,1fr)_80px_118px] md:grid-cols-[80px_28px_minmax(108px,1.1fr)_minmax(88px,0.9fr)_minmax(96px,0.95fr)_minmax(64px,0.65fr)_minmax(96px,1fr)_118px]"
@@ -658,6 +673,7 @@ export const ActivityCard = memo(function ActivityCard({
         className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
+        <FeedSourceRail color={feedSourceColor} />
         <CardContent className="px-0 py-0">
           <div className="flex min-h-10 items-start gap-2.5 border-b border-white/[0.035] px-3 py-2">
             <Avatar className="mt-0.5 h-7 w-7 shrink-0 md:order-2">
@@ -781,6 +797,7 @@ export const ActivityCard = memo(function ActivityCard({
       className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
       onClick={onClick}
     >
+      <FeedSourceRail color={feedSourceColor} />
       <CardContent className="px-3 py-2">
         <div className="flex min-w-0 items-start gap-2.5">
           <Avatar className="h-7 w-7 shrink-0 md:order-2">
