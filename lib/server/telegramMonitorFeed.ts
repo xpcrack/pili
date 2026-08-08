@@ -14,6 +14,7 @@ import {
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import {
   buildActivityFromSnapshot,
+  buildActivityFromSnapshotSync,
   repairCollapsedCanonicalActivity,
 } from '@/lib/server/telegramMonitorActivity';
 import {
@@ -27,6 +28,11 @@ import type { Activity, User } from '@/types';
 export interface TelegramMonitorFeedRow {
   user: User;
   activity: Activity;
+}
+
+export interface TelegramMonitorProjectionOptions {
+  /** Skip external historical-price lookup for latency-sensitive ingest. */
+  resolveTradeAmountUsdAtTx?: boolean;
 }
 
 export interface BidOnchainEventCursor {
@@ -78,34 +84,16 @@ async function buildProjectedTelegramMonitorFeedRow(params: {
   trackedAddress: string | null;
   monitorReconciliationStatus: Activity['metadata']['monitorReconciliationStatus'] | undefined;
   monitorReconciledSource: Activity['metadata']['monitorReconciledSource'] | null;
-}): Promise<TelegramMonitorFeedRow> {
+}, options: TelegramMonitorProjectionOptions = {}): Promise<TelegramMonitorFeedRow> {
   const { user } = params;
+
+  const activity = options.resolveTradeAmountUsdAtTx === false
+    ? buildActivityFromSnapshotSync(params)
+    : await buildActivityFromSnapshot(params);
 
   return {
     user,
-    activity: await buildActivityFromSnapshot({
-      user,
-      chain: params.chain,
-      tokenAddress: params.tokenAddress,
-      tokenSymbol: params.tokenSymbol,
-      txHash: params.txHash,
-      marketCapUsd: params.marketCapUsd,
-      quoteAmount: params.quoteAmount,
-      quoteSymbol: params.quoteSymbol,
-      tokenAmount: params.tokenAmount,
-      explicitPriceUsd: params.explicitPriceUsd,
-      rawText: params.rawText,
-      action: params.action,
-      actionLabel: params.actionLabel,
-      actionVariant: params.actionVariant,
-      walletLabel: params.walletLabel,
-      walletGroupLabel: params.walletGroupLabel,
-      walletAliasLabel: params.walletAliasLabel,
-      eventTimeMs: params.eventTimeMs,
-      trackedAddress: params.trackedAddress,
-      monitorReconciliationStatus: params.monitorReconciliationStatus,
-      monitorReconciledSource: params.monitorReconciledSource,
-    }),
+    activity,
   };
 }
 
@@ -198,6 +186,7 @@ async function projectTelegramMonitorFallbackFeed(params: {
 export async function projectTelegramMonitorEvent(params: {
   event: TelegramMonitorFeedEvent;
   users?: User[];
+  projectionOptions?: TelegramMonitorProjectionOptions;
 }): Promise<TelegramMonitorFeedRow | null> {
   const users = params.users || listMonitoredUsers();
   const trackedAddressIndex = buildTrackedAddressIndex(users);
@@ -273,12 +262,13 @@ export async function projectTelegramMonitorEvent(params: {
     trackedAddress,
     monitorReconciliationStatus: event.txHash && trackedAddress ? 'pending' : undefined,
     monitorReconciledSource: event.txHash && trackedAddress ? 'xxyy' : null,
-  });
+  }, params.projectionOptions);
 }
 
 export async function projectTelegramMonitorTxState(params: {
   state: TelegramMonitorTxState;
   users?: User[];
+  projectionOptions?: TelegramMonitorProjectionOptions;
 }): Promise<TelegramMonitorFeedRow | null> {
   const users = params.users || listMonitoredUsers();
   const user = users.find((candidate) => candidate.id === params.state.userId);
@@ -331,7 +321,7 @@ export async function projectTelegramMonitorTxState(params: {
     trackedAddress: params.state.trackedWalletAddress,
     monitorReconciliationStatus: params.state.reconciliationStatus,
     monitorReconciledSource: params.state.reconciledSource || 'xxyy',
-  });
+  }, params.projectionOptions);
 }
 
 export async function readTelegramMonitorFeed(limit = 200): Promise<TelegramMonitorFeedRow[]> {

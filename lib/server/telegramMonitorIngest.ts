@@ -509,6 +509,7 @@ export async function ingestTelegramMonitorUpdate(
     ? await projectTelegramMonitorTxState({
         state: txState,
         users: [trackedMatch.user],
+        projectionOptions: { resolveTradeAmountUsdAtTx: false },
       })
     : await projectTelegramMonitorEvent({
         event: {
@@ -535,6 +536,7 @@ export async function ingestTelegramMonitorUpdate(
           updatedAt: Date.now(),
         },
         users: [trackedMatch.user],
+        projectionOptions: { resolveTradeAmountUsdAtTx: false },
       });
 
   const scoredProjected = projected ? scoreFeedRowsAgainstDatabase([projected])[0] || null : null;
