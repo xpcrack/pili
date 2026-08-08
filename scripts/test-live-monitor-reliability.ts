@@ -202,6 +202,43 @@ async function testDoorbellClaimLimitIsConfigurable() {
   assert.equal(observedLimit, 2, 'live monitor should pass the configured small claim limit to SQLite');
 }
 
+async function testAlchemyInboxFailureDoesNotBlockDoorbells() {
+  const wallet = '0xabc0000000000000000000000000000000000004';
+  const user = makeUser('inbox-failure-user', wallet);
+  let fetched = false;
+  const acked: string[] = [];
+
+  const result = await runLiveMonitorCycle({
+    listUsers: () => [user],
+    env: {
+      PILI_LIVE_SOURCE: 'alchemy',
+      PILI_ALCHEMY_INBOX_URL: 'https://example.invalid/inbox',
+      PILI_ALCHEMY_PULL_TOKEN: 'token',
+      PILI_LIVE_CYCLE_MS: '1',
+    },
+    now: () => Date.now() + 10 * 60_000,
+    pullInbox: async () => {
+      fetched = true;
+      throw new Error('inbox unavailable');
+    },
+    claimDoorbells: () => [makeDoorbell(wallet, 'inbox-failure-user')],
+    fetchActivity: async () => activityResponse,
+    upsertTrades: () => ({ upserted: 0 }),
+    ackDoorbells: (claims) => {
+      acked.push(...claims.map((claim) => claim.walletLower));
+      return claims.length;
+    },
+    nackDoorbells: () => 0,
+    enqueueHoldingsRefresh: () => ({ enqueued: true, key: 'base:inbox-failure' }),
+    gmgnCooldownRemainingMs: () => 0,
+  });
+
+  assert.equal(fetched, true);
+  assert.deepEqual(acked, [wallet.toLowerCase()], 'XXYY doorbell should still be acked after inbox failure');
+  assert.equal(result.summary.xxyyDoorbells, 1);
+  assert.match(result.lastError || '', /inbox unavailable/);
+}
+
 function testHoldingsYieldToPendingLiveFeed() {
   assert.equal(shouldDeferHoldingsRefreshForLiveFeed(0), false);
   assert.equal(shouldDeferHoldingsRefreshForLiveFeed(1), true);
@@ -212,6 +249,7 @@ async function run() {
   await testFastWalletCommitsBeforeSlowWalletFinishes();
   await testSlowWalletTimesOutAndNacks();
   await testDoorbellClaimLimitIsConfigurable();
+  await testAlchemyInboxFailureDoesNotBlockDoorbells();
   testHoldingsYieldToPendingLiveFeed();
   console.log('live-monitor reliability tests: ok');
 }

@@ -171,6 +171,14 @@ export function upsertLiveMonitorTrades(params: {
   /** Bulk history backfill: skip per-row importance DB scans. */
   skipImportanceScore?: boolean;
   /**
+   * Compute the exact position ratio synchronously from the full events
+   * history. Keep this off for realtime ingest: a large events table can turn
+   * one doorbell into a multi-second synchronous SQLite scan and block the
+   * worker before it can ack the queue. The scheduled position-delta pass
+   * fills the authoritative ratio shortly afterwards.
+   */
+  resolvePositionDelta?: boolean;
+  /**
    * Fast path for history backfill: plain INSERT OR REPLACE into events.
    * Skips conflict detection / logical rekey / telegram payload enrichment.
    * Safe for filling missing live-monitor rows; live realtime should use default path.
@@ -192,7 +200,7 @@ export function upsertLiveMonitorTrades(params: {
       user: params.user,
       trade,
       skipImportanceScore: params.skipImportanceScore,
-      resolvePositionDelta: true,
+      resolvePositionDelta: params.resolvePositionDelta === true,
     }),
   }));
   upsertEventsFromFeedRows(rows, LIVE_MONITOR_INGEST_SOURCE);
