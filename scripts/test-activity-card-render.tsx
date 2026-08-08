@@ -91,6 +91,11 @@ function makeTranslatedTwitterActivity(): Activity {
   };
 }
 
+function assertFeedSourceRail(markup: string, color: string, label: string) {
+  assert.match(markup, /data-feed-source-rail/, label + ' should render a source rail');
+  assert.match(markup, new RegExp('background-color:' + color), label + ' should render the ' + color + ' source rail');
+}
+
 function run() {
   const markup = renderToStaticMarkup(
     <ActivityCard
@@ -105,6 +110,7 @@ function run() {
   assert.match(markup, /DRAM is now live\. 20x leverage, 24\/7, 365\./, 'activity card should render the quoted tweet content');
   assert.match(markup, /data-social-row/, 'twitter cards should use compact social row layout');
   assert.match(markup, />引用</, 'twitter quote kind badge should render');
+  assertFeedSourceRail(markup, '#1D9BF0', 'twitter cards');
 
   const translatedMarkup = renderToStaticMarkup(
     <ActivityCard
@@ -173,6 +179,7 @@ function run() {
   assert.match(transferMarkup, />发送</, 'transfer action pill should render');
   assert.match(transferMarkup, /USDC/, 'transfer token symbol should render');
   assert.doesNotMatch(transferMarkup, /data-trade-row/, 'pure send should not use trade row');
+  assertFeedSourceRail(transferMarkup, '#9945FF', 'solana transfer cards');
 
   console.log('activity card render tests: ok');
 }
