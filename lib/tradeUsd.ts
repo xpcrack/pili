@@ -63,6 +63,33 @@ function roundUsd(value: number) {
   return Math.round(value * 1_000_000) / 1_000_000;
 }
 
+/**
+ * Resolve the USD amount using only fields already present in the source
+ * message. This is safe for latency-sensitive ingest because it never calls
+ * an external price service.
+ */
+export function resolveTradeAmountUsdAtTxSync(params: ResolveTradeAmountUsdAtTxParams) {
+  const quoteTokenSymbol = normalizeSymbol(params.quoteToken);
+  const tokenSymbol = normalizeSymbol(params.token);
+  const quoteAmount = parsePositiveFiniteNumber(params.quoteAmount);
+  const tokenAmount = parsePositiveFiniteNumber(params.value);
+  const explicitPriceUsd = parsePositiveFiniteNumber(params.explicitPriceUsd);
+
+  if (quoteTokenSymbol && quoteAmount !== null && STABLE_SYMBOLS.has(quoteTokenSymbol)) {
+    return roundUsd(quoteAmount);
+  }
+
+  if (tokenSymbol && tokenAmount !== null && STABLE_SYMBOLS.has(tokenSymbol)) {
+    return roundUsd(tokenAmount);
+  }
+
+  if (explicitPriceUsd !== null && tokenAmount !== null) {
+    return roundUsd(tokenAmount * explicitPriceUsd);
+  }
+
+  return null;
+}
+
 export async function resolveTradeAmountUsdAtTx(
   params: ResolveTradeAmountUsdAtTxParams,
   deps: ResolveTradeAmountUsdAtTxDeps = {}

@@ -2,7 +2,7 @@ import 'server-only';
 
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
 import { buildTradeDisplayMetadata } from '@/lib/tradeDisplay';
-import { resolveTradeAmountUsdAtTx } from '@/lib/tradeUsd';
+import { resolveTradeAmountUsdAtTx, resolveTradeAmountUsdAtTxSync } from '@/lib/tradeUsd';
 import type { Activity, User } from '@/types';
 
 type TxActionLabel = NonNullable<Activity['metadata']['txActionLabel']>;
@@ -347,7 +347,26 @@ export function buildActivityFromSnapshotSync(
   params: MonitorActivitySnapshot,
   options?: { tradeAmountUsdAtTx?: number | null }
 ) {
-  return buildActivityFromSnapshotCore(params, options?.tradeAmountUsdAtTx ?? null);
+  const tradeAmountUsdAtTx =
+    options && options.tradeAmountUsdAtTx !== undefined
+      ? options.tradeAmountUsdAtTx
+      : resolveTradeAmountUsdAtTxSync({
+          chain: params.chain,
+          txTimestampMs: params.eventTimeMs,
+          token: params.tokenSymbol,
+          value:
+            typeof params.tokenAmount === 'number' && Number.isFinite(params.tokenAmount)
+              ? String(params.tokenAmount)
+              : null,
+          quoteToken: params.quoteSymbol,
+          quoteAmount:
+            typeof params.quoteAmount === 'number' && Number.isFinite(params.quoteAmount)
+              ? String(params.quoteAmount)
+              : null,
+          explicitPriceUsd: params.explicitPriceUsd,
+        });
+
+  return buildActivityFromSnapshotCore(params, tradeAmountUsdAtTx);
 }
 
 function hasUsableProvisionalTradeToken(state: MonitorCanonicalRepairState) {

@@ -1,7 +1,10 @@
 import 'server-only';
 
 import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
-import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
+import {
+  upsertEventsFromFeedRows,
+  upsertTelegramMonitorProvisionalEventFast,
+} from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
 import { consumeIngestAlertQuota } from '@/lib/server/ingestAlertRepo';
 import { projectTelegramMonitorEvent, projectTelegramMonitorTxState } from '@/lib/server/telegramMonitorFeed';
@@ -539,7 +542,12 @@ export async function ingestTelegramMonitorUpdate(
         projectionOptions: { resolveTradeAmountUsdAtTx: false },
       });
 
-  const scoredProjected = projected ? scoreFeedRowsAgainstDatabase([projected])[0] || null : null;
+  const scoredProjected =
+    projected && xxyyFeedMode === 'doorbell'
+      ? projected
+      : projected
+        ? scoreFeedRowsAgainstDatabase([projected])[0] || null
+        : null;
 
   if (scoredProjected && txState) {
     withSqliteBusyRetry(() => setTelegramMonitorTxStateCanonicalActivity({
@@ -561,10 +569,17 @@ export async function ingestTelegramMonitorUpdate(
   }
 
   if (scoredProjected) {
-    withSqliteBusyRetry(
-      () => upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest'),
-      { attempts: 3, label: 'telegram-doorbell-feed-upsert' }
-    );
+    if (xxyyFeedMode === 'doorbell') {
+      withSqliteBusyRetry(
+        () => upsertTelegramMonitorProvisionalEventFast(scoredProjected),
+        { attempts: 3, label: 'telegram-doorbell-fast-feed-upsert' }
+      );
+    } else {
+      withSqliteBusyRetry(
+        () => upsertEventsFromFeedRows([scoredProjected], 'telegram-monitor-ingest'),
+        { attempts: 3, label: 'telegram-doorbell-feed-upsert' }
+      );
+    }
     const tweetUrls = xxyyFeedMode === 'project'
       ? messageLinks.filter((item) => Boolean(parseTweetIdFromUrl(item)))
       : [];
