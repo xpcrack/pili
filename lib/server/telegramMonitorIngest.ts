@@ -32,6 +32,15 @@ import {
 } from '@/lib/server/twitterLinkRefs';
 import { isEvmChain } from '@/lib/addressBook';
 import { withSqliteBusyRetry } from '@/lib/server/sqlite';
+import {
+  collectTelegramMessageLinks,
+  extractTelegramMessage,
+  extractTelegramMessageText,
+  type TelegramMessageLike,
+  type TelegramUpdateLike,
+} from '@/lib/server/telegramMonitorUpdateHelpers';
+
+export type { TelegramMessageLike, TelegramUpdateLike } from '@/lib/server/telegramMonitorUpdateHelpers';
 
 function getMonitorAuthConfig() {
   const relayToken = process.env.TELEGRAM_MONITOR_INGEST_TOKEN?.trim() || '';
@@ -76,47 +85,6 @@ export function authorizeTelegramMonitorHeaders(headers: Headers) {
   };
 }
 
-interface TelegramMessageEntityLike {
-  type?: string;
-  url?: string;
-}
-
-interface TelegramInlineKeyboardButtonLike {
-  text?: string;
-  url?: string;
-}
-
-export interface TelegramMessageLike {
-  message_id?: number;
-  date?: number;
-  chat?: {
-    id?: number | string;
-  };
-  text?: string;
-  caption?: string;
-  entities?: TelegramMessageEntityLike[];
-  caption_entities?: TelegramMessageEntityLike[];
-  reply_markup?: {
-    inline_keyboard?: TelegramInlineKeyboardButtonLike[][];
-  };
-}
-
-export interface TelegramUpdateLike {
-  update_id?: number;
-  message?: TelegramMessageLike;
-  channel_post?: TelegramMessageLike;
-  edited_message?: TelegramMessageLike;
-  edited_channel_post?: TelegramMessageLike;
-}
-
-function extractMessage(update: TelegramUpdateLike) {
-  if (update.message) return update.message;
-  if (update.channel_post) return update.channel_post;
-  if (update.edited_message) return update.edited_message;
-  if (update.edited_channel_post) return update.edited_channel_post;
-  return null;
-}
-
 const INGEST_ALERT_WINDOW_MS = 5 * 60 * 1000;
 
 async function notifyIngestFormatIssue(params: {
@@ -147,27 +115,6 @@ async function notifyIngestFormatIssue(params: {
   ].join('\n');
 
   await sendTelegramTextMessage({ chatId, text });
-}
-
-function collectMessageLinks(message: TelegramMessageLike) {
-  const links = new Set<string>();
-  const entities = [...(message.entities || []), ...(message.caption_entities || [])];
-
-  for (const entity of entities) {
-    if (entity.type === 'text_link' && typeof entity.url === 'string' && entity.url.trim()) {
-      links.add(entity.url.trim());
-    }
-  }
-
-  for (const row of message.reply_markup?.inline_keyboard || []) {
-    for (const button of row || []) {
-      if (typeof button?.url === 'string' && button.url.trim()) {
-        links.add(button.url.trim());
-      }
-    }
-  }
-
-  return Array.from(links);
 }
 
 function isFeedCompatibleEvmChain(chain: string | null | undefined) {
@@ -263,15 +210,12 @@ export async function ingestTelegramMonitorUpdate(
   body: TelegramUpdateLike,
   channelType?: 'news' | 'social',
 ) {
-  const message = extractMessage(body);
+  const message = extractTelegramMessage(body);
   if (!message) {
     return { ok: true, ignored: true, reason: 'no-message' as const };
   }
 
-  const text =
-    (typeof message.text === 'string' && message.text.trim()) ||
-    (typeof message.caption === 'string' && message.caption.trim()) ||
-    '';
+  const text = extractTelegramMessageText(message);
 
   if (!text) {
     return { ok: true, ignored: true, reason: 'empty-text' as const };
@@ -296,7 +240,7 @@ export async function ingestTelegramMonitorUpdate(
     return { ok: true, ignored: true, reason: 'chat-not-allowed' as const };
   }
 
-  const messageLinks = collectMessageLinks(message);
+  const messageLinks = collectTelegramMessageLinks(message);
   const parsed = parseXxyyTelegramText(
     text,
     typeof message.date === 'number' ? message.date * 1000 : Date.now(),
