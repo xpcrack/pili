@@ -15,9 +15,12 @@ import { join } from 'node:path';
 
 import {
   acquireGmgnGlobalToken,
+  gmgnAccountBucketKey,
   assertGmgnAllowed,
+  assertGmgnEgressAllowed,
   isGmgnBanMessage,
   noteGmgnBan,
+  noteGmgnEgressBan,
   noteGmgnError,
 } from '@/lib/server/gmgnRateLimit';
 import { recordGmgnRequest } from '@/lib/server/gmgnMetrics';
@@ -27,6 +30,15 @@ import { ProxyAgent, fetch as undiciFetch } from 'undici';
 const DEFAULT_HOST = 'https://openapi.gmgn.ai';
 const DEFAULT_PROXY = 'http://127.0.0.1:7897';
 const USER_AGENT = 'pili-gmgn-openapi/1.0';
+
+function gmgnRequestWeight(subPath: string): number {
+  if (/\/v1\/user\/wallet_holdings$/.test(subPath)) return 5;
+  if (/\/v1\/user\/(wallet_stats|wallet_activity)$/.test(subPath)) return 3;
+  if (/\/v1\/user\/created_tokens$/.test(subPath)) return 2;
+  if (/\/v1\/market\/(token_top_holders|token_top_traders)$/.test(subPath)) return 5;
+  if (/\/v1\/market\/token_kline$/.test(subPath)) return 2;
+  return 1;
+}
 
 /** 加载 key → 独立代理端口映射（signed/unsigned 路由按 key 选出口 IP）。与 newone gmgn-client.ts 相同。 */
 export function loadProxyByKey(): Record<string, string> {
@@ -566,18 +578,22 @@ export class GmgnOpenApiClient {
       throw e;
     }
     const key = await this.pool.acquire(opts.signed ? { signed: true } : {});
-    // Pick the key before taking a token so each configured proxy endpoint
-    // gets its own cross-process bucket instead of all keys sharing one quota.
+    // Key selection fixes the public egress; all processes on that proxy share
+    // the same weighted bucket and scoped cooldown.
     const effectiveProxy = this.proxyByKey[key] ?? null;
+    const accountBucket = gmgnAccountBucketKey(key);
     try {
-      // signed 路由（wallet_holdings 等）多 key 轮询，按 3 倍加权扣令牌，
-      // 与 newone 对齐（否则 pili 发 signed 请求比 newone 快 3 倍 → 打爆单 IP →
-      // ban 死循环：冷却 60s 一到期队列积压立刻重打 → 再 ban）。
+      if (effectiveProxy) assertGmgnEgressAllowed(effectiveProxy);
+      if (accountBucket) assertGmgnEgressAllowed(accountBucket);
+      const requestWeight = gmgnRequestWeight(subPath);
       await acquireGmgnGlobalToken(
-        opts.signed ? 3 : 1,
+        requestWeight,
         opts.signal,
-        effectiveProxy ?? 'default',
+        effectiveProxy ?? undefined,
       );
+      if (accountBucket) {
+        await acquireGmgnGlobalToken(requestWeight * 10, opts.signal, accountBucket);
+      }
     } catch (error) {
       this.pool.markError(key);
       throw error;
@@ -685,7 +701,20 @@ export class GmgnOpenApiClient {
           /IP is temporarily banned/i.test(msg)
         ) {
           recordGmgnRequest({ ok: false, status: 429, path: subPath, error: 'rate-limit-banned' });
-          noteGmgnBan(reset ? `${msg} reset_at=${reset}` : msg);
+          const reason = reset ? `${msg} reset_at=${reset}` : msg;
+          if (effectiveProxy) noteGmgnEgressBan(reason, effectiveProxy, Date.now(), reset);
+          else noteGmgnBan(reason, Date.now(), reset);
+          if (accountBucket) {
+            // reset_at described the short response window in the 2026-08-08
+            // recovery test, but sibling keys on the same account were still
+            // immediately hard-banned afterwards. Quarantine the account for
+            // at least sixty minutes so background jobs do not probe it.
+            const accountReset = Math.max(
+              reset ?? 0,
+              Math.floor(Date.now() / 1000) + 3600,
+            );
+            noteGmgnEgressBan(reason, accountBucket, Date.now(), accountReset);
+          }
           markRateLimit(
             reset ? Math.max(5, reset - Math.floor(Date.now() / 1000)) : undefined
           );

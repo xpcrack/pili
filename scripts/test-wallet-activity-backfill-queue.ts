@@ -46,9 +46,9 @@ async function main() {
         rawCount: 3,
         tradeCount: 2,
         upserted: 2,
-        chainsOk: ['base'],
+        chainsOk: ['eth', 'bsc', 'base', 'robinhood'],
         chainsFailed: [],
-      chainsTruncated: [],
+        chainsTruncated: [],
         stoppedOnBan: false,
       };
     },
@@ -85,6 +85,69 @@ async function main() {
   assert.equal(marks.length, 1);
   assert.equal(marks[0].kind, 'ok');
   assert.equal(marks[0].days, 14);
+
+  // Explicit operator work runs before older rolling-maintenance entries.
+  const priorityCalls: string[] = [];
+  const priorityUser = makeUser();
+  priorityUser.addresses.push({
+    address: '0x1111111111111111111111111111111111111111',
+    name: '',
+    chain: 'base',
+    totalAssetUsd: null,
+    assetUpdatedAt: null,
+  });
+  const priorityQueue = createWalletActivityBackfillQueue({
+    memoryOnly: true,
+    now: () => 100,
+    listUsers: () => [priorityUser],
+    backfill: async (params) => {
+      priorityCalls.push(params.address);
+      return {
+        address: params.address,
+        rawCount: 0,
+        tradeCount: 0,
+        upserted: 0,
+        chainsOk: ['eth', 'bsc', 'base', 'robinhood'],
+        chainsFailed: [],
+        chainsTruncated: [],
+        stoppedOnBan: false,
+      };
+    },
+    markOk: () => {},
+    markFail: () => {},
+    log: () => {},
+  });
+  priorityQueue.enqueue({ address: priorityUser.addresses[0]!.address });
+  priorityQueue.enqueue({ address: priorityUser.addresses[1]!.address, priority: true });
+  await priorityQueue.drain({ maxJobs: 1 });
+  assert.equal(priorityCalls[0], priorityUser.addresses[1]!.address);
+  assert.equal(priorityQueue.removeMany([priorityUser.addresses[0]!.address]).removed, 1);
+  assert.equal(priorityQueue.pendingCount(), 0);
+
+  // Any failed or truncated inferred chain is incomplete and must re-queue.
+  const partialQueue = createWalletActivityBackfillQueue({
+    memoryOnly: true,
+    debounceMs: 0,
+    listUsers: () => [makeUser()],
+    backfill: async () => ({
+      address: '0x57841A6640bf42d4F2aA7D87308db3c962C3945C',
+      rawCount: 100,
+      tradeCount: 90,
+      upserted: 90,
+      chainsOk: ['eth', 'bsc', 'base', 'robinhood'],
+      chainsFailed: [],
+      chainsTruncated: [{ chain: 'base', error: 'max-pages-exhausted:40' }],
+      stoppedOnBan: false,
+    }),
+    markOk: (input) => marks.push({ kind: 'ok', address: input.address }),
+    markFail: (input) => marks.push({ kind: 'fail', address: input.address, error: input.error }),
+    log: () => {},
+  });
+  marks.length = 0;
+  partialQueue.enqueue({ address: '0x57841A6640bf42d4F2aA7D87308db3c962C3945C' });
+  const partialDrain = await partialQueue.drain({ maxJobs: 1 });
+  assert.equal(partialDrain.remaining, 1);
+  assert.equal(marks[0]?.kind, 'fail');
 
   // ban path marks fail and re-queues
   const banQueue = createWalletActivityBackfillQueue({

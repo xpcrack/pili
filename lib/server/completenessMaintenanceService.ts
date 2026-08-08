@@ -245,6 +245,7 @@ export function createCompletenessMaintenanceService(deps: CompletenessMaintenan
 
       const leaseAcquired = await deps.acquireLease();
       if (!leaseAcquired) {
+        const nowMs = deps.now ? deps.now() : Date.now();
         const globalState = (await deps.readGlobalState()) ?? createDefaultGlobalState();
         const currentSourceStates = mergeSourceStates(await deps.readSourceStates());
         const configuredStartMs = normalizeTimestamp(globalState.configuredStartMs);

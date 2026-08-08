@@ -7,10 +7,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  acquireGmgnGlobalToken,
   assertGmgnAllowed,
   isGmgnBanMessage,
   noteGmgnBan,
+  noteGmgnEgressBan,
   noteGmgnError,
 } from '@/lib/server/gmgnRateLimit';
 
@@ -107,7 +107,9 @@ function noteFailureFromOutput(stderr: string, stdout: string) {
   const msg = `${stderr}\n${stdout}`.trim();
   if (!msg) return;
   if (isGmgnBanMessage(msg)) {
-    noteGmgnBan(msg);
+    const scoped = msg.match(/GMGN_EGRESS_BANNED proxy=(https?:\/\/\S+)/i)?.[1];
+    if (scoped) noteGmgnEgressBan(msg, scoped);
+    else noteGmgnBan(msg);
   } else {
     noteGmgnError(msg);
   }
@@ -119,33 +121,10 @@ export async function runGmgnCliAsync(opts: {
   signal?: AbortSignal;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
-  /** 全局桶令牌成本：signed 路由（portfolio/holdings/swap）传 3，其余默认 1。
-   *  与 newone 对齐——signed 固定单 key+单 IP，3 倍加权防打爆 ban 死循环。 */
+  /** @deprecated The guarded wrapper derives the documented route weight. */
   cost?: number;
 }): Promise<string> {
   assertGmgnAllowed();
-  const tokenController = new AbortController();
-  const forwardAbort = () => tokenController.abort();
-  if (opts.signal) {
-    if (opts.signal.aborted) throw new Error('gmgn-cli aborted');
-    opts.signal.addEventListener('abort', forwardAbort, { once: true });
-  }
-  const tokenTimer =
-    opts.timeoutMs && opts.timeoutMs > 0
-      ? setTimeout(() => tokenController.abort(), opts.timeoutMs)
-      : null;
-  try {
-    await acquireGmgnGlobalToken(opts.cost, tokenController.signal);
-  } catch (error) {
-    if (tokenTimer) clearTimeout(tokenTimer);
-    opts.signal?.removeEventListener('abort', forwardAbort);
-    if (tokenController.signal.aborted && !opts.signal?.aborted && opts.timeoutMs && opts.timeoutMs > 0) {
-      throw new Error(`gmgn-cli timed out after ${opts.timeoutMs}ms`);
-    }
-    throw error;
-  }
-  if (tokenTimer) clearTimeout(tokenTimer);
-  opts.signal?.removeEventListener('abort', forwardAbort);
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);
 

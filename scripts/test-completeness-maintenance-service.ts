@@ -331,10 +331,10 @@ async function testReadsStateOnlyAfterLeaseIsAcquired() {
   let leaseAcquired = false;
   const globalState = makeGlobalState({ configuredStartMs: 1711000000000, activeRunId: 77 });
   const sourceStates = [
-    makeSourceState('blockchain', { status: 'complete', provenStartMs: 1710500000000 }),
-    makeSourceState('twitter', { status: 'complete', provenStartMs: 1710400000000 }),
-    makeSourceState('telegram-bridge', { status: 'complete', provenStartMs: 1710300000000 }),
-    makeSourceState('telegram-channel', { status: 'complete', provenStartMs: 1710200000000 }),
+    makeSourceState('blockchain', { status: 'complete', provenStartMs: 1710500000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('twitter', { status: 'complete', provenStartMs: 1710400000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('telegram-bridge', { status: 'complete', provenStartMs: 1710300000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('telegram-channel', { status: 'complete', provenStartMs: 1710200000000, provenEndMs: FIXED_NOW_MS }),
   ];
   const logs: SyncLogInput[] = [];
 
@@ -476,10 +476,10 @@ async function testBusyLeaseReturnsPersistedStateAndRunId() {
     activeRunId: 999,
   });
   const sourceStates = [
-    makeSourceState('blockchain', { status: 'complete', provenStartMs: 1710500000000 }),
-    makeSourceState('twitter', { status: 'complete', provenStartMs: 1710400000000 }),
-    makeSourceState('telegram-bridge', { status: 'complete', provenStartMs: 1710300000000 }),
-    makeSourceState('telegram-channel', { status: 'complete', provenStartMs: 1710200000000 }),
+    makeSourceState('blockchain', { status: 'complete', provenStartMs: 1710500000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('twitter', { status: 'complete', provenStartMs: 1710400000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('telegram-bridge', { status: 'complete', provenStartMs: 1710300000000, provenEndMs: FIXED_NOW_MS }),
+    makeSourceState('telegram-channel', { status: 'complete', provenStartMs: 1710200000000, provenEndMs: FIXED_NOW_MS }),
   ];
 
   const service = createCompletenessMaintenanceService({

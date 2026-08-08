@@ -15,7 +15,6 @@ import {
   assertGmgnAllowed,
   isGmgnBanMessage,
   isGmgnRateLimitMessage,
-  noteGmgnBan,
 } from '@/lib/server/gmgnRateLimit';
 import { upsertLiveMonitorTrades } from '@/lib/server/liveMonitorIngest';
 import { isSqliteBusyError } from '@/lib/server/sqlite';
@@ -73,8 +72,10 @@ export async function fetchWalletActivitySince(
   params: FetchWalletActivitySinceParams
 ): Promise<FetchWalletActivitySinceResult> {
   const pageLimit = params.pageLimit ?? 100;
-  // 80→40：削单地址突发（L2 全局令牌桶已兜底聚合 qps，此处双保险）
-  const maxPages = params.maxPages ?? 40;
+  // Completeness must cover very active wallets too. The shared egress/account
+  // buckets control request rate; this cap is only a runaway guard. A 40-page
+  // cap truncated >4k-event wallets before reaching the 14-day boundary.
+  const maxPages = params.maxPages ?? 200;
   const sleepMs = params.sleepMs ?? DEFAULT_PAGE_SLEEP_MS;
   const pageAttempts = Math.max(1, params.pageAttempts ?? DEFAULT_PAGE_ATTEMPTS);
   const allItems: Awaited<ReturnType<typeof fetchGmgnWalletActivityAsync>>['items'] = [];
@@ -142,6 +143,13 @@ export async function fetchWalletActivitySince(
       if (ts > 0 && ts < oldest) oldest = ts;
     }
     if (Number.isFinite(oldest) && oldest <= params.afterTsSec) break;
+    if (pages >= maxPages) {
+      // A live cursor after the configured cap means the requested history is
+      // not proven complete. Persist fetched pages, but do not mark coverage.
+      truncated = true;
+      lastError = `max-pages-exhausted:${maxPages}`;
+      break;
+    }
     cursor = page.next;
     if (sleepMs > 0) {
       await new Promise((r) => setTimeout(r, sleepMs));
@@ -210,6 +218,8 @@ export type BackfillWalletTimelineResult = {
 export async function backfillWalletTimeline(params: {
   user: User;
   address: string;
+  /** Optional subset for targeted retries after another egress failed. */
+  chains?: string[];
   days?: number;
   sinceMs?: number;
   pageLimit?: number;
@@ -227,7 +237,7 @@ export async function backfillWalletTimeline(params: {
       ? params.sinceMs
       : Date.now() - days * 24 * 60 * 60 * 1000;
   const afterTsSec = Math.floor(sinceMs / 1000);
-  const chains = inferChainsForAddress(address);
+  const chains = params.chains?.length ? [...new Set(params.chains)] : inferChainsForAddress(address);
   const trades: NormalizedLiveTrade[] = [];
   let rawCount = 0;
   const chainsOk: string[] = [];
@@ -235,14 +245,12 @@ export async function backfillWalletTimeline(params: {
   const chainsTruncated: Array<{ chain: string; error: string }> = [];
   let stoppedOnBan = false;
 
-  // Parallel per-chain. Default 2, not 4: GMGN openapi rate-limits hard at ~2
-  // concurrent, and the old 4-way fan-out is what dropped 2 of 4 EVM chains on
-  // rop's first backfill. Raise via PILI_WALLET_TIMELINE_CHAIN_PARALLEL only if
-  // the key pool grows.
-  const chainParallelEnv = Number(process.env.PILI_WALLET_TIMELINE_CHAIN_PARALLEL || 2);
+  // Completeness favors proof over speed. Default to one chain at a time; the
+  // egress-scoped shared bucket remains authoritative across wallets/processes.
+  const chainParallelEnv = Number(process.env.PILI_WALLET_TIMELINE_CHAIN_PARALLEL || 1);
   const chainParallel = Number.isFinite(chainParallelEnv)
     ? Math.max(1, Math.min(chains.length, Math.floor(chainParallelEnv)))
-    : Math.min(4, chains.length);
+    : 1;
 
   const runOneChain = async (chain: string) => {
     try {
@@ -292,7 +300,6 @@ export async function backfillWalletTimeline(params: {
       } else {
         chainsFailed.push({ chain: result.chain, error: result.error || 'unknown' });
         if (result.error && (isGmgnBanMessage(result.error) || isGmgnRateLimitMessage(result.error))) {
-          noteGmgnBan(result.error);
           stoppedOnBan = true;
           break;
         }
@@ -324,7 +331,6 @@ export async function backfillWalletTimeline(params: {
       } else {
         chainsFailed.push({ chain: result.chain, error: result.error || 'unknown' });
         if (result.error && (isGmgnBanMessage(result.error) || isGmgnRateLimitMessage(result.error))) {
-          noteGmgnBan(result.error);
           stoppedOnBan = true;
         }
       }

@@ -38,7 +38,11 @@ import { acquireIngestionLease, releaseIngestionLease } from '@/lib/server/twitt
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 import { refreshCurrentHoldings } from '@/lib/server/holdingsRefreshRuntime';
 import { drainWalletActivityBackfillQueue } from '@/lib/server/walletActivityBackfillQueue';
-import { gmgnCooldownRemainingMs } from '@/lib/server/gmgnRateLimit';
+import {
+  gmgnConfiguredAccountBucketKeys,
+  gmgnCooldownRemainingMs,
+  gmgnEgressCooldownRemainingMs,
+} from '@/lib/server/gmgnRateLimit';
 import { sweepStaleWalletTimelines } from '@/lib/server/walletTimelineSweep';
 
 const WORKER_KEY = 'completeness-maintenance';
@@ -57,8 +61,10 @@ const HOLDINGS_REFRESH_INTERVAL_MS = process.env.PILI_HOLDINGS_REFRESH_INTERVAL_
   : 60 * 60_000; // 默认 1 小时
 
 function walletTimelineMaintenanceEnabled() {
-  // Opt-in full-fleet rolling 14d sweep. Default off (too slow / GMGN heavy).
-  return process.env.PILI_WALLET_TIMELINE_MAINTENANCE === '1';
+  // pili is the complete local database for observed wallets. The rolling
+  // activity sweep is therefore on by default; set explicit 0 only for an
+  // operator maintenance window.
+  return process.env.PILI_WALLET_TIMELINE_MAINTENANCE !== '0';
 }
 
 function walletTimelineDrainMaxJobs() {
@@ -71,7 +77,12 @@ async function runWalletTimelineMaintenance() {
   // 冷却守卫：GMGN 冷却期完全不 drain（sweep 也跳过——sweep 只是入队，
   // 入队无请求，但跳过可以避免恢复瞬间队列里攒一批货全速打）。
   // 冷却解除后下一轮循环自然恢复，backfill 翻页自身另有 1.2s 间隔兜底。
-  const coolRemaining = gmgnCooldownRemainingMs();
+  const coolRemaining = Math.max(
+    gmgnCooldownRemainingMs(),
+    ...gmgnConfiguredAccountBucketKeys().map((scope) =>
+      gmgnEgressCooldownRemainingMs(scope)
+    ),
+  );
   if (coolRemaining > 0) {
     console.log(
       `[completeness-worker] wallet-timeline-maintenance skip (GMGN cooldown ${Math.ceil(coolRemaining / 1000)}s)`

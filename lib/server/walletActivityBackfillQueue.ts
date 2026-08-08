@@ -12,6 +12,7 @@ import {
   DEFAULT_TIMELINE_DAYS,
   type BackfillWalletTimelineResult,
 } from '@/lib/server/walletActivityBackfill';
+import { inferChainsForAddress } from '@/lib/server/gmgnWalletActivity';
 import {
   markWalletTimelineFail,
   markWalletTimelineOk,
@@ -26,6 +27,8 @@ export type EnqueueWalletActivityBackfillInput = {
   userId?: string | null;
   days?: number;
   reason?: string;
+  /** Put operator-requested work ahead of the rolling stale sweep. */
+  priority?: boolean;
 };
 
 type QueueItem = {
@@ -148,7 +151,7 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
       userId: input.userId ? String(input.userId) : null,
       days: input.days ?? DEFAULT_TIMELINE_DAYS,
       reason: input.reason || 'enqueue',
-      enqueuedAt: now(),
+      enqueuedAt: input.priority ? 0 : now(),
     };
     pending.set(key, item);
     persist();
@@ -162,6 +165,15 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
       if (enqueue(input).enqueued) n += 1;
     }
     return { enqueued: n };
+  }
+
+  function removeMany(addresses: string[]) {
+    let removed = 0;
+    for (const address of addresses) {
+      if (pending.delete(addressKey(address))) removed += 1;
+    }
+    if (removed > 0) persist();
+    return { removed };
   }
 
   async function drain(opts?: { maxJobs?: number }): Promise<{
@@ -220,17 +232,25 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
             });
             return { kind: 'ban' as const, next, result };
           }
-          if (result.chainsOk.length > 0) {
+          const expectedChains = inferChainsForAddress(next.address);
+          const complete =
+            result.chainsFailed.length === 0 &&
+            result.chainsTruncated.length === 0 &&
+            expectedChains.every((chain) => result.chainsOk.includes(chain));
+          if (complete) {
             markOk({
               address: next.address,
               windowDays: next.days,
+              chains: result.chainsOk,
               at: now(),
             });
             return { kind: 'ok' as const, next, result };
           }
           const err =
-            result.chainsFailed.map((c) => `${c.chain}:${c.error}`).join(';') ||
-            'all_chains_failed';
+            [
+              ...result.chainsFailed.map((c) => `${c.chain}:${c.error}`),
+              ...result.chainsTruncated.map((c) => `${c.chain}:${c.error}`),
+            ].join(';') || 'incomplete-chain-coverage';
           markFail({ address: next.address, error: err, at: now() });
           return { kind: 'fail' as const, next, result, error: err };
         } catch (error) {
@@ -297,6 +317,7 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
   return {
     enqueue,
     enqueueMany,
+    removeMany,
     drain,
     pendingCount,
     peek,

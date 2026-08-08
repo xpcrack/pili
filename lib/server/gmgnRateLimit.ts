@@ -147,6 +147,38 @@ function readFileCooldownState(): { untilMs: number; consecutiveBans?: number; l
   }
 }
 
+type CooldownState = ReturnType<typeof readFileCooldownState>;
+
+function scopedFile(root: string, scopeKey: string): string {
+  const digest = createHash('sha256').update(scopeKey).digest('hex').slice(0, 16);
+  return root.replace(/\.json$/i, `.${digest}.json`);
+}
+
+function egressCooldownFile(scopeKey: string): string {
+  return scopedFile(COOLDOWN_FILE, scopeKey);
+}
+
+function readEgressCooldownState(scopeKey: string): CooldownState {
+  try {
+    const file = egressCooldownFile(scopeKey);
+    if (!existsSync(file)) return { untilMs: 0 };
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as CooldownState;
+    return { ...raw, untilMs: Number(raw.untilMs) || 0 };
+  } catch {
+    return { untilMs: 0 };
+  }
+}
+
+function writeEgressCooldownState(scopeKey: string, state: CooldownState): void {
+  try {
+    const file = egressCooldownFile(scopeKey);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(state, null, 2), 'utf8');
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function writeFileUntilMs(untilMs: number) {
   try {
     mkdirSync(dirname(COOLDOWN_FILE), { recursive: true });
@@ -287,7 +319,9 @@ export function noteGmgnBan(msg: string, nowMs = Date.now(), resetAtUnix?: numbe
 
 export function noteGmgnError(msg: string, nowMs = Date.now()): void {
   if (isGmgnBanMessage(msg)) {
-    noteGmgnBan(msg, nowMs);
+    // The guarded client records the fixed egress. Do not duplicate that hard
+    // ban into the machine-wide root cooldown from an outer catch block.
+    return;
   }
   // bare 429 without ban → do not lock whole process
 }
@@ -301,17 +335,86 @@ export function assertGmgnAllowed(nowMs = Date.now()): void {
   }
 }
 
+export function gmgnEgressCooldownRemainingMs(scopeKey: string, nowMs = Date.now()): number {
+  return Math.max(0, readEgressCooldownState(scopeKey).untilMs - nowMs);
+}
+
+export function assertGmgnEgressAllowed(scopeKey: string, nowMs = Date.now()): void {
+  const left = gmgnEgressCooldownRemainingMs(scopeKey, nowMs);
+  if (left > 0) {
+    throw new Error(`GMGN_COOLDOWN ${Math.ceil(left / 1000)}s remaining on fixed egress`);
+  }
+}
+
+export function noteGmgnEgressBan(
+  msg: string,
+  scopeKey: string,
+  nowMs = Date.now(),
+  resetAtUnix?: number | null,
+): number {
+  if (/^GMGN_COOLDOWN/i.test(msg)) return readEgressCooldownState(scopeKey).untilMs;
+  const prior = readEgressCooldownState(scopeKey);
+  const prevConsecutive = Math.max(0, Number(prior.consecutiveBans || 0));
+  const recentBan = Number(prior.untilMs || 0) > nowMs - 5 * 60_000;
+  const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
+  let untilMs = nowMs + GMGN_BAN_COOLDOWN_MS;
+  if (resetAtUnix != null && Number.isFinite(resetAtUnix) && resetAtUnix > 1e9) {
+    untilMs = Math.max(untilMs, (resetAtUnix > 1e12 ? resetAtUnix : resetAtUnix * 1000) + 5_000);
+  }
+  const match = msg.match(/reset_at[=:\s]+(\d{10,13})/i);
+  if (match) {
+    let resetMs = Number(match[1]);
+    if (resetMs < 1e12) resetMs *= 1000;
+    if (Number.isFinite(resetMs)) untilMs = Math.max(untilMs, resetMs + 5_000);
+  }
+  writeEgressCooldownState(scopeKey, {
+    untilMs,
+    consecutiveBans,
+    lastBanAt: new Date(nowMs).toISOString(),
+    lastReason: msg.slice(0, 500),
+    source: 'pili',
+    state: 'open',
+  });
+  return untilMs;
+}
+
 // ============================================================================
 // Cross-process global rate limit (file token bucket) — preventive.
 // pilipili / newone / wrapper share the same bucket-file protocol. Requests
-// using different configured proxy endpoints get isolated buckets; callers
-// without a proxy identity keep the legacy shared bucket.
-//   bucket: ~/.config/gmgn/global-bucket[.<proxy-hash>].json = { tokens, lastMs }
+// Each fixed public egress has one cross-process bucket. Unknown/default
+// traffic uses the root bucket; API keys never get private quota.
+//   bucket: ~/.config/gmgn/global-bucket[.<egress-hash>].json
 //   mutex:  same path + .lock (lockdir; macOS 无 flock)
 // ============================================================================
 
 const GLOBAL_BUCKET_ROOT_FILE =
   process.env.GMGN_GLOBAL_BUCKET_FILE?.trim() || join(homedir(), '.config', 'gmgn', 'global-bucket.json');
+const KEY_ACCOUNT_FILE =
+  process.env.GMGN_KEYS_TO_ACCOUNTS_FILE?.trim() || join(homedir(), '.config', 'gmgn', 'keys-to-accounts.json');
+
+/** Stable non-secret account bucket id for keys that GMGN bills together. */
+export function gmgnAccountBucketKey(apiKey: string): string | undefined {
+  try {
+    if (!apiKey || !existsSync(KEY_ACCOUNT_FILE)) return undefined;
+    const raw = JSON.parse(readFileSync(KEY_ACCOUNT_FILE, 'utf8')) as Record<string, string>;
+    const account = String(raw[apiKey] || raw[apiKey.slice(-5)] || '').trim();
+    return account ? `account:${account}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Non-secret account scopes configured on this machine. */
+export function gmgnConfiguredAccountBucketKeys(): string[] {
+  try {
+    if (!existsSync(KEY_ACCOUNT_FILE)) return [];
+    const raw = JSON.parse(readFileSync(KEY_ACCOUNT_FILE, 'utf8')) as Record<string, string>;
+    return [...new Set(Object.values(raw).map((value) => String(value || '').trim()).filter(Boolean))]
+      .map((account) => `account:${account}`);
+  } catch {
+    return [];
+  }
+}
 
 function globalBucketFile(bucketKey?: string): string {
   if (!bucketKey) return GLOBAL_BUCKET_ROOT_FILE;
@@ -322,11 +425,31 @@ function globalBucketFile(bucketKey?: string): string {
 function globalBucketLock(bucketKey?: string): string {
   return globalBucketFile(bucketKey) + '.lock';
 }
-// GMGN IP 级限速窗口实测 ~25-30 请求/分钟（35 请求/63s 即被封，0.56rps 都超）。
-// 全局桶是跨进程聚合入口，容量必须压到 IP 窗口之下（与 newone 对齐）。
-// 0.4rps × 60 = 24/min，留余量；burst 3 防安静期攒满瞬间放行。
-const GLOBAL_RPS = Math.max(0.1, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 0.4);
+// 2026-08-08 controlled test proved hard bans follow the fixed public egress.
+// Defaults use a conservative fraction of GMGN's published 20/20 leaky bucket.
+const GLOBAL_RPS = Math.max(0.05, Number(process.env.GMGN_GLOBAL_RPS?.trim()) || 1);
 const GLOBAL_BURST = Math.max(1, Number(process.env.GMGN_GLOBAL_BURST?.trim()) || 3);
+const GLOBAL_WINDOW_SECONDS = Math.max(10, Number(process.env.GMGN_GLOBAL_WINDOW_SECONDS?.trim()) || 60);
+const GLOBAL_WINDOW_MAX = Math.max(1, Number(process.env.GMGN_GLOBAL_WINDOW_MAX?.trim()) || 60);
+const BULK_LOCK_FILE =
+  process.env.GMGN_BULK_LOCK_FILE?.trim() || join(homedir(), '.config/gmgn/bulk-job.lock');
+
+function bulkJobBlocked(): boolean {
+  try {
+    if (!existsSync(BULK_LOCK_FILE)) return false;
+    const raw = JSON.parse(readFileSync(BULK_LOCK_FILE, 'utf8')) as {
+      job?: string; pid?: number; startedAtMs?: number;
+    };
+    if (!raw.job || raw.job === process.env.GMGN_BULK_JOB_ID) return false;
+    if (raw.startedAtMs && Date.now() - raw.startedAtMs > 2 * 60 * 60 * 1000) return false;
+    if (raw.pid) {
+      try { process.kill(raw.pid, 0); } catch { return false; }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const sleepMs = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -346,19 +469,32 @@ const sleepMs = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
-type BucketState = { tokens: number; lastMs: number };
+type BucketEvent = { atMs: number; cost: number };
+type BucketState = { tokens: number; lastMs: number; recent?: BucketEvent[] };
 
-function readBucket(bucketKey?: string): BucketState {
-  const fallback: BucketState = { tokens: GLOBAL_BURST, lastMs: Date.now() };
+function readBucket(bucketKey?: string, cost = 1): BucketState {
+  // A scaled account request may cost more than the configured burst. Seed a
+  // new bucket with enough capacity for exactly one request; otherwise a
+  // missing file resets to GLOBAL_BURST on every retry and can never refill.
+  const fallback: BucketState = { tokens: Math.max(GLOBAL_BURST, cost), lastMs: Date.now(), recent: [] };
   try {
     const file = globalBucketFile(bucketKey);
     if (!existsSync(file)) return fallback;
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<BucketState>;
     const tokens = Number(raw.tokens);
     const lastMs = Number(raw.lastMs);
+    const cutoff = Date.now() - GLOBAL_WINDOW_SECONDS * 1000;
+    const recent = (Array.isArray(raw.recent) ? raw.recent : [])
+      .map((item) => {
+        if (typeof item === 'number') return { atMs: item, cost: 1 };
+        return { atMs: Number(item?.atMs), cost: Number(item?.cost ?? 1) };
+      })
+      .filter((item) => Number.isFinite(item.atMs) && item.atMs >= cutoff && item.cost > 0);
+    const capacity = Math.max(GLOBAL_BURST, cost);
     return {
-      tokens: Number.isFinite(tokens) ? tokens : fallback.tokens,
+      tokens: Number.isFinite(tokens) && tokens >= 0 && tokens <= capacity * 4 ? tokens : capacity,
       lastMs: Number.isFinite(lastMs) ? lastMs : fallback.lastMs,
+      recent,
     };
   } catch {
     return fallback;
@@ -369,7 +505,8 @@ function writeBucket(s: BucketState, bucketKey?: string): void {
   try {
     const file = globalBucketFile(bucketKey);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(s), 'utf8');
+    const recent = (s.recent || []).slice(-Math.max(100, Math.ceil(GLOBAL_WINDOW_MAX * 4)));
+    writeFileSync(file, JSON.stringify({ ...s, recent }), 'utf8');
   } catch {
     /* non-fatal: in-process pacing still works */
   }
@@ -412,21 +549,21 @@ function releaseBucketLock(bucketKey?: string): void {
 
 /**
  * 恢复期慢启动因子：连封后冷却刚过期时不要满速恢复到全量并发。
- * 与 newone getGmgnRecoveryFactor 语义一致：consecutiveBans >= 2 且
- * 最后一次封禁在 5 分钟内时，因子从 0.3 线性回归到 1.0。
+ * 与 newone getGmgnRecoveryFactor 语义一致：任意一次封禁后且
+ * 最后一次封禁在 6 分钟内时，因子从 0.3 线性回归到 1.0。
  * 基于 lastBanAt（而非 untilMs）——即使手动清冷却，只要封禁刚发生慢启动仍生效。
  */
-export function getGmgnRecoveryFactor(nowMs = Date.now()): number {
-  const prev = readFileCooldownState();
+export function getGmgnRecoveryFactor(nowMs = Date.now(), scopeKey?: string): number {
+  const prev = scopeKey ? readEgressCooldownState(scopeKey) : readFileCooldownState();
   let bans = Math.max(0, Number(prev.consecutiveBans || 0));
   // 防御：consecutiveBans 被第二写入者抹掉，但剩余冷却仍明显长于
   // 「所有 ban 强制 5min」地板（6.5min+，只可能是旧阶梯/真连封残留）时
   // 推断连封，避免慢启动被绕过、冷却一结束就全速撞墙再封。
-  if (bans < 2 && prev.untilMs != null && prev.untilMs > 0) {
+  if (bans < 1 && prev.untilMs != null && prev.untilMs > 0) {
     const remaining = Math.max(0, prev.untilMs - nowMs);
     if (remaining > 6.5 * 60_000) bans = 2;
   }
-  if (bans < 2) return 1.0;
+  if (bans < 1) return 1.0;
   const lastBanAt = prev.lastBanAt ? Date.parse(prev.lastBanAt) : 0;
   const sinceMs =
     Number.isFinite(lastBanAt) && lastBanAt > 0
@@ -473,28 +610,41 @@ export async function acquireGmgnGlobalToken(
   signal?: AbortSignal,
   bucketKey?: string,
 ): Promise<void> {
-  const factor = getGmgnRecoveryFactor();
+  const factor = getGmgnRecoveryFactor(Date.now(), bucketKey);
   const effectiveCost = gmgnEffectiveCost(cost, factor);
   for (let attempt = 0; attempt < 300; attempt++) {
     if (signal?.aborted) throw new Error('GMGN request aborted');
     let waitMs = 0;
     let got = false;
+    if (bulkJobBlocked()) {
+      await sleepMs(1000, signal);
+      continue;
+    }
     if (await tryAcquireBucketLock(bucketKey)) {
       try {
         const now = Date.now();
-        const s = readBucket(bucketKey);
+        const s = readBucket(bucketKey, effectiveCost);
         const elapsed = Math.max(0, now - s.lastMs);
         // 恢复期（连封后慢启动窗口内）burst 压缩：burst 上限 6→2，避免冷却
         // 一解除桶里瞬间攒满 6 token → 6 连发同毫秒放行撞 IP 限速再封。
         // 三层闸门都控平均速率，burst 上限才是瞬时峰值；IP 级限速罚瞬时峰值。
-        const burstCap = gmgnBucketCapacity(GLOBAL_BURST, effectiveCost, factor);
+        const burstCap = Math.max(gmgnBucketCapacity(GLOBAL_BURST, effectiveCost, factor), effectiveCost);
         const tokens = Math.min(burstCap, s.tokens + (elapsed / 1000) * GLOBAL_RPS);
-        if (tokens >= effectiveCost) {
-          writeBucket({ tokens: tokens - effectiveCost, lastMs: now }, bucketKey);
+        const recent = (s.recent || []).filter(
+          (item) => item.atMs >= now - GLOBAL_WINDOW_SECONDS * 1000,
+        );
+        const recentCost = recent.reduce((sum, item) => sum + item.cost, 0);
+        if (tokens >= effectiveCost && recentCost + effectiveCost <= GLOBAL_WINDOW_MAX) {
+          recent.push({ atMs: now, cost: effectiveCost });
+          writeBucket({ tokens: tokens - effectiveCost, lastMs: now, recent }, bucketKey);
           got = true;
         } else {
-          const deficit = effectiveCost - tokens;
-          waitMs = Math.ceil((deficit / GLOBAL_RPS) * 1000) + 10;
+          const deficit = Math.max(0, effectiveCost - tokens);
+          waitMs = deficit ? Math.ceil((deficit / Math.max(0.05, GLOBAL_RPS)) * 1000) + 10 : 20;
+          if (recentCost + effectiveCost > GLOBAL_WINDOW_MAX && recent.length > 0) {
+            const windowWait = recent[0].atMs + GLOBAL_WINDOW_SECONDS * 1000 - now + 10;
+            waitMs = Math.max(waitMs, windowWait);
+          }
         }
       } finally {
         releaseBucketLock(bucketKey);
