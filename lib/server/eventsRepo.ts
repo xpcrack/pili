@@ -294,6 +294,112 @@ export function persistHealedTelegramMonitorActivity(params: {
   return true;
 }
 
+/**
+ * Minimal provisional writer for the latency-sensitive XXYY doorbell path.
+ *
+ * The normal upsert performs historical importance scans, logical rekeying,
+ * conflict detection, and raw-payload joins. Those are appropriate for
+ * canonical/reconciliation writes, but they turn a burst of complete XXYY
+ * messages into a serial SQLite write queue. The raw XXYY audit row and the
+ * later live-monitor canonical write remain the authorities for those jobs.
+ */
+export function upsertTelegramMonitorProvisionalEventFast(params: {
+  user: User;
+  activity: Activity;
+  ingestSource?: string;
+}) {
+  const ingestSource = params.ingestSource || 'telegram-monitor-ingest';
+  const activity = params.activity;
+  if (
+    liveMonitorOwnsWalletTx({
+      userId: params.user.id,
+      chain: activity.metadata.chain,
+      trackedAddress: activity.metadata.trackedAddress,
+      txHash: activity.metadata.txHash,
+    })
+  ) {
+    return {
+      upserted: false,
+      skipped: 'live-monitor-owns-wallet-tx' as const,
+      eventId: buildEventId(params.user, activity),
+    };
+  }
+
+  const db = getDb();
+  const eventId = buildEventId(params.user, activity);
+  const chain = normalize(activity.metadata.chain) || null;
+  const address =
+    normalize(activity.metadata.trackedAddress) ||
+    normalize(activity.metadata.fromAddress) ||
+    normalize(activity.metadata.toAddress) ||
+    null;
+  const action = (activity.metadata.txAction || activity.metadata.tweetKind || null) as string | null;
+  const now = Date.now();
+  const originalPayload = buildFallbackOriginalPayload(activity, ingestSource);
+
+  withTransaction(() => {
+    db.prepare(
+      `INSERT INTO events (
+         event_id, source, kind, timestamp, user_id, user_name,
+         chain, address, content, url, action, token, tweet_id, tx_hash,
+         ingest_source, dedup_key, metadata_json, payload_json,
+         user_json, activity_json, indexed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(event_id) DO UPDATE SET
+         source = excluded.source,
+         kind = excluded.kind,
+         timestamp = excluded.timestamp,
+         user_id = excluded.user_id,
+         user_name = excluded.user_name,
+         chain = excluded.chain,
+         address = excluded.address,
+         content = excluded.content,
+         url = excluded.url,
+         action = excluded.action,
+         token = excluded.token,
+         tx_hash = excluded.tx_hash,
+         ingest_source = excluded.ingest_source,
+         dedup_key = excluded.dedup_key,
+         metadata_json = excluded.metadata_json,
+         payload_json = excluded.payload_json,
+         user_json = excluded.user_json,
+         activity_json = excluded.activity_json,
+         indexed_at = excluded.indexed_at,
+         updated_at = excluded.updated_at`
+    ).run(
+      eventId,
+      activity.source,
+      activity.type,
+      activity.timestamp,
+      params.user.id,
+      params.user.name,
+      chain,
+      address,
+      activity.content,
+      extractUrl(activity),
+      action,
+      activity.metadata.token || null,
+      activity.metadata.tweetId || null,
+      activity.metadata.txHash || null,
+      ingestSource,
+      eventId,
+      JSON.stringify(activity.metadata || {}),
+      JSON.stringify(originalPayload),
+      JSON.stringify(params.user),
+      JSON.stringify(activity),
+      now,
+      now,
+      now
+    );
+  });
+
+  bumpFeedRevision();
+  if (ingestSource === 'telegram-monitor-ingest') {
+    triggerBidFeedPush([{ user: params.user, activity }]);
+  }
+  return { upserted: true, skipped: null, eventId };
+}
+
 function buildTelegramMonitorRepairLookup(activity: Activity) {
   const lookupKey = buildTelegramMonitorLogicalTxKey(activity);
   if (!lookupKey) {

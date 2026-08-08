@@ -71,14 +71,27 @@ async function main() {
   });
 
   const provisional = getDb()
-    .prepare(`SELECT event_id FROM events WHERE user_id = ? AND LOWER(COALESCE(tx_hash, '')) = ?`)
-    .all(user.id, fixture.expected.txHash!.toLowerCase()) as Array<{ event_id: string }>;
+    .prepare(`SELECT event_id, activity_json FROM events WHERE user_id = ? AND LOWER(COALESCE(tx_hash, '')) = ?`)
+    .all(user.id, fixture.expected.txHash!.toLowerCase()) as Array<{
+      event_id: string;
+      activity_json: string;
+    }>;
 
   assert.equal(fetchCalls, 0, 'fast XXYY ingest must not call the network');
   assert.equal(result.projected, true, 'fast XXYY ingest should still project a provisional Feed row');
   assert.equal(result.feedMode, 'doorbell');
   assert.equal(provisional.length, 1, 'the provisional transaction should be visible exactly once');
   assert.match(provisional[0]!.event_id, /^xxyy-monitor:/);
+  const provisionalActivity = JSON.parse(provisional[0]!.activity_json) as {
+    metadata?: { quoteAmount?: string; quoteToken?: string; tradeAmountUsdAtTx?: number };
+  };
+  assert.equal(provisionalActivity.metadata?.quoteAmount, String(fixture.expected.quoteAmount));
+  assert.equal(provisionalActivity.metadata?.quoteToken, fixture.expected.quoteSymbol);
+  assert.equal(
+    provisionalActivity.metadata?.tradeAmountUsdAtTx,
+    fixture.expected.tradeAmountUsdAtTx,
+    'XXYY price and token quantity should provide a local USD amount without network access'
+  );
 }
 
 main()

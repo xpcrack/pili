@@ -363,7 +363,8 @@ export function getTradeHeadlineDisplayText(params: {
   tradeAmountUsdAtTx: number | null | undefined;
 }) {
   if (params.mode === 'usd') {
-    return formatTradeAmountUsdLabel(params.tradeAmountUsdAtTx);
+    const usdText = formatTradeAmountUsdLabel(params.tradeAmountUsdAtTx);
+    return usdText === '金额未知' ? normalize(params.nativeAmountText) || usdText : usdText;
   }
 
   return normalize(params.nativeAmountText) || formatTradeAmountUsdLabel(params.tradeAmountUsdAtTx);
