@@ -175,7 +175,10 @@ export async function fetchGmgnWalletActivityAsync(opts: {
       process.env.GMGN_FETCH_TIMEOUT_MS ||
       20_000
   );
-  const timeoutMs = Number.isFinite(activityTimeoutMs) && activityTimeoutMs > 0 ? activityTimeoutMs : 20_000;
+  // The guarded wrapper may legitimately wait ~30s for the account bucket
+  // before opening the upstream request. Keep the process timeout above that
+  // pacing delay so safe throttling is not misclassified as a network timeout.
+  const timeoutMs = Number.isFinite(activityTimeoutMs) && activityTimeoutMs > 0 ? activityTimeoutMs : 90_000;
   const via = opts.via ?? (preferOpenApiActivity() ? 'openapi' : 'cli');
   if (via === 'openapi') {
     try {

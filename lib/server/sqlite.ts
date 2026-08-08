@@ -1847,6 +1847,8 @@ CREATE TABLE IF NOT EXISTS wallet_timeline_state (
 CREATE INDEX IF NOT EXISTS idx_wallet_timeline_state_last_ok
 ON wallet_timeline_state(last_ok_at);
 `);
+  ensureColumn(db, 'wallet_timeline_state', 'coverage_version', 'INTEGER NOT NULL', '0');
+  ensureColumn(db, 'wallet_timeline_state', 'chains_json', 'TEXT');
 }
 
 export function getDb() {
