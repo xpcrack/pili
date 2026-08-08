@@ -1,5 +1,27 @@
 import type { Activity } from '@/types';
 
+const FEED_SOURCE_DEFAULT_COLOR = '#71717A';
+const FEED_SOCIAL_COLOR = '#1D9BF0';
+const FEED_CHAIN_COLORS: Record<string, string> = {
+  solana: '#9945FF',
+  ethereum: '#627EEA',
+  bsc: '#F3BA2F',
+  base: '#0052FF',
+  robinhood: '#CCFF00',
+};
+const FEED_CHAIN_ALIASES: Record<string, string> = {
+  sol: 'solana',
+  eth: 'ethereum',
+  rh: 'robinhood',
+};
+
+export function getFeedSourceColor(activity: Pick<Activity, 'source' | 'metadata'>) {
+  if (activity.source !== 'blockchain') return FEED_SOCIAL_COLOR;
+  const normalizedChain = (activity.metadata.chain || '').trim().toLowerCase();
+  const canonicalChain = FEED_CHAIN_ALIASES[normalizedChain] || normalizedChain;
+  return FEED_CHAIN_COLORS[canonicalChain] || FEED_SOURCE_DEFAULT_COLOR;
+}
+
 const ACTIVITY_TYPE_LABELS: Record<string, string> = {
   post: '发布',
   transfer: '转账',
