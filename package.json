@@ -16,6 +16,7 @@
     "lint": "eslint",
     "telegram:bridge": "NODE_USE_ENV_PROXY=1 HTTPS_PROXY=${HTTPS_PROXY:-http://127.0.0.1:7897} HTTP_PROXY=${HTTP_PROXY:-http://127.0.0.1:7897} NO_PROXY=${NO_PROXY:-127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12} NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge.ts",
     "telegram:bridge:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-bridge-backfill.ts",
+    "telegram:monitor:backfill": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-telegram-monitor-provisional.ts",
     "telegram:bridge:install-launchagent": "./scripts/install-telegram-bridge-launchagent.sh",
     "telegram:channel:login": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-channel-login.ts",
     "telegram:channel:sync": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/telegram-channel-sync.ts",
