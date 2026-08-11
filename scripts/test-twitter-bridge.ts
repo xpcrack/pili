@@ -77,7 +77,7 @@ async function testParserRtAndReply() {
     inlineUrls: ['https://x.com/Ga__ke/status/1912345678901234000'],
   });
   const rtPayload = parseTwitterRelayPayload(rtUpdate.message!);
-  assert.equal(rtPayload?.action, 'quote', 'RT content should map to quote');
+  assert.equal(rtPayload?.action, 'retweet', 'RT content should map to retweet');
 
   const replyUpdate = makeTwitterUpdate({
     text: [
@@ -156,6 +156,79 @@ async function testParserXxyyReplyFormat() {
   assert.equal(payload?.content, 'Sell');
   assert.equal(payload?.action, 'reply');
   console.log('PASS twitter-bridge parser xxyy-reply');
+}
+
+async function testParserXxyyPureRetweetFormat() {
+  // Real xxyy 转推: only 原推, no 推文 — previously content empty → null
+  const update = makeXxyyUpdate(
+    [
+      '[pow🧲] 转推',
+      '👤 原推作者: @nonhorsesol',
+      '📝 原推:',
+      'GM (Get Money) https://t.co/wlba3jocvM',
+      '🔗 https://twitter.com/traderpow/status/2087046159022080407',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+  const parsed = payload as (typeof payload & {
+    quotedAuthorHandle?: string;
+    quotedContent?: string;
+  }) | null;
+
+  assert.ok(payload, 'xxyy pure retweet: payload should parse');
+  assert.equal(payload?.authorHandle, 'traderpow');
+  assert.equal(payload?.tweetId, '2087046159022080407');
+  assert.equal(payload?.action, 'retweet');
+  assert.equal(payload?.content, 'RT @nonhorsesol: GM (Get Money) https://t.co/wlba3jocvM');
+  assert.equal(parsed?.quotedAuthorHandle, 'nonhorsesol');
+  assert.equal(parsed?.quotedContent, 'GM (Get Money) https://t.co/wlba3jocvM');
+  console.log('PASS twitter-bridge parser xxyy-pure-retweet');
+}
+
+async function testParserXxyyRetweetMediaOnly() {
+  const update = makeXxyyUpdate(
+    [
+      '[pow🧲] 转推',
+      '👤 原推作者: @nonhorsesol',
+      '📝 原推:',
+      'https://t.co/bliMekXOkC',
+      '🔗 https://twitter.com/traderpow/status/2087045932349260135',
+    ].join('\n')
+  );
+  const payload = parseTwitterRelayPayload(update.message!);
+  assert.ok(payload, 'xxyy media RT: payload should parse');
+  assert.equal(payload?.action, 'retweet');
+  assert.equal(payload?.content, 'RT @nonhorsesol: https://t.co/bliMekXOkC');
+  console.log('PASS twitter-bridge parser xxyy-retweet-media');
+}
+
+async function testParserXxyyAtHandleProfileEntity() {
+  // entities often use https://x.com/@handle — must still resolve status url
+  const text = [
+    '[pow🧲] 转推',
+    '👤 原推作者: @nonhorsesol',
+    '📝 原推:',
+    'GM (Get Money)',
+    '🔗 https://twitter.com/traderpow/status/2087046159022080407',
+  ].join('\n');
+  const update = makeTwitterUpdate({
+    text,
+    entities: [
+      { type: 'text_link', url: 'https://x.com/@traderpow', offset: 1, length: 5 },
+      { type: 'text_link', url: 'https://x.com/@nonhorsesol', offset: 20, length: 12 },
+      {
+        type: 'text_link',
+        url: 'https://twitter.com/traderpow/status/2087046159022080407',
+        offset: text.indexOf('https://twitter.com'),
+        length: 'https://twitter.com/traderpow/status/2087046159022080407'.length,
+      },
+    ],
+  });
+  const payload = parseTwitterRelayPayload(update.message!);
+  assert.ok(payload, 'xxyy @handle entity: payload should parse');
+  assert.equal(payload?.authorHandle, 'traderpow');
+  assert.equal(payload?.tweetId, '2087046159022080407');
+  console.log('PASS twitter-bridge parser xxyy-at-handle-entity');
 }
 
 async function testParserXxyyQuotePrefersStructuredStatusUrl() {
@@ -332,6 +405,9 @@ async function main() {
   await testParserXxyyTweetFormat();
   await testParserXxyyMultilineTweetFormat();
   await testParserXxyyReplyFormat();
+  await testParserXxyyPureRetweetFormat();
+  await testParserXxyyRetweetMediaOnly();
+  await testParserXxyyAtHandleProfileEntity();
   await testParserXxyyQuotePrefersStructuredStatusUrl();
   await testParserXxyyQuoteFormat();
   await testParserXxyyQuoteUrlOnlyFormat();

@@ -46,7 +46,7 @@ export interface ParsedTwitterRelayPayload {
   sourceChatId: string;
   messageId: number | null;
   tweetId?: string;
-  action: 'tweet' | 'quote' | 'reply';
+  action: 'tweet' | 'quote' | 'reply' | 'retweet';
   content: string;
   quotedAuthorHandle?: string;
   quotedContent?: string;
@@ -212,9 +212,10 @@ function parseTwitterUrl(urlText: string) {
       return null;
     }
 
+    // xxyy entities sometimes use https://x.com/@handle — strip leading @
     const parts = url.pathname
       .split('/')
-      .map((part) => normalize(part))
+      .map((part) => normalize(part).replace(/^@+/, ''))
       .filter(Boolean);
     if (parts.length === 0) {
       return null;
@@ -376,12 +377,23 @@ function extractTwitterQuotedContent(text: string) {
   return '';
 }
 
-function inferTwitterAction(text: string, content: string): 'tweet' | 'quote' | 'reply' {
+/**
+ * xxyy headline actions:
+ * - 发推 → tweet
+ * - 转推 → retweet (pure RT, body only in 原推)
+ * - 引用推文 → quote (own 推文 + 原推)
+ * - 回复了 @x → reply
+ */
+function inferTwitterAction(text: string, content: string): 'tweet' | 'quote' | 'reply' | 'retweet' {
   const headline = text.split(/\r?\n/)[0]?.trim() || '';
   if (/回复了(?:\s|@|$)/.test(headline)) {
     return 'reply';
   }
-  if (/(?:引用推文|转推)/.test(headline)) {
+  // 转推 before 引用 — headline is authoritative for pure RT
+  if (/转推/.test(headline)) {
+    return 'retweet';
+  }
+  if (/引用推文/.test(headline)) {
     return 'quote';
   }
   if (/发推/.test(headline)) {
@@ -390,12 +402,25 @@ function inferTwitterAction(text: string, content: string): 'tweet' | 'quote' | 
 
   const trimmed = content.trim();
   if (/^RT\s*@/i.test(trimmed)) {
-    return 'quote';
+    return 'retweet';
   }
   if (/^@\w/.test(trimmed)) {
     return 'reply';
   }
   return 'tweet';
+}
+
+/** Pure RT: xxyy only has 原推, no 推文 — synthesize Twitter-style body for downstream matchers. */
+function buildRetweetContent(quotedAuthorHandle: string, quotedContent: string): string {
+  const body = (quotedContent || '').trim();
+  const handle = (quotedAuthorHandle || '').trim().replace(/^@+/, '');
+  if (handle && body) {
+    return `RT @${handle}: ${body}`;
+  }
+  if (handle) {
+    return `RT @${handle}`;
+  }
+  return body;
 }
 
 export function looksLikeTwitterRelayMessage(message: TelegramMessageLike) {
@@ -422,10 +447,12 @@ export function parseTwitterRelayPayload(message: TelegramMessageLike): ParsedTw
 
   const text = getMessageText(message);
   const refs = findTwitterRefs(message);
-  const content = extractTwitterContent(text);
+  let content = extractTwitterContent(text);
   const quotedAuthorHandle = normalizeLower(extractTwitterQuotedAuthorHandle(text));
   const quotedContent = extractTwitterQuotedContent(text);
-  const authorHandle = normalizeLower(refs.status?.authorHandle || refs.profile?.authorHandle || extractAuthorHandleFromText(text));
+  const authorHandle = normalizeLower(
+    refs.status?.authorHandle || refs.profile?.authorHandle || extractAuthorHandleFromText(text)
+  );
   const tweetId = normalize(refs.status?.tweetId);
   const url = normalize(refs.status?.url);
   const sourceChatId = normalize(message.chat?.id ? String(message.chat.id) : '');
@@ -433,6 +460,23 @@ export function parseTwitterRelayPayload(message: TelegramMessageLike): ParsedTw
     typeof message.date === 'number' && Number.isFinite(message.date) ? Math.max(0, Math.floor(message.date * 1000)) : Date.now();
   const messageId =
     typeof message.message_id === 'number' && Number.isFinite(message.message_id) ? Math.floor(message.message_id) : null;
+
+  // xxyy 转推: only 📝 原推 (no 📝 推文). Fall back so parse does not drop pure RTs.
+  // Do not treat 引用/回复/发推 as pure RT even if 推文 body is empty.
+  const headline = text.split(/\r?\n/)[0]?.trim() || '';
+  const isPureRetweet =
+    /转推/.test(headline) ||
+    (!content &&
+      Boolean(quotedContent || quotedAuthorHandle) &&
+      !/(?:引用推文|回复了|发推)/.test(headline));
+  if (!content && (quotedContent || quotedAuthorHandle) && isPureRetweet) {
+    content = buildRetweetContent(quotedAuthorHandle, quotedContent);
+  }
+
+  // Media-only tweet: allow URL as body so we still ingest
+  if (!content && (tweetId || url)) {
+    content = url || (tweetId ? `https://x.com/i/status/${tweetId}` : '');
+  }
 
   if (!sourceChatId || !content || !authorHandle || (!tweetId && !url)) {
     return null;
