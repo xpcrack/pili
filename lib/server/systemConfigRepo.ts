@@ -3,8 +3,11 @@ import 'server-only';
 import { getDb } from '@/lib/server/sqlite';
 
 const SYSTEM_CONFIG_KEY = 'system_config_v1';
+// Relay-covered: relay already delivers near-real-time; API poll is backup.
 const DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES = 360;
-const DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES = 30;
+// Uncovered: was 30min — too slow for hold-mention Bark. 5min is a budget-aware
+// compromise (free 6551 ~400 pts/day). True wall-clock <10s needs twitter relay / paid WS.
+const DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES = 5;
 const MAX_TWITTER_POLLING_INTERVAL_MINUTES = 60 * 24 * 7;
 
 /**

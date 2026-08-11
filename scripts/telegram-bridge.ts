@@ -38,9 +38,12 @@ const WORKER_KEY = 'telegram-bridge';
 const LOG_PREFIX = '[bridge]';
 const TELEGRAM_BRIDGE_CAPTURE_DIR = path.join(process.cwd(), '.data', 'telegram-bridge-captures');
 const TWITTER_RAW_CAPTURE_FILE = path.join(TELEGRAM_BRIDGE_CAPTURE_DIR, 'twitter-relay-raw.ndjson');
+// Default 60s (was 30min). Per-user due still gated by systemConfig
+// twitterUncoveredPollingIntervalMinutes — this only sets how often we try.
+// Override with TWITTER_SYNC_INTERVAL_MS. Floor 15s for 10s-class Bark SLA budget.
 const TWITTER_SYNC_INTERVAL_MS = Math.max(
-  60_000,
-  Number.parseInt(process.env.TWITTER_SYNC_INTERVAL_MS || '1800000', 10) || 1_800_000
+  15_000,
+  Number.parseInt(process.env.TWITTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000
 );
 
 const status = createWorkerStatusReporter(WORKER_KEY, 'telegram-bridge');

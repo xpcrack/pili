@@ -234,13 +234,84 @@ async function translateQuotedContent(params: {
   }
 }
 
+/**
+ * Rule-only extract + write mentions (no vision/LLM/market).
+ * Used so downstream (newone Bark) can react in seconds instead of waiting
+ * for the full enrichment pipeline (avg ~2min, backlog can be hours).
+ */
+export function publishRuleMentionsForTweet(tweet: StoredTwitterTweet): number {
+  const textMentions = extractMentionsFromTweet(tweet);
+  if (textMentions.length === 0) {
+    // Still mark enrichment row as started so feed projector does not re-queue forever
+    // when a tweet has no rule hits; full pass may still add vision/alias hits later.
+    return 0;
+  }
+  replaceTwitterTweetTokenMentions({
+    tweetId: tweet.tweetId,
+    mentions: textMentions.map((mention, idx) => ({
+      tokenAddress: mention.tokenAddress,
+      tokenSymbol: mention.tokenSymbol,
+      chain: null,
+      matchSource: mention.matchSource,
+      sentiment: 'neutral' as TweetMentionSentiment,
+      confidence: null,
+      rankInTweet: idx + 1,
+      origin: 'text' as TweetMentionOrigin,
+      marketCapUsd: null,
+      marketCapAtPostUsd: null,
+      marketCapAtPostEstimated: false,
+      marketCapSource: null,
+      resolvedAtMs: null,
+    })),
+  });
+  upsertTwitterTweetEnrichment({
+    tweetId: tweet.tweetId,
+    translationZh: null,
+    translationStatus: 'pending',
+    extractionStatus: 'processing',
+    extractorVersion: EXTRACTOR_VERSION,
+    translatorVersion: TRANSLATOR_VERSION,
+    quotedTranslationZh: null,
+    quotedTranslationStatus: 'pending',
+    visionStatus: 'pending',
+    visionProcessedAtMs: null,
+    lastProcessedAtMs: Date.now(),
+    lastError: null,
+  });
+  return textMentions.length;
+}
+
 async function runEnrichmentForTweet(params: {
   tweet: StoredTwitterTweet;
   model: TweetEnrichmentModel;
   visionModel?: VisionEnrichmentModel;
   enqueueQuoteTweetIds?: string[];
+  /** When true, skip the early rule publish (already done in fast pass). */
+  skipFastPublish?: boolean;
 }) {
   const textMentions = extractMentionsFromTweet(params.tweet);
+
+  // FAST PATH: publish rule hits before vision/LLM/DexScreener so Bark is not blocked.
+  if (!params.skipFastPublish && textMentions.length > 0) {
+    replaceTwitterTweetTokenMentions({
+      tweetId: params.tweet.tweetId,
+      mentions: textMentions.map((mention, idx) => ({
+        tokenAddress: mention.tokenAddress,
+        tokenSymbol: mention.tokenSymbol,
+        chain: null,
+        matchSource: mention.matchSource,
+        sentiment: 'neutral' as TweetMentionSentiment,
+        confidence: null,
+        rankInTweet: idx + 1,
+        origin: 'text' as TweetMentionOrigin,
+        marketCapUsd: null,
+        marketCapAtPostUsd: null,
+        marketCapAtPostEstimated: false,
+        marketCapSource: null,
+        resolvedAtMs: null,
+      })),
+    });
+  }
 
   let visionStatus: TweetEnrichmentStatus = 'skipped';
   let imageMentions: ExtractedTweetTokenMention[] = [];
@@ -493,6 +564,26 @@ export async function runTweetEnrichmentForTweetIds(params: {
   const model = params.model || getDefaultTweetEnrichmentModel();
   const quoteTweetIdsToEnqueue: string[] = [];
 
+  // Pass 1: rule extract for ALL tweets first (sync, ~ms each). Downstream Bark
+  // must not wait for the sequential LLM/vision backlog of earlier tweets.
+  let fastPublished = 0;
+  for (const tweet of tweets) {
+    try {
+      fastPublished += publishRuleMentionsForTweet(tweet);
+    } catch (err) {
+      console.warn(
+        '[enrichment] fast publish failed:',
+        tweet.tweetId,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  if (fastPublished > 0) {
+    console.log(
+      `[enrichment] fast-publish mentions=${fastPublished} tweets=${tweets.length}`
+    );
+  }
+
   let succeeded = 0;
   let failed = 0;
   for (const tweet of tweets) {
@@ -501,6 +592,7 @@ export async function runTweetEnrichmentForTweetIds(params: {
       model,
       visionModel: params.visionModel,
       enqueueQuoteTweetIds: quoteTweetIdsToEnqueue,
+      skipFastPublish: true,
     });
     if (ok) {
       succeeded += 1;

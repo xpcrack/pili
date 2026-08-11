@@ -18,7 +18,10 @@ import {
 } from '@/lib/server/twitterRepo';
 import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
-import { runTweetEnrichmentForTweetIds } from '@/lib/server/twitterEnrichmentService';
+import {
+  publishRuleMentionsForTweet,
+  runTweetEnrichmentForTweetIds,
+} from '@/lib/server/twitterEnrichmentService';
 import { extractQuotedTextFromSourceJson } from '@/lib/server/tweetSourceTexts';
 
 function normalize(value: string | undefined | null) {
@@ -302,6 +305,24 @@ export function projectTwitterTweetsToFeed(options: {
     .map((t) => t.tweetId);
 
   if (pendingTweetIds.length > 0) {
+    // Sync rule extract FIRST (ms) so newone Bark can fire before LLM queue drains.
+    const pendingTweets = listTwitterTweetsByIds(pendingTweetIds);
+    let fastHits = 0;
+    for (const tweet of pendingTweets) {
+      try {
+        fastHits += publishRuleMentionsForTweet(tweet);
+      } catch (err) {
+        console.warn(
+          '[enrichment] sync fast-publish failed:',
+          tweet.tweetId,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+    if (fastHits > 0) {
+      console.log(`[enrichment] sync fast-publish mentions=${fastHits} tweets=${pendingTweets.length}`);
+    }
+
     void runTweetEnrichmentForTweetIds({ tweetIds: pendingTweetIds })
       .then((result) => {
         if (result.succeeded > 0) {
