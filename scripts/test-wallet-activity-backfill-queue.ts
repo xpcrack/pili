@@ -18,6 +18,7 @@ function makeUser(): User {
     telegrams: [],
     tags: [],
     totalAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     historicalMaxAssetUsd: 0,
     assetUpdatedAt: null,
     addresses: [
@@ -29,7 +30,7 @@ function makeUser(): User {
         assetUpdatedAt: null,
       },
     ],
-  } as User;
+  } as unknown as User;
 }
 
 async function main() {
@@ -85,6 +86,40 @@ async function main() {
   assert.equal(marks.length, 1);
   assert.equal(marks[0].kind, 'ok');
   assert.equal(marks[0].days, 14);
+
+  let realtimePending = true;
+  const pausedCalls: string[] = [];
+  const pausedQueue = createWalletActivityBackfillQueue({
+    memoryOnly: true,
+    debounceMs: 0,
+    listUsers: () => [makeUser()],
+    shouldPause: () => realtimePending,
+    backfill: async (params) => {
+      pausedCalls.push(params.address);
+      return {
+        address: params.address,
+        rawCount: 0,
+        tradeCount: 0,
+        upserted: 0,
+        chainsOk: ['eth', 'bsc', 'base', 'robinhood'],
+        chainsFailed: [],
+        chainsTruncated: [],
+        stoppedOnBan: false,
+      };
+    },
+    markOk: () => {},
+    markFail: () => {},
+    log: () => {},
+  });
+  pausedQueue.enqueue({ address: makeUser().addresses[0]!.address });
+  const paused = await pausedQueue.drain({ maxJobs: 1 });
+  assert.equal(paused.processed, 0);
+  assert.equal(paused.remaining, 1);
+  assert.equal(pausedCalls.length, 0);
+  realtimePending = false;
+  const resumed = await pausedQueue.drain({ maxJobs: 1 });
+  assert.equal(resumed.processed, 1);
+  assert.equal(pausedCalls.length, 1);
 
   // Explicit operator work runs before older rolling-maintenance entries.
   const priorityCalls: string[] = [];

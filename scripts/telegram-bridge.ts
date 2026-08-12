@@ -2,6 +2,10 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { ingestTelegramMonitorUpdate } from '@/lib/server/telegramMonitorIngest';
+import {
+  createTelegramBotApiClient,
+  readTelegramBotApiProxyUrl,
+} from '@/lib/server/telegramBotApi';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
@@ -26,7 +30,6 @@ import {
 
 loadWorkerEnv();
 
-const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const BRIDGE_BOT_TOKEN =
   process.env.tgbot_in_token?.trim() || process.env.TELEGRAM_BRIDGE_BOT_TOKEN?.trim() || '';
 const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN?.trim() || '';
@@ -113,26 +116,10 @@ function captureRawTwitterLikeUpdate(
   );
 }
 
-function getApiUrl(method: string) {
-  return `${TELEGRAM_API_BASE}/bot${BRIDGE_BOT_TOKEN}/${method}`;
-}
-
-async function telegramApi<T>(method: string, body?: Record<string, unknown>) {
-  const response = await fetch(getApiUrl(method), {
-    method: body ? 'POST' : 'GET',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  const payload = (await response.json().catch(() => null)) as
-    | { ok?: boolean; result?: T; description?: string }
-    | null;
-  if (!response.ok || !payload?.ok) {
-    throw new Error(`Telegram ${method} failed: ${response.status} ${payload?.description || 'unknown error'}`);
-  }
-
-  return payload.result as T;
-}
+const telegramApi = createTelegramBotApiClient({
+  token: BRIDGE_BOT_TOKEN,
+  proxyUrl: readTelegramBotApiProxyUrl(),
+});
 
 async function runTwitterSyncFallback(reason: 'startup' | 'interval') {
   if (!ADMIN_API_TOKEN) {

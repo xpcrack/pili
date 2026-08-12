@@ -52,6 +52,7 @@ export type WalletActivityBackfillQueueDeps = {
   log?: (message: string) => void;
   markOk?: typeof markWalletTimelineOk;
   markFail?: typeof markWalletTimelineFail;
+  shouldPause?: () => boolean;
   /** When true, skip sqlite persistence (unit tests). */
   memoryOnly?: boolean;
 };
@@ -128,6 +129,7 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
   const listUsers = deps.listUsers ?? listMonitoredUsers;
   const markOk = deps.markOk ?? markWalletTimelineOk;
   const markFail = deps.markFail ?? markWalletTimelineFail;
+  let shouldPause = deps.shouldPause ?? (() => false);
   const log =
     deps.log ??
     ((message: string) => {
@@ -185,6 +187,9 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
     if (draining) {
       return { processed: 0, results: [], remaining: pending.size, stoppedOnBan: false };
     }
+    if (shouldPause()) {
+      return { processed: 0, results: [], remaining: pending.size, stoppedOnBan: false };
+    }
     draining = true;
     const maxJobs = Math.max(1, opts?.maxJobs ?? 1);
     const results: BackfillWalletTimelineResult[] = [];
@@ -209,6 +214,9 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
         : Math.min(batch.length || 1, maxJobs);
 
       const runItem = async (next: QueueItem) => {
+        if (shouldPause()) {
+          return { kind: 'paused' as const, next };
+        }
         const user = findUserForAddress(users, next.address, next.userId);
         if (!user) {
           log(`skip no-user ${next.address} reason=${next.reason}`);
@@ -220,6 +228,7 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
             address: next.address,
             days: next.days,
             async: true,
+            shouldPause,
           });
           log(
             `ok ${next.address} upserted=${result.upserted}/${result.tradeCount} raw=${result.rawCount} reason=${next.reason}`
@@ -278,6 +287,10 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
 
       for (const outcome of outcomes) {
         if (!outcome) continue;
+        if (outcome.kind === 'paused') {
+          pending.set(outcome.next.addressLower, outcome.next);
+          continue;
+        }
         processed += 1;
         if (outcome.kind === 'ok' && outcome.result) {
           results.push(outcome.result);
@@ -314,6 +327,10 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
     if (!memoryOnly) savePersisted([]);
   }
 
+  function setShouldPause(next: () => boolean) {
+    shouldPause = next;
+  }
+
   return {
     enqueue,
     enqueueMany,
@@ -322,6 +339,7 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
     pendingCount,
     peek,
     resetForTests,
+    setShouldPause,
     debounceMs,
   };
 }

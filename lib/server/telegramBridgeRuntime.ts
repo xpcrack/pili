@@ -1,6 +1,10 @@
 import 'server-only';
 
 import { ingestTelegramMonitorUpdate } from '@/lib/server/telegramMonitorIngest';
+import {
+  createTelegramBotApiClient,
+  readTelegramBotApiProxyUrl,
+} from '@/lib/server/telegramBotApi';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import {
@@ -16,7 +20,6 @@ import {
   type TelegramUpdateLike,
 } from '@/scripts/telegram-bridge-core';
 
-const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const WORKER_KEY = 'telegram-bridge';
 const WORKER_TYPE = 'telegram-bridge';
 const POLL_TIMEOUT_SECONDS = 30;
@@ -25,12 +28,6 @@ const RETRY_DELAY_MS = 3_000;
 
 let bootstrapped = false;
 let lastProcessedUpdateId = readTelegramIngestCursor(WORKER_KEY)?.last_update_id ?? 0;
-
-interface TelegramApiResponse<T> {
-  ok?: boolean;
-  result?: T;
-  description?: string;
-}
 
 interface ProcessedUpdateOutcome {
   processed: boolean;
@@ -79,23 +76,11 @@ function rememberProcessedUpdate(updateId: number | null) {
   touchWorkerHeartbeat(WORKER_KEY);
 }
 
-function getApiUrl(method: string) {
-  return `${TELEGRAM_API_BASE}/bot${readBridgeBotToken()}/${method}`;
-}
-
 async function telegramApi<T>(method: string, body?: Record<string, unknown>) {
-  const response = await fetch(getApiUrl(method), {
-    method: body ? 'POST' : 'GET',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  const payload = (await response.json().catch(() => null)) as TelegramApiResponse<T> | null;
-  if (!response.ok || !payload?.ok) {
-    throw new Error(`Telegram ${method} failed: ${response.status} ${payload?.description || 'unknown error'}`);
-  }
-
-  return payload.result as T;
+  return createTelegramBotApiClient({
+    token: readBridgeBotToken(),
+    proxyUrl: readTelegramBotApiProxyUrl(),
+  })<T>(method, body);
 }
 
 function isTelegramGetUpdatesConflict(error: unknown) {

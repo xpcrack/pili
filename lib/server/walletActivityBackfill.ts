@@ -33,6 +33,7 @@ export type FetchWalletActivitySinceParams = {
   pageAttempts?: number;
   /** Prefer async gmgn-cli (runtime); sync used by CLI when omitted. */
   async?: boolean;
+  shouldPause?: () => boolean;
 };
 
 export type FetchWalletActivitySinceResult = {
@@ -102,6 +103,11 @@ export async function fetchWalletActivitySince(
         });
 
   while (pages < maxPages) {
+    if (params.shouldPause?.()) {
+      truncated = true;
+      lastError = 'live-doorbells-pending';
+      break;
+    }
     pages += 1;
     assertGmgnAllowed();
 
@@ -229,6 +235,7 @@ export async function backfillWalletTimeline(params: {
   pageAttempts?: number;
   async?: boolean;
   dryRun?: boolean;
+  shouldPause?: () => boolean;
 }): Promise<BackfillWalletTimelineResult> {
   const address = (params.address || '').trim();
   const days = params.days ?? DEFAULT_TIMELINE_DAYS;
@@ -263,6 +270,7 @@ export async function backfillWalletTimeline(params: {
         sleepMs: params.sleepMs,
         pageAttempts: params.pageAttempts,
         async: params.async ?? true,
+        shouldPause: params.shouldPause,
       });
       return {
         chain,
