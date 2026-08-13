@@ -298,7 +298,13 @@ export async function syncAllTelegramChannelSources(params: {
   let projectedCount = 0;
   let backoffMs: number | null = null;
 
-  for (const source of sources) {
+  // 并发同步（信号量 3）：单 source 卡在 socks 代理 10s 超时或 Twitter 链接抓取
+  // 时不再阻塞其余 channel；flood_wait 由 gramjs floodSleepThreshold + backoff 兜底。
+  // 串行版实测一轮可达 100s+（10×10s 超时排队），并发 3 后一轮 ≈ 最慢批次 + ε。
+  const CONCURRENCY = 3;
+  let cursor = 0;
+
+  async function syncOne(source: (typeof sources)[number]): Promise<void> {
     try {
       const result = await syncTelegramChannelSource({
         sourceId: source.id,
@@ -335,14 +341,28 @@ export async function syncAllTelegramChannelSources(params: {
           typeof classified.waitMs === 'number' && Number.isFinite(classified.waitMs)
             ? Math.max(backoffMs || 0, classified.waitMs)
             : backoffMs;
-        break;
+        // flood：本 worker 停止再领新任务；已在跑的其他 worker 完成自己的
+        return;
       }
     }
 
+    // 每个 source 之间保留最小间隔，平滑并发下的请求节奏
     if (source.id !== sources[sources.length - 1]?.id) {
       await sleepFn(policy.requestDelayMs);
     }
   }
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, sources.length) }, async () => {
+    while (true) {
+      const idx = cursor;
+      cursor += 1;
+      if (idx >= sources.length) {
+        return;
+      }
+      await syncOne(sources[idx]);
+    }
+  });
+  await Promise.all(workers);
 
   return {
     sourceCount: sources.length,

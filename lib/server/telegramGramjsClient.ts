@@ -3,6 +3,7 @@ import 'server-only';
 import bigInt from 'big-integer';
 import { TelegramClient } from 'telegram';
 import { Api } from 'telegram/tl';
+import { NewMessage } from 'telegram/events';
 import { StringSession } from 'telegram/sessions';
 
 import { readTelegramClientConfig } from '@/lib/server/telegramClientConfig';
@@ -40,8 +41,7 @@ function normalizeIdLike(value: unknown): string | null {
 }
 
 function readTelegramSocksProxy() {
-  const raw = (process.env.TELEGRAM_MTPROTO_PROXY || process.env.TELEGRAM_PROXY || '').trim();
-  if (!raw) {
+  const raw = (process.env.TELEGRAM_MTPROTO_PROXY || process.env.TELEGRAM_PROXY || '').trim();  if (!raw) {
     return undefined;
   }
 
@@ -62,6 +62,8 @@ function readTelegramSocksProxy() {
       socksType,
       username: url.username ? decodeURIComponent(url.username) : undefined,
       password: url.password ? decodeURIComponent(url.password) : undefined,
+      // 10s：update loop（updates 长连接）需要稳定的代理连接，5s 会让 getDifference
+      // 高频超时断连、事件丢失。慢 source 的阻塞已由 sync 并行 3 解决，不需要再压超时。
       timeout: 10,
     };
   } catch (error) {
@@ -514,7 +516,7 @@ function buildBridgeChatEntityRef(input: {
   });
 }
 
-export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncClient> {
+export async function createTelegramGramjsClient(): Promise<TelegramLiveClient> {
   const config = readTelegramClientConfig();
   const policy = readTelegramMtprotoPolicy();
   if (config.status === 'missing_credentials') {
@@ -535,6 +537,8 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
     await client.disconnect();
     throw new Error('Telegram session is not authorized.');
   }
+
+  attachTelegramLiveUpdateLoop(client);
 
   return {
     async resolveChannel(input: TelegramChannelResolveInput): Promise<TelegramChannelResolved> {
@@ -777,5 +781,83 @@ export async function createTelegramGramjsClient(): Promise<TelegramChannelSyncC
     async disconnect() {
       await client.disconnect();
     },
+    async reconnect() {
+      if (client.connected) {
+        return;
+      }
+      await client.connect();
+    },
+    addNewMessageHandler(handler: (event: LiveTelegramNewMessageEvent) => void | Promise<void>) {
+      newMessageHandlers.add(handler);
+    },
+    isConnected() {
+      return client.connected;
+    },
   };
+}
+
+export interface LiveTelegramNewMessageEvent {
+  /** gramjs peer channel id（无 -100 前缀，number 字符串） */
+  chatId: string;
+  /** gramjs Message.post：channel 广播消息为 true */
+  isChannelPost: boolean;
+  /** mapped remote message（postedAtMs 等） */
+  message: TelegramChannelRemoteMessage;
+}
+
+export interface TelegramLiveClient extends TelegramChannelSyncClient {
+  reconnect(): Promise<void>;
+  addNewMessageHandler(handler: (event: LiveTelegramNewMessageEvent) => void | Promise<void>): void;
+  isConnected(): boolean;
+}
+
+const newMessageHandlers = new Set<(event: LiveTelegramNewMessageEvent) => void | Promise<void>>();
+
+async function dispatchLiveNewMessage(event: LiveTelegramNewMessageEvent) {
+  for (const handler of newMessageHandlers) {
+    try {
+      await handler(event);
+    } catch (error) {
+      console.warn(
+        '[telegram-live] new-message handler error:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+}
+
+function attachTelegramLiveUpdateLoop(client: TelegramClient) {
+  client.addEventHandler(
+    async (rawEvent: unknown) => {
+      const message = asRecord((rawEvent as { message?: unknown }).message);
+      if (!message) {
+        return;
+      }
+      const peerId = asRecord((rawEvent as { peerId?: unknown }).peerId);
+      const channelIdValue =
+        message.chatId ??
+        (peerId && peerId.channelId !== undefined ? peerId.channelId : peerId && peerId.chatId);
+      if (channelIdValue === undefined || channelIdValue === null) {
+        return;
+      }
+      const mapped = mapTelegramMessageToRemoteMessage(message);
+      if (!mapped) {
+        return;
+      }
+      // gramjs Message.post 在事件路径恒为 false（实测），channel 广播的正确判定：
+      // peerId 是 PeerChannel，或 chatId 带 -100 超级群/频道前缀
+      const rawChatId = String(channelIdValue);
+      const isChannelPost =
+        message.post === true ||
+        message.post === 1 ||
+        peerId?.className === 'PeerChannel' ||
+        rawChatId.startsWith('-100');
+      void dispatchLiveNewMessage({
+        chatId: rawChatId,
+        isChannelPost,
+        message: mapped,
+      });
+    },
+    new NewMessage({}),
+  );
 }

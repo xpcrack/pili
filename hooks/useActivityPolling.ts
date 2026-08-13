@@ -500,33 +500,9 @@ export function useActivityPolling(
         dispatch({ type: 'set_loading', loading: true });
       }
 
-      if (currentUsers.length === 0) {
-        if (!isMountedRef.current || requestId !== requestIdRef.current) {
-          return {
-            feedLength: feedRef.current.length,
-            selectedFeedLength: currentSelectedFeedLength,
-            totalAvailable: Math.max(feedRef.current.length, (stateRef.current.summary?.transactionCount ?? 0)),
-            success: false,
-            error: '请求状态已过期',
-            partialSyncWarning: false,
-            autoBackfillRounds: 0,
-          };
-        }
-
-        feedRef.current = [];
-        feedNextCursorRef.current = null;
-        dispatch({ type: 'clear_all' });
-        return {
-          feedLength: 0,
-          selectedFeedLength: 0,
-          totalAvailable: 0,
-          success: true,
-          autoBackfillRounds: 0,
-          hasMore: false,
-          historyComplete: null,
-          localQualifiedCount: 0,
-        };
-      }
+      // 注意：不要用 currentUsers.length === 0 短路返回。全新浏览器（无 zustand
+      // persist 缓存）users 为空，短路会让页面永远不发请求、永久空白；服务端
+      // /api/feed 响应自带 users 并会通过 mergeUsersFromServer 填充 store。
 
       // append：再拉一页（400）；silent/poll：只重拉顶窗；其余：从顶攒到 targetCount
       const isBackgroundRefresh = Boolean(options?.silent || options?.poll) && !replace && !append;
