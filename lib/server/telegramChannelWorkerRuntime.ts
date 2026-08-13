@@ -4,6 +4,7 @@ import type { TelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { readTelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { createTelegramGramjsClient } from '@/lib/server/telegramGramjsClient';
 import { syncAllTelegramChannelSources } from '@/lib/server/telegramChannelSync';
+import { ensureLiveTelegramChannelClient } from '@/lib/server/telegramChannelLive';
 import { classifyTelegramMtprotoError, readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import type { TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
@@ -55,9 +56,23 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
     };
   }
 
+  // 即时路径：常驻 client + updates 长连接。成功后兜底 sync 复用同一连接。
+  // 失败则回退到「每 cycle 新建 client」的旧路径，确保兜底 sync 不中断。
+  let useLiveClient = deps.createClient === undefined;
+  let liveClient: TelegramChannelSyncClient | null = null;
+  if (useLiveClient) {
+    const live = await ensureLiveTelegramChannelClient();
+    if (!live.client) {
+      console.warn(`[telegram-channel-worker] live client unavailable, falling back to per-cycle client: ${live.error}`);
+      useLiveClient = false;
+    } else {
+      liveClient = live.client;
+    }
+  }
+
   let client: TelegramChannelSyncClient | null = null;
   try {
-    client = deps.createClient ? await deps.createClient() : await createTelegramGramjsClient();
+    client = useLiveClient ? liveClient : deps.createClient ? await deps.createClient() : await createTelegramGramjsClient();
     const result = await syncAllTelegramChannelSources({
       client,
     });
@@ -114,6 +129,9 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
       lastError: classified.message,
     };
   } finally {
-    await client?.disconnect?.();
+    // live client 常驻跨 cycle，绝不 disconnect；仅断开 fallback 新建的 client
+    if (!useLiveClient) {
+      await client?.disconnect?.();
+    }
   }
 }

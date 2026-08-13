@@ -191,7 +191,11 @@ const LIVE_MONITOR_OWNS_WALLET_TX_SQL = `SELECT 1 AS ok
        WHERE user_id = ?
          AND source = 'blockchain'
          AND chain = ?
-         AND address = ?
+         -- LOWER(address) matches the expression in
+         -- idx_events_blockchain_chain_address_lower_timestamp; plain
+         -- address=? would skip the third index column and force a scan of
+         -- every blockchain/chain row (5s per XXYY message during backlog).
+         AND LOWER(address) = ?
          AND LOWER(COALESCE(tx_hash, '')) = ?
          AND (
            ingest_source LIKE 'live-monitor%'
@@ -1263,40 +1267,66 @@ export function readLatestBuyAtByToken(tokens: Array<{ chain: string; contractAd
   return latestByToken;
 }
 
-let latestActivityCache: { data: Record<string, number>; ts: number } | null = null;
+let latestActivityCache: { data: Record<string, number>; ts: number; refreshing: boolean } | null = null;
 const LATEST_ACTIVITY_TTL_MS = 30_000;
 
+function refreshLatestActivityCache() {
+  const db = getDb();
+  // 26 万行 GROUP BY user_id 全表扫实测 ~1.1s；换 DISTINCT user_id（走索引，~30ms）
+  // + 每个用户按 idx_events_user_timestamp 前缀取 MAX（进程内复用 prepared stmt），
+  // 总计 ~100ms，比全表扫快一个量级。
+  const userIds = db
+    .prepare(`SELECT DISTINCT user_id FROM events WHERE user_id IS NOT NULL AND user_id != ''`)
+    .all() as Array<{ user_id: string }>;
+  const stmt = db.prepare(`SELECT timestamp FROM events WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1`);
+
+  const latestByUser: Record<string, number> = {};
+  for (const row of userIds) {
+    const userId = (row.user_id || '').trim();
+    if (!userId) {
+      continue;
+    }
+    const latest = stmt.get(userId) as { timestamp?: number } | undefined;
+    const ts = typeof latest?.timestamp === 'number' && Number.isFinite(latest.timestamp) ? latest.timestamp : 0;
+    if (ts > 0) {
+      latestByUser[userId] = ts;
+    }
+  }
+
+  latestActivityCache = { data: latestByUser, ts: Date.now(), refreshing: false };
+  return latestByUser;
+}
+
+/**
+ * 侧栏红点用的按用户最新时间戳。GROUP BY 全表扫实测 ~1.1s，
+ * 而 poll 每 5s 一次且 TTL 过期时恰好撞上会拖慢整个 feed 轮询。
+ * 采用 stale-while-revalidate：过期时立即返回旧缓存，后台异步刷新，
+ * 保证 poll 路径永远是内存读（~µs）。
+ */
 export function readLatestActivityAtByUser() {
   const now = Date.now();
   if (latestActivityCache && now - latestActivityCache.ts < LATEST_ACTIVITY_TTL_MS) {
     return latestActivityCache.data;
   }
 
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT user_id, MAX(timestamp) AS latest_ts
-       FROM events
-       WHERE user_id IS NOT NULL AND user_id != ''
-       GROUP BY user_id`
-    )
-    .all() as Array<{ user_id: string; latest_ts: number | null }>;
-
-  const latestByUser: Record<string, number> = {};
-  for (const row of rows) {
-    const userId = (row.user_id || '').trim();
-    if (!userId) {
-      continue;
+  if (latestActivityCache) {
+    if (!latestActivityCache.refreshing) {
+      latestActivityCache.refreshing = true;
+      // refreshLatestActivityCache 是同步全表扫（~1.1s），必须真正异步调度，
+      // 否则 void 包装也会同步阻塞当前 poll 请求。
+      setImmediate(() => {
+        try {
+          refreshLatestActivityCache();
+        } catch {
+          // 刷新失败保留旧缓存；下个 TTL 周期再试
+        }
+      });
     }
-
-    const ts = typeof row.latest_ts === 'number' && Number.isFinite(row.latest_ts) ? row.latest_ts : 0;
-    if (ts > 0) {
-      latestByUser[userId] = ts;
-    }
+    // 刷新中或刚过期：先返回旧缓存，不阻塞请求
+    return latestActivityCache.data;
   }
 
-  latestActivityCache = { data: latestByUser, ts: now };
-  return latestByUser;
+  return refreshLatestActivityCache();
 }
 
 export function deleteTelegramMonitorEventsByTxHash(params: {
