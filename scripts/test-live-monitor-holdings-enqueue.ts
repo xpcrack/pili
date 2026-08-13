@@ -28,6 +28,7 @@ async function run() {
   };
 
   const enqueued: Array<{ address: string; chain: string; userId: string }> = [];
+  const order: string[] = [];
 
   const result = await runLiveMonitorCycle({
     listUsers: () => [user],
@@ -47,7 +48,9 @@ async function run() {
     }),
     syncWatchlist: async () => ({ ok: true } as never),
     fetchActivity: async ({ chain }) => {
-      // Only return a trade on base so we get one unique (wallet, chain) enqueue.
+      order.push('activity');
+      // Only return a trade on base; the target itself still refreshes all
+      // inferred wallet chains before this activity scan.
       if (chain !== 'base') {
         return { items: [], next: null, raw: null };
       }
@@ -69,6 +72,7 @@ async function run() {
     },
     upsertTrades: () => ({ upserted: 1 }),
     enqueueHoldingsRefresh: (input) => {
+      order.push('enqueue');
       enqueued.push(input);
       return { enqueued: true, key: `${input.chain}:${input.address}` };
     },
@@ -76,12 +80,16 @@ async function run() {
   });
 
   assert.ok(result.summary.tradesUpserted >= 1, `expected trades upserted, got ${result.summary.tradesUpserted}`);
-  assert.equal(enqueued.length, 1, `expected 1 enqueue, got ${enqueued.length}: ${JSON.stringify(enqueued)}`);
+  assert.equal(enqueued.length, 4, `expected one enqueue per inferred chain, got ${enqueued.length}: ${JSON.stringify(enqueued)}`);
   assert.equal(enqueued[0]?.userId, 'user-1');
   assert.equal(enqueued[0]?.address.toLowerCase(), wallet.toLowerCase());
-  assert.equal(enqueued[0]?.chain, 'base');
+  assert.deepEqual(
+    new Set(enqueued.map((item) => item.chain)),
+    new Set(['robinhood', 'base', 'eth', 'bsc'])
+  );
+  assert.equal(order[0], 'enqueue', `holdings should enqueue before activity scan: ${order.join(' -> ')}`);
 
-  // No trades → no enqueue
+  // A wallet hit still refreshes holdings even when GMGN returns no trade.
   enqueued.length = 0;
   await runLiveMonitorCycle({
     listUsers: () => [user],
@@ -107,7 +115,7 @@ async function run() {
     },
     gmgnCooldownRemainingMs: () => 0,
   });
-  assert.equal(enqueued.length, 0, 'no trades should not enqueue holdings refresh');
+  assert.equal(enqueued.length, 4, 'wallet hits should enqueue holdings refresh without a trade result');
 
   console.log('live-monitor holdings enqueue tests: ok');
 }

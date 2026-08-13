@@ -22,6 +22,7 @@ async function flushMicrotasks(times = 20) {
 async function run() {
   resetLiveDoorbellQueueForTests();
   const calls: Array<{ address: string; chain: string; userId: string }> = [];
+  const liquidityFlags: Array<boolean | undefined> = [];
   const timers: Array<{ cb: () => void; ms: number }> = [];
 
   const queue = createHoldingsRefreshQueue({
@@ -43,6 +44,7 @@ async function run() {
         chain: params.chain,
         userId: params.userId,
       });
+      liquidityFlags.push(params.fetchTokenLiquidity);
       return {
         status: 'idle',
         chain: 'solana',
@@ -90,11 +92,55 @@ async function run() {
   queue.enqueue({ address: 'WalletB', chain: 'base', userId: 'u1' });
   flushTimers(timers);
   await flushMicrotasks();
-  assert.equal(calls.length, 2, 'holdings must yield while a live Feed doorbell is pending');
-  assert.equal(queue.pendingCount(), 1);
+  assert.equal(calls.length, 3, 'EVM holdings must run while a live Feed doorbell is pending');
+  assert.equal(calls[2]?.address, 'WalletB');
+  assert.equal(queue.pendingCount(), 0);
+
+  let transientAttempts = 0;
+  const retryQueue = createHoldingsRefreshQueue({
+    debounceMs: 0,
+    retryDelayMs: 0,
+    setTimer: ((cb: () => void) => {
+      const handle = { cb, ms: 0 };
+      timers.push(handle);
+      return handle as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout,
+    clearTimer: ((handle: unknown) => {
+      const idx = timers.indexOf(handle as { cb: () => void; ms: number });
+      if (idx >= 0) timers.splice(idx, 1);
+    }) as typeof clearTimeout,
+    refreshWallet: async () => {
+      transientAttempts += 1;
+      if (transientAttempts === 1) {
+        return {
+          status: 'error',
+          chain: 'base',
+          holdingsRowCount: 0,
+          filteredOutHoldingCount: 0,
+          totalAssetUsd: null,
+          lastError: 'OKX 网络错误: fetch failed',
+        };
+      }
+      return {
+        status: 'idle',
+        chain: 'base',
+        holdingsRowCount: 1,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: 10,
+        lastError: null,
+      };
+    },
+    log: () => {},
+  });
+  retryQueue.enqueue({ address: 'WalletRetry', chain: 'base', userId: 'u1' });
+  flushTimers(timers);
+  await flushMicrotasks();
+  assert.equal(transientAttempts, 2, 'transient OKX network failures should retry once');
 
   queue.resetForTests();
+  retryQueue.resetForTests();
   resetLiveDoorbellQueueForTests();
+  assert.deepEqual(liquidityFlags, [false, false, false], 'event refreshes must not wait for DexScreener');
   console.log('holdings refresh queue tests: ok');
 }
 

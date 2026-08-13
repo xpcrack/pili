@@ -239,10 +239,37 @@ async function testAlchemyInboxFailureDoesNotBlockDoorbells() {
   assert.match(result.lastError || '', /inbox unavailable/);
 }
 
-function testHoldingsYieldToPendingLiveFeed() {
+async function testCooldownStillEnqueuesEvmHoldings() {
+  const wallet = '0xabc0000000000000000000000000000000000005';
+  const user = makeUser('cooldown-holdings-user', wallet);
+  const enqueued: Array<{ address: string; chain: string; userId: string }> = [];
+
+  const result = await runLiveMonitorCycle({
+    listUsers: () => [user],
+    env: {
+      PILI_LIVE_SOURCE: 'alchemy',
+      PILI_ALCHEMY_INBOX_URL: 'https://example.invalid/inbox',
+      PILI_ALCHEMY_PULL_TOKEN: 'token',
+      PILI_LIVE_CYCLE_MS: '1',
+    },
+    claimDoorbells: () => [makeDoorbell(wallet, 'cooldown-holdings-user')],
+    enqueueHoldingsRefresh: (input) => {
+      enqueued.push(input);
+      return { enqueued: true, key: `${input.chain}:${input.address}` };
+    },
+    gmgnCooldownRemainingMs: () => 60_000,
+  });
+
+  assert.equal(result.status, 'idle');
+  assert.deepEqual(enqueued, [
+    { address: wallet, chain: 'base', userId: 'cooldown-holdings-user' },
+  ]);
+}
+
+function testHoldingsContinueWithPendingLiveFeed() {
   assert.equal(shouldDeferHoldingsRefreshForLiveFeed(0), false);
-  assert.equal(shouldDeferHoldingsRefreshForLiveFeed(1), true);
-  assert.equal(shouldDeferHoldingsRefreshForLiveFeed(40), true);
+  assert.equal(shouldDeferHoldingsRefreshForLiveFeed(1), false);
+  assert.equal(shouldDeferHoldingsRefreshForLiveFeed(40), false);
 }
 
 async function run() {
@@ -250,7 +277,8 @@ async function run() {
   await testSlowWalletTimesOutAndNacks();
   await testDoorbellClaimLimitIsConfigurable();
   await testAlchemyInboxFailureDoesNotBlockDoorbells();
-  testHoldingsYieldToPendingLiveFeed();
+  await testCooldownStillEnqueuesEvmHoldings();
+  testHoldingsContinueWithPendingLiveFeed();
   console.log('live-monitor reliability tests: ok');
 }
 

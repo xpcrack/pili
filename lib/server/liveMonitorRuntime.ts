@@ -262,6 +262,15 @@ export async function runLiveMonitorCycle(
     gmgnErrors: 0,
   };
 
+  if (env.PILI_GMGN_RECOVERY_PAUSED === '1') {
+    return {
+      sleepMs: 30_000,
+      status: 'idle',
+      lastError: 'paused for newone self-holdings recovery',
+      summary: emptySummary,
+    };
+  }
+
   if (mode === 'xxyy') {
     return {
       sleepMs: DEFAULT_IDLE_MS,
@@ -323,12 +332,42 @@ export async function runLiveMonitorCycle(
   let tradesUpserted = 0;
   let walletsScanned = 0;
   let gmgnErrors = 0;
+  const enqueueRefresh = deps.enqueueHoldingsRefresh ?? enqueueHoldingsRefresh;
+  const claimLimit = Math.max(
+    1,
+    Math.min(
+      200,
+      Math.floor(readPositiveEnvNumber(env, 'PILI_LIVE_DOORBELL_CLAIM_LIMIT', DEFAULT_DOORBELL_CLAIM_LIMIT))
+    )
+  );
+
+  // A claimed doorbell is still useful during GMGN cooldown: OKX-backed EVM and
+  // Solana holdings can refresh independently of GMGN. Leave the doorbell
+  // unacked so it is reclaimed for trade enrichment once cooldown clears.
+  const enqueueCooldownHoldings = (doorbells: LiveDoorbellRow[]) => {
+    for (const doorbell of doorbells) {
+      const owner = byLower.get(doorbell.address.toLowerCase());
+      if (!owner) continue;
+      for (const chain of resolveChainsForDoorbell(owner.address, doorbell.chains)) {
+        if (chain === 'robinhood') continue;
+        try {
+          enqueueRefresh({ address: owner.address, chain, userId: owner.user.id });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          lastError = lastError || `holdings enqueue failed: ${message}`;
+          console.error(
+            `[live-monitor] cooldown holdings enqueue failed for ${owner.address}/${chain}: ${message}`
+          );
+        }
+      }
+    }
+  };
 
   try {
     // GMGN is the sole trade-detail source. While a ban is active every scan would
-    // fail at assertGmgnAllowed; rather than claim+drop doorbells (consuming the
-    // ring and losing the signal) or pull+advance the Alchemy inbox cursor (consuming
-    // on-chain events we then can't scan), hold everything and idle until it clears.
+    // fail at assertGmgnAllowed. Claim local doorbells only to trigger independent
+    // holdings refreshes; leave them unacked and never pull the Alchemy inbox so
+    // the trade signal remains available after cooldown.
     const banRemainingMs = cooldownRemaining(now());
     // 冷却期当然跳过。但冷却解除后 GMGN 滚动惩罚窗口（5min）还没完全清空，
     // 立即恢复 wallet_activity 扫描会续杯再封。利用慢启动因子判断是否在恢复期：
@@ -336,22 +375,18 @@ export async function runLiveMonitorCycle(
     // （acquireGmgnGlobalToken 的慢启动已压 RPS，但 live-monitor 的并发请求
     // 仍可能撞窗口。全量跳过 5min 恢复期最干净。）
     if (banRemainingMs > 0 || recoveryFactor(now()) < 1.0) {
+      const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
+      xxyyDoorbells = doorbells.length;
+      enqueueCooldownHoldings(doorbells);
       const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
       return {
         sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
         status: 'idle',
-        lastError: `GMGN_COOLDOWN ${Math.ceil(banRemainingMs / 1000)}s remaining — doorbells held, no pull/scan`,
-        summary: emptySummary,
+        lastError: `GMGN_COOLDOWN ${Math.ceil(banRemainingMs / 1000)}s remaining — doorbells held, holdings queued`,
+        summary: { ...emptySummary, xxyyDoorbells },
       };
     }
 
-    const claimLimit = Math.max(
-      1,
-      Math.min(
-        200,
-        Math.floor(readPositiveEnvNumber(env, 'PILI_LIVE_DOORBELL_CLAIM_LIMIT', DEFAULT_DOORBELL_CLAIM_LIMIT))
-      )
-    );
     const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
     xxyyDoorbells = doorbells.length;
 
@@ -398,7 +433,6 @@ export async function runLiveMonitorCycle(
     const maxConcurrentScans = Number.isFinite(maxConcurrentScansRaw)
       ? Math.max(1, Math.min(2, Math.floor(maxConcurrentScansRaw)))
       : 1;
-    const enqueueRefresh = deps.enqueueHoldingsRefresh ?? enqueueHoldingsRefresh;
     const activityTimeoutMs = readPositiveEnvNumber(
       env,
       'PILI_LIVE_ACTIVITY_TIMEOUT_MS',
@@ -407,6 +441,29 @@ export async function runLiveMonitorCycle(
     const leaseByWalletLower = new Map<string, string>();
     for (const doorbell of doorbells) {
       leaseByWalletLower.set(doorbell.walletLower, doorbell.leaseToken);
+    }
+
+    const enqueuedHoldingKeys = new Set<string>();
+    const enqueueTargetHolding = (target: ScanTarget, chain: string) => {
+      const key = `${chain.toLowerCase()}:${target.address.toLowerCase()}`;
+      if (enqueuedHoldingKeys.has(key)) return;
+      enqueuedHoldingKeys.add(key);
+      try {
+        enqueueRefresh({ address: target.address, chain, userId: target.user.id });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        lastError = lastError || `holdings enqueue failed: ${message}`;
+        console.error(`[live-monitor] holdings enqueue failed for ${target.address}/${chain}: ${message}`);
+      }
+    };
+
+    // A doorbell already proves that the wallet changed on-chain. Enqueue the
+    // balance snapshot before GMGN activity enrichment so OKX-backed holdings
+    // do not wait for the slower Feed reconciliation path.
+    for (const target of targets) {
+      for (const chain of target.chains) {
+        enqueueTargetHolding(target, chain);
+      }
     }
 
     const processTarget = async (target: ScanTarget) => {
@@ -461,9 +518,9 @@ export async function runLiveMonitorCycle(
               const chain = (trade.chain || '').trim();
               if (!wallet || !chain) continue;
               const key = `${chain.toLowerCase()}:${wallet.toLowerCase()}`;
-              if (seenWalletChains.has(key)) continue;
+              if (seenWalletChains.has(key) || enqueuedHoldingKeys.has(key)) continue;
               seenWalletChains.add(key);
-              enqueueRefresh({ address: wallet, chain, userId: target.user.id });
+              enqueueTargetHolding(target, chain);
             }
           }
         } catch (error) {

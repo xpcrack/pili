@@ -1,7 +1,10 @@
 import { syncFeishuEnablementFromNewone } from '@/lib/server/feishuEnablementSync';
 import { syncTwitterFromGmgnForUnfilledUsers } from '@/lib/server/gmgnTwitterSync';
 import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completenessMaintenanceWorkerRuntime';
-import { runHoldingsRefreshCycle } from '@/lib/server/holdingsRefreshRuntime';
+import {
+  runGmgnHoldingsRefreshQueueCycle,
+  runNativeHoldingsRefreshQueueCycle,
+} from '@/lib/server/holdingsRefreshQueue';
 import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
 import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
 import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
@@ -295,10 +298,18 @@ export function createTaskRegistry(tasks: TaskDefinition[]): RuntimeTaskRegistry
 
 const DEFAULT_ENABLEMENT_SYNC_MS = 15 * 60_000;
 
+type HoldingsRuntimeCycle = () => Promise<{
+  sleepMs: number;
+  status: string;
+  summary: Record<string, unknown>;
+  lastError: string | null;
+}>;
+
 interface DefaultRuntimeTaskDeps {
   runTelegramChannelWorkerCycle?: typeof runTelegramChannelWorkerCycle;
   runCompletenessMaintenanceWorkerCycle?: typeof runCompletenessMaintenanceWorkerCycle;
-  runHoldingsRefreshCycle?: typeof runHoldingsRefreshCycle;
+  runHoldingsRefreshCycle?: HoldingsRuntimeCycle;
+  runGmgnHoldingsRefreshCycle?: HoldingsRuntimeCycle;
   runHolderSnapshotCycle?: typeof runHolderSnapshotCycle;
   runTelegramBridgeCycle?: typeof runTelegramBridgeCycle;
   runLiveMonitorCycle?: typeof runLiveMonitorCycle;
@@ -316,7 +327,8 @@ export function createDefaultRuntimeTasks(
   const runTelegramChannelCycle = deps.runTelegramChannelWorkerCycle ?? runTelegramChannelWorkerCycle;
   const runCompletenessCycle =
     deps.runCompletenessMaintenanceWorkerCycle ?? runCompletenessMaintenanceWorkerCycle;
-  const runHoldingsCycle = deps.runHoldingsRefreshCycle ?? runHoldingsRefreshCycle;
+  const runHoldingsCycle = deps.runHoldingsRefreshCycle ?? runNativeHoldingsRefreshQueueCycle;
+  const runGmgnHoldingsCycle = deps.runGmgnHoldingsRefreshCycle ?? runGmgnHoldingsRefreshQueueCycle;
   const runHolderSnapshotCycleImpl = deps.runHolderSnapshotCycle ?? runHolderSnapshotCycle;
   const runTelegramBridgeCycleImpl = deps.runTelegramBridgeCycle ?? runTelegramBridgeCycle;
   const runLiveMonitorCycleImpl = deps.runLiveMonitorCycle ?? runLiveMonitorCycle;
@@ -416,23 +428,28 @@ export function createDefaultRuntimeTasks(
     })
   );
 
-  tasks.push(
-    createLoopTask({
-      key: 'holdings-refresh',
-      label: 'Holdings Refresh',
-      cycle: async () => {
-        const result = await runHoldingsCycle();
-        return {
-          sleepMs: result.sleepMs,
-          status: result.status,
-          detail: {
-            lastError: result.lastError ?? null,
-            ...result.summary,
-          },
-        };
-      },
-    })
-  );
+  for (const [key, label, cycle] of [
+    ['holdings-refresh', 'Holdings Refresh (OKX/RPC)', runHoldingsCycle],
+    ['holdings-refresh-gmgn', 'Holdings Refresh (GMGN)', runGmgnHoldingsCycle],
+  ] as const) {
+    tasks.push(
+      createLoopTask({
+        key,
+        label,
+        cycle: async () => {
+          const result = await cycle();
+          return {
+            sleepMs: result.sleepMs,
+            status: result.status,
+            detail: {
+              lastError: result.lastError ?? null,
+              ...result.summary,
+            },
+          };
+        },
+      })
+    );
+  }
 
   tasks.push(
     createLoopTask({

@@ -838,6 +838,9 @@ ON twitter_tweet_token_mentions(tweet_id, chain, token_address_lower, token_symb
 CREATE INDEX IF NOT EXISTS idx_twitter_tweet_token_mentions_tweet_id
 ON twitter_tweet_token_mentions(tweet_id);
 
+CREATE INDEX IF NOT EXISTS idx_twitter_tweet_token_mentions_created
+ON twitter_tweet_token_mentions(created_at_ms);
+
 CREATE TABLE IF NOT EXISTS event_tweet_refs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL,

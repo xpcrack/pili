@@ -77,6 +77,10 @@ function walletTimelineDrainMaxJobs() {
 }
 
 async function runWalletTimelineMaintenance() {
+  if (process.env.PILI_GMGN_RECOVERY_PAUSED === '1') {
+    console.log('[completeness-worker] wallet-timeline-maintenance skip (self-holdings recovery)');
+    return { sweep: null, walletBackfill: null };
+  }
   if (countPendingLiveDoorbells() > 0) {
     console.log('[completeness-worker] wallet-timeline-maintenance skip (live doorbells pending)');
     return { sweep: null, walletBackfill: null };
