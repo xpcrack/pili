@@ -20,7 +20,6 @@ import {
   readGmgnHeavyJobLock,
   releaseGmgnHeavyJob,
 } from '@/lib/server/gmgnRateLimit';
-import { countPendingLiveDoorbells } from '@/lib/server/liveDoorbellQueue';
 
 const MIN_HOLDING_USD = 5;
 const MIN_LIQUIDITY_USD = 5_000;
@@ -118,7 +117,10 @@ export interface HoldingsRefreshRunResult {
 }
 
 export function shouldDeferHoldingsRefreshForLiveFeed(pendingLiveDoorbells: number) {
-  return Number.isFinite(pendingLiveDoorbells) && pendingLiveDoorbells > 0;
+  // Full scans merge per-wallet by refreshed_at, so pending live doorbells
+  // must not starve OKX-backed holdings forever when GMGN is degraded.
+  void pendingLiveDoorbells;
+  return false;
 }
 
 interface RunHoldingsRefreshOptions {
@@ -248,7 +250,7 @@ function toNumber(value: unknown): number | null {
 }
 
 function isRateLimitError(message: string) {
-  return /429|rate.?limit|RATE_LIMIT/i.test(message);
+  return /429|rate.?limit|RATE_LIMIT|GMGN_COOLDOWN|GMGN_EGRESS_BANNED|temporarily banned/i.test(message);
 }
 
 function listRobinhoodCandidateWallets(db: DbHandle, trackedAddresses: TrackedAddressRow[]) {
@@ -568,11 +570,56 @@ function replaceCurrentHoldings(
   holdings: CurrentHoldingRecord[],
   walletStatuses: CurrentHoldingWalletStatusRecord[]
 ) {
+  const holdingsByWallet = new Map<string, CurrentHoldingRecord[]>();
+  for (const holding of holdings) {
+    const key = `${holding.tracked_address_lower}:${holding.chain}`;
+    const rows = holdingsByWallet.get(key);
+    if (rows) rows.push(holding);
+    else holdingsByWallet.set(key, [holding]);
+  }
+
+  const currentSnapshotAt = db.prepare(
+    `SELECT MAX(refreshed_at) AS refreshed_at
+     FROM (
+       SELECT refreshed_at FROM current_holdings
+       WHERE tracked_address_lower = ? AND chain = ?
+       UNION ALL
+       SELECT refreshed_at FROM current_holdings_wallet_status
+       WHERE tracked_address_lower = ? AND chain = ?
+     )`
+  );
+
   const write = db.transaction(() => {
-    db.prepare('DELETE FROM current_holdings').run();
-    db.prepare('DELETE FROM current_holdings_wallet_status').run();
-    insertHoldingsRows(db, holdings);
-    insertWalletStatusRows(db, walletStatuses);
+    for (const status of walletStatuses) {
+      const existing = currentSnapshotAt.get(
+        status.tracked_address_lower,
+        status.chain,
+        status.tracked_address_lower,
+        status.chain
+      ) as { refreshed_at?: number | null } | undefined;
+      const existingRefreshedAt = existing?.refreshed_at;
+
+      // Preserve an event snapshot completed after this full-scan wallet. Equal
+      // timestamps are this scan's immediate write and may receive liquidity now.
+      if (
+        typeof existingRefreshedAt === 'number' &&
+        existingRefreshedAt > status.refreshed_at
+      ) {
+        continue;
+      }
+
+      const key = `${status.tracked_address_lower}:${status.chain}`;
+      db.prepare(
+        `DELETE FROM current_holdings
+         WHERE tracked_address_lower = ? AND chain = ?`
+      ).run(status.tracked_address_lower, status.chain);
+      db.prepare(
+        `DELETE FROM current_holdings_wallet_status
+         WHERE tracked_address_lower = ? AND chain = ?`
+      ).run(status.tracked_address_lower, status.chain);
+      insertHoldingsRows(db, holdingsByWallet.get(key) ?? []);
+      insertWalletStatusRows(db, [status]);
+    }
   });
 
   write();
@@ -585,7 +632,21 @@ function replaceWalletHoldings(
   chain: HoldingsChain,
   holdings: CurrentHoldingRecord[],
   walletStatus: CurrentHoldingWalletStatusRecord
-) {
+): boolean {
+  const existing = db.prepare(
+    `SELECT MAX(refreshed_at) AS refreshed_at
+     FROM (
+       SELECT refreshed_at FROM current_holdings
+       WHERE tracked_address_lower = ? AND chain = ?
+       UNION ALL
+       SELECT refreshed_at FROM current_holdings_wallet_status
+       WHERE tracked_address_lower = ? AND chain = ?
+     )`
+  ).get(addressLower, chain, addressLower, chain) as { refreshed_at?: number | null } | undefined;
+  if (typeof existing?.refreshed_at === 'number' && existing.refreshed_at > walletStatus.refreshed_at) {
+    return false;
+  }
+
   const write = db.transaction(() => {
     db.prepare(
       `DELETE FROM current_holdings WHERE tracked_address_lower = ? AND chain = ?`
@@ -595,6 +656,7 @@ function replaceWalletHoldings(
   });
 
   write();
+  return true;
 }
 
 function normalizeHoldingsChain(chain: string): HoldingsChain | null {
@@ -961,6 +1023,8 @@ export async function refreshCurrentHoldings(
 
   for (const row of uniqueTrackedAddresses) {
     ensureNotAborted(options.signal);
+    // Timestamp this wallet request, not the multi-hour sweep start.
+    const walletRefreshAt = options.now ? options.now() : Date.now();
 
     if (!isSupportedOkxChain(row.chain)) {
       walletStatuses.push({
@@ -969,7 +1033,7 @@ export async function refreshCurrentHoldings(
         user_id: row.user_id,
         chain: row.chain,
         status: 'failed',
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
       summary.failedWalletCount += 1;
       failedUserIds.add(row.user_id);
@@ -985,7 +1049,7 @@ export async function refreshCurrentHoldings(
         user_id: row.user_id,
         chain: row.chain,
         status: 'failed',
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
       summary.failedWalletCount += 1;
       failedUserIds.add(row.user_id);
@@ -1001,7 +1065,7 @@ export async function refreshCurrentHoldings(
       address: row.address,
       chain: row.chain,
       totalAssetUsd: result.assets.reduce((sum, asset) => sum + asset.valueUsd, 0),
-      updatedAt: nowMs,
+      updatedAt: walletRefreshAt,
     });
 
     walletStatuses.push({
@@ -1010,7 +1074,7 @@ export async function refreshCurrentHoldings(
       user_id: row.user_id,
       chain: row.chain,
       status: 'success',
-      refreshed_at: nowMs,
+      refreshed_at: walletRefreshAt,
     });
     summary.refreshedWalletCount += 1;
 
@@ -1033,8 +1097,19 @@ export async function refreshCurrentHoldings(
         price_usd: asset.priceUsd,
         value_usd: asset.valueUsd,
         liquidity_usd: null,
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
+    }
+
+    if (!options.dryRun) {
+      const walletHoldings = holdings.filter(
+        (holding) =>
+          holding.tracked_address_lower === row.address_lower &&
+          holding.chain === row.chain &&
+          holding.refreshed_at === walletRefreshAt
+      );
+      const walletStatus = walletStatuses[walletStatuses.length - 1]!;
+      replaceWalletHoldings(db, row.address_lower, row.chain, walletHoldings, walletStatus);
     }
   }
 
@@ -1042,6 +1117,7 @@ export async function refreshCurrentHoldings(
   let stopRobinhood = false;
   for (const row of robinhoodCandidates) {
     ensureNotAborted(options.signal);
+    const walletRefreshAt = options.now ? options.now() : Date.now();
     if (stopRobinhood) {
       walletStatuses.push({
         tracked_address: row.address,
@@ -1049,7 +1125,7 @@ export async function refreshCurrentHoldings(
         user_id: row.user_id,
         chain: ROBINHOOD_CHAIN,
         status: 'failed',
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
       summary.failedWalletCount += 1;
       holdings.push(...readPreviousRobinhoodHoldings(db, row.address_lower));
@@ -1064,7 +1140,7 @@ export async function refreshCurrentHoldings(
         user_id: row.user_id,
         chain: ROBINHOOD_CHAIN,
         status: 'failed',
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
       summary.failedWalletCount += 1;
       lastError = lastError ?? result.error;
@@ -1081,7 +1157,7 @@ export async function refreshCurrentHoldings(
       user_id: row.user_id,
       chain: ROBINHOOD_CHAIN,
       status: 'success',
-      refreshed_at: nowMs,
+      refreshed_at: walletRefreshAt,
     });
     summary.refreshedWalletCount += 1;
 
@@ -1104,8 +1180,19 @@ export async function refreshCurrentHoldings(
         price_usd: asset.priceUsd,
         value_usd: asset.valueUsd,
         liquidity_usd: asset.liquidityUsd,
-        refreshed_at: nowMs,
+        refreshed_at: walletRefreshAt,
       });
+    }
+
+    if (!options.dryRun) {
+      const walletHoldings = holdings.filter(
+        (holding) =>
+          holding.tracked_address_lower === row.address_lower &&
+          holding.chain === ROBINHOOD_CHAIN &&
+          holding.refreshed_at === walletRefreshAt
+      );
+      const walletStatus = walletStatuses[walletStatuses.length - 1]!;
+      replaceWalletHoldings(db, row.address_lower, ROBINHOOD_CHAIN, walletHoldings, walletStatus);
     }
   }
 
@@ -1206,25 +1293,6 @@ export async function refreshCurrentHoldings(
 }
 
 export async function runHoldingsRefreshCycle(options: RunHoldingsRefreshOptions = {}) {
-  const pendingLiveDoorbells = countPendingLiveDoorbells();
-  if (shouldDeferHoldingsRefreshForLiveFeed(pendingLiveDoorbells)) {
-    return {
-      sleepMs: Math.min(getHoldingsRefreshIntervalMs(), 30_000),
-      status: 'idle' as const,
-      summary: {
-        trackedAddressCount: 0,
-        uniqueTrackedAddressCount: 0,
-        refreshedWalletCount: 0,
-        failedWalletCount: 0,
-        holdingsRowCount: 0,
-        filteredOutHoldingCount: 0,
-        robinhoodWalletCount: 0,
-        refreshedAtMs: Date.now(),
-      },
-      lastError: `skipped: ${pendingLiveDoorbells} live Feed doorbell(s) pending`,
-    };
-  }
-
   if (!acquireGmgnHeavyJob('holdings-refresh')) {
     const other = readGmgnHeavyJobLock()?.job;
     return {

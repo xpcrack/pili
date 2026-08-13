@@ -124,6 +124,9 @@ export async function runGmgnCliAsync(opts: {
   /** @deprecated The guarded wrapper derives the documented route weight. */
   cost?: number;
 }): Promise<string> {
+  if (process.env.PILI_GMGN_RECOVERY_PAUSED === '1') {
+    throw new Error('GMGN_COOLDOWN paused for newone self-holdings recovery');
+  }
   assertGmgnAllowed();
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);
@@ -204,6 +207,9 @@ export function runGmgnCliSync(opts: {
   /** 全局桶令牌成本：signed 路由传 3，其余默认 1（同 runGmgnCliAsync）。 */
   cost?: number;
 }): SpawnSyncReturns<string> {
+  if (process.env.PILI_GMGN_RECOVERY_PAUSED === '1') {
+    throw new Error('GMGN_COOLDOWN paused for newone self-holdings recovery');
+  }
   assertGmgnAllowed();
   const bin = resolveGmgnCliBin(opts.bin);
   const env = buildGmgnCliEnv(opts.env);

@@ -12,7 +12,6 @@ Do not switch to Node `25+` unless you first reinstall or rebuild native depende
 - `pili-web-prod` is the default steady-state web/API process (Bun + Hono + Vite SPA).
 - use `runtime:status` to inspect runtime state.
 - use `runtime:refresh` after code changes to rebuild and replace only the production web process.
-- do not restart workers by default unless user asks.
 - build must succeed before replacing the running web process.
 - production refresh and normal operation share the same `.env.local`, `.data`, and SQLite DB.
 

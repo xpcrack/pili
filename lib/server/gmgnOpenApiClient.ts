@@ -571,6 +571,9 @@ export class GmgnOpenApiClient {
     query: GmgnQuery = {},
     opts: { signed: boolean; signal?: AbortSignal }
   ): Promise<T> {
+    if (process.env.PILI_GMGN_RECOVERY_PAUSED === '1') {
+      throw new Error('GMGN_COOLDOWN paused for newone self-holdings recovery');
+    }
     try {
       assertGmgnAllowed();
     } catch (e) {
@@ -705,15 +708,9 @@ export class GmgnOpenApiClient {
           if (effectiveProxy) noteGmgnEgressBan(reason, effectiveProxy, Date.now(), reset);
           else noteGmgnBan(reason, Date.now(), reset);
           if (accountBucket) {
-            // reset_at described the short response window in the 2026-08-08
-            // recovery test, but sibling keys on the same account were still
-            // immediately hard-banned afterwards. Quarantine the account for
-            // at least sixty minutes so background jobs do not probe it.
-            const accountReset = Math.max(
-              reset ?? 0,
-              Math.floor(Date.now() / 1000) + 3600,
-            );
-            noteGmgnEgressBan(reason, accountBucket, Date.now(), accountReset);
+            // First hard ban: 5-minute quiet window. A repeated hard ban on
+            // the first recovery attempt escalates this account to 60 minutes.
+            noteGmgnEgressBan(reason, accountBucket, Date.now(), reset, true);
           }
           markRateLimit(
             reset ? Math.max(5, reset - Math.floor(Date.now() / 1000)) : undefined

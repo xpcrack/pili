@@ -167,6 +167,7 @@ async function testTaskStopWaitsForActiveCycleShutdown() {
 
 async function testDefaultTasksIncludeHoldingsRefresh() {
   let holdingsCycleCount = 0;
+  let gmgnHoldingsCycleCount = 0;
   let holderSnapshotCycleCount = 0;
   let bridgeCycleCount = 0;
   const tasks = createDefaultRuntimeTasks({
@@ -199,6 +200,15 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
           filteredOutHoldingCount: 1,
           refreshedAtMs: 123_456,
         },
+      };
+    },
+    runGmgnHoldingsRefreshCycle: async () => {
+      gmgnHoldingsCycleCount += 1;
+      return {
+        sleepMs: 120_000,
+        status: 'idle',
+        lastError: null,
+        summary: { processed: 1, walletChain: 'robinhood:wallet1' },
       };
     },
     runHolderSnapshotCycle: async () => {
@@ -236,13 +246,16 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
 
   const registry = createTaskRegistry(tasks);
   const holdingsTask = registry.getTask('holdings-refresh');
+  const gmgnHoldingsTask = registry.getTask('holdings-refresh-gmgn');
   const holderSnapshotTask = registry.getTask('holder-snapshot');
   const bridgeTask = registry.getTask('telegram-bridge');
 
   assert.ok(holdingsTask, 'default runtime tasks should include holdings-refresh');
+  assert.ok(gmgnHoldingsTask, 'default runtime tasks should include holdings-refresh-gmgn');
   assert.ok(holderSnapshotTask, 'default runtime tasks should include holder-snapshot');
   assert.ok(bridgeTask, 'default runtime tasks should include telegram-bridge');
   await holdingsTask.runNow('manual-holdings-test');
+  await gmgnHoldingsTask.runNow('manual-gmgn-holdings-test');
   await holderSnapshotTask.runNow('manual-holder-snapshot-test');
   await bridgeTask.runNow('manual-bridge-test');
 
@@ -250,6 +263,7 @@ async function testDefaultTasksIncludeHoldingsRefresh() {
   const afterHolderSnapshotRun = holderSnapshotTask.getStatus();
   const afterBridgeRun = bridgeTask.getStatus();
   assert.equal(holdingsCycleCount, 1);
+  assert.equal(gmgnHoldingsCycleCount, 1);
   assert.equal(holderSnapshotCycleCount, 1);
   assert.equal(bridgeCycleCount, 1);
   assert.equal(afterRun.status, 'idle');
@@ -447,6 +461,7 @@ async function testDefaultTaskOrderIsStable() {
       'telegram-channel-sync',
       'completeness-maintenance',
       'holdings-refresh',
+      'holdings-refresh-gmgn',
       'holder-snapshot',
       'live-monitor',
       'position-delta-fill',
@@ -507,6 +522,7 @@ async function testDefaultTaskOrderIsStable() {
     'feishu-enablement-sync',
     'completeness-maintenance',
     'holdings-refresh',
+    'holdings-refresh-gmgn',
     'holder-snapshot',
     'live-monitor',
     'position-delta-fill',

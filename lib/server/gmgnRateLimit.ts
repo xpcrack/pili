@@ -351,13 +351,17 @@ export function noteGmgnEgressBan(
   scopeKey: string,
   nowMs = Date.now(),
   resetAtUnix?: number | null,
+  accountRecoveryPolicy = false,
 ): number {
   if (/^GMGN_COOLDOWN/i.test(msg)) return readEgressCooldownState(scopeKey).untilMs;
   const prior = readEgressCooldownState(scopeKey);
   const prevConsecutive = Math.max(0, Number(prior.consecutiveBans || 0));
   const recentBan = Number(prior.untilMs || 0) > nowMs - 5 * 60_000;
   const consecutiveBans = recentBan ? prevConsecutive + 1 : 1;
-  let untilMs = nowMs + GMGN_BAN_COOLDOWN_MS;
+  const quarantineMs = accountRecoveryPolicy
+    ? (consecutiveBans >= 2 ? 60 * 60_000 : 5 * 60_000)
+    : GMGN_BAN_COOLDOWN_MS;
+  let untilMs = nowMs + quarantineMs;
   if (resetAtUnix != null && Number.isFinite(resetAtUnix) && resetAtUnix > 1e9) {
     untilMs = Math.max(untilMs, (resetAtUnix > 1e12 ? resetAtUnix : resetAtUnix * 1000) + 5_000);
   }
