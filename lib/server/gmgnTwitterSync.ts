@@ -134,8 +134,8 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
         continue;
       }
       const v = settled.value;
-        // 无论成功失败，记入已查地址避免下一周期再打
-        checkedThisProcess.add(batch[j]!.address.toLowerCase());
+      // 无论成功失败，记入已查地址避免下一周期再打（持久化 + TTL）。
+      rememberChecked(batch[j]!.address.toLowerCase());
       switch (v.kind) {
         case 'alreadyFilled':
           skippedAlreadyFilled += 1;
@@ -178,8 +178,54 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
     failed,
   };
 }
-/** 本进程本轮已查过推特身份的地址(避免 notBound/nocommon 每周期反复打同一批)。 */
-const checkedThisProcess = new Set<string>();
+/**
+ * 已查过推特身份的地址 → 查的时间。持久化到 app_state（TTL 7 天），
+ * 进程重启后仍不重复打 notBound/nocommon 地址。
+ */
+const CHECKED_STORE_KEY = 'gmgn_twitter_checked_v1';
+const CHECKED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const checkedThisProcess = new Map<string, number>();
+
+function loadCheckedMap() {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT value_json FROM app_state WHERE key = ? LIMIT 1')
+      .get(CHECKED_STORE_KEY) as { value_json?: string } | undefined;
+    if (!row?.value_json) return;
+    const parsed = JSON.parse(row.value_json) as Record<string, number>;
+    const now = Date.now();
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && now - v < CHECKED_TTL_MS) {
+        checkedThisProcess.set(k, v);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function rememberChecked(addressLower: string) {
+  checkedThisProcess.set(addressLower, Date.now());
+  try {
+    const db = getDb();
+    const now = Date.now();
+    const prune = Object.fromEntries(
+      [...checkedThisProcess].filter(([, at]) => now - at < CHECKED_TTL_MS)
+    );
+    db.prepare(
+      `INSERT INTO app_state (key, value_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         value_json = excluded.value_json,
+         updated_at = excluded.updated_at`
+    ).run(CHECKED_STORE_KEY, JSON.stringify(prune), now);
+  } catch {
+    /* ignore */
+  }
+}
+
+loadCheckedMap();
 
 /**
  * 收集"推特为空 + 有监控地址"的用户的全部地址。 * 按用户 updated_at 升序(新进 pili 的优先),同一用户的地址相邻排列。
@@ -199,7 +245,16 @@ function collectUnfilledCandidates(): Candidate[] {
         ORDER BY u.updated_at ASC, a.address ASC
         LIMIT ?`
     )
-    .all(MAX_ADDRESSES_PER_CYCLE, JSON.stringify([...checkedThisProcess])) as Array<{ user_id: string; address: string }>;
+    // json_each(?) 在前、LIMIT ? 在后 —— 参数顺序必须与占位符一致。
+    // 只排除仍在 TTL 内的已查地址。
+    .all(
+      JSON.stringify(
+        [...checkedThisProcess.entries()]
+          .filter(([, at]) => Date.now() - at < CHECKED_TTL_MS)
+          .map(([k]) => k)
+      ),
+      MAX_ADDRESSES_PER_CYCLE
+    ) as Array<{ user_id: string; address: string }>;
 
   return rows.map((row) => ({
     userId: String(row.user_id || ''),
