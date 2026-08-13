@@ -562,7 +562,8 @@ async function run() {
 
       const nowMs = Date.UTC(2026, 3, 24, 8, 0, 0);
       setLaneSuccessCursors(nowMs - 2 * 60 * 60 * 1000);
-      insertRelayTweet(nowMs - 30 * 60 * 1000);
+      // 新鲜 relay 投递（5min 内）→ 视为监控在线，走 covered 长间隔。
+      insertRelayTweet(nowMs - 5 * 60 * 1000);
       const fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }> = [];
 
       await withSystemConfig(
@@ -583,6 +584,40 @@ async function run() {
       );
 
       assert.equal(fetchCalls.length, 0);
+    }
+
+    async function testStaleRelayCoverageFallsBackToUncoveredInterval() {
+      cleanup();
+      insertTrackedUser();
+
+      const nowMs = Date.UTC(2026, 3, 24, 8, 0, 0);
+      setLaneSuccessCursors(nowMs - 2 * 60 * 60 * 1000);
+      // 陈旧 relay 投递（31min 前，超过 RELAY_COVERAGE_STALE_MS）→ 监控失联，
+      // 按 uncovered 间隔轮询兜底，不应再锁在 covered 长间隔上。
+      insertRelayTweet(nowMs - 31 * 60 * 1000);
+      const fetchCalls: Array<{ lane: 'timeline' | 'replies'; sinceMs: number }> = [];
+
+      await withSystemConfig(
+        {
+          twitterRelayCoveredPollingIntervalMinutes: 360,
+          twitterUncoveredPollingIntervalMinutes: 30,
+        },
+        async () => {
+          await withMockedDateNow(nowMs, async () => {
+            const result = await twitterSyncService.runTwitterSyncAction({
+              action: 'sync',
+              userId: TEST_USER_ID,
+              fetcherOverride: createCountingFetcher(fetchCalls),
+            });
+            assert.equal(result.ok, true);
+          });
+        }
+      );
+
+      assert.deepEqual(
+        fetchCalls.map((item) => item.lane),
+        ['timeline', 'replies']
+      );
     }
 
     async function testUncoveredUserUsesConfiguredUncoveredInterval() {
@@ -668,6 +703,7 @@ async function run() {
       await testStructuredIncompleteFirstSyncKeepsBootstrapWindowSticky();
       await testStructuredCompleteEmptyBootstrapDoesNotStaySticky();
       await testRelayCoveredUserSkipsUntilCoveredIntervalElapsed();
+      await testStaleRelayCoverageFallsBackToUncoveredInterval();
       await testUncoveredUserUsesConfiguredUncoveredInterval();
       await testForcedManualSyncBypassesRelayCoveredInterval();
     } finally {

@@ -22,6 +22,7 @@ import { getDb } from '@/lib/server/sqlite';
 import {
   addTrackedAddresses,
   createTrackedUser,
+  invalidateTrackedUsersCache,
   TrackedAddressOwnershipConflictError,
 } from '@/lib/server/trackedUsersRepo';
 import { isValidTrackedAddress } from '@/lib/trackedAddressValidation';
@@ -733,6 +734,9 @@ export function syncFeishuEnablementFromNewone(opts?: {
       now
     );
 
+    // 直接 SQL 写 tracked_users（twitter 回填 / monitoring_enabled）不会经过
+    // trackedUsersRepo 的失效点，这里统一失效 10s TTL 缓存。
+    invalidateTrackedUsersCache();
     return {
       ok: true,
       newonePath,

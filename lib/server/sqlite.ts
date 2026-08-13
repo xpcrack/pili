@@ -359,6 +359,7 @@ CREATE TABLE IF NOT EXISTS current_holdings (
   balance REAL,
   price_usd REAL,
   value_usd REAL,
+  liquidity_usd REAL,
   refreshed_at INTEGER NOT NULL,
   UNIQUE(tracked_address_lower, chain, token_address_lower)
 );

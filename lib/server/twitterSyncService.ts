@@ -23,6 +23,7 @@ import {
   touchTwitterCursorLastSuccess,
   upsertTwitterCursor,
   upsertTwitterTweets,
+  type TrackedTwitterUser,
   type TwitterLane,
   type TwitterRelationType,
   type TwitterSyncAction,
@@ -53,6 +54,12 @@ const BACKFILL_MAX_NODES_PER_ROOT = 40;
 const BACKFILL_MAX_NODES_PER_ACCOUNT_PER_RUN = 120;
 const BACKFILL_MAX_RUNTIME_MS_PER_ACCOUNT = 120000;
 const BACKFILL_MAX_RETRIES_PER_NODE = 2;
+
+// Relay 投递超过该时长未出现 → 视为监控失联，按 uncovered 间隔轮询兜底。
+// 否则「covered 用户」会永远锁在 360min 兜底间隔上，relay 一断就是数小时延迟。
+const RELAY_COVERAGE_STALE_MS = 30 * 60 * 1000;
+// 用户级并发：顺序 pass ~10min → 并行 ~2min，使轮询延迟受 interval 约束而非 pass 时长。
+const SYNC_USER_CONCURRENCY = 6;
 
 interface BackfillQueueItem {
   rootTweetId: string;
@@ -353,6 +360,26 @@ async function processBackfillQueue(params: {
   };
 }
 
+/** 有界并发 map：保持用户级 sync 并发上限，避免顺序 pass 拖垮轮询延迟。 */
+async function mapWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) {
+        return;
+      }
+      await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+}
+
 function getTwitterSyncOverview() {
   const lease = readIngestionLease(TWITTER_SYNC_LOCK_KEY);
   const nowMs = Date.now();
@@ -437,11 +464,16 @@ async function runSyncAction(options: {
     ? Date.now() - windowDaysOverride * 24 * 60 * 60 * 1000
     : null;
 
-  for (const user of trackedUsers) {
+  await mapWithConcurrency(trackedUsers, SYNC_USER_CONCURRENCY, async (user: TrackedTwitterUser) => {
     const userRelayCoverage = relayCoverageByHandle.get(user.twitterHandle) || null;
+    // 时效化 relay 覆盖：监控静默超过 RELAY_COVERAGE_STALE_MS 视为失联，
+    // 按 uncovered 间隔轮询兜底，避免「covered 用户」锁死在 360min 上。
+    const relayCovered = Boolean(
+      userRelayCoverage && Date.now() - userRelayCoverage.latestLastSeenAtMs <= RELAY_COVERAGE_STALE_MS
+    );
     const dueDecision = shouldSkipAutomaticTwitterUserSync({
       userId: user.id,
-      relayCovered: Boolean(userRelayCoverage),
+      relayCovered,
       config: systemConfig,
       nowMs: Date.now(),
       force: options.force === true,
@@ -456,13 +488,13 @@ async function runSyncAction(options: {
         message: `skip user @${user.twitterHandle}: polling interval not due`,
         payload: {
           userId: user.id,
-          relayCovered: Boolean(userRelayCoverage),
+          relayCovered,
           intervalMinutes: dueDecision.intervalMinutes,
           freshnessMs: dueDecision.freshnessMs,
           latestRelayTweetId: userRelayCoverage?.latestTweetId || null,
         },
       });
-      continue;
+      return;
     }
 
     appendSyncLog({
@@ -625,7 +657,7 @@ async function runSyncAction(options: {
         storedCount: summary.storedCount,
       },
     });
-  }
+  });
 
   await notifyTwitterProviderFailuresSafely({
     runId,

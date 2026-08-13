@@ -4,6 +4,17 @@
 
 ---
 
+## Runtime Setup
+
+Node `24.11.1` — run `nvm use` (see `.nvmrc`); if native deps break after a Node switch, `npm rebuild better-sqlite3` restores them.
+
+- `npm run runtime:status` — inspect the pm2 runtime state.
+- `npm run runtime:refresh` — refresh only rebuilds and replaces the production web process `pili-web-prod`, the pm2-managed production web steady state. workers are intentionally left running during refresh.
+- Production refresh and normal operation share the same `.env.local`, `.data`, and SQLite DB.
+- If you are actively editing code without pm2, `npm run dev` still works locally at [http://localhost:3005](http://localhost:3005). `npm run build` and `npm run start` are the underlying local equivalent / fallback.
+
+## Getting Started
+
 ## 核心功能
 
 - **实时交易流**：按 revision 轮询获取链上交易事件（买入/卖出），自动刷新

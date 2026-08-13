@@ -59,7 +59,7 @@ async function run() {
     const { syncFeishuEnablementFromNewone } = await import(
       `../lib/server/feishuEnablementSync.ts?fe=${stamp}`
     );
-    const { listMonitoredUsers, listTrackedUsers } = await import(
+    const { listMonitoredUsers, listTrackedUsers, invalidateTrackedUsersCache } = await import(
       `../lib/server/trackedUsersRepo.ts?fe=${stamp}`
     );
 
@@ -246,6 +246,9 @@ async function run() {
     assert.ok(rosterResult.addressesAdded >= 2, 'Gamma new + Alpha merge');
     assert.ok(rosterResult.ownershipSkipped >= 1, 'Delta conflict skipped');
 
+    // stamped 实例的 listTrackedUsers 带 10s TTL 缓存；sync 走的是 canonical
+    // 实例的 createTrackedUser（只失效 canonical 缓存），这里须主动失效。
+    invalidateTrackedUsersCache();
     const afterUsers = listTrackedUsers();
     assert.ok(afterUsers.length > beforeUsers, 'new person added');
     const gamma = afterUsers.find((u) => u.name === 'Gamma');
@@ -306,6 +309,7 @@ async function run() {
     const backfillResult = syncFeishuEnablementFromNewone({ newonePath: backfillPath });
     assert.equal(backfillResult.ok, true, backfillResult.error);
     assert.ok((backfillResult.twittersBackfilled || 0) >= 1, 'should backfill Alpha twitter');
+    invalidateTrackedUsersCache();
     const alphaAfter = listTrackedUsers().find((u) => u.id === 'u1');
     assert.equal(alphaAfter?.twitter, 'alpha_x_now');
     // must not overwrite existing twitter

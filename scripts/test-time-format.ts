@@ -119,8 +119,8 @@ function run() {
       nativeAmountText: '18.28 SOL',
       tradeAmountUsdAtTx: null,
     }),
-    '金额未知',
-    'usd mode should surface unknown trade amounts when usd data is missing'
+    '18.28 SOL',
+    'usd mode should keep the native amount when usd data is missing (1c40141: keep xxyy amounts)'
   );
 
   assert.equal(

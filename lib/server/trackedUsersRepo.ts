@@ -868,6 +868,7 @@ export function importTrackedUsers(users: User[], options?: { replaceExisting?: 
   const replaceExisting = options?.replaceExisting === true;
 
   return withTransaction(() => {
+    invalidateTrackedUsersCache();
     const db = getDb();
     const now = Date.now();
 
@@ -918,12 +919,15 @@ export function createTrackedUser(input: Omit<User, 'id'>) {
     upsertAddressRows(user.id, user.addresses, now, true);
   });
 
+  invalidateTrackedUsersCache();
   bumpFeedRevision();
   return user;
 }
 
 export function updateTrackedUser(id: string, updates: Partial<User>) {
   return withTransaction(() => {
+    // 写路径绝不能读 10s TTL 缓存：创建/更新后的同窗口 PATCH 会 404。
+    invalidateTrackedUsersCache();
     const currentUsers = listTrackedUsers();
     const current = currentUsers.find((user) => user.id === id);
     if (!current) {
@@ -946,6 +950,9 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
 
     refreshPersistedUserSnapshots(next);
     bumpFeedRevision();
+    // 首次 listTrackedUsers 会把写前快照填进 10s 缓存；写后再读必须重新失效，
+    // 否则返回的是更新前数据（改名不回显、新增地址缺失）。
+    invalidateTrackedUsersCache();
     const refreshed = listTrackedUsers().find((user) => user.id === id);
     return refreshed || next;
   });
@@ -953,6 +960,7 @@ export function updateTrackedUser(id: string, updates: Partial<User>) {
 
 export function deleteTrackedUser(id: string) {
   return withTransaction(() => {
+    invalidateTrackedUsersCache();
     const db = getDb();
     const addresses = db
       .prepare(
@@ -979,6 +987,7 @@ export function deleteTrackedUser(id: string) {
 
 export function addTrackedAddresses(userId: string, addresses: User['addresses']) {
   return withTransaction(() => {
+    invalidateTrackedUsersCache();
     const db = getDb();
     const exists = db.prepare('SELECT id FROM tracked_users WHERE id = ? LIMIT 1').get(userId);
     if (!exists) {
@@ -990,6 +999,8 @@ export function addTrackedAddresses(userId: string, addresses: User['addresses']
     const now = Date.now();
     upsertAddressRows(userId, sanitized, now, false);
 
+    // 写后重读必须失效缓存：首次 listTrackedUsers 已把写前快照填进 10s 缓存。
+    invalidateTrackedUsersCache();
     const refreshed = listTrackedUsers().find((user) => user.id === userId);
     return refreshed || null;
   });
@@ -997,6 +1008,7 @@ export function addTrackedAddresses(userId: string, addresses: User['addresses']
 
 export function removeTrackedAddress(userId: string, address: string, chain?: ChainType) {
   return withTransaction(() => {
+    invalidateTrackedUsersCache();
     const db = getDb();
     const addressLower = normalize(address);
     if (!addressLower) {

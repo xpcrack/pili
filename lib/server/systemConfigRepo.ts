@@ -5,9 +5,11 @@ import { getDb } from '@/lib/server/sqlite';
 const SYSTEM_CONFIG_KEY = 'system_config_v1';
 // Relay-covered: relay already delivers near-real-time; API poll is backup.
 const DEFAULT_TWITTER_RELAY_COVERED_POLLING_INTERVAL_MINUTES = 360;
-// Uncovered: was 30min — too slow for hold-mention Bark. 5min is a budget-aware
-// compromise (free 6551 ~400 pts/day). True wall-clock <10s needs twitter relay / paid WS.
-const DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES = 5;
+// Uncovered: 顺序 pass 时代 5min 形同虚设（pass 本身 ~10min）。
+// sync 用户级并行后 revisit 受 interval 约束，3min 是速率核算后的折中
+// （66 uncovered × 2 lanes / 180s ≈ 0.73 req/s ≈ 2.5x 实测安全包络）。
+// 真 <10s 只能靠 twitter relay（外部监控覆盖），轮询只是兜底。
+const DEFAULT_TWITTER_UNCOVERED_POLLING_INTERVAL_MINUTES = 3;
 const MAX_TWITTER_POLLING_INTERVAL_MINUTES = 60 * 24 * 7;
 
 /**
