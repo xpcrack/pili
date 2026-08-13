@@ -21,10 +21,10 @@ function run() {
     );
   }
 
-  assert.doesNotMatch(
+  assert.match(
     ecosystemConfig,
     /pili-telegram-channel-worker/,
-    'ecosystem config should retire the old telegram worker pm2 app'
+    'ecosystem config should define the live MTProto telegram channel worker (production topology)'
   );
   assert.doesNotMatch(
     ecosystemConfig,
@@ -88,8 +88,8 @@ function run() {
   );
   assert.match(
     runtimeMode,
-    /if \(command === 'refresh'\) \{[\s\S]*deleteIfPresent\('pili-web-prod'\);[\s\S]*startPm2Process\('pili-web-prod'\);[\s\S]*\}/,
-    'refresh flow should recreate pili-web-prod from the ecosystem config so script changes take effect'
+    /if \(command === 'refresh'\) \{[\s\S]*startOrRestart\('pili-web-prod'\);[\s\S]*\}/,
+    'refresh flow should replace pili-web-prod so script changes take effect'
   );
   assert.doesNotMatch(
     runtimeMode,

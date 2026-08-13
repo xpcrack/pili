@@ -743,7 +743,8 @@ function run() {
     q: 'alice',
     cursor: filteredByUserName.nextCursor,
   });
-  assert.equal(filteredByUserNamePage2.total, 2);
+  // cursor 页跳过 COUNT（perf：cursor COUNT 扫大段索引 ~5s），total 回退为页长。
+  assert.equal(filteredByUserNamePage2.total, filteredByUserNamePage2.feed.length);
   assert.equal(filteredByUserNamePage2.feed.length, 1);
   assert.equal(filteredByUserNamePage2.hasMore, true);
 
@@ -761,7 +762,7 @@ function run() {
     userId: userId1,
     cursor: page1.nextCursor,
   });
-  assert.equal(page2.total, 2);
+  assert.equal(page2.total, page2.feed.length);
 
   runRebuildPathRegression();
 

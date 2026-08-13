@@ -95,11 +95,25 @@ function applyUserUpdates(user: User, updates: Partial<User>): User {
       ? normalizeAssetTotal(updates.currentChainAssetTotal)
       : normalizeAssetTotal(mergedUser.totalAssetUsd);
 
-  return normalizeUser({
+  const normalized = normalizeUser({
     ...mergedUser,
     totalAssetUsd,
     historicalMaxAssetUsd: totalAssetUsd,
   });
+
+  // normalizeUser 会把 historicalMax 重置为当前总额。历史最高是资产记录不是派生值，
+  // 读/写归一化都不应把它压回当前总额（删地址/编辑人物后峰值清零是 bug）。
+  return {
+    ...normalized,
+    historicalMaxAssetUsd: Math.max(
+      normalizeAssetTotal(mergedUser.historicalMaxAssetUsd),
+      normalized.historicalMaxAssetUsd ?? 0
+    ),
+    historicalMaxChainAssetTotal: Math.max(
+      normalizeAssetTotal(mergedUser.historicalMaxChainAssetTotal),
+      normalized.historicalMaxChainAssetTotal ?? 0
+    ),
+  };
 }
 
 function normalizePersistedUser(user: User): User {
@@ -183,15 +197,24 @@ function applyAddressCollectionUpdate(user: User, addresses: User['addresses']) 
   const normalizedAddresses = addresses.map((address, index) => normalizeAddress(address, index));
   const currentTotalAssetUsd = sumAddressAssetUsd(normalizedAddresses);
 
-  return normalizeUser({
+  const normalized = normalizeUser({
     ...user,
     addresses: normalizedAddresses,
     totalAssetUsd: currentTotalAssetUsd,
     currentChainAssetTotal: currentTotalAssetUsd,
-    historicalMaxAssetUsd: currentTotalAssetUsd,
-    historicalMaxChainAssetTotal: currentTotalAssetUsd,
     assetUpdatedAt: getLatestAddressAssetUpdatedAt(normalizedAddresses),
   });
+
+  // normalizeUser 会把 historicalMax 重置为当前总额；增删地址是资产集合变化，
+  // 历史最高（含被删地址时期）不能被篡改，取两者较大值。
+  return {
+    ...normalized,
+    historicalMaxAssetUsd: Math.max(user.historicalMaxAssetUsd ?? 0, normalized.historicalMaxAssetUsd ?? 0),
+    historicalMaxChainAssetTotal: Math.max(
+      user.historicalMaxChainAssetTotal ?? 0,
+      normalized.historicalMaxChainAssetTotal ?? 0
+    ),
+  };
 }
 
 function normalizeAddress(address: User['addresses'][number], index: number): User['addresses'][number] {

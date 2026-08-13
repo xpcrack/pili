@@ -77,7 +77,17 @@ async function run() {
         chat: { id: '-100123456' },
         text: '[xp] [user_d#1]\n🟢 New buy 0.1336 BNB\nToken: 23423.53  [共建]\nPrice: $0.0036\nMCAP: $3.6M\nPlatform: Pancake V2\nCA: 0xb2acf3ae051c7f0b0b8de90cbb4ed99312574444\n#574444',
         reply_markup: {
-          inline_keyboard: [[{ text: 'tweet', url: 'https://x.com/alpha/status/1912345678901234567' }]],
+          // trackedWalletAddress 只从 xxyy.io 链接的 ?wallet= 参数解析；缺它则
+          // findTrackedUserMatch 永远 unknown-tracked-user（fixture 历史缺陷）。
+          inline_keyboard: [
+            [
+              {
+                text: 'View',
+                url: 'https://xxyy.io/bsc/0xb2acf3ae051c7f0b0b8de90cbb4ed99312574444?wallet=0x1111111111111111111111111111111111111111',
+              },
+              { text: 'tweet', url: 'https://x.com/alpha/status/1912345678901234567' },
+            ],
+          ],
         },
       },
     });

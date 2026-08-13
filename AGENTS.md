@@ -1,8 +1,10 @@
 # Runtime
 
+<!-- BEGIN:runtime-rules -->
 Use Node `24.11.1` for this repo.
 
 Do not switch to Node `25+` unless you first reinstall or rebuild native dependencies and then verify `npm run build` and `npm test` both pass.
+<!-- END:runtime-rules -->
 
 1. 这是一个仅对我个人开发使用的工具，而我是一个非专业程序员，只会让AI帮我操作，程序要尽可能轻量、精简。
 
@@ -12,6 +14,7 @@ Do not switch to Node `25+` unless you first reinstall or rebuild native depende
 - `pili-web-prod` is the default steady-state web/API process (Bun + Hono + Vite SPA).
 - use `runtime:status` to inspect runtime state.
 - use `runtime:refresh` after code changes to rebuild and replace only the production web process.
+- do not restart workers by default unless user asks: `runtime:refresh` leaves background workers running, so they keep the latest code only after an explicit restart.
 - build must succeed before replacing the running web process.
 - production refresh and normal operation share the same `.env.local`, `.data`, and SQLite DB.
 
