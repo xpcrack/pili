@@ -516,10 +516,6 @@ function readPreviousHoldings(
   }
 }
 
-function readPreviousRobinhoodHoldings(db: DbHandle, addressLower: string): CurrentHoldingRecord[] {
-  return readPreviousHoldings(db, addressLower, ROBINHOOD_CHAIN);
-}
-
 function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
   const insert = db.prepare(`
     INSERT OR REPLACE INTO current_holdings
@@ -993,7 +989,11 @@ export async function refreshCurrentHoldings(
 
   const trackedAddresses = listTrackedAddresses(db);
   const uniqueTrackedAddresses = dedupeTrackedAddresses(trackedAddresses);
-  const robinhoodCandidates = listRobinhoodCandidateWallets(db, uniqueTrackedAddresses);
+  // Robinhood holdings are served exclusively by the persistent GMGN queue
+  // (holdings-refresh-gmgn runtime task / enqueueHoldingsRefresh). This full
+  // scan previously re-read every Robinhood wallet hourly with the same
+  // weight-5 signed requests, duplicating the queue — removed 2026-08-13.
+  const robinhoodCandidates: TrackedAddressRow[] = [];
   const summary: HoldingsRefreshSummary = {
     trackedAddressCount: trackedAddresses.length,
     uniqueTrackedAddressCount: uniqueTrackedAddresses.length,
@@ -1110,89 +1110,6 @@ export async function refreshCurrentHoldings(
       );
       const walletStatus = walletStatuses[walletStatuses.length - 1]!;
       replaceWalletHoldings(db, row.address_lower, row.chain, walletHoldings, walletStatus);
-    }
-  }
-
-  // Robinhood: XXYY-active EVM wallets; openapi signed (primary key) — keep sequential
-  let stopRobinhood = false;
-  for (const row of robinhoodCandidates) {
-    ensureNotAborted(options.signal);
-    const walletRefreshAt = options.now ? options.now() : Date.now();
-    if (stopRobinhood) {
-      walletStatuses.push({
-        tracked_address: row.address,
-        tracked_address_lower: row.address_lower,
-        user_id: row.user_id,
-        chain: ROBINHOOD_CHAIN,
-        status: 'failed',
-        refreshed_at: walletRefreshAt,
-      });
-      summary.failedWalletCount += 1;
-      holdings.push(...readPreviousRobinhoodHoldings(db, row.address_lower));
-      continue;
-    }
-
-    const result = await fetchRobinhoodHoldings(row.address, options.signal);
-    if (!result.ok) {
-      walletStatuses.push({
-        tracked_address: row.address,
-        tracked_address_lower: row.address_lower,
-        user_id: row.user_id,
-        chain: ROBINHOOD_CHAIN,
-        status: 'failed',
-        refreshed_at: walletRefreshAt,
-      });
-      summary.failedWalletCount += 1;
-      lastError = lastError ?? result.error;
-      holdings.push(...readPreviousRobinhoodHoldings(db, row.address_lower));
-      if (result.rateLimited) {
-        stopRobinhood = true;
-      }
-      continue;
-    }
-
-    walletStatuses.push({
-      tracked_address: row.address,
-      tracked_address_lower: row.address_lower,
-      user_id: row.user_id,
-      chain: ROBINHOOD_CHAIN,
-      status: 'success',
-      refreshed_at: walletRefreshAt,
-    });
-    summary.refreshedWalletCount += 1;
-
-    for (const asset of result.assets) {
-      if (asset.valueUsd < MIN_HOLDING_USD) {
-        summary.filteredOutHoldingCount += 1;
-        continue;
-      }
-
-      holdings.push({
-        tracked_address: row.address,
-        tracked_address_lower: row.address_lower,
-        user_id: row.user_id,
-        chain: ROBINHOOD_CHAIN,
-        token_address: asset.tokenAddress,
-        token_address_lower: asset.tokenAddress.toLowerCase(),
-        symbol: asset.symbol,
-        name: asset.name,
-        balance: asset.balance,
-        price_usd: asset.priceUsd,
-        value_usd: asset.valueUsd,
-        liquidity_usd: asset.liquidityUsd,
-        refreshed_at: walletRefreshAt,
-      });
-    }
-
-    if (!options.dryRun) {
-      const walletHoldings = holdings.filter(
-        (holding) =>
-          holding.tracked_address_lower === row.address_lower &&
-          holding.chain === ROBINHOOD_CHAIN &&
-          holding.refreshed_at === walletRefreshAt
-      );
-      const walletStatus = walletStatuses[walletStatuses.length - 1]!;
-      replaceWalletHoldings(db, row.address_lower, ROBINHOOD_CHAIN, walletHoldings, walletStatus);
     }
   }
 

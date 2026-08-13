@@ -16,6 +16,8 @@ import { inferChainsForAddress } from '@/lib/server/gmgnWalletActivity';
 import {
   markWalletTimelineFail,
   markWalletTimelineOk,
+  readWalletTimelineState,
+  WALLET_TIMELINE_COVERAGE_VERSION,
 } from '@/lib/server/walletTimelineState';
 import type { User } from '@/types';
 
@@ -59,6 +61,30 @@ export type WalletActivityBackfillQueueDeps = {
 
 function normalizeAddress(address: string) {
   return (address || '').trim();
+}
+
+/**
+ * For a wallet whose 14d timeline is already proven complete, only fetch
+ * events newer than the last successful backfill minus a 12h lag overlap.
+ * Returns undefined (full 14d window) for incomplete/failed wallets so the
+ * first pass still covers history. Pagination stops at this watermark.
+ */
+function incrementalSinceMs(address: string, days: number): number | undefined {
+  const state = readWalletTimelineState(address);
+  const nowMs = Date.now();
+  const needStart = nowMs - days * 24 * 60 * 60 * 1000;
+  if (
+    !state ||
+    state.lastOkAt == null ||
+    state.lastError != null ||
+    state.coverageVersion < WALLET_TIMELINE_COVERAGE_VERSION ||
+    state.windowStartMs == null ||
+    state.windowStartMs > needStart
+  ) {
+    return undefined;
+  }
+  const overlapMs = 12 * 60 * 60 * 1000;
+  return Math.max(needStart, state.lastOkAt - overlapMs);
 }
 
 function addressKey(address: string) {
@@ -227,6 +253,10 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
             user,
             address: next.address,
             days: next.days,
+            // Complete wallets only need the tail since their last successful
+            // backfill (plus a lag overlap). A full 14-day re-walk every 6h
+            // re-downloaded history we already have — the main activity cost.
+            sinceMs: incrementalSinceMs(next.address, next.days),
             async: true,
             shouldPause,
           });
