@@ -185,7 +185,25 @@ type ScanTarget = {
   user: User;
   address: string;
   chains: GmgnChain[];
+  /** chains explicitly requested by an event (doorbell) — never rotation-throttled */
+  eventChains: Set<string>;
 };
+
+/**
+ * robinhood 链对 EVM 钱包几乎恒空(live-monitor 每次 15s 周期 4 链全扫,
+ * robinhood 白打)。非事件驱动的周期扫描按钱包轮换:每 ROBINHOOD_PROBE_EVERY
+ * 个周期才探测一次 robinhood,其余周期跳过。事件(doorbell chains 含 robinhood)
+ * 不受影响,仍每次全扫。
+ */
+const ROBINHOOD_PROBE_EVERY = 6;
+const robinhoodProbeCounter = new Map<string, number>();
+
+function shouldProbeRobinhood(address: string): boolean {
+  const key = address.trim().toLowerCase();
+  const count = (robinhoodProbeCounter.get(key) ?? 0) + 1;
+  robinhoodProbeCounter.set(key, count);
+  return count % ROBINHOOD_PROBE_EVERY === 0;
+}
 
 function resolveChainsForDoorbell(
   address: string,
@@ -216,6 +234,7 @@ function buildScanTargets(params: {
       user: owner.user,
       address: owner.address,
       chains: inferChainsForAddress(owner.address),
+      eventChains: new Set(),
     });
   }
 
@@ -231,6 +250,7 @@ function buildScanTargets(params: {
     if (existing) {
       const set = new Set<GmgnChain>([...existing.chains, ...chains]);
       existing.chains = [...set];
+      for (const c of chains) existing.eventChains.add(c);
       continue;
     }
     merged.set(key, {
@@ -238,6 +258,7 @@ function buildScanTargets(params: {
       user,
       address,
       chains,
+      eventChains: new Set(chains),
     });
   }
 
@@ -472,6 +493,11 @@ export async function runLiveMonitorCycle(
 
       for (let index = 0; index < target.chains.length; index += 1) {
         const chain = target.chains[index]!;
+        // robinhood 恒空:非事件驱动时按钱包轮换探测,其余周期跳过(省 ~1/4
+        // EVM activity 请求)。事件(doorbell chains 含 robinhood)不受影响。
+        if (chain === 'robinhood' && !target.eventChains.has(chain)) {
+          if (!shouldProbeRobinhood(target.address)) continue;
+        }
         walletsScanned += 1;
         try {
           const response = await fetchActivityWithTimeout(

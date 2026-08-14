@@ -16,7 +16,7 @@ import {
   statSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const DEFAULT_GMGN_METRICS_FILE = join(
   homedir(),
@@ -29,6 +29,14 @@ function gmgnMetricsFile(): string {
   return process.env.GMGN_METRICS_FILE?.trim() || DEFAULT_GMGN_METRICS_FILE;
 }
 
+/** 与 newone getRuntimeSourceIdentity 同格式：cwd|entrypoint，env 可覆盖。 */
+function getRuntimeSourceIdentity(): string {
+  const configured = process.env.PILI_SOURCE_IDENTITY?.trim();
+  if (configured) return configured;
+  const entrypoint = process.argv[1] ? resolve(process.argv[1]) : 'unknown';
+  return `${resolve(process.cwd())}|${entrypoint}`;
+}
+
 export type GmgnRequestEvent = {
   ts: number;
   ok: boolean;
@@ -36,6 +44,7 @@ export type GmgnRequestEvent = {
   path?: string;
   error?: string;
   blocked?: boolean;
+  source_identity?: string;
 };
 
 /** 与 newone 同构：写 request-events.jsonl；文件 >1MB 时按 5min 窗口压缩。 */
@@ -47,7 +56,15 @@ export function recordGmgnRequest(
   try {
     const file = gmgnMetricsFile();
     mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, JSON.stringify({ ts: nowMs, ...event }) + '\n', 'utf8');
+    appendFileSync(
+      file,
+      JSON.stringify({
+        ts: nowMs,
+        source_identity: getRuntimeSourceIdentity(),
+        ...event,
+      }) + '\n',
+      'utf8'
+    );
     if (existsSync(file) && statSync(file).size >= 1_000_000) {
       const cutoff = nowMs - 5 * 60_000;
       const lines: string[] = [];
