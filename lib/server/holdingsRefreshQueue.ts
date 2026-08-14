@@ -23,6 +23,42 @@ const DEFAULT_DEBOUNCE_MS = 10_000;
 const DEFAULT_MAX_CONCURRENT = 1;
 const DEFAULT_TRANSIENT_RETRY_DELAY_MS = 1_000;
 const MAX_TRANSIENT_RETRIES = 1;
+const DEFAULT_MIN_REFRESH_AGE_MS = 120_000;
+
+/**
+ * Per-wallet×chain minimum re-sync interval. Trade-triggered refreshes are
+ * hard-capped at once per this window so a high-frequency wallet cannot turn
+ * its trade burst into an unbounded stream of OKX/GMGN balance pulls.
+ * Override with HOLDINGS_MIN_REFRESH_AGE_MS (0 disables the cap).
+ */
+function getMinRefreshAgeMs() {
+  const configured = Number.parseInt(process.env.HOLDINGS_MIN_REFRESH_AGE_MS || '', 10);
+  if (Number.isFinite(configured) && configured >= 0) return configured;
+  return DEFAULT_MIN_REFRESH_AGE_MS;
+}
+
+const DEFAULT_QUIET_INTERVAL_MS = 4 * 60 * 60_000;
+const DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS = 12 * 60 * 60_000;
+const DEFAULT_ACTIVE_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * Quiet wallets (no on-chain activity within the active window) re-sync on
+ * this slower cadence instead of HOLDINGS_REFRESH_INTERVAL_MS. Their balance
+ * cannot have moved without a trade, so only price is stale — display re-pricing
+ * covers that. Override with HOLDINGS_QUIET_INTERVAL_MS.
+ */
+function getQuietIntervalMs() {
+  const configured = Number.parseInt(process.env.HOLDINGS_QUIET_INTERVAL_MS || '', 10);
+  if (Number.isFinite(configured) && configured > 0) return Math.max(60_000, configured);
+  return DEFAULT_QUIET_INTERVAL_MS;
+}
+
+/** A wallet with no on-chain trade within this window is treated as quiet. */
+function getActiveWindowMs() {
+  const configured = Number.parseInt(process.env.HOLDINGS_ACTIVE_WINDOW_MS || '', 10);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return DEFAULT_ACTIVE_WINDOW_MS;
+}
 
 export type EnqueueHoldingsRefreshInput = {
   address: string;
@@ -312,7 +348,11 @@ function upsertPersistentJob(
        address = excluded.address,
        user_id = excluded.user_id,
        priority = MAX(holdings_refresh_jobs.priority, excluded.priority),
-       due_at_ms = MIN(holdings_refresh_jobs.due_at_ms, excluded.due_at_ms),
+       due_at_ms = CASE
+         WHEN MAX(holdings_refresh_jobs.priority, excluded.priority) > 0
+           THEN MIN(holdings_refresh_jobs.due_at_ms, excluded.due_at_ms)
+         ELSE excluded.due_at_ms
+       END,
        rerun_requested = CASE
          WHEN excluded.priority > 0 AND holdings_refresh_jobs.lease_until_ms > excluded.updated_at_ms
          THEN 1 ELSE holdings_refresh_jobs.rerun_requested END,
@@ -338,8 +378,9 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
     ? Math.max(60_000, intervalMs)
     : 30 * 60_000;
   const rows = db.prepare(
-    `SELECT ta.address, ta.chain, ta.user_id,
-            MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at
+    `SELECT ta.address, ta.address_lower, ta.chain, ta.user_id,
+            MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at,
+            NULL AS last_trade_at
      FROM tracked_addresses ta
      LEFT JOIN current_holdings_wallet_status ws
        ON ws.tracked_address_lower = ta.address_lower AND ws.chain = ta.chain
@@ -347,8 +388,9 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
        AND ta.chain IN ('solana', 'ethereum', 'bsc', 'base')
      GROUP BY ta.address_lower, ta.chain
      UNION ALL
-     SELECT ta.address, 'robinhood' AS chain, ta.user_id,
-            MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at
+     SELECT ta.address, ta.address_lower, 'robinhood' AS chain, ta.user_id,
+            MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at,
+            MAX(e.event_time_ms) AS last_trade_at
      FROM tracked_addresses ta
      JOIN telegram_monitor_events e
        ON e.tracked_wallet_address_lower = ta.address_lower AND e.chain = 'robinhood'
@@ -359,16 +401,41 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
      GROUP BY ta.address_lower`
   ).all() as Array<{
     address: string;
+    address_lower: string;
     chain: string;
     user_id: string;
     last_success_at: number | null;
+    last_trade_at: number | null;
   }>;
+
+  // Native chains read the last on-chain trade from the canonical events table
+  // (indexed lookup); robinhood carries MAX(event_time_ms) from the feed above.
+  const latestTradeStmt = db.prepare(
+    `SELECT MAX(timestamp) AS latest_ts
+     FROM events
+     WHERE source = 'blockchain'
+       AND chain = ?
+       AND TRIM(COALESCE(address, '')) <> ''
+       AND LOWER(address) = ?`
+  );
+
+  const quietIntervalMs = getQuietIntervalMs();
+  const activeWindowMs = getActiveWindowMs();
+
   for (const row of rows) {
+    const isRobinhood = row.chain === 'robinhood';
+    const lastTradeAt = isRobinhood
+      ? row.last_trade_at
+      : (latestTradeStmt.get(row.chain, row.address_lower) as { latest_ts: number | null } | undefined)?.latest_ts ?? null;
+    const active = lastTradeAt != null && lastTradeAt >= nowMs - activeWindowMs;
+    const intervalMs = isRobinhood
+      ? (active ? refreshIntervalMs : DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS)
+      : (active ? refreshIntervalMs : quietIntervalMs);
     // Preserve real age in due_at so an old wallet cannot remain at a fixed
     // roster position behind newer wallets every cycle.
     const dueAtMs = row.last_success_at == null
       ? 0
-      : Number(row.last_success_at) + refreshIntervalMs;
+      : Number(row.last_success_at) + intervalMs;
     upsertPersistentJob(db, {
       address: row.address,
       chain: row.chain,
@@ -387,6 +454,7 @@ function claimPersistentJob(
 ): (PersistentQueueRow & { leaseToken: string }) | null {
   ensurePersistentQueue(db);
   const leaseToken = randomUUID();
+  const minAgeMs = getMinRefreshAgeMs();
   const providerClause = provider === 'gmgn'
     ? `AND chain = 'robinhood'`
     : provider === 'native'
@@ -398,10 +466,11 @@ function claimPersistentJob(
        FROM holdings_refresh_jobs
        WHERE due_at_ms <= ?
          AND (lease_until_ms IS NULL OR lease_until_ms <= ?)
+         AND (last_success_at_ms IS NULL OR last_success_at_ms + ? <= ?)
          ${providerClause}
        ORDER BY priority DESC, COALESCE(last_success_at_ms, 0) ASC, due_at_ms ASC
        LIMIT 1`
-    ).get(nowMs, nowMs) as PersistentQueueRow | undefined;
+    ).get(nowMs, nowMs, minAgeMs, nowMs) as PersistentQueueRow | undefined;
     if (!row) return null;
     const result = db.prepare(
       `UPDATE holdings_refresh_jobs
