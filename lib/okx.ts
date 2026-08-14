@@ -16,6 +16,19 @@ const endpointNextAvailableAt = new Map<string, number>();
 const endpointInFlight = new Map<string, number>();
 const marketPriceCache = new Map<string, { value: number | null; expiresAt: number }>();
 const marketPriceInFlight = new Map<string, Promise<number | null>>();
+let okxProxyUrl: string | null = null;
+type OkxProxyAgent = { close: () => Promise<void> };
+type OkxUndici = {
+  ProxyAgent: new (proxy: string) => OkxProxyAgent;
+  fetch: (input: string, init: Record<string, unknown>) => Promise<unknown>;
+};
+let okxProxyAgent: OkxProxyAgent | null = null;
+
+function loadOkxUndici() {
+  const runtimeModule = typeof module !== 'undefined' ? module : null;
+  if (!runtimeModule?.require) return null;
+  return runtimeModule.require('undici') as OkxUndici;
+}
 
 export const CHAIN_TO_OKX_INDEX: Record<string, string> = {
   bsc: '56',
@@ -257,11 +270,46 @@ function createOkxHeaders(requestPathWithQuery: string) {
 
   return {
     'Content-Type': 'application/json',
+    // Clash/proxy can keep a dead upstream socket alive. A fresh connection per
+    // OKX request is more reliable for the long-running background worker.
+    Connection: 'close',
     'OK-ACCESS-KEY': credentials.apiKey as string,
     'OK-ACCESS-SIGN': sign,
     'OK-ACCESS-PASSPHRASE': credentials.passphrase as string,
     'OK-ACCESS-TIMESTAMP': timestamp,
   };
+}
+
+function okxFetch(input: string, init: RequestInit = {}) {
+  if (process.env.PILI_OKX_USE_PROXY_AGENT !== '1') {
+    return fetch(input, init);
+  }
+
+  const proxy = (
+    process.env.PILI_OKX_PROXY?.trim() ||
+    process.env.HTTPS_PROXY?.trim() ||
+    process.env.HTTP_PROXY?.trim() ||
+    process.env.ALL_PROXY?.trim() ||
+    ''
+  );
+  if (!proxy) return fetch(input, init);
+
+  if (okxProxyUrl !== proxy) {
+    okxProxyAgent?.close().catch(() => undefined);
+    okxProxyUrl = proxy;
+    // Keep undici out of the browser bundle. This path is enabled only by the
+    // long-running Node worker; tests/client code continue using global fetch.
+    const undici = loadOkxUndici();
+    if (!undici) return fetch(input, init);
+    okxProxyAgent = new undici.ProxyAgent(proxy);
+  }
+
+  const undici = loadOkxUndici();
+  if (!undici) return fetch(input, init);
+  return undici.fetch(input, {
+    ...init,
+    dispatcher: okxProxyAgent,
+  } as never) as unknown as Promise<Response>;
 }
 
 function extractTransactions(payload: unknown): OkxTransaction[] {
@@ -338,8 +386,9 @@ export async function fetchOkxMarketUsdPrice(symbol: string) {
           controller.abort();
         }, OKX_REQUEST_TIMEOUT_MS);
 
-        return fetch(`${OKX_MARKET_API_BASE}${requestPathWithQuery}`, {
+        return okxFetch(`${OKX_MARKET_API_BASE}${requestPathWithQuery}`, {
           method: 'GET',
+          headers: { Connection: 'close' },
           cache: 'no-store',
           signal: controller.signal,
         }).finally(() => {
@@ -453,7 +502,7 @@ async function fetchOkxHistoricalCandlePrice(
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
@@ -525,7 +574,7 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
@@ -575,7 +624,7 @@ export async function fetchOkxTokenLogoByContract(chain: string, tokenAddress: s
           controller.abort();
         }, OKX_REQUEST_TIMEOUT_MS);
 
-        return fetch(`${OKX_API_BASE}${requestPathBySymbol}`, {
+        return okxFetch(`${OKX_API_BASE}${requestPathBySymbol}`, {
           method: 'GET',
           headers: headersBySymbol,
           cache: 'no-store',
@@ -663,7 +712,7 @@ export async function fetchOkxTransactionsByAddress(
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
@@ -755,7 +804,7 @@ export async function fetchOkxTransactionDetailByTxHash(txHash: string, chain: s
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
@@ -939,7 +988,7 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',
@@ -1052,7 +1101,7 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
         controller.abort();
       }, OKX_REQUEST_TIMEOUT_MS);
 
-      return fetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
+      return okxFetch(`${OKX_API_BASE}${requestPathWithQuery}`, {
         method: 'GET',
         headers,
         cache: 'no-store',

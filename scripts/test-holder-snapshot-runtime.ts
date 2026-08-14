@@ -12,8 +12,8 @@ async function testCycleQueuesAndCompletesOneRun() {
   let queuedCount = 1;
 
   const cycle = createHolderSnapshotCycleRunner({
-    readHolderSnapshotPeriodicCursor: () => null,
-    readHolderSnapshotTradeCursor: () => null,
+    readHolderSnapshotPeriodicCursor: () => 0,
+    readHolderSnapshotTradeCursor: () => 0,
     queueTradeTriggeredHolderSnapshots: () => {
       queueTradeCalls += 1;
       return {
@@ -126,8 +126,8 @@ async function testCycleHandlesCollectorFailure() {
   const failed: Array<{ runId: number; error: string }> = [];
 
   const cycle = createHolderSnapshotCycleRunner({
-    readHolderSnapshotPeriodicCursor: () => null,
-    readHolderSnapshotTradeCursor: () => null,
+    readHolderSnapshotPeriodicCursor: () => 0,
+    readHolderSnapshotTradeCursor: () => 0,
     queueTradeTriggeredHolderSnapshots: () => ({
       scannedCount: 0,
       queuedCount: 0,

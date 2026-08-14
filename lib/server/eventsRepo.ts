@@ -1318,7 +1318,11 @@ export function readLatestActivityAtByUser() {
         try {
           refreshLatestActivityCache();
         } catch {
-          // 刷新失败保留旧缓存；下个 TTL 周期再试
+          // 刷新失败保留旧缓存；必须复位 refreshing，否则标志永久卡 true、
+          // 后续调用永远返回旧数据且不再重试。
+          if (latestActivityCache) {
+            latestActivityCache.refreshing = false;
+          }
         }
       });
     }
@@ -1329,19 +1333,3 @@ export function readLatestActivityAtByUser() {
   return refreshLatestActivityCache();
 }
 
-export function deleteTelegramMonitorEventsByTxHash(params: {
-  userId: string;
-  chain: string;
-  txHash: string;
-  oldTokenAddress: string;
-}) {
-  const db = getDb();
-  const result = db.prepare(
-    `DELETE FROM events
-     WHERE user_id = ? AND chain = ? AND tx_hash = ? AND token = ?
-     AND source = 'telegram-monitor'`
-  ).run(params.userId, params.chain, params.txHash, params.oldTokenAddress);
-  if (result.changes > 0) {
-    bumpFeedRevision();
-  }
-}

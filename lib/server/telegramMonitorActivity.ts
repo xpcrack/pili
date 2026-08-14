@@ -169,7 +169,7 @@ export interface MonitorCanonicalRepairState {
   reconciledSource: 'xxyy' | 'okx-address' | 'okx-detail' | null;
 }
 
-function buildActivityFromSnapshotCore(params: MonitorActivitySnapshot, tradeAmountUsdAtTx: number | null) {
+function buildActivityFromSnapshotCore(params: MonitorActivitySnapshot, tradeAmountUsdAtTx: number | null): Activity {
   const {
     user,
     chain,
@@ -252,7 +252,7 @@ function buildActivityFromSnapshotCore(params: MonitorActivitySnapshot, tradeAmo
       monitorTxAggregateKey: aggregateKey || undefined,
       ...displayMetadata,
     },
-  } satisfies Activity;
+  };
 }
 
 function mergeRepairedCanonicalActivity(params: {
@@ -346,7 +346,7 @@ export async function buildActivityFromSnapshot(params: MonitorActivitySnapshot)
 export function buildActivityFromSnapshotSync(
   params: MonitorActivitySnapshot,
   options?: { tradeAmountUsdAtTx?: number | null }
-) {
+): Activity {
   const tradeAmountUsdAtTx =
     options && options.tradeAmountUsdAtTx !== undefined
       ? options.tradeAmountUsdAtTx

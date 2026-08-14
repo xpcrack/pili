@@ -1058,7 +1058,10 @@ export function repairTrackedAddressOwnership(params: {
   address: string;
   ownerUserId: string;
 }): AddressOwnershipRepairResult {
-  return withTransaction(() => {
+  // 函数内部 listTrackedUsers() 会把修复前快照填入 10s TTL 缓存；
+  // 修复前后都必须失效，否则修复后 10s 内列表仍显示旧归属。
+  invalidateTrackedUsersCache();
+  const result = withTransaction(() => {
     const db = getDb();
     const chain = params.chain;
     const address = assertValidTrackedAddress(params.address, chain);
@@ -1196,6 +1199,8 @@ export function repairTrackedAddressOwnership(params: {
       reassignedTxStateCount,
     };
   });
+  invalidateTrackedUsersCache();
+  return result;
 }
 
 export function listTrackedAddressSyncCursors() {
@@ -1324,14 +1329,25 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
       const liquidRow = liquidTotalByAddressStmt.get(...LIQUID_ASSET_SYMBOLS, chain, addressLower) as
         | { total_asset_usd: number | null; refreshed: number | null }
         | undefined;
-      const totalAssetUsd =
+      // current_holdings 是流动性守卫真源，但已按 MIN_HOLDING_USD 预过滤——
+      // 直接覆盖会把 <$5 的真实持仓（有流动性、仅因金额小未入库）从总额里丢掉。
+      // 取 max：守卫负责兜底（OKX 失败/总额为 0 时用流动性汇总），新鲜快照总额优先。
+      const snapshotTotal =
+        typeof snapshot.totalAssetUsd === 'number' && Number.isFinite(snapshot.totalAssetUsd)
+          ? snapshot.totalAssetUsd
+          : null;
+      const liquidTotal =
         (liquidRow?.refreshed ?? 0) > 0
           ? typeof liquidRow?.total_asset_usd === 'number'
             ? liquidRow.total_asset_usd
             : 0
-          : typeof snapshot.totalAssetUsd === 'number'
-            ? snapshot.totalAssetUsd
-            : null;
+          : null;
+      const totalAssetUsd =
+        snapshotTotal !== null && liquidTotal !== null
+          ? Math.max(snapshotTotal, liquidTotal)
+          : snapshotTotal !== null
+            ? snapshotTotal
+            : liquidTotal;
       addressStmt.run(
         totalAssetUsd,
         snapshot.updatedAt,
@@ -1352,6 +1368,9 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
        FROM tracked_addresses
        WHERE user_id = ?`
     );
+    const existingMaxByUserStmt = db.prepare(
+      `SELECT historical_max_asset_usd FROM tracked_users WHERE id = ?`
+    );
     const userStmt = db.prepare(
       `UPDATE tracked_users
        SET total_asset_usd = ?,
@@ -1364,7 +1383,21 @@ export function updateAssetSnapshots(addressAssets: AddressAssetSnapshot[], user
     for (const [userId, updatedAt] of affectedUpdatedAtByUserId) {
       const row = totalByUserStmt.get(userId) as { total_asset_usd: number | null } | undefined;
       const totalAssetUsd = typeof row?.total_asset_usd === 'number' ? row.total_asset_usd : 0;
-      userStmt.run(totalAssetUsd, totalAssetUsd, updatedAt, Date.now(), userId);
+      // 峰值是资产记录不是派生值：任何下行刷新都不允许把历史最高压回当前总额。
+      const existingMaxRow = existingMaxByUserStmt.get(userId) as
+        | { historical_max_asset_usd: number | null }
+        | undefined;
+      const existingMax =
+        typeof existingMaxRow?.historical_max_asset_usd === 'number'
+          ? existingMaxRow.historical_max_asset_usd
+          : 0;
+      userStmt.run(
+        totalAssetUsd,
+        Math.max(existingMax, totalAssetUsd),
+        updatedAt,
+        Date.now(),
+        userId
+      );
     }
   });
 }

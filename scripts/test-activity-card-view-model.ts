@@ -12,6 +12,7 @@ function makeUser(): User {
     addresses: [{ address: 'TrackedWallet111', name: 'main', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

@@ -159,14 +159,31 @@ function normalizeIp(value: string | null | undefined): string | null {
   return candidate;
 }
 
+function isTrustedProxyPeer(ip: string | null): boolean {
+  // null = 无 socket 信息（测试/直连 handler 路径），按旧行为信任转发头；
+  // 否则只有回环/RFC1918 内网对端（本机 cloudflared/tunnel）才可信。
+  if (!ip) return true;
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  if (ip.startsWith('10.')) return true;
+  if (ip.startsWith('192.168.')) return true;
+  if (ip.startsWith('172.')) {
+    const second = Number(ip.split('.')[1] ?? NaN);
+    if (Number.isInteger(second) && second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
 export function readSourceIp(request: NextRequest): string | null {
+  // socket 直连 IP（adapter 注入）是唯一可信真源；外部直连者可随意伪造
+  // x-forwarded-for / x-real-ip，若直接信任等于白名单形同虚设。
+  const socketIp = normalizeIp(request.headers.get('x-real-ip'));
   const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) {
+  if (forwarded && isTrustedProxyPeer(socketIp)) {
     const first = forwarded.split(',')[0]?.trim();
     const normalized = normalizeIp(first);
     if (normalized) return normalized;
   }
-  return normalizeIp(request.headers.get('x-real-ip'));
+  return socketIp;
 }
 
 export function checkInternalBidIp(request: NextRequest):

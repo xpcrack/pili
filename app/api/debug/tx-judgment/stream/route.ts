@@ -28,11 +28,16 @@ export async function GET(request: Request) {
         if (closed) {
           return;
         }
-        const nextVersion = await readTxJudgmentStoreVersion();
-        if (nextVersion !== lastVersion) {
-          lastVersion = nextVersion;
-          controller.enqueue(toSseFrame({ type: 'updated', version: nextVersion }));
-          return;
+        try {
+          const nextVersion = await readTxJudgmentStoreVersion();
+          if (nextVersion !== lastVersion) {
+            lastVersion = nextVersion;
+            controller.enqueue(toSseFrame({ type: 'updated', version: nextVersion }));
+            return;
+          }
+        } catch (error) {
+          // 瞬态读失败（DB 忙等）也要维持心跳，不能让它变成未处理拒绝
+          console.warn('[tx-judgment/stream] version read failed:', error);
         }
         controller.enqueue(toSseFrame({ type: 'ping', version: lastVersion }));
       };

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import './server-only-shim.cjs';
+import Database from 'better-sqlite3';
 
-const require = createRequire(import.meta.url);
+import './server-only-shim.cjs';
 
 /** Valid-format fixtures for create/merge path */
 const EVM_NEW = '0x1111111111111111111111111111111111111111';
@@ -21,11 +20,7 @@ async function run() {
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'pili.sqlite');
 
   const newonePath = path.join(tempDir, 'newone.sqlite');
-  const BetterSqlite3 = require('better-sqlite3') as new (f: string) => {
-    exec(sql: string): void;
-    close(): void;
-  };
-  const newone = new BetterSqlite3(newonePath);
+  const newone = new Database(newonePath);
   newone.exec(`
     CREATE TABLE sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,13 +50,15 @@ async function run() {
 
   try {
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { getDb } = await import(`../lib/server/sqlite.ts?fe=${stamp}`);
-    const { syncFeishuEnablementFromNewone } = await import(
+    const { getDb } = (await import(
+      `../lib/server/sqlite.ts?fe=${stamp}`
+    )) as typeof import('../lib/server/sqlite');
+    const { syncFeishuEnablementFromNewone } = (await import(
       `../lib/server/feishuEnablementSync.ts?fe=${stamp}`
-    );
-    const { listMonitoredUsers, listTrackedUsers, invalidateTrackedUsersCache } = await import(
+    )) as typeof import('../lib/server/feishuEnablementSync');
+    const { listMonitoredUsers, listTrackedUsers, invalidateTrackedUsersCache } = (await import(
       `../lib/server/trackedUsersRepo.ts?fe=${stamp}`
-    );
+    )) as typeof import('../lib/server/trackedUsersRepo');
 
     const db = getDb();
     const now = Date.now();
@@ -141,14 +138,14 @@ async function run() {
     assert.ok(u2.addresses.length >= 1);
 
     const emptyPath = path.join(tempDir, 'empty.sqlite');
-    const empty = new BetterSqlite3(emptyPath);
+    const empty = new Database(emptyPath);
     empty.exec(`CREATE TABLE sources (kind TEXT, external_id TEXT, disabled INTEGER);`);
     empty.close();
     assert.equal(syncFeishuEnablementFromNewone({ newonePath: emptyPath }).ok, false);
 
     // label=self fallback when wallets table is missing
     const labelOnlyPath = path.join(tempDir, 'label-self.sqlite');
-    const labelOnly = new BetterSqlite3(labelOnlyPath);
+    const labelOnly = new Database(labelOnlyPath);
     labelOnly.exec(`
       CREATE TABLE sources (
         kind TEXT NOT NULL,
@@ -178,7 +175,7 @@ async function run() {
 
     // --- auto-create / merge / ownership ---
     const rosterPath = path.join(tempDir, 'roster.sqlite');
-    const rosterDb = new BetterSqlite3(rosterPath);
+    const rosterDb = new Database(rosterPath);
     const metaNew = JSON.stringify({
       person_name: 'Gamma',
       twitter: 'gamma_x',
@@ -287,7 +284,7 @@ async function run() {
       note: 'Alpha#2',
     });
     const backfillPath = path.join(tempDir, 'backfill-twitter.sqlite');
-    const backfillDb = new BetterSqlite3(backfillPath);
+    const backfillDb = new Database(backfillPath);
     backfillDb.exec(`
       CREATE TABLE sources (
         kind TEXT NOT NULL,
@@ -318,7 +315,7 @@ async function run() {
 
     // Disable Gamma wallet → flag off, person remains
     const disablePath = path.join(tempDir, 'disable.sqlite');
-    const disableDb = new BetterSqlite3(disablePath);
+    const disableDb = new Database(disablePath);
     disableDb.exec(`
       CREATE TABLE sources (
         kind TEXT NOT NULL,

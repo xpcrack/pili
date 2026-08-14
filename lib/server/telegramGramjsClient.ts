@@ -790,8 +790,8 @@ export async function createTelegramGramjsClient(): Promise<TelegramLiveClient> 
     addNewMessageHandler(handler: (event: LiveTelegramNewMessageEvent) => void | Promise<void>) {
       newMessageHandlers.add(handler);
     },
-    isConnected() {
-      return client.connected;
+    isConnected(): boolean {
+      return client.connected === true;
     },
   };
 }

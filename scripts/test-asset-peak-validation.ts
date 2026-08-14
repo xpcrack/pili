@@ -31,6 +31,7 @@ function createUser(id: string, totalAssetUsd: number, historicalMaxAssetUsd: nu
     ],
     totalAssetUsd,
     historicalMaxAssetUsd,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };
@@ -78,8 +79,10 @@ async function run() {
     const { getDb } = await import('@/lib/server/sqlite');
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get('connection'), 'close', 'OKX requests should not reuse stale proxy connections');
+      return new Response(
         JSON.stringify({
           code: '0',
           data: [
@@ -104,9 +107,10 @@ async function run() {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }
-      )) as typeof fetch;
+      );
+    }) as typeof fetch;
 
-    const okxDetails = await fetchOkxAddressAssetDetails('0xWallet', 'bsc');
+    const okxDetails = await fetchOkxAddressAssetDetails('0x0000000000000000000000000000000000000001', 'bsc');
     assert.equal(okxDetails.ok, true, 'OKX 资产明细请求应成功');
     assert.equal(okxDetails.assets.length, 2, '应归一化两条资产明细');
     const okxToken = okxDetails.assets.find((asset) => asset.symbol === 'AAA');
@@ -443,8 +447,18 @@ async function run() {
       }),
       fetchTokenLiquidity: async () => ({ liquidityUsd: null }),
     });
-    assert.equal(missingLiquidityValidation.blockedUsers.length, 1, '前五持仓缺少流动性应直接拦截');
-    assert.equal(missingLiquidityValidation.blockedUsers[0]?.status, 'missing_liquidity');
+    // missing_liquidity 只是 DexScreener 没收录某 token，不是污染证据
+    // （55c43a6 起有意不 block 整个用户，否则 rune 这类真实持仓会永久卡 $0）。
+    assert.equal(
+      missingLiquidityValidation.blockedUsers.length,
+      0,
+      '仅缺流动性不拦截——真实持仓（如 rune）会因此永久卡 0'
+    );
+    assert.equal(
+      missingLiquidityValidation.userAssets.length,
+      1,
+      '缺流动性不拦截时保留人物总资产快照'
+    );
 
     const blockedPersistUser = createTrackedUser(
       createUser('persist-blocked', 100, 100, '0x2222222222222222222222222222222222222222')

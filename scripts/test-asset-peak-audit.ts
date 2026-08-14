@@ -29,6 +29,7 @@ function createUser(id: string, historicalMaxAssetUsd: number, address: string):
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

@@ -60,7 +60,9 @@ export function recordGmgnRequest(
           /* skip corrupt */
         }
       }
-      const tmp = file + '.tmp';
+      // 多进程共用同一文件：rename 目标必须原子。tmp 名带 pid，
+      // 并发压缩互不覆盖对方的中间文件，最坏只丢一个窗口（metrics 尽力而为）。
+      const tmp = `${file}.${process.pid}.tmp`;
       appendFileSync(tmp, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
       try {
         renameSync(tmp, file);

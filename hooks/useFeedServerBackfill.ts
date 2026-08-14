@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef } from 'react';
+import { adminHeaders } from '@/lib/adminClient';
 import { User } from '@/types';
 
 const SERVER_BACKFILL_ENDPOINT = '/api/users/import';
@@ -53,9 +54,7 @@ export function useFeedServerBackfill() {
         try {
           response = await fetch(SERVER_BACKFILL_ENDPOINT, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: adminHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
               users: usersWithAddresses,
               replaceExisting: false,

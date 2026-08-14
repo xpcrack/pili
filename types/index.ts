@@ -185,7 +185,7 @@ export interface Activity {
     coHitAddresses?: string[];
     marketCapAtTxUsd?: number;
     tradeAmountUsdAtTx?: number;
-    marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot';
+    marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot' | 'gmgn-activity';
     /** Alchemy doorbell + GMGN enrichment (not XXYY TG). */
     liveSource?: 'alchemy-gmgn';
     marketCapAtTxEstimated?: boolean;

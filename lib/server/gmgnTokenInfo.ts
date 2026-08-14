@@ -134,7 +134,8 @@ export async function fetchGmgnTokenInfo(
     return null;
   }
 
-  const cacheKey = `${gmgnChain}:${address.toLowerCase()}`;
+  // EVM hex 大小写不敏感 → 小写归一；solana base58 大小写敏感保留原样。
+  const cacheKey = `${gmgnChain}:${/^0x[0-9a-fA-F]+$/.test(address) ? address.toLowerCase() : address}`;
   const now = Date.now();
   const cached = tokenInfoCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {

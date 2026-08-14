@@ -20,6 +20,7 @@ function createPayload(id: string): UserDetailsSuccessPayload {
       addresses: [],
       totalAssetUsd: 10,
       historicalMaxAssetUsd: 20,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: null,
       tags: [],
     },

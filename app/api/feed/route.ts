@@ -416,7 +416,9 @@ export async function GET(request: NextRequest) {
         total: filteredByUser.length,
         page: 1,
         pageSize,
-        hasMore: filteredByUser.length > paged.length,
+        // telegram 模式是单页实时窗口（readTelegramMonitorFeed 无游标）：
+        // hasMore=true + nextCursor=null 会让前端 load-more 从头重复拉第一页。
+        hasMore: false,
         nextCursor: null,
         historyComplete: true,
         localQualifiedCount: filteredByUser.length,

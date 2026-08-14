@@ -16,6 +16,7 @@ function makeUser(): User {
     addresses: [],
     totalAssetUsd: 123_400,
     historicalMaxAssetUsd: 456_700,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: ['Alpha', 'Whale'],
   };
@@ -120,10 +121,10 @@ function run() {
     new RegExp(formatUsdCompact(123_400).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
     'panel total should use the authoritative user total instead of visible holdings'
   );
-  assert.match(
+  assert.doesNotMatch(
     partialSuccessMarkup,
     new RegExp(formatUsdCompact(456_700).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-    'panel peak should use the same authoritative historical max as the sidebar'
+    'panel header shows current assets; the sidebar also stopped rendering ATH (ranking is current-asset based)'
   );
   assert.match(partialSuccessMarkup, />100\.0%<\//, 'holding share should use visible holdings total');
 

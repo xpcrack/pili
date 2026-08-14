@@ -105,14 +105,14 @@ async function run() {
   });
   assert.deepEqual(
     filtered.items.map((item) => item.id),
-    ['a', 'c'],
-    'filtered accumulation should keep scanning pages until enough matches are found'
+    ['a', 'c', 'd'],
+    '整页消费：desiredCount 是预算，超出最多一页由调用方窗口裁剪；截断会丢掉本页未消费的匹配项'
   );
   assert.equal(filtered.pageCount, 2);
   assert.equal(
     filtered.hasMore,
-    true,
-    'stopping in the middle of a matched page should still allow more results to load'
+    false,
+    '最后一页 hasMore=false 且整页已消费 → 确实没有更多结果'
   );
 
   console.log('feed query mode tests: ok');

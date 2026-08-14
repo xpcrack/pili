@@ -215,6 +215,7 @@ export function canonicalUserToLegacy(user: CanonicalUser, addresses: CanonicalA
     })),
     totalAssetUsd: user.currentBalanceUsd,
     historicalMaxAssetUsd: Math.max(user.maxBalanceUsd, user.currentBalanceUsd),
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

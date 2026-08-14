@@ -485,14 +485,16 @@ export default function ManagePage() {
       if (!response.ok || !payload?.ok) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
+      // 只有服务端确认删除成功才移除本地行；失败保留行，避免 UI/服务端不一致
+      deleteUser(userId);
+      invalidateAddresses();
     } catch (error) {
       console.warn(
         '[manage] failed to delete user from server',
         error instanceof Error ? error.message : error
       );
+      setAddressActionError(`删除失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
-      deleteUser(userId);
-      invalidateAddresses();
       setDeletingUserIds((state) => {
         const next = { ...state };
         delete next[userId];
@@ -521,6 +523,7 @@ export default function ManagePage() {
       addresses: expandTrackedAddresses(parsedAddresses),
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: null,
       tags: [
         ...(formData.isNewsSource ? ['news'] : []),
@@ -539,6 +542,7 @@ export default function ManagePage() {
     await addUsers(
       parsedBulkUsers.map((user) => ({
         ...user,
+        mainstreamAssetUsd: 0,
         addresses: expandTrackedAddresses(user.addresses),
       }))
     );

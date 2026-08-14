@@ -38,6 +38,7 @@ async function run() {
       ],
       totalAssetUsd: 10,
       historicalMaxAssetUsd: 10,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: 100,
       twitter: undefined,
       telegram: undefined,

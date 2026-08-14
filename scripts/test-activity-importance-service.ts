@@ -16,6 +16,7 @@ function makeUser(id: string, historicalMaxAssetUsd: number): User {
     addresses: [{ address: `${id}-wallet`, name: '#1', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
     totalAssetUsd: historicalMaxAssetUsd,
     historicalMaxAssetUsd,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

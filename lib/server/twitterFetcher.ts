@@ -22,6 +22,7 @@ import { isLikelyTwitterArtifactText } from '@/lib/twitterArtifactText';
 import {
   normalizeTwitterUsername,
   type StructuredTwitterTweet,
+  type TwitterProviderFetch,
   type TwitterProviderIntent,
 } from '@/lib/server/twitterProviderTypes';
 
@@ -220,7 +221,9 @@ function toCreatedAtMs(value: unknown) {
     if (!raw) return 0;
     const asInt = Number.parseInt(raw, 10);
     if (Number.isFinite(asInt) && asInt > 0) {
-      return asInt;
+      // 10 位 = epoch 秒（部分 provider 返回），13 位 = 毫秒；
+      // 直接当毫秒用会把 2026 年变成 1970 年，推文被时间窗静默丢弃。
+      return asInt >= 1_000_000_000_000 ? asInt : asInt * 1_000;
     }
     const asDate = Date.parse(raw);
     if (Number.isFinite(asDate) && asDate > 0) {
@@ -958,6 +961,20 @@ async function resolveTwitterIdentity(params: {
   return null;
 }
 
+/** 6551/xread provider fetch 超时（ms）。挂起请求必须被中止，否则整批卡死。 */
+const TWITTER_PROVIDER_FETCH_TIMEOUT_MS = 15_000;
+
+/** 给裸 fetch 包一层 AbortSignal.timeout；已有 signal 时两者叠加。 */
+function withProviderFetchTimeout(): TwitterProviderFetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const timeoutSignal = AbortSignal.timeout(TWITTER_PROVIDER_FETCH_TIMEOUT_MS);
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : timeoutSignal;
+    return fetch(input, { ...init, signal });
+  }) as TwitterProviderFetch;
+}
+
 export function createTwitterFetcher(
   seedByHandle?: TwitterFetcherSeedByHandle,
   overrides: TwitterFetcherDependencies = {}
@@ -966,8 +983,11 @@ export function createTwitterFetcher(
   const byIdFixtureFile = path.join(fixtureRoot, 'by-id.json');
   const providerMode = normalizeRealProviderMode(process.env.TWITTER_FETCH_PROVIDER);
   const dependencies = {
-    client6551: overrides.client6551 || createTwitter6551Client(),
-    clientXread: overrides.clientXread || createTwitterXreadClient(),
+    // 6551/xread client 内部 fetch 无超时：挂起的请求会永久 await，卡死调用方
+    // 的整批处理（telegram-bridge processUpdate 逐条 await → for 循环停住 →
+    // offset 不再推进 → 积压无限增长）。包一层 AbortSignal.timeout 兜底。
+    client6551: overrides.client6551 || createTwitter6551Client(withProviderFetchTimeout()),
+    clientXread: overrides.clientXread || createTwitterXreadClient(withProviderFetchTimeout()),
     routeChooser: overrides.routeChooser || chooseTwitterProviderRoute,
     readBudgetSnapshot: overrides.readBudgetSnapshot || readTwitterProviderBudgetSnapshot,
     readIdentityCache: overrides.readIdentityCache || readTwitterIdentityCache,
@@ -1038,25 +1058,41 @@ export function createTwitterFetcher(
 
             try {
               const successUnits = params.lane === 'replies' ? 2 : 1;
-              const result = await dependencies.client6551.fetchUserTweets({
-                apiKey,
-                username: normalizeTwitterUsername(handle),
-                lane: params.lane,
-                maxResults: params.maxItems,
-              });
-              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane, resolvedUserId);
-              dependencies.markProviderSuccess({
-                provider: '6551',
-                credentialId: item.credentialId,
-                nowMs: dependencies.now(),
-                dailyLimit: DEFAULT_6551_DAILY_LIMIT,
-                successUnits,
-              });
-              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: successUnits });
+              // 预算 200 / 页 100：单页只取到一半，活跃账号窗口内老推文永久
+              // 缺失、coverage 卡死。翻页直到收满预算或 provider 无更多。
+              const collected: StructuredTwitterTweet[] = [];
+              let cursor: string | null = null;
+              let hasMore = false;
+              let pageCount = 0;
+              do {
+                const result = await dependencies.client6551.fetchUserTweets({
+                  apiKey,
+                  username: normalizeTwitterUsername(handle),
+                  lane: params.lane,
+                  maxResults: 100,
+                  cursor,
+                });
+                pageCount += 1;
+                dependencies.markProviderSuccess({
+                  provider: '6551',
+                  credentialId: item.credentialId,
+                  nowMs: dependencies.now(),
+                  dailyLimit: DEFAULT_6551_DAILY_LIMIT,
+                  successUnits,
+                });
+                collected.push(...result.tweets);
+                hasMore = result.hasMore;
+                cursor = result.nextCursor ?? null;
+                if (collected.length >= params.maxItems || !hasMore || pageCount >= 5) {
+                  break;
+                }
+              } while (true);
+              const authoredTweets = filterStructuredUserTweets(collected, handle, params.lane, resolvedUserId);
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: successUnits * pageCount });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
                 tweets: authoredTweets,
-                hasMore: result.hasMore,
+                hasMore,
                 sinceMs: params.sinceMs,
               });
               return {
@@ -1088,19 +1124,35 @@ export function createTwitterFetcher(
               continue;
             }
             try {
-              const result = await dependencies.clientXread.fetchUserTweets({
-                apiKey,
-                username: normalizeTwitterUsername(handle),
-                userId: resolvedUserId || undefined,
-                lane: params.lane,
-                maxResults: params.maxItems,
-              });
-              const authoredTweets = filterStructuredUserTweets(result.tweets, handle, params.lane, resolvedUserId);
+              // 与 6551 一致：翻页直到收满预算或 provider 无更多，避免
+              // 活跃账号窗口内老推文被单页截断。
+              const collected: StructuredTwitterTweet[] = [];
+              let cursor: string | null = null;
+              let hasMore = false;
+              let pageCount = 0;
+              do {
+                const result = await dependencies.clientXread.fetchUserTweets({
+                  apiKey,
+                  username: normalizeTwitterUsername(handle),
+                  userId: resolvedUserId || undefined,
+                  lane: params.lane,
+                  maxResults: 100,
+                  cursor,
+                });
+                pageCount += 1;
+                collected.push(...result.tweets);
+                hasMore = result.hasMore;
+                cursor = result.nextCursor ?? null;
+                if (collected.length >= params.maxItems || !hasMore || pageCount >= 5) {
+                  break;
+                }
+              } while (true);
+              const authoredTweets = filterStructuredUserTweets(collected, handle, params.lane, resolvedUserId);
               attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
                 tweets: authoredTweets,
-                hasMore: result.hasMore,
+                hasMore,
                 sinceMs: params.sinceMs,
               });
               return {

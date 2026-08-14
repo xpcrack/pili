@@ -17,6 +17,7 @@ function makeUser(id: string, name: string): User {
     addresses: [{ address: `${id}Wallet`, name: 'main', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };
@@ -38,6 +39,7 @@ function makeActivity(
     walletCount7d: source === 'blockchain' ? 1 : 0,
     totalCount7d: 1,
     historicalMaxAssetUsd: 250_000,
+    mainstreamAssetUsd: 0,
     sourceRarity: 1,
     assetWeight: 0.7,
     totalFrequencyFactor: 1,

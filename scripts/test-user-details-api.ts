@@ -22,6 +22,7 @@ function createSuccessPayload(): UserDetailsSuccessPayload {
       ],
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: null,
       tags: ['alpha'],
     },

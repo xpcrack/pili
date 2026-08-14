@@ -40,7 +40,7 @@ export interface ActivityFeedSummary {
 }
 
 export interface AddressAssetSnapshot {
-  userId?: string;
+  userId: string;
   address: string;
   chain: string;
   token?: string;

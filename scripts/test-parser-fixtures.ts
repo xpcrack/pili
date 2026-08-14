@@ -49,6 +49,7 @@ function createUser(userId: string, userName: string, trackedAddress: string, ch
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };
@@ -179,6 +180,7 @@ async function runTelegramMonitorHelperFixtures() {
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };
@@ -198,6 +200,7 @@ async function runTelegramMonitorHelperFixtures() {
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };
@@ -571,6 +574,7 @@ async function runTelegramMonitorFixtures() {
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: ['fixture'],
   });
@@ -679,15 +683,15 @@ async function runTelegramMonitorFixtures() {
          LIMIT 1`
       )
       .get(
-        `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}`
+        `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}:${routeFixture.expected.tokenAddress?.toLowerCase()}`
       ) as { event_id: string; tx_hash: string | null } | undefined;
 
     assert.ok(projectedEvent, 'telegram route: expected projected event row');
     assert.equal(projectedEvent?.tx_hash, routeFixture.expected.txHash, 'telegram route: projected txHash mismatch');
     assert.equal(
       projectedEvent?.event_id,
-      `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}`,
-      'telegram route: projected event_id should use stable monitor tx identity'
+      `xxyy-monitor:${routeFixture.expected.chain}:${routeFixture.expected.trackedWalletAddress?.toLowerCase()}:${routeFixture.expected.txHash?.toLowerCase()}:${routeFixture.expected.tokenAddress?.toLowerCase()}`,
+      'telegram route: projected event_id should use the token-aware monitor tx identity'
     );
 
     console.log('PASS telegram-route xxyy-bot-to-bot-buy');
@@ -822,6 +826,7 @@ async function runTwitterRelayFixtures() {
     addresses: [],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: ['fixture'],
   });

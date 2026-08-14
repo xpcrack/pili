@@ -51,6 +51,7 @@ async function run() {
       ],
       totalAssetUsd: 100,
       historicalMaxAssetUsd: 200,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: 100,
       twitter: undefined,
       telegram: undefined,
@@ -158,153 +159,18 @@ async function run() {
       ],
       totalAssetUsd: 30,
       historicalMaxAssetUsd: 30,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: 100,
       twitter: undefined,
       telegram: undefined,
     });
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS telegram_monitor_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        provider TEXT NOT NULL,
-        chain TEXT NOT NULL,
-        token_address TEXT NOT NULL,
-        token_address_lower TEXT NOT NULL,
-        raw_text TEXT NOT NULL DEFAULT '',
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        tracked_wallet_address TEXT,
-        tracked_wallet_address_lower TEXT
-      );
-    `);
-    db.prepare(
-      `INSERT INTO telegram_monitor_events
-        (provider, chain, token_address, token_address_lower, raw_text, payload_json,
-         created_at, updated_at, tracked_wallet_address, tracked_wallet_address_lower)
-       VALUES ('xxyy', 'robinhood', '0xtoken', '0xtoken', '', '{}', 1, 1, ?, ?)`
-    ).run(evmAddress, evmAddress.toLowerCase());
-
+    // Robinhood wallets are owned by the persistent GMGN queue
+    // (holdings-refresh-gmgn) since 2026-08-13; the OKX full scan must not
+    // re-fetch them (weight-5 signed requests, duplicates the queue).
     let robinhoodCalls = 0;
-    const rhResult = await refreshCurrentHoldings({
+    const rhScan = await refreshCurrentHoldings({
       now: () => 1_717_000_000_100,
-      batchFetchLiquidity,
-      fetchAddressAssetDetails: async (address, chain) => {
-        if (address === trackedAddress) {
-          return {
-            ok: true,
-            configured: true,
-            totalAssetUsd: 100,
-            assets: [
-              {
-                address,
-                chain,
-                assetKey: `${chain}:usdc`,
-                tokenAddress: 'So11111111111111111111111111111111111111112',
-                symbol: 'USDC',
-                name: 'USD Coin',
-                balance: 100,
-                priceUsd: 1,
-                valueUsd: 100,
-              },
-            ],
-            error: null,
-          };
-        }
-        return {
-          ok: true,
-          configured: true,
-          totalAssetUsd: 10,
-          assets: [
-            {
-              address,
-              chain,
-              assetKey: `${chain}:eth`,
-              tokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-              symbol: 'ETH',
-              name: 'Ether',
-              balance: 0.01,
-              priceUsd: 1000,
-              valueUsd: 10,
-            },
-          ],
-          error: null,
-        };
-      },
-      fetchRobinhoodHoldings: async (address) => {
-        robinhoodCalls += 1;
-        assert.equal(address.toLowerCase(), evmAddress.toLowerCase());
-        return {
-          ok: true,
-          assets: [
-            {
-              tokenAddress: '0x45242320dbb855eea8fd36804c6487e10e97fcf9',
-              symbol: 'TENDIES',
-              name: 'TENDIES',
-              balance: 1_000_000,
-              priceUsd: 0.03,
-              valueUsd: 30_000,
-              liquidityUsd: 800_000,
-            },
-            {
-              tokenAddress: '0xdeadlowvalue',
-              symbol: 'DUST',
-              name: 'Dust',
-              balance: 1,
-              priceUsd: 1,
-              valueUsd: 1,
-              liquidityUsd: 100_000,
-            },
-            {
-              tokenAddress: '0xdeadlowliq',
-              symbol: 'ILLIQ',
-              name: 'Illiquid',
-              balance: 10,
-              priceUsd: 10,
-              valueUsd: 100,
-              liquidityUsd: 100,
-            },
-          ],
-          error: null,
-        };
-      },
-    });
-
-    assert.equal(robinhoodCalls, 1, 'same EVM 0x should only fetch Robinhood once');
-    assert.equal(rhResult.summary.robinhoodWalletCount, 1);
-    // Fact table keeps value>=$5 bags even if low-liq (ILLIQ $100 / liq $100).
-    // Dust $1 still filtered by MIN_HOLDING_USD. Display may still hide low-liq.
-    assert.ok(rhResult.summary.holdingsRowCount >= 2);
-
-    const rhRows = db
-      .prepare(
-        `SELECT chain, symbol, token_address_lower, value_usd, liquidity_usd, user_id
-         FROM current_holdings
-         WHERE chain = 'robinhood'
-         ORDER BY value_usd DESC`
-      )
-      .all() as Array<{
-      chain: string;
-      symbol: string;
-      token_address_lower: string;
-      value_usd: number;
-      liquidity_usd: number | null;
-      user_id: string;
-    }>;
-
-    assert.equal(rhRows.length, 2);
-    assert.equal(rhRows[0]?.symbol, 'TENDIES');
-    assert.equal(rhRows[0]?.token_address_lower, '0x45242320dbb855eea8fd36804c6487e10e97fcf9');
-    assert.equal(rhRows[0]?.value_usd, 30_000);
-    assert.equal(rhRows[0]?.liquidity_usd, 800_000);
-    assert.equal(rhRows[0]?.user_id, user.id);
-    assert.equal(rhRows[1]?.symbol, 'ILLIQ');
-    assert.equal(rhRows[1]?.value_usd, 100);
-    assert.equal(rhRows[1]?.liquidity_usd, 100);
-
-    // Failure preserves previous Robinhood cache
-    const failed = await refreshCurrentHoldings({
-      now: () => 1_717_000_000_200,
       batchFetchLiquidity,
       fetchAddressAssetDetails: async (address, chain) => ({
         ok: true,
@@ -314,48 +180,30 @@ async function run() {
           {
             address,
             chain,
-            assetKey: `${chain}:keep`,
-            tokenAddress:
-              chain === 'solana'
-                ? 'So11111111111111111111111111111111111111112'
-                : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-            symbol: chain === 'solana' ? 'USDC' : 'ETH',
-            name: null,
-            balance: 1,
-            priceUsd: 10,
+            assetKey: `${chain}:eth`,
+            tokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            symbol: 'ETH',
+            name: 'Ether',
+            balance: 0.01,
+            priceUsd: 1000,
             valueUsd: 10,
           },
         ],
         error: null,
       }),
-      fetchRobinhoodHoldings: async () => ({
-        ok: false,
-        assets: [],
-        error: '429 RATE_LIMIT_BANNED',
-        rateLimited: true,
-      }),
+      fetchRobinhoodHoldings: async () => {
+        robinhoodCalls += 1;
+        return { ok: true, assets: [], error: null };
+      },
     });
 
-    assert.equal(failed.status, 'partial');
-    const cachedRh = db
-      .prepare(
-        `SELECT symbol, value_usd FROM current_holdings WHERE chain = 'robinhood' ORDER BY value_usd DESC`
-      )
-      .all() as Array<{ symbol: string; value_usd: number }>;
-    // Failed RH refresh preserves last-good fact bags (TENDIES + ILLIQ; DUST was never stored)
-    assert.equal(cachedRh.length, 2);
-    assert.equal(cachedRh[0]?.symbol, 'TENDIES');
-    assert.equal(cachedRh[0]?.value_usd, 30_000);
-    assert.equal(cachedRh[1]?.symbol, 'ILLIQ');
-    assert.equal(cachedRh[1]?.value_usd, 100);
+    assert.equal(robinhoodCalls, 0, 'full scan must not fetch Robinhood wallets (GMGN queue owns them)');
+    assert.equal(rhScan.summary.robinhoodWalletCount, 0);
+    const rhRowsAfterScan = db
+      .prepare(`SELECT COUNT(*) AS n FROM current_holdings WHERE chain = 'robinhood'`)
+      .get() as { n: number };
+    assert.equal(rhRowsAfterScan.n, 0, 'full scan must not write Robinhood holdings');
 
-    const rhStatus = db
-      .prepare(
-        `SELECT status FROM current_holdings_wallet_status
-         WHERE chain = 'robinhood' AND tracked_address_lower = ?`
-      )
-      .get(evmAddress.toLowerCase()) as { status: string } | undefined;
-    assert.equal(rhStatus?.status, 'failed');
 
     // Partial OKX failure must not raise historical peak for incomplete users
     const partialSol = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
@@ -383,6 +231,7 @@ async function run() {
       ],
       totalAssetUsd: 100,
       historicalMaxAssetUsd: 100,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: 100,
       twitter: undefined,
       telegram: undefined,
@@ -483,6 +332,7 @@ async function run() {
       ],
       totalAssetUsd: 50,
       historicalMaxAssetUsd: 50,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: 100,
       twitter: undefined,
       telegram: undefined,

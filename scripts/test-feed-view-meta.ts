@@ -47,6 +47,7 @@ async function run() {
       historicalMaxChainAssetTotal: 0,
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: null,
       tags: [],
     });

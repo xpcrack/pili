@@ -16,6 +16,7 @@ function makeUser(): User {
     addresses: [{ address: 'backfill-wallet', name: '#1', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
     totalAssetUsd: 120_000,
     historicalMaxAssetUsd: 120_000,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

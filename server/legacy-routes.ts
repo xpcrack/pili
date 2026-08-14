@@ -18,13 +18,14 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'GET', path: '/users', load: () => import('@/app/api/users/route') },
   { method: 'POST', path: '/users', load: () => import('@/app/api/users/route') },
   { method: 'POST', path: '/users/import', load: () => import('@/app/api/users/import/route') },
+  // 静态路径必须先于 /users/:id 注册，否则被参数路由吞掉（404 用户不存在）
+  { method: 'GET', path: '/users/activity-stats', load: () => import('@/app/api/users/activity-stats/route') },
   { method: 'GET', path: '/users/:id', load: () => import('@/app/api/users/[id]/route') },
   { method: 'PATCH', path: '/users/:id', load: () => import('@/app/api/users/[id]/route') },
   { method: 'DELETE', path: '/users/:id', load: () => import('@/app/api/users/[id]/route') },
   { method: 'GET', path: '/users/:id/addresses', load: () => import('@/app/api/users/[id]/addresses/route') },
   { method: 'POST', path: '/users/:id/addresses', load: () => import('@/app/api/users/[id]/addresses/route') },
   { method: 'DELETE', path: '/users/:id/addresses', load: () => import('@/app/api/users/[id]/addresses/route') },
-  { method: 'GET', path: '/users/activity-stats', load: () => import('@/app/api/users/activity-stats/route') },
   { method: 'GET', path: '/addresses', load: () => import('@/app/api/addresses/route') },
   { method: 'GET', path: '/ranking', load: () => import('@/app/api/ranking/route') },
   { method: 'GET', path: '/tokens', load: () => import('@/app/api/tokens/route') },
@@ -52,6 +53,13 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'GET', path: '/media', load: () => import('@/app/api/media/route') },
   { method: 'GET', path: '/token-logo', load: () => import('@/app/api/token-logo/route') },
   { method: 'POST', path: '/token-logo/batch', load: () => import('@/app/api/token-logo/batch/route') },
+  { method: 'GET', path: '/okx/transactions', load: () => import('@/app/api/okx/transactions/route') },
+  { method: 'GET', path: '/okx/health', load: () => import('@/app/api/okx/health/route') },
+  { method: 'POST', path: '/backfill-14days', load: () => import('@/app/api/backfill-14days/route') },
+  { method: 'POST', path: '/twitter/relay', load: () => import('@/app/api/twitter/relay/route') },
+  { method: 'POST', path: '/telegram/relay', load: () => import('@/app/api/telegram/relay/route') },
+  { method: 'POST', path: '/telegram/channel-sync', load: () => import('@/app/api/telegram/channel-sync/route') },
+  { method: 'POST', path: '/telegram/monitor', load: () => import('@/app/api/telegram/monitor/route') },
 ];
 
 function normalizeLoopback(address: string | undefined | null) {
@@ -77,19 +85,12 @@ function readRemoteAddress(c: { env?: unknown; req: { raw: Request } }) {
 }
 
 // BID client only sends Authorization; inject socket IP so INTERNAL_BID_ALLOWED_IPS works.
+// Always overwrite: a client-supplied x-real-ip is forgeable, the socket is ground truth.
 function toNextRequest(request: Request, remoteAddress?: string | null) {
-  if (
-    !remoteAddress ||
-    request.headers.get('x-forwarded-for') ||
-    request.headers.get('x-real-ip')
-  ) {
-    return new NextRequest(request);
-  }
-
-  // Avoid new Request(request, { headers }) — Bun may consume the body stream,
-  // making subsequent request.json() hang forever.
   const next = new NextRequest(request);
-  next.headers.set('x-real-ip', remoteAddress);
+  if (remoteAddress) {
+    next.headers.set('x-real-ip', remoteAddress);
+  }
   return next;
 }
 

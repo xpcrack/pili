@@ -48,24 +48,14 @@ export async function collectItemsUntilCount<T>(params: {
     pageCount += 1;
 
     const pageItems = params.matcher ? page.items.filter(params.matcher) : page.items;
-    const remaining = desiredCount - items.length;
-    const truncated = pageItems.length > remaining;
-    items.push(...pageItems.slice(0, remaining));
+    // 整页消费，绝不截断：截断分支会丢掉本页未消费的匹配项，而游标只能
+    // 从「下一页」继续，load-more 时那些匹配项会被永久跳过。
+    // desiredCount 是取数预算，超出一点点（最多一页）由调用方窗口裁剪。
+    items.push(...pageItems);
 
     lastPageNextCursor = page.nextCursor;
     hasMore = page.hasMore;
     cursor = page.nextCursor;
-
-    if (truncated) {
-      // 本页还有未消费条目，下一轮应从本页 nextCursor 之前的位置继续；
-      // 当前 load-more 按整页追加，截断时仍标记 hasMore。
-      return {
-        items,
-        hasMore: true,
-        pageCount,
-        nextCursor: lastPageNextCursor,
-      };
-    }
 
     if (!cursor) {
       hasMore = false;

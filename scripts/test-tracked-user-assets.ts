@@ -46,6 +46,7 @@ function buildUser(): Omit<User, 'id'> {
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     twitter: undefined,
     telegram: undefined,
@@ -59,7 +60,9 @@ async function run() {
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
 
   try {
-    const { createTrackedUser, listTrackedUsers, updateAssetSnapshots } = await import('@/lib/server/trackedUsersRepo');
+    const { createTrackedUser, listTrackedUsers, updateAssetSnapshots, invalidateTrackedUsersCache } = await import(
+      '@/lib/server/trackedUsersRepo'
+    );
     const trackedUser = createTrackedUser(buildUser());
 
     updateAssetSnapshots(
@@ -137,6 +140,8 @@ async function run() {
       ]
     );
 
+    // 10s TTL 缓存：写路径后必须主动失效，否则读到旧快照。
+    invalidateTrackedUsersCache();
     const partial = listTrackedUsers().find((user) => user.id === trackedUser.id);
     assert.ok(partial, '局部快照后人物仍应存在');
 
@@ -157,6 +162,7 @@ async function run() {
     updateAssetSnapshots(
       [
         {
+          userId: trackedUser.id,
           address: SOLANA_ADDRESS,
           chain: 'solana',
           token: '',

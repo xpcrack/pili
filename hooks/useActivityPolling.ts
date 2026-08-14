@@ -270,7 +270,12 @@ export function useActivityPolling(
   }, [users]);
 
   useEffect(() => {
+    // 会话快照只代表「全局、未过滤」的 feed：选中人物或带搜索/来源过滤时
+    // 的 feed 会被客户端过滤，持久化会让下次进入页面时全局视图被污染。
     if (feed.length === 0) {
+      return;
+    }
+    if (activeSelectedUserId || activeSearchQuery || activeSource) {
       return;
     }
 
@@ -288,6 +293,9 @@ export function useActivityPolling(
       cachedAt: Date.now(),
     });
   }, [
+    activeSearchQuery,
+    activeSelectedUserId,
+    activeSource,
     activityBreakdown,
     completenessWindow,
     diagnostics,
@@ -738,7 +746,10 @@ export function useActivityPolling(
 
       const message = err instanceof Error ? err.message : '获取数据失败';
       // Keep last-good feed on transient failures so the trading UI does not blank out.
-      dispatch({ type: 'apply_error', error: message, clearLoading: !options?.silent });
+      // 后台 silent/poll 失败只记日志，不弹全局红色横幅（瞬时网络抖动不该惊吓交易界面）。
+      if (!options?.silent) {
+        dispatch({ type: 'apply_error', error: message, clearLoading: !options?.silent });
+      }
       console.warn('拉取失败（保留上次成功数据）:', err);
       return {
         feedLength: feedRef.current.length,

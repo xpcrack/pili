@@ -33,6 +33,21 @@ function buildPlist(repoRoot: string) {
   </array>
   <key>WorkingDirectory</key>
   <string>${repoRoot}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>3005</string>
+    <key>NODE_USE_ENV_PROXY</key>
+    <string>1</string>
+    <key>HTTP_PROXY</key>
+    <string>http://127.0.0.1:7897</string>
+    <key>HTTPS_PROXY</key>
+    <string>http://127.0.0.1:7897</string>
+    <key>ALL_PROXY</key>
+    <string>http://127.0.0.1:7897</string>
+    <key>NO_PROXY</key>
+    <string>127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -56,6 +71,15 @@ function install(repoRoot: string) {
   } catch {
     // Ignore missing/previously unloaded jobs during install.
   }
+  // bootout 已杀掉旧 live 进程；必须重新 bootstrap + kickstart，
+  // 否则升级后 live 服务一直停摆到重启。
+  try {
+    execFileSync('launchctl', ['bootstrap', launchctlGuiTarget(), target], { stdio: 'ignore' });
+  } catch {
+    // already bootstrapped (first install after bootout race) — ignore
+  }
+  execFileSync('launchctl', ['enable', `${launchctlGuiTarget()}/${LABEL}`], { stdio: 'ignore' });
+  execFileSync('launchctl', ['kickstart', '-k', `${launchctlGuiTarget()}/${LABEL}`], { stdio: 'ignore' });
 }
 
 function restart() {

@@ -21,6 +21,10 @@ async function main() {
   const port = Number.parseInt(process.env.PORT || '3005', 10) || 3005;
   loadRuntimeEnv(repoRoot);
 
+  // NODE_ENV 兜底：prod 模式未设 NODE_ENV（launchd 等路径）时管理鉴权会
+  // 落入「允许无 token 本地管理」分支；按 mode 钉死，避免生产裸奔。
+  process.env.NODE_ENV ||= mode === 'prod' ? 'production' : 'development';
+
   if (mode === 'status') {
     const bunVersion = (globalThis as typeof globalThis & { Bun?: BunGlobal }).Bun?.version ?? null;
     try {
@@ -64,7 +68,17 @@ async function main() {
     console.log(`[runtime] shutting down (${signal})`);
 
     try {
-      await server.stop(signal);
+      // 硬期限：stop() 内部有 10s 排空，但 vite.close/httpServer.close 可能
+      // 无限挂起；超时后强制退出，避免 pm2 重启被卡死进程拖住。
+      await Promise.race([
+        server.stop(signal),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            console.warn(`[runtime] forced exit after shutdown deadline`);
+            resolve();
+          }, 15_000).unref?.();
+        }),
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.stack || error.message : String(error);
       console.error(message);

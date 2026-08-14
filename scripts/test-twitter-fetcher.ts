@@ -475,6 +475,7 @@ async function testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBound
       TWITTER_6551_API_KEY_1: 'key-1',
     },
     async () => {
+      let fetchPage = 0;
       const fetcher = createTwitterFetcher(undefined, {
         client6551: {
           lookupUser: async () => ({
@@ -486,17 +487,23 @@ async function testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBound
             },
             raw: {},
           }),
-          fetchUserTweets: async () => ({
-            provider: '6551',
-            tweets: [
-              createStructuredTweet('1950', {
-                createdAtMs: NOW_MS - 5 * 60 * 1000,
-              }),
-            ],
-            hasMore: true,
-            nextCursor: 'next-page',
-            raw: {},
-          }),
+          fetchUserTweets: async () => {
+            // 分页语义：fetcher 会一直翻页直到收满 maxItems 或 hasMore=false。
+            // 每页返回窗口内（>sinceMs）的一条新推文且 hasMore 恒 true →
+            // 翻满 5 页后仍未触达边界，不得宣称 coverage。
+            fetchPage += 1;
+            return {
+              provider: '6551',
+              tweets: [
+                createStructuredTweet(String(1950 - fetchPage), {
+                  createdAtMs: NOW_MS - 5 * 60 * 1000 - fetchPage * 30_000,
+                }),
+              ],
+              hasMore: true,
+              nextCursor: `next-page-${fetchPage}`,
+              raw: {},
+            };
+          },
           fetchTweetById: async () => {
             throw new Error('unexpected detail fetch');
           },
@@ -542,7 +549,8 @@ async function testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBound
       });
 
       assert.equal(result.provider, '6551');
-      assert.equal(result.tweets.length, 1);
+      // 分页翻满 maxItems=5 页，全部在窗口内且 hasMore 恒 true → 不宣称 coverage
+      assert.equal(result.tweets.length, 5);
       assert.equal(result.coverageEstablished, false);
     }
   );

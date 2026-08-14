@@ -343,11 +343,23 @@ function formatTradeAmountDigits(value: string | number | null | undefined) {
   const sanitized = sanitizeTradeAmount(value);
   if (!sanitized) return null;
 
-  const integerDigits = Math.max(1, Math.trunc(Math.abs(sanitized.raw))).toString().length;
-  const decimals = Math.max(0, 4 - integerDigits);
-  return sanitized.raw
-    .toFixed(decimals)
-    .replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
+  const raw = sanitized.raw;
+  if (raw === 0) return '0';
+  const abs = Math.abs(raw);
+  if (abs >= 1) {
+    const integerDigits = Math.trunc(abs).toString().length;
+    const decimals = Math.max(0, 4 - integerDigits);
+    return raw.toFixed(decimals).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
+  }
+  if (abs >= 0.001) {
+    // 保留原显示精度（3 位小数），避免改动既有展示
+    return raw.toFixed(3).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
+  }
+  // < 0.001 时 toFixed(3) 会显示成 0.000（≈0）：改用 4 位有效数字，
+  // 小额持仓/交易金额不再被当成 0。
+  const leadingZeros = Math.max(0, Math.ceil(-Math.log10(abs)) - 1);
+  const decimals = Math.min(12, leadingZeros + 4);
+  return raw.toFixed(decimals).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
 }
 
 export function formatDisplayTradeAmount(value: string | number | null | undefined, symbol: string | null | undefined) {

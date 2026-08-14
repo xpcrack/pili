@@ -15,6 +15,7 @@ async function run() {
 
   try {
     const { getDb } = await import('../lib/server/sqlite');
+    const { invalidateTrackedUsersCache } = await import('../lib/server/trackedUsersRepo');
     const {
       bootstrapTelegramChannelSourcesFromTrackedUsers,
       getTelegramChannelSourceById,
@@ -410,6 +411,8 @@ async function run() {
         id, name, handle, avatar, twitter, telegram, tags_json, total_asset_usd, historical_max_asset_usd, asset_updated_at, created_at, updated_at
       ) VALUES (?, ?, ?, '', ?, ?, '[]', 0, 0, null, ?, ?)`
     ).run('user-telegram-4', '改频道', '改频道', null, '@oldcall', now, now);
+    // 裸 SQL 插入不走 repo 写路径，须主动失效 10s TTL 缓存。
+    invalidateTrackedUsersCache();
     bootstrapTelegramChannelSourcesFromTrackedUsers();
     const oldAutoSource = listTelegramChannelSources().find((item) => item.userId === 'user-telegram-4' && item.sourceKind === 'auto');
     assert.ok(oldAutoSource, 'should create auto source from tracked user telegram');
@@ -428,6 +431,7 @@ async function run() {
       sourceKind: 'manual',
     });
     db.prepare(`UPDATE tracked_users SET telegram = ? WHERE id = ?`).run('@newcall', 'user-telegram-4');
+    invalidateTrackedUsersCache();
     bootstrapTelegramChannelSourcesFromTrackedUsers();
     const userFourSources = listTelegramChannelSources().filter((item) => item.userId === 'user-telegram-4');
     const staleAutoSource = userFourSources.find((item) => item.id === oldAutoSource!.id)!;
@@ -448,6 +452,7 @@ async function run() {
         id, name, handle, avatar, twitter, telegram, tags_json, total_asset_usd, historical_max_asset_usd, asset_updated_at, created_at, updated_at
       ) VALUES (?, ?, ?, '', ?, ?, ?, 0, 0, null, ?, ?)`
     ).run('user-telegram-news', '方程式', '方程式', null, '@bwetradfi', JSON.stringify(['news']), now, now);
+    invalidateTrackedUsersCache();
     bootstrapTelegramChannelSourcesFromTrackedUsers();
     const newsAutoSource = listTelegramChannelSources().find((item) => item.userId === 'user-telegram-news');
     assert.ok(newsAutoSource, 'news user should create telegram source');

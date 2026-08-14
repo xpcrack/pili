@@ -57,7 +57,7 @@ export async function getBatchTokenPrices(
     const prices = await getHyperCoreBatchPrices(names);
 
     for (const t of hypercoreTokens) {
-      const key = `${t.chain}:${t.contractAddress}`;
+      const key = `${t.chain.toLowerCase()}:${t.contractAddress.trim().toLowerCase()}`;
       result.set(key, {
         price: prices[t.contractAddress] ?? null,
         marketCap: null,
@@ -77,7 +77,7 @@ export async function getBatchTokenPrices(
     );
 
     for (const t of dexScreenerTokens) {
-      const key = `${t.chain}:${t.contractAddress}`;
+      const key = `${t.chain.toLowerCase()}:${t.contractAddress.trim().toLowerCase()}`;
       const data = priceMap.get(t.contractAddress.toLowerCase());
 
       if (data) {

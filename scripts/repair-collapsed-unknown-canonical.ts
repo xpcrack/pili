@@ -136,7 +136,7 @@ function writeBatch(pending: PendingHeal[]) {
       const activityJson = JSON.stringify(item.repaired);
       const metadataJson = JSON.stringify(item.repaired.metadata || {});
       const token = String(item.repaired.metadata.token || '');
-      const action = String(item.repaired.metadata.txAction || item.repaired.metadata.action || '');
+      const action = String(item.repaired.metadata.txAction || (item.repaired.metadata as { action?: unknown }).action || '');
       const content = String(item.repaired.content || '');
 
       updateState.run(activityJson, now, item.row.id);
