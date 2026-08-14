@@ -153,6 +153,32 @@ async function main() {
       'GMGN lane must claim only Robinhood work'
     );
 
+    // min-age guard: a wallet refreshed within HOLDINGS_MIN_REFRESH_AGE_MS must
+    // not be re-claimed even when its job is due — caps event-driven refresh rate.
+    process.env.HOLDINGS_MIN_REFRESH_AGE_MS = '120000';
+    enqueueHoldingsRefresh({ address: 'WalletMinAge', chain: 'base', userId: 'u1' });
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 0 WHERE wallet_chain = 'base:walletminage'`).run();
+    let minAgeCalls = 0;
+    const minAgeRefresh = async (params: { address: string; chain: string }) => {
+      minAgeCalls += 1;
+      return {
+        status: 'idle' as const,
+        chain: params.chain as 'base',
+        holdingsRowCount: 1,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: 10,
+        lastError: null,
+      };
+    };
+    await runHoldingsRefreshQueueCycle({ db, now: () => 1000, refreshWallet: minAgeRefresh });
+    assert.equal(minAgeCalls, 1, 'initial refresh must run once');
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 2000 WHERE wallet_chain = 'base:walletminage'`).run();
+    await runHoldingsRefreshQueueCycle({ db, now: () => 2000, refreshWallet: minAgeRefresh });
+    assert.equal(minAgeCalls, 1, 'min-age guard must block a refresh within the window');
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 121000 WHERE wallet_chain = 'base:walletminage'`).run();
+    await runHoldingsRefreshQueueCycle({ db, now: () => 121000, refreshWallet: minAgeRefresh });
+    assert.equal(minAgeCalls, 2, 'refresh must resume once min-age has elapsed');
+
     console.log('holdings persistent refresh queue tests: ok');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

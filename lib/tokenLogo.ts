@@ -44,6 +44,7 @@ export interface TokenLogoResult {
   logoUrl: string | null;
   marketCapUsd: number | null;
   liquidityUsd: number | null;
+  priceUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
   source: LogoSource;
@@ -290,6 +291,7 @@ export async function fetchTokenLogo(
       logoUrl: gmgnResult?.logoUrl ?? null,
       marketCapUsd: gmgnResult?.marketCapUsd ?? null,
       liquidityUsd: null,
+      priceUsd: null,
       marketCapAtTxUsd,
       marketCapAtTxEstimated,
       marketCapAtTxSource,
@@ -343,6 +345,7 @@ export async function fetchTokenLogo(
       logoUrl: fromDexscreener.logoUrl,
       marketCapUsd: currentMarketCapUsd,
       liquidityUsd,
+      priceUsd: currentPriceUsd,
       marketCapAtTxUsd,
       marketCapAtTxEstimated,
       marketCapAtTxSource,
@@ -356,6 +359,7 @@ export async function fetchTokenLogo(
       logoUrl: fromOkx,
       marketCapUsd: currentMarketCapUsd,
       liquidityUsd,
+      priceUsd: currentPriceUsd,
       marketCapAtTxUsd,
       marketCapAtTxEstimated,
       marketCapAtTxSource,
@@ -372,6 +376,7 @@ export async function fetchTokenLogo(
         logoUrl: fromGmgn.logoUrl,
         marketCapUsd: currentMarketCapUsd ?? fromGmgn.marketCapUsd,
         liquidityUsd,
+        priceUsd: currentPriceUsd,
         marketCapAtTxUsd,
         marketCapAtTxEstimated,
         marketCapAtTxSource,
@@ -382,6 +387,7 @@ export async function fetchTokenLogo(
       logoUrl: null,
       marketCapUsd: currentMarketCapUsd ?? fromGmgn?.marketCapUsd ?? null,
       liquidityUsd,
+      priceUsd: currentPriceUsd,
       marketCapAtTxUsd,
       marketCapAtTxEstimated,
       marketCapAtTxSource,
@@ -393,6 +399,7 @@ export async function fetchTokenLogo(
     logoUrl: null,
     marketCapUsd: currentMarketCapUsd,
     liquidityUsd,
+    priceUsd: currentPriceUsd,
     marketCapAtTxUsd,
     marketCapAtTxEstimated,
     marketCapAtTxSource,

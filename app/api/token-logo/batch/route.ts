@@ -22,6 +22,7 @@ interface BatchItemResult {
   logoUrl: string | null;
   marketCapUsd: number | null;
   liquidityUsd: number | null;
+  priceUsd: number | null;
   marketCapAtTxUsd: number | null;
   marketCapAtTxEstimated: boolean;
   marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated';
@@ -149,6 +150,7 @@ export async function POST(request: NextRequest) {
             logoUrl: null,
             marketCapUsd: null,
             liquidityUsd: null,
+            priceUsd: null,
             marketCapAtTxUsd: null,
             marketCapAtTxEstimated: false,
             source: null,
@@ -177,6 +179,7 @@ export async function POST(request: NextRequest) {
             logoUrl: result.logoUrl,
             marketCapUsd: result.marketCapUsd,
             liquidityUsd: result.liquidityUsd,
+            priceUsd: result.priceUsd,
             marketCapAtTxUsd: result.marketCapAtTxUsd,
             marketCapAtTxEstimated: result.marketCapAtTxEstimated,
             marketCapAtTxSource: result.marketCapAtTxSource,
@@ -191,6 +194,7 @@ export async function POST(request: NextRequest) {
             logoUrl: null,
             marketCapUsd: null,
             liquidityUsd: null,
+            priceUsd: null,
             marketCapAtTxUsd: null,
             marketCapAtTxEstimated: false,
             source: null,

@@ -19,6 +19,7 @@ import type { User } from '@/types';
 type HoldingMetric = {
   liquidityUsd: number | null;
   marketCapUsd: number | null;
+  priceUsd: number | null;
 };
 
 function toFiniteNumber(value: unknown) {
@@ -53,7 +54,7 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
           .filter((holding) => holding.chain === 'robinhood')
           .map((holding) => [
             `${holding.chain}:${holding.tokenAddress}`,
-            { liquidityUsd: holding.liquidityUsd, marketCapUsd: null },
+            { liquidityUsd: holding.liquidityUsd, marketCapUsd: null, priceUsd: null },
           ]),
       );
       const metricTargets = missingHoldings.filter(
@@ -89,6 +90,7 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
             nextEntries[key] = {
               liquidityUsd: holding.liquidityUsd ?? toFiniteNumber(row.liquidityUsd),
               marketCapUsd: toFiniteNumber(row.marketCapUsd),
+              priceUsd: toFiniteNumber(row.priceUsd),
             };
           }
         } catch {
@@ -99,7 +101,7 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
       for (const holding of metricTargets) {
         const key = `${holding.chain}:${holding.tokenAddress}`;
         if (!(key in nextEntries)) {
-          nextEntries[key] = { liquidityUsd: holding.liquidityUsd, marketCapUsd: null };
+          nextEntries[key] = { liquidityUsd: holding.liquidityUsd, marketCapUsd: null, priceUsd: null };
         }
       }
 
@@ -189,6 +191,18 @@ export function SelectedUserDetailsPanel({
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
   const holdingMetricsMap = useHoldingMetricsMap(details?.holdings);
 
+  // Live re-valuation: balance is authoritative (only moves on trades), the stale
+  // part is price. Re-price valueUsd from the batch metric's live DexScreener price
+  // when available, else fall back to the snapshot. Never re-pulls the balance —
+  // this is what keeps quiet wallets' displayed value fresh at zero API cost.
+  const liveValueUsd = (holding: { balance: number; valueUsd: number; chain: string; tokenAddress: string }) => {
+    const livePrice = holdingMetricsMap[`${holding.chain}:${holding.tokenAddress}`]?.priceUsd;
+    if (typeof livePrice === 'number' && Number.isFinite(livePrice) && livePrice > 0) {
+      return holding.balance * livePrice;
+    }
+    return holding.valueUsd;
+  };
+
   // Filter out dead coins with insufficient liquidity (client-side fallback).
   // Robinhood uses server-side GMGN liquidity only — no DexScreener for that chain.
   // Stablecoins / native gas tokens (USDT/USDC/SOL/BNB/ETH/WETH) are always shown —
@@ -226,10 +240,10 @@ export function SelectedUserDetailsPanel({
   }).length;
   const hasPendingLiquidityLookups = pendingLiquidityHoldingsCount > 0;
 
-  const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + holding.valueUsd, 0);
+  const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + liveValueUsd(holding), 0);
   // holdings 明细是从 current_holdings 实时读的，totalAssetUsd 是 tracked_users 缓存的；
   // 缓存可能因 peak reset / refresh 不同步而为 0，此时用 holdings 合计兜底。
-  const holdingsTotalUsd = (details?.holdings ?? []).reduce((sum, h) => sum + h.valueUsd, 0);
+  const holdingsTotalUsd = (details?.holdings ?? []).reduce((sum, h) => sum + liveValueUsd(h), 0);
   const totalAssetUsd = (details?.user.totalAssetUsd ?? selectedUser.totalAssetUsd) || holdingsTotalUsd;
   const holdingsAge = getHoldingsAgeState(details?.holdingsUpdatedAt);
   const statusLine = [
@@ -361,7 +375,7 @@ export function SelectedUserDetailsPanel({
                   const rowKey = `${holding.chain}:${holding.tokenAddress}`;
                   const sharePct =
                     visibleHoldingsTotalUsd > 0
-                      ? (holding.valueUsd / visibleHoldingsTotalUsd) * 100
+                      ? (liveValueUsd(holding) / visibleHoldingsTotalUsd) * 100
                       : 0;
                   const marketCapUsd = holdingMetricsMap[rowKey]?.marketCapUsd;
 
@@ -406,7 +420,7 @@ export function SelectedUserDetailsPanel({
                         {marketCapUsd != null ? formatCompactMarketCap(marketCapUsd) : '—'}
                       </td>
                       <td className="py-1.5 text-right font-medium text-zinc-100">
-                        {formatUsd(holding.valueUsd)}
+                        {formatUsd(liveValueUsd(holding))}
                       </td>
                     </tr>
                   );
