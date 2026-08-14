@@ -99,12 +99,36 @@ function pickDexscreenerTokenInfo(pairs: DexScreenerPair[], chain: string, token
   };
 }
 
+/** 进程级 dexscreener 现价信息缓存：feed 每 15s 重渲染对同 token 重复打
+ * token-pairs 端点；成功 60s / 失败 10s 负缓存把 N 次 render 合成 1 次请求。
+ * 只缓存「当前估值」(logo/marketCap/liquidity)；tx 时间点估值不经过这里。 */
+const DEX_INFO_TTL_MS = 60_000;
+const DEX_INFO_ERROR_TTL_MS = 10_000;
+const dexInfoCache = new Map<string, { at: number; value: DexscreenerTokenInfo | null }>();
+
+export function clearDexInfoCache(): void {
+  dexInfoCache.clear();
+}
+
 export async function fetchDexscreenerTokenInfo(chain: string, tokenAddress: string) {
   const chainId = normalizeChainForDexscreener(chain);
   const normalizedAddress = tokenAddress.trim();
   if (!chainId || !normalizedAddress) {
     return null;
   }
+  const key = `${chainId}|${normalizedAddress.toLowerCase()}`;
+  const now = Date.now();
+  const hit = dexInfoCache.get(key);
+  if (hit) {
+    const ttl = hit.value ? DEX_INFO_TTL_MS : DEX_INFO_ERROR_TTL_MS;
+    if (now - hit.at < ttl) return hit.value;
+  }
+  const value = await fetchDexscreenerTokenInfoUncached(chainId, normalizedAddress);
+  dexInfoCache.set(key, { at: now, value });
+  return value;
+}
+
+async function fetchDexscreenerTokenInfoUncached(chainId: string, normalizedAddress: string) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEXSCREENER_TIMEOUT_MS);
@@ -124,7 +148,7 @@ export async function fetchDexscreenerTokenInfo(chain: string, tokenAddress: str
     if (!Array.isArray(payload)) {
       return null;
     }
-    return pickDexscreenerTokenInfo(payload as DexScreenerPair[], chain, normalizedAddress) as DexscreenerTokenInfo;
+    return pickDexscreenerTokenInfo(payload as DexScreenerPair[], chainId, normalizedAddress) as DexscreenerTokenInfo;
   } catch {
     return null;
   } finally {
