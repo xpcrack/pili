@@ -4,6 +4,7 @@ import path from 'node:path';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { basicAuth } from 'hono/basic-auth';
 import { compress } from 'hono/compress';
 import type { StatusCode } from 'hono/utils/http-status';
 
@@ -16,7 +17,21 @@ const distIndexPath = path.join(repoRoot, 'dist/client/index.html');
 
 loadRuntimeEnv(repoRoot);
 
+const PUBLIC_FEED_USER = (process.env.PILI_PUBLIC_FEED_USER || '').trim();
+const PUBLIC_FEED_PASSWORD = (process.env.PILI_PUBLIC_FEED_PASSWORD || '').trim();
+const publicFeedCredentialsConfigured = Boolean(PUBLIC_FEED_USER && PUBLIC_FEED_PASSWORD);
+
 const app = new Hono();
+
+// 公网只读视图访问门：未配置口令时 fail-closed 拒绝服务，避免误暴露。
+if (!publicFeedCredentialsConfigured) {
+  app.use('*', async (c) =>
+    c.text('public feed disabled: PILI_PUBLIC_FEED_USER / PILI_PUBLIC_FEED_PASSWORD not configured', 503)
+  );
+} else {
+  app.use('*', basicAuth({ username: PUBLIC_FEED_USER, password: PUBLIC_FEED_PASSWORD, realm: 'pili' }));
+}
+
 app.use(compress());
 
 // SPA static assets
@@ -58,5 +73,5 @@ serve({
   port: PUBLIC_PORT,
   hostname: '0.0.0.0',
 }, () => {
-  console.log(`[public-feed] http://0.0.0.0:${PUBLIC_PORT}/public-feed`);
+  console.log(`[public-feed] http://0.0.0.0:${PUBLIC_PORT}/public-feed auth=${publicFeedCredentialsConfigured ? 'on' : 'DISABLED (fail-closed)'}`);
 });
