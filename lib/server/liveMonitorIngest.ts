@@ -9,6 +9,7 @@ import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { resolveAuthoritativePositionDelta } from '@/lib/server/positionDeltaService';
 import type { NormalizedLiveTrade } from '@/lib/server/gmgnWalletActivity';
+import type { ActivityImportance } from '@/lib/activityImportance';
 import type { Activity, User } from '@/types';
 
 export const LIVE_MONITOR_ID_PREFIX = 'live-monitor:';
@@ -75,13 +76,21 @@ function sideToAction(side: 'buy' | 'sell', isOpenOrClose: boolean | null | unde
 }
 
 /** Lightweight stub so bulk backfill skips scoreFeedRowsAgainstDatabase (per-row COUNT on 2GB DB). */
-const BACKFILL_IMPORTANCE_STUB = {
+const BACKFILL_IMPORTANCE_STUB: ActivityImportance = {
   version: 2,
   score: 0,
   formulaVersion: 'backfill-skip',
-  factors: {},
-  components: {},
-} as const;
+  sourceKind: 'wallet',
+  sourceCount7d: 0,
+  socialCount7d: 0,
+  walletCount7d: 0,
+  totalCount7d: 0,
+  historicalMaxAssetUsd: null,
+  sourceRarity: 0,
+  assetWeight: 0,
+  totalFrequencyFactor: 0,
+  dataConfidenceFactor: 0,
+};
 
 export function buildLiveMonitorActivity(params: {
   user: User;

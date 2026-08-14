@@ -41,9 +41,7 @@ async function main() {
   };
 
   installShutdownHandlers({
-    onShutdown: (signal) => {
-      void shutdown(signal);
-    },
+    onShutdown: (signal) => shutdown(signal),
   });
 
   await tasks.startAll();

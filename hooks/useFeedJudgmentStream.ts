@@ -40,12 +40,17 @@ export function useFeedJudgmentStream(onUpdate: () => Promise<unknown> | void) {
           return;
         }
         inFlightRef.current = true;
-        const result = onUpdateRef.current();
-        if (result && typeof (result as Promise<unknown>).finally === 'function') {
-          (result as Promise<unknown>).finally(() => {
+        try {
+          const result = onUpdateRef.current();
+          if (result && typeof (result as Promise<unknown>).finally === 'function') {
+            (result as Promise<unknown>).finally(() => {
+              inFlightRef.current = false;
+            });
+          } else {
             inFlightRef.current = false;
-          });
-        } else {
+          }
+        } catch {
+          // 同步抛异常也要复位，否则 inFlightRef 永久置位、流停摆
           inFlightRef.current = false;
         }
       } catch {

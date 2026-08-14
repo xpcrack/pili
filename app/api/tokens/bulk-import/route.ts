@@ -14,8 +14,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const { text, chain } = body;
+    const body = await req.json().catch(() => null);
+    const { text, chain } = body ?? {};
 
     if (!text || !chain) {
       return NextResponse.json({ error: 'text and chain required' }, { status: 400 });

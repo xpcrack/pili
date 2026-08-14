@@ -42,7 +42,9 @@ function buildItemKey(item: {
       : 'none';
   return [
     item.chain,
-    item.tokenAddress.toLowerCase(),
+    // 与 lib/tokenInfoCache.ts 的键规则一致：EVM hex 小写归一，
+    // solana base58 大小写敏感保留原样，避免键碰撞。
+    /^0x[0-9a-fA-F]+$/.test(item.tokenAddress) ? item.tokenAddress.toLowerCase() : item.tokenAddress,
     item.tokenSymbol.toUpperCase(),
     bucket,
     item.txHash.toLowerCase() || 'none',
@@ -121,48 +123,84 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // 串行取，避免对上游打爆。batch 上限 40，体感可接受。
+  // 并发 4 + 15s 总期限：40 条最坏 40×5s=200s 串行会把客户端 20s abort
+  // 之后的整批工作全废。期限到后未完成项标记 deadline 失败，客户端按 key
+  // 逐项缓存，缺的项下次渲染再补，不丢数据。
+  const BATCH_CONCURRENCY = 4;
+  const BATCH_DEADLINE_MS = 15_000;
+  const deadline = Date.now() + BATCH_DEADLINE_MS;
+  const entries = [...unique.entries()];
   const results: BatchItemResult[] = [];
-  for (const [key, item] of unique) {
-    try {
-      const result = await Promise.race([
-        fetchTokenLogo(item.chain, item.tokenAddress, item.tokenSymbol, {
-          txTimestampMs: item.txTimestampMs ?? undefined,
-          txHash: item.txHash || undefined,
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`timeout ${PER_ITEM_TIMEOUT_MS}ms`)), PER_ITEM_TIMEOUT_MS)
-        ),
-      ]);
-      results.push({
-        key,
-        chain: item.chain,
-        tokenAddress: item.tokenAddress,
-        ok: true,
-        logoUrl: result.logoUrl,
-        marketCapUsd: result.marketCapUsd,
-        liquidityUsd: result.liquidityUsd,
-        marketCapAtTxUsd: result.marketCapAtTxUsd,
-        marketCapAtTxEstimated: result.marketCapAtTxEstimated,
-        marketCapAtTxSource: result.marketCapAtTxSource,
-        source: result.source,
-      });
-    } catch (error) {
-      results.push({
-        key,
-        chain: item.chain,
-        tokenAddress: item.tokenAddress,
-        ok: false,
-        logoUrl: null,
-        marketCapUsd: null,
-        liquidityUsd: null,
-        marketCapAtTxUsd: null,
-        marketCapAtTxEstimated: false,
-        source: null,
-        error: error instanceof Error ? error.message : 'fetch failed',
-      });
+  let nextIdx = 0;
+  const workers = Array.from(
+    { length: Math.min(BATCH_CONCURRENCY, entries.length) },
+    async () => {
+      while (true) {
+        const idx = nextIdx++;
+        if (idx >= entries.length) return;
+        const [key, item] = entries[idx]!;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          results.push({
+            key,
+            chain: item.chain,
+            tokenAddress: item.tokenAddress,
+            ok: false,
+            logoUrl: null,
+            marketCapUsd: null,
+            liquidityUsd: null,
+            marketCapAtTxUsd: null,
+            marketCapAtTxEstimated: false,
+            source: null,
+            error: 'batch deadline',
+          });
+          continue;
+        }
+        try {
+          const result = await Promise.race([
+            fetchTokenLogo(item.chain, item.tokenAddress, item.tokenSymbol, {
+              txTimestampMs: item.txTimestampMs ?? undefined,
+              txHash: item.txHash || undefined,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`timeout ${PER_ITEM_TIMEOUT_MS}ms`)),
+                Math.min(PER_ITEM_TIMEOUT_MS, remaining)
+              )
+            ),
+          ]);
+          results.push({
+            key,
+            chain: item.chain,
+            tokenAddress: item.tokenAddress,
+            ok: true,
+            logoUrl: result.logoUrl,
+            marketCapUsd: result.marketCapUsd,
+            liquidityUsd: result.liquidityUsd,
+            marketCapAtTxUsd: result.marketCapAtTxUsd,
+            marketCapAtTxEstimated: result.marketCapAtTxEstimated,
+            marketCapAtTxSource: result.marketCapAtTxSource,
+            source: result.source,
+          });
+        } catch (error) {
+          results.push({
+            key,
+            chain: item.chain,
+            tokenAddress: item.tokenAddress,
+            ok: false,
+            logoUrl: null,
+            marketCapUsd: null,
+            liquidityUsd: null,
+            marketCapAtTxUsd: null,
+            marketCapAtTxEstimated: false,
+            source: null,
+            error: error instanceof Error ? error.message : 'fetch failed',
+          });
+        }
+      }
     }
-  }
+  );
+  await Promise.all(workers);
 
   return NextResponse.json({ ok: true, results });
 }

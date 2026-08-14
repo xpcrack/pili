@@ -341,8 +341,8 @@ async function main() {
           // For bulk current-only we pass no tx so it skips historical OKX.
           // IMPORTANT: pass original-case tokenAddress (Solana base58).
           const logo = await fetchTokenLogo(sample.chain, sample.tokenAddress, undefined, {
-            txTimestampMs: args.currentOnly ? null : sample.timestamp,
-            txHash: args.currentOnly ? null : sample.txLower || null,
+            txTimestampMs: args.currentOnly ? undefined : sample.timestamp,
+            txHash: args.currentOnly ? undefined : sample.txLower || undefined,
           });
           if (!args.currentOnly && logo.marketCapAtTxUsd && logo.marketCapAtTxUsd > 0) {
             mc = logo.marketCapAtTxUsd;

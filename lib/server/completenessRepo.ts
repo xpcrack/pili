@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getDb } from '@/lib/server/sqlite';
+import { getDb, withTransaction } from '@/lib/server/sqlite';
 import {
   COMPLETENESS_SOURCES,
   COMPLETENESS_STATUSES,
@@ -323,38 +323,43 @@ export function finishCompletenessRun(
   status: CompletenessStatus,
   summary: Record<string, unknown>
 ): void {
-  const db = getDb();
-  const now = Date.now();
   const normalizedRunId = normalizePositiveInteger(runId);
   if (!normalizedRunId) {
     throw new Error('completeness run id is required');
   }
 
-  const summaryJson = summary === undefined ? null : JSON.stringify(summary);
-  const globalProvenStartMs = readSummaryGlobalProvenStartMs(summary);
+  // 两个 worker 并发 finish 时，read-modify-write 全局状态必须原子：
+  // 事务内第一个写（UPDATE completeness_runs）先取写锁，另一个 worker 排队，
+  // 后写者不再覆盖前者的 status/lastSuccessAt。
+  withTransaction(() => {
+    const db = getDb();
+    const now = Date.now();
+    const summaryJson = summary === undefined ? null : JSON.stringify(summary);
+    const globalProvenStartMs = readSummaryGlobalProvenStartMs(summary);
 
-  const result = db.prepare(
-    `UPDATE completeness_runs
-     SET status = ?,
-         finished_at = ?,
-         global_proven_start_ms = ?,
-         summary_json = ?,
-         updated_at = ?
-     WHERE id = ?`
-  ).run(normalizeStatus(status), now, globalProvenStartMs, summaryJson, now, normalizedRunId);
-  if (result.changes !== 1) {
-    throw new Error(`completeness run not found: ${normalizedRunId}`);
-  }
+    const result = db.prepare(
+      `UPDATE completeness_runs
+       SET status = ?,
+           finished_at = ?,
+           global_proven_start_ms = ?,
+           summary_json = ?,
+           updated_at = ?
+       WHERE id = ?`
+    ).run(normalizeStatus(status), now, globalProvenStartMs, summaryJson, now, normalizedRunId);
+    if (result.changes !== 1) {
+      throw new Error(`completeness run not found: ${normalizedRunId}`);
+    }
 
-  const globalState = readCompletenessGlobalState() ?? createDefaultGlobalState();
-  saveCompletenessGlobalState({
-    configuredStartMs: globalState.configuredStartMs,
-    globalProvenStartMs: globalProvenStartMs ?? globalState.globalProvenStartMs,
-    status: normalizeStatus(status),
-    activeRunId: null,
-    lastSuccessAt: status === 'complete' ? now : globalState.lastSuccessAt,
-    lastFailureAt:
-      status === 'partial' || status === 'retrying' || status === 'blocked' ? now : globalState.lastFailureAt,
+    const globalState = readCompletenessGlobalState() ?? createDefaultGlobalState();
+    saveCompletenessGlobalState({
+      configuredStartMs: globalState.configuredStartMs,
+      globalProvenStartMs: globalProvenStartMs ?? globalState.globalProvenStartMs,
+      status: normalizeStatus(status),
+      activeRunId: null,
+      lastSuccessAt: status === 'complete' ? now : globalState.lastSuccessAt,
+      lastFailureAt:
+        status === 'partial' || status === 'retrying' || status === 'blocked' ? now : globalState.lastFailureAt,
+    });
   });
 }
 

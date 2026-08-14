@@ -56,8 +56,8 @@ function run() {
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
       sources: [
-        { status: 'partial', provenStartMs: 1711900000000 },
-        { status: 'blocked', provenStartMs: null },
+        { status: 'partial', provenStartMs: 1711900000000, provenEndMs: null },
+        { status: 'blocked', provenStartMs: null, provenEndMs: null },
       ],
     }),
     'blocked'
@@ -66,7 +66,7 @@ function run() {
   assert.equal(
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
-      sources: [{ status: 'running', provenStartMs: null }],
+      sources: [{ status: 'running', provenStartMs: null, provenEndMs: null }],
     }),
     'retrying'
   );
@@ -75,8 +75,8 @@ function run() {
     computeCompletenessGlobalStatus({
       configuredStartMs: 1712000000000,
       sources: [
-        { status: 'retrying', provenStartMs: null },
-        { status: 'partial', provenStartMs: 1711900000000 },
+        { status: 'retrying', provenStartMs: null, provenEndMs: null },
+        { status: 'partial', provenStartMs: 1711900000000, provenEndMs: null },
       ],
     }),
     'retrying'

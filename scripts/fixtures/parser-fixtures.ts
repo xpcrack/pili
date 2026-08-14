@@ -6,6 +6,9 @@ export const fixtureAddresses = {
   trackedB: '0x2222222222222222222222222222222222222222',
   trackedC: '0x3333333333333333333333333333333333333333',
   trackedD: '0x4444444444444444444444444444444444444444',
+  /** Valid base58 solana wallet (EVM fixtures above are invalid on solana). */
+  solanaTrackedA: '71CPXu3TvH3iUKaY1bNkAAow24k6tjH473SsKprQBABC',
+  solanaCounterparty: 'EPeUFDgHRxs9xxqVkMBL9oWfB4mHbvA1Y6K8b4nQJ3xT',
   router: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   counterparty: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   suspiciousSender: '0xcccccccccccccccccccccccccccccccccccccccc',
@@ -401,7 +404,7 @@ export const parserFixtureCases: ParserFixtureCase[] = [
   {
     name: 'small-native-send-is-hidden',
     chain: 'solana',
-    trackedAddress: fixtureAddresses.trackedA,
+    trackedAddress: fixtureAddresses.solanaTrackedA,
     transactions: [
       {
         txHash: '0xsmall-native-send',
@@ -409,8 +412,8 @@ export const parserFixtureCases: ParserFixtureCase[] = [
         iType: '0',
         symbol: 'SOL',
         amount: '0.01',
-        from: [{ address: fixtureAddresses.trackedA, amount: '0.01' }],
-        to: [{ address: fixtureAddresses.counterparty, amount: '0.01' }],
+        from: [{ address: fixtureAddresses.solanaTrackedA, amount: '0.01' }],
+        to: [{ address: fixtureAddresses.solanaCounterparty, amount: '0.01' }],
         txStatus: 'success',
       },
     ],

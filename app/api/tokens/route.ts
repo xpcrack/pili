@@ -53,8 +53,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const { chain, contractAddress, tags } = body;
+    const body = await req.json().catch(() => null);
+    const { chain, contractAddress, tags } = body ?? {};
 
     if (!chain || !contractAddress) {
       return NextResponse.json({ error: 'chain and contractAddress required' }, { status: 400 });
@@ -80,8 +80,8 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const { ids } = body;
+    const body = await req.json().catch(() => null);
+    const { ids } = body ?? {};
 
     if (!ids || !Array.isArray(ids)) {
       return NextResponse.json({ error: 'ids array required' }, { status: 400 });

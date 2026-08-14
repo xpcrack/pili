@@ -18,16 +18,31 @@ function parseEnvLine(line: string) {
   }
 
   let value = trimmed.slice(separatorIndex + 1).trim();
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
+  const doubleQuoted = value.length >= 2 && value.startsWith('"') && value.endsWith('"');
+  const singleQuoted = value.length >= 2 && value.startsWith("'") && value.endsWith("'");
+
+  if (doubleQuoted || singleQuoted) {
     value = value.slice(1, -1);
+  } else {
+    // 未加引号：剥离行内注释（# 前需有空白），不做转义处理
+    const inlineComment = value.indexOf(' #');
+    if (inlineComment >= 0) {
+      value = value.slice(0, inlineComment).trimEnd();
+    }
+    value = value.trim();
   }
+
+  if (doubleQuoted) {
+    // 双引号内按 dotenv 语义反转义：\n→换行、\t→制表、\\→反斜杠、\"→引号
+    value = value.replace(/\\([\\'"nt])/g, (_, ch: string) =>
+      ch === 'n' ? '\n' : ch === 't' ? '\t' : ch
+    );
+  }
+  // 单引号与裸值：保持字面，不做任何反转义
 
   return {
     key,
-    value: value.replace(/\\n/g, '\n'),
+    value,
   };
 }
 

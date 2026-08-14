@@ -28,6 +28,7 @@ async function run() {
       addresses: [],
       totalAssetUsd: 0,
       historicalMaxAssetUsd: 0,
+      mainstreamAssetUsd: 0,
       assetUpdatedAt: null,
       tags: [],
     });

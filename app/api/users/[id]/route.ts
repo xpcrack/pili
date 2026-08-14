@@ -118,6 +118,7 @@ function serializeUser(user: User): User {
     addresses: user.addresses,
     totalAssetUsd: user.totalAssetUsd,
     historicalMaxAssetUsd: user.historicalMaxAssetUsd,
+    mainstreamAssetUsd: user.mainstreamAssetUsd,
     assetUpdatedAt: user.assetUpdatedAt,
     tags: user.tags,
     relayCoverage: user.relayCoverage,

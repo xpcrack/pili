@@ -72,7 +72,11 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
 
   let client: TelegramChannelSyncClient | null = null;
   try {
-    client = useLiveClient ? liveClient : deps.createClient ? await deps.createClient() : await createTelegramGramjsClient();
+    if (!useLiveClient || !liveClient) {
+      client = deps.createClient ? await deps.createClient() : await createTelegramGramjsClient();
+    } else {
+      client = liveClient;
+    }
     const result = await syncAllTelegramChannelSources({
       client,
     });

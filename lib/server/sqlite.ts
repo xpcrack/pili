@@ -29,7 +29,7 @@ export interface SqlDatabase {
   transaction<TArgs extends unknown[], TResult>(
     fn: (...args: TArgs) => TResult
   ): (...args: TArgs) => TResult;
-  pragma?(value: string): unknown;
+  pragma(value: string): unknown;
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.data');

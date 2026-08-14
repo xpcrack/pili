@@ -737,6 +737,22 @@ export class GmgnOpenApiClient {
         });
       }
 
+      if (res.status >= 400) {
+        // 非 2xx 但无 code 字段的 JSON（如 5xx {"message": …}）此前会
+        // 落进 markSuccess 被当成功，脏数据静默入库。先于 apiCode 分支拦截。
+        const msg = json.message || apiError || `HTTP ${res.status}`;
+        recordGmgnRequest({ ok: false, status: res.status, path: subPath, error: String(msg) });
+        markError();
+        noteGmgnError(String(msg));
+        throw new GmgnApiError({
+          message: `${method} ${subPath} HTTP ${res.status} ${msg}`,
+          status: res.status,
+          apiCode,
+          apiError,
+          resetAtUnix: reset,
+        });
+      }
+
       if (apiCode != null && apiCode !== 0) {
         recordGmgnRequest({ ok: false, status: res.status, path: subPath, error: String(apiError ?? apiCode) });
         markError();

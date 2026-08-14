@@ -93,8 +93,14 @@ async function run() {
 
     const backfillResult = await backfillTelegramBridgeHistory({
       client: {
-        async resolveChannel() {
-          throw new Error('unused');
+        async resolveChannel(input) {
+          // 23cd113 起 backfill 先解析再拉历史（补 accessHash/分页）；直接用 source 的 chatId。
+          return {
+            channelChatId: input.channelChatId ?? '',
+            channelUsername: input.channelUsername ?? null,
+            channelTitle: null,
+            accessHash: input.accessHash ?? null,
+          };
         },
         async listChannelMessages() {
           return [];

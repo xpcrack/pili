@@ -5,6 +5,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
+import type { StatusCode } from 'hono/utils/http-status';
 
 import { loadRuntimeEnv } from '@/server/env';
 
@@ -33,7 +34,7 @@ app.get('/api/feed', async (c) => {
       signal: AbortSignal.timeout(15_000),
     });
     const body = await resp.text();
-    return c.newResponse(body, resp.status, {
+    return c.newResponse(body, resp.status as StatusCode, {
       'content-type': 'application/json',
       'access-control-allow-origin': '*',
     });

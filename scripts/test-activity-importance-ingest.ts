@@ -19,6 +19,7 @@ function makeUser(id: string): User {
     addresses: [{ address: VALID_SOLANA_WALLET, name: '#1', chain: 'solana', totalAssetUsd: null, assetUpdatedAt: null }],
     totalAssetUsd: 250_000,
     historicalMaxAssetUsd: 250_000,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

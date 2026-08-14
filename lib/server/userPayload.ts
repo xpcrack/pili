@@ -74,6 +74,8 @@ export function sanitizeUsersPayload(value: unknown): User[] {
         totalAssetUsd: typeof candidate.totalAssetUsd === 'number' ? candidate.totalAssetUsd : 0,
         historicalMaxAssetUsd:
           typeof candidate.historicalMaxAssetUsd === 'number' ? candidate.historicalMaxAssetUsd : 0,
+        mainstreamAssetUsd:
+          typeof candidate.mainstreamAssetUsd === 'number' ? candidate.mainstreamAssetUsd : 0,
         assetUpdatedAt: toNumberOrNull(candidate.assetUpdatedAt),
         monitoringEnabled: typeof candidate.monitoringEnabled === 'boolean' ? candidate.monitoringEnabled : undefined,
       },

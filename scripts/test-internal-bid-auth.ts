@@ -75,6 +75,16 @@ async function run() {
       makeRequest({ 'x-forwarded-for': '192.168.1.5' })
     );
     assert.equal(exactAllowed.ok, true);
+    // 外部直连（socket 非回环/内网）伪造 x-forwarded-for 不得绕过白名单。
+    const forgedFromExternal = auth.checkInternalBidIp(
+      makeRequest({ 'x-real-ip': '203.0.113.9', 'x-forwarded-for': '10.1.2.3' })
+    );
+    assert.equal(forgedFromExternal.ok, false, 'external socket + forged x-forwarded-for must be blocked');
+    // 本机代理（socket 回环）透传的 x-forwarded-for 仍可信。
+    const proxiedFromLoopback = auth.checkInternalBidIp(
+      makeRequest({ 'x-real-ip': '127.0.0.1', 'x-forwarded-for': '10.1.2.3' })
+    );
+    assert.equal(proxiedFromLoopback.ok, true, 'loopback proxy forwarding trusted source ip');
     delete process.env.INTERNAL_BID_ALLOWED_IPS;
     auth._resetInternalBidAuthCacheForTest();
 

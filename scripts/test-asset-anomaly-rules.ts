@@ -42,6 +42,7 @@ function createUser(id: string, addresses: string[]): User {
     })),
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

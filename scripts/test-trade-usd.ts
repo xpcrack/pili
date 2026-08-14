@@ -142,7 +142,7 @@ async function run() {
     188.123
   );
   assert.equal(robinhoodPriceChain, 'ethereum');
-  assert.equal(robinhoodPriceAddress?.toLowerCase(), '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2');
+  assert.equal((robinhoodPriceAddress as string | null)?.toLowerCase(), '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2');
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>

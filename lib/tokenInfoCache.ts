@@ -60,9 +60,16 @@ function lruSet<K, V>(map: Map<K, V>, key: K, value: V, max: number) {
   map.set(key, value);
 }
 
+// EVM 地址 hex 大小写不敏感 → 小写归一；solana base58 大小写敏感，
+// 统一 toLowerCase 会让两个仅大小写不同的真实地址在缓存键上碰撞。
+export function normalizeTokenAddressForCacheKey(tokenAddress: string): string {
+  const trimmed = (tokenAddress || '').trim();
+  return /^0x[0-9a-fA-F]+$/.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+}
+
 export function buildTokenInfoKey(req: TokenInfoRequest) {
   const chain = (req.chain || '').trim().toLowerCase();
-  const ca = (req.tokenAddress || '').trim().toLowerCase();
+  const ca = normalizeTokenAddressForCacheKey(req.tokenAddress);
   const symbol = (req.tokenSymbol || '').trim().toUpperCase();
   const ts =
     typeof req.txTimestampMs === 'number' && Number.isFinite(req.txTimestampMs) && req.txTimestampMs > 0
@@ -73,7 +80,7 @@ export function buildTokenInfoKey(req: TokenInfoRequest) {
 }
 
 export function buildTokenAvatarKey(chain: string, tokenAddress: string) {
-  return `${(chain || '').trim().toLowerCase()}:${(tokenAddress || '').trim().toLowerCase()}`;
+  return `${(chain || '').trim().toLowerCase()}:${normalizeTokenAddressForCacheKey(tokenAddress)}`;
 }
 
 export function getCachedTokenInfo(key: string): TokenInfoSnapshot | undefined {

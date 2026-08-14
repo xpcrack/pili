@@ -266,7 +266,28 @@ export default function Home() {
 
       if (!result.success) {
         if (result.error === '请求进行中') {
-          setExpandFeedback('请求排队中，上一轮完成后会自动切换到该人物数据');
+          // 请求已入队：当前轮完成后队列会自动执行同一请求，但 handleSelectUser
+          // 拿不到那次执行的结果，提示会永久停在“请求排队中”。轮询等队列放行，
+          // 用真实结果替换提示（最多等 8s）。
+          setExpandFeedback('请求排队中，正在等待上一轮完成...');
+          for (let attempt = 0; attempt < 20; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            const retry = await refetch({
+              targetCount: MIN_SELECTED_USER_FEED_ITEMS,
+              selectedUserId: user.id,
+              syncStrategy: 'local',
+            });
+            if (retry.success) {
+              const partialSuffix = retry.partialSyncWarning ? '（部分地址失败，数据可能未完全对齐）' : '';
+              setExpandFeedback(`已加载该人物 ${retry.selectedFeedLength} 条动态${partialSuffix}`);
+              return;
+            }
+            if (retry.error !== '请求进行中') {
+              setExpandFeedback(retry.error ? `API 拉取失败：${retry.error}` : 'API 拉取失败');
+              return;
+            }
+          }
+          setExpandFeedback('请求排队中，请稍后重试');
           return;
         }
         setExpandFeedback(result.error ? `API 拉取失败：${result.error}` : 'API 拉取失败');

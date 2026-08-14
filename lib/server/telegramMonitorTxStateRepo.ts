@@ -440,7 +440,7 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
   const existing = selectByKey(chain, trackedWalletAddress, txHash, tokenAddress);
   const messageLinksJson = JSON.stringify(normalizeMessageLinks(input.provisionalMessageLinks));
 
-  if (existing) {
+  const applyProvisionalUpdate = (tokenMatchLower: string) => {
     db.prepare(
       `UPDATE telegram_monitor_tx_states
        SET user_id = ?,
@@ -506,11 +506,15 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
       chain,
       trackedWalletAddressLower,
       txHashLower,
-      tokenAddressLower,
-      tokenAddressLower
+      tokenMatchLower,
+      tokenMatchLower
     );
+  };
+
+  if (existing) {
+    applyProvisionalUpdate(tokenAddressLower);
   } else {
-    db.prepare(
+    const insertStmt = db.prepare(
       `INSERT INTO telegram_monitor_tx_states (
          user_id,
          chain,
@@ -544,8 +548,10 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
          repair_claimed_at,
          retry_count,
          updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?, NULL, 0, ?)`
-    ).run(
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?, NULL, 0, ?)
+        ON CONFLICT(chain, tracked_wallet_address_lower, tx_hash_lower, token_address_lower) DO NOTHING`);
+    const result = insertStmt.run(
       input.userId.trim(),
       chain,
       trackedWalletAddress,
@@ -583,6 +589,14 @@ export function upsertTelegramMonitorTxStateProvisional(input: UpsertTelegramMon
       now,
       now
     );
+    if (result.changes === 0) {
+      // 跨进程 select-then-insert 竞态：对方已插入同一 (chain, wallet, tx, token)。
+      // 转更新既有行，避免 SQLITE_CONSTRAINT 冒泡到 ingest 主链路。
+      const raced = selectByKey(chain, trackedWalletAddress, txHash, tokenAddress);
+      if (raced) {
+        applyProvisionalUpdate(tokenAddressLower);
+      }
+    }
   }
 
   return getTelegramMonitorTxState({

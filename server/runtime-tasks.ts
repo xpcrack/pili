@@ -180,11 +180,14 @@ export function createLoopTask(options: LoopTaskOptions): TaskDefinition {
     });
   }
 
-  async function drain() {
-    if (draining) return;
+  let drainInFlight: Promise<void> | null = null;
+
+  function drain(): Promise<void> {
+    if (draining) return drainInFlight ?? Promise.resolve();
     draining = true;
-    try {
-      while (!stopped && queuedRequests.length > 0) {
+    drainInFlight = (async () => {
+      try {
+        while (!stopped && queuedRequests.length > 0) {
         const request = queuedRequests.shift()!;
         state.running = true;
         state.pendingRun = queuedRequests.length > 0;
@@ -231,7 +234,10 @@ export function createLoopTask(options: LoopTaskOptions): TaskDefinition {
       }
     } finally {
       draining = false;
+      drainInFlight = null;
     }
+    })();
+    return drainInFlight;
   }
 
   return {
@@ -259,6 +265,9 @@ export function createLoopTask(options: LoopTaskOptions): TaskDefinition {
       queuedRequests = [];
       if (options.onStop) await options.onStop(signal);
       if (activeRun) await activeRun.catch(() => undefined);
+      // 等 drain 循环整体收尾（含 cycle 间窗口），stop 返回后不再有
+      // 任务状态写入/重排发生，停机时序才确定。
+      if (drainInFlight) await drainInFlight.catch(() => undefined);
     },
     async runNow(reason: string) {
       await enqueue(reason);

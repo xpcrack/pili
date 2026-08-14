@@ -512,9 +512,15 @@ export const useUsersDataStore = create<UsersDataState>()(
               ...user,
               addresses: nextAddresses,
               currentChainAssetTotal: successfulTotal,
-              historicalMaxChainAssetTotal: successfulTotal,
+              historicalMaxChainAssetTotal: Math.max(
+                typeof user.historicalMaxChainAssetTotal === 'number' ? user.historicalMaxChainAssetTotal : 0,
+                successfulTotal
+              ),
               totalAssetUsd: successfulTotal,
-              historicalMaxAssetUsd: successfulTotal,
+              historicalMaxAssetUsd: Math.max(
+                typeof user.historicalMaxAssetUsd === 'number' ? user.historicalMaxAssetUsd : 0,
+                successfulTotal
+              ),
               assetUpdatedAt: payload.updatedAt,
             };
           }),

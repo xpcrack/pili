@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
       addresses: source.addresses,
       totalAssetUsd: source.totalAssetUsd,
       historicalMaxAssetUsd: source.historicalMaxAssetUsd,
+      mainstreamAssetUsd: source.mainstreamAssetUsd,
       assetUpdatedAt: source.assetUpdatedAt,
       tags: source.tags,
     });

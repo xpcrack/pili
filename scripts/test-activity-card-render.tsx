@@ -15,6 +15,7 @@ function makeUser(): User {
     addresses: [],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

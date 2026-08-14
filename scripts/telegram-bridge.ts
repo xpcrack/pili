@@ -304,52 +304,62 @@ async function main() {
             ? Math.floor(update.update_id)
             : null;
         const nextOffset = typeof updateId === 'number' ? updateId + 1 : offset;
-        const result = await processUpdate(update);
-
-        if (result.kind === 'telegram-monitor') {
-          if ('ignored' in result.result && result.result.ignored) {
-            console.log(
-              `${LOG_PREFIX} monitor ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
+        // 单条 update 失败绝不能卡死整批：任何异常（DexScreener 富化、
+        // SQLite busy 等）若中断批次会让 offset 停在失败处，下轮重拉同一批
+        // 又撞同一条坏消息 → 永久死锁、pending 无限堆积（8/12 断供根因）。
+        let result: Awaited<ReturnType<typeof processUpdate>> | null = null;
+        try {
+          result = await processUpdate(update);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`${LOG_PREFIX} update ${updateId ?? '?'} failed, skipped: ${message}`);
+        }
+        if (result) {
+          if (result.kind === 'telegram-monitor') {
+            if ('ignored' in result.result && result.result.ignored) {
+              console.log(
+                `${LOG_PREFIX} monitor ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
+              );
+            } else {
+              queueCompletenessPoke({
+                trigger: 'ingest',
+                sourceHint: 'telegram-bridge',
+                reason: 'telegram monitor ingest',
+              });
+              const feedMode =
+                'feedMode' in result.result && result.result.feedMode
+                  ? String(result.result.feedMode)
+                  : '-';
+              const doorbell =
+                'doorbell' in result.result ? String(Boolean(result.result.doorbell)) : '-';
+              console.log(
+                `${LOG_PREFIX} monitor ingested chat=${result.chatId} source=${result.source} feedMode=${feedMode} doorbell=${doorbell} projected=${String(result.result.projected)} preview=${result.preview}`
+              );
+            }
+          } else if (result.kind === 'twitter-relay') {
+            if ('ignored' in result.result && result.result.ignored) {
+              console.log(
+                `${LOG_PREFIX} twitter-relay ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
+              );
+            } else {
+              queueCompletenessPoke({
+                trigger: 'ingest',
+                sourceHint: 'telegram-bridge',
+                reason: 'telegram twitter relay ingest',
+              });
+              console.log(
+                `${LOG_PREFIX} twitter-relay ingested chat=${result.chatId} source=${result.source} tweet=${result.payload.tweetId || '-'} projected=${result.result.projectedCount} preview=${result.preview}`
+              );
+            }
+          } else if (result.kind === 'twitter-relay-parse-failed') {
+            console.warn(
+              `${LOG_PREFIX} twitter-relay parse-failed chat=${result.chatId} source=${result.source} reason=${result.reason} preview=${result.preview}`
             );
           } else {
-            queueCompletenessPoke({
-              trigger: 'ingest',
-              sourceHint: 'telegram-bridge',
-              reason: 'telegram monitor ingest',
-            });
-            const feedMode =
-              'feedMode' in result.result && result.result.feedMode
-                ? String(result.result.feedMode)
-                : '-';
-            const doorbell =
-              'doorbell' in result.result ? String(Boolean(result.result.doorbell)) : '-';
             console.log(
-              `${LOG_PREFIX} monitor ingested chat=${result.chatId} source=${result.source} feedMode=${feedMode} doorbell=${doorbell} projected=${String(result.result.projected)} preview=${result.preview}`
+              `${LOG_PREFIX} skip chat=${result.chatId} source=${result.source} reason=${result.reason} preview=${result.preview}`
             );
           }
-        } else if (result.kind === 'twitter-relay') {
-          if ('ignored' in result.result && result.result.ignored) {
-            console.log(
-              `${LOG_PREFIX} twitter-relay ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
-            );
-          } else {
-            queueCompletenessPoke({
-              trigger: 'ingest',
-              sourceHint: 'telegram-bridge',
-              reason: 'telegram twitter relay ingest',
-            });
-            console.log(
-              `${LOG_PREFIX} twitter-relay ingested chat=${result.chatId} source=${result.source} tweet=${result.payload.tweetId || '-'} projected=${result.result.projectedCount} preview=${result.preview}`
-            );
-          }
-        } else if (result.kind === 'twitter-relay-parse-failed') {
-          console.warn(
-            `${LOG_PREFIX} twitter-relay parse-failed chat=${result.chatId} source=${result.source} reason=${result.reason} preview=${result.preview}`
-          );
-        } else {
-          console.log(
-            `${LOG_PREFIX} skip chat=${result.chatId} source=${result.source} reason=${result.reason} preview=${result.preview}`
-          );
         }
 
         rememberProcessedUpdate(updateId ?? undefined);

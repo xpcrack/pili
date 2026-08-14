@@ -6,6 +6,8 @@ export const dynamic = 'force-dynamic';
 const LOGO_CACHE_TTL_MS = 30 * 60 * 1000;
 const EMPTY_LOGO_CACHE_TTL_MS = 60 * 1000;
 const TOKEN_LOGO_CACHE_VERSION = 'v5';
+/** 键含 txHash/txTimestampBucket，长尾无限增长；设上限按插入序淘汰最老项。 */
+const LOGO_CACHE_MAX_ENTRIES = 2_000;
 const logoCache = new Map<
   string,
   {
@@ -73,6 +75,21 @@ export async function GET(request: NextRequest) {
     txTimestampMs: normalizedTxTimestampMs ?? undefined,
     txHash: txHash || undefined,
   });
+  if (logoCache.size >= LOGO_CACHE_MAX_ENTRIES) {
+    const now = Date.now();
+    let evicted = false;
+    for (const [key, entry] of logoCache) {
+      if (entry.expiresAt <= now) {
+        logoCache.delete(key);
+        evicted = true;
+        break;
+      }
+    }
+    if (!evicted) {
+      const oldestKey = logoCache.keys().next().value;
+      if (oldestKey !== undefined) logoCache.delete(oldestKey);
+    }
+  }
   logoCache.set(cacheKey, {
     logoUrl: result.logoUrl,
     marketCapUsd: result.marketCapUsd,

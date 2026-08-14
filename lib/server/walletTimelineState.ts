@@ -30,9 +30,11 @@ function parseChains(raw: string | null | undefined): string[] {
 }
 
 function addressKey(address: string) {
-  const a = (address || '').trim();
-  if (!a) return '';
-  return a.startsWith('0x') || a.startsWith('0X') ? a.toLowerCase() : a;
+  // 一律小写，与 tracked_addresses.address_lower 归一化一致。此前只对 0x
+  // 前缀小写，solana base58（大小写敏感）写库原大小写，而
+  // listMonitoredWalletsForTimeline 读的是小写 → state 永远 miss、
+  // 钱包被无限重入队。
+  return (address || '').trim().toLowerCase();
 }
 
 export function readWalletTimelineState(address: string): WalletTimelineStateRow | null {

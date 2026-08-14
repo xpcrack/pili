@@ -28,6 +28,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     addresses: overrides.addresses || [],
     totalAssetUsd: overrides.totalAssetUsd || 0,
     historicalMaxAssetUsd: overrides.historicalMaxAssetUsd || 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: overrides.assetUpdatedAt ?? null,
     tags: overrides.tags || [],
   };
@@ -132,6 +133,7 @@ function run() {
     handle: 'profit',
     totalAssetUsd: 10,
     historicalMaxAssetUsd: 12,
+    mainstreamAssetUsd: 0,
     addresses: [
       makeAddress('G5nxEXuFMfV74DSnsrSatqCW32F34XUnBeq3PfDS7w5E', '#1'),
       makeAddress('0x3333333333333333333333333333333333333333', '#2'),
@@ -143,6 +145,7 @@ function run() {
     handle: 'profit',
     totalAssetUsd: 99,
     historicalMaxAssetUsd: 99,
+    mainstreamAssetUsd: 0,
     addresses: [makeAddress('G5nxEXuFMfV74DSnsrSatqCW32F34XUnBeq3PfDS7w5E', '#1')],
   });
   const serverEcaeth = makeUser({
@@ -198,6 +201,7 @@ function run() {
           ],
           totalAssetUsd: 12,
           historicalMaxAssetUsd: 20,
+          mainstreamAssetUsd: 0,
           currentChainAssetTotal: 12,
           historicalMaxChainAssetTotal: 20,
         }),
@@ -223,6 +227,7 @@ function run() {
       handle: 'lanyue',
       totalAssetUsd: 97_920.58,
       historicalMaxAssetUsd: 97_920.58,
+      mainstreamAssetUsd: 0,
       addresses: [
         {
           address: 'Aqa8H5hmHe9MFY9sW6widbqEuaYv7q2KnRo25ApPhWhA',

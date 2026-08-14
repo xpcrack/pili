@@ -103,8 +103,11 @@ function run(command: RuntimeModeCommand) {
   }
 
   if (command === 'dev-on') {
+    // Live mode embeds runtime tasks; stop the prod background worker so
+    // position-delta / twitter-identity-backfill don't run in both processes.
     stopIfPresent('pili');
     stopIfPresent('pili-web-prod');
+    stopIfPresent('pili-background-worker');
     startOrRestart('pili-web-dev');
     return;
   }
@@ -122,10 +125,13 @@ function run(command: RuntimeModeCommand) {
     return;
   }
 
+  // dev-off: build FIRST so a failed build never takes the site down.
+  runNpm(['run', 'build']);
   stopIfPresent('pili');
   stopIfPresent('pili-web-dev');
-  runNpm(['run', 'build']);
   startOrRestart('pili-web-prod');
+  // dev-on stopped it; restore the periodic-task owner (restart covers stopped).
+  startOrRestart('pili-background-worker');
   const ready = waitForReady();
   if (!ready) {
     console.error('[runtime] WARNING: pili-web-prod did not become ready within timeout');

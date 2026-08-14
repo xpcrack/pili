@@ -43,6 +43,11 @@ export function loadWorkerEnv(): void {
   if (!process.env.NODE_USE_ENV_PROXY) {
     process.env.NODE_USE_ENV_PROXY = '1';
   }
+  // OKX calls use an explicit undici ProxyAgent in long-running workers;
+  // Node's global fetch + env proxy is prone to stale/reset sockets here.
+  if (!process.env.PILI_OKX_USE_PROXY_AGENT) {
+    process.env.PILI_OKX_USE_PROXY_AGENT = '1';
+  }
   if (!process.env.NO_PROXY) {
     process.env.NO_PROXY = '127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12';
   }
@@ -62,20 +67,33 @@ export function getWorkerOwner(): string {
 // --------------------------------------------------------------------------
 
 export interface InstallShutdownHandlersOptions {
-  /** Called once per signal before the process exits. Should be fast and synchronous. */
-  onShutdown: (signal: 'SIGINT' | 'SIGTERM') => void;
+  /** Called once per signal before the process exits. May be async; the process exits after it resolves. */
+  onShutdown: (signal: 'SIGINT' | 'SIGTERM') => void | Promise<void>;
   /** Process exit code. Defaults to 0. */
   exitCode?: number;
 }
 
-/** Wires SIGINT/SIGTERM to a single handler that runs `onShutdown` then `process.exit`. */
+/**
+ * Wires SIGINT/SIGTERM to a single handler that runs `onShutdown` then
+ * `process.exit`. Async `onShutdown` (e.g. `tasks.stopAll`) is awaited before
+ * exit; a second signal during shutdown is ignored so the cleanup can finish.
+ */
 export function installShutdownHandlers(opts: InstallShutdownHandlersOptions): void {
-  const handler = (signal: 'SIGINT' | 'SIGTERM') => {
-    opts.onShutdown(signal);
+  let exiting = false;
+  const handler = async (signal: 'SIGINT' | 'SIGTERM') => {
+    if (exiting) return;
+    exiting = true;
+    try {
+      await opts.onShutdown(signal);
+    } catch (error) {
+      console.error(
+        `[workerLifecycle] shutdown handler failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     process.exit(opts.exitCode ?? 0);
   };
-  process.on('SIGINT', () => handler('SIGINT'));
-  process.on('SIGTERM', () => handler('SIGTERM'));
+  process.on('SIGINT', () => void handler('SIGINT'));
+  process.on('SIGTERM', () => void handler('SIGTERM'));
 }
 
 // --------------------------------------------------------------------------

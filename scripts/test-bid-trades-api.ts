@@ -66,6 +66,7 @@ function makeUser(params: {
     ],
     totalAssetUsd: 0,
     historicalMaxAssetUsd: 0,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: null,
     tags: [],
   };

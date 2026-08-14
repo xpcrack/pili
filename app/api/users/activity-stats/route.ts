@@ -22,6 +22,14 @@ export async function GET() {
   const users = listTrackedUsers();
   const db = getDb();
 
+  // 只聚合被追踪用户的 events：events 表是全站最大的表，
+  // 无 WHERE 全表扫描+json_extract 会白白拖垮每次 manage 页统计请求。
+  const userIds = users.map((user) => user.id).filter(Boolean);
+  if (userIds.length === 0) {
+    return NextResponse.json({ ok: true, sinceMs, statsByUserId: {} });
+  }
+  const placeholders = userIds.map(() => '?').join(',');
+
   const rows = db
     .prepare(
       `SELECT
@@ -41,9 +49,10 @@ export async function GET() {
            END
          ) AS avg_buy_market_cap_7d
        FROM events
+       WHERE user_id IN (${placeholders})
        GROUP BY user_id`
     )
-    .all(sinceMs, sinceMs, sinceMs, sinceMs) as Array<{ user_id: string } & ActivityStatsRow>;
+    .all(sinceMs, sinceMs, sinceMs, sinceMs, ...userIds) as Array<{ user_id: string } & ActivityStatsRow>;
 
   const rowByUserId = new Map(rows.map((row) => [row.user_id, row] as const));
   const statsByUserId: Record<

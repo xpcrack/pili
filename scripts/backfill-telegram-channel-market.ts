@@ -59,7 +59,10 @@ async function main() {
   }
 
   const args = parseArgs(process.argv.slice(2));
-  exitIfProdDbHeavyJobBlocked({ force: args.forceProd, jobLabel: 'telegram-channel market backfill' });
+  if (args.forceProd) {
+    process.env.PILIPILI_ALLOW_PROD_DB_HEAVY = '1';
+  }
+  exitIfProdDbHeavyJobBlocked({ jobName: 'telegram-channel market backfill' });
 
   const db = getDb();
   const usersById = new Map(listTrackedUsers().map((user) => [user.id, user] as const));

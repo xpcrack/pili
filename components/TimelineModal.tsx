@@ -159,7 +159,8 @@ function TimelineItem({
   const contentText =
     activity.source === 'blockchain' && activity.type === 'transfer'
       ? activity.content.replace(
-          /-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/iu,
+          // 只匹配独立的金额数字：前后不是字母数字（否则会命中 0x… 地址里的数字段）
+          /(?<![0-9a-fA-F])-?\d+(?:\.\d+)?(?:e[+-]?\d+)?(?![0-9a-fA-F])/iu,
           formattedTokenAmount
         )
       : activity.content;

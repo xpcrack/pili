@@ -25,6 +25,7 @@ function makeUser(id: string, wallet: string): User {
     ],
     totalAssetUsd: 10,
     historicalMaxAssetUsd: 10,
+    mainstreamAssetUsd: 0,
     assetUpdatedAt: 1,
     tags: [],
   };
