@@ -364,7 +364,9 @@ export function createDefaultRuntimeTasks(
         > | null = null;
         if (result.ok) {
           try {
-            gmgnTwitter = await syncTwitterFromGmgnForUnfilledUsers();
+            gmgnTwitter = await syncTwitterFromGmgnForUnfilledUsers({
+              addresses: result.gmgnTwitterCandidates ?? [],
+            });
             if (gmgnTwitter.filled > 0) {
               console.log(
                 `[feishu-sync] gmgn twitter filled=${gmgnTwitter.filled} queried=${gmgnTwitter.queried} notBound=${gmgnTwitter.notBound} failed=${gmgnTwitter.failed}`

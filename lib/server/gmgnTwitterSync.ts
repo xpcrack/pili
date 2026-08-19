@@ -13,7 +13,7 @@
  *   - 失败静默打日志,绝不阻断飞书同步本身。
  *
  * 触发点:并入 feishu-enablement-sync 循环(见 server/runtime-tasks.ts),
- * 每 ~15min 跑完飞书同步后顺手补一次。新地址最迟下个周期内补上推特,
+ * 只接收本轮新增/重新启用地址；失败按 6h/24h/7d 退避后停止自动重试。
  * 之后现成的 twitterIdentityBackfill(completeness worker)补 twitter_user_id +
  * completeness twitter adapter 开始抓推文监控 —— 全自动。
  */
@@ -54,7 +54,10 @@ type Candidate = {
 };
 
 /** 飞书同步跑完后调,补 gmgn 推特。永不抛 —— 失败只回传结果,不拖垮飞书循环。 */
-export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitterSyncResult> {
+export async function syncTwitterFromGmgnForUnfilledUsers(options: {
+  addresses?: string[];
+  force?: boolean;
+} = {}): Promise<GmgnTwitterSyncResult> {
   const empty: GmgnTwitterSyncResult = {
     ok: true,
     queried: 0,
@@ -67,7 +70,11 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
 
   let candidates: Candidate[];
   try {
-    candidates = collectUnfilledCandidates();
+    const triggered = new Set(
+      (options.addresses ?? []).map((address) => address.trim().toLowerCase()).filter(Boolean)
+    );
+    for (const address of triggered) reopenFailedAddress(address);
+    candidates = collectUnfilledCandidates(triggered, options.force === true);
   } catch (error) {
     return {
       ...empty,
@@ -128,14 +135,14 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
     for (let j = 0; j < results.length; j++) {
       const settled = results[j];
       if (settled.status === 'rejected') {
+        queried += 1;
         failed += 1;
         const msg = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
         console.warn(`[gmgn-twitter-sync] stats failed for ${batch[j]!.address}: ${msg}`);
+        rememberFailure(batch[j]!.address.toLowerCase(), msg);
         continue;
       }
       const v = settled.value;
-      // 无论成功失败，记入已查地址避免下一周期再打（持久化 + TTL）。
-      rememberChecked(batch[j]!.address.toLowerCase());
       switch (v.kind) {
         case 'alreadyFilled':
           skippedAlreadyFilled += 1;
@@ -143,14 +150,19 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
         case 'nocommon':
           queried += 1;
           failed += 1;
+          rememberFailure(batch[j]!.address.toLowerCase(), 'gmgn stats missing common');
           break;
         case 'notBound':
           queried += 1;
           notBound += 1;
+          rememberChecked(batch[j]!.address.toLowerCase());
+          clearFailure(batch[j]!.address.toLowerCase());
           break;
         case 'emptyHandle':
           queried += 1;
           skippedEmptyHandle += 1;
+          rememberChecked(batch[j]!.address.toLowerCase());
+          clearFailure(batch[j]!.address.toLowerCase());
           break;
         case 'fill': {
           queried += 1;
@@ -162,6 +174,8 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
           } else {
             skippedAlreadyFilled += 1; // 已被别处填上
           }
+          rememberChecked(batch[j]!.address.toLowerCase());
+          clearFailure(batch[j]!.address.toLowerCase());
           break;
         }
       }
@@ -185,6 +199,10 @@ export async function syncTwitterFromGmgnForUnfilledUsers(): Promise<GmgnTwitter
 const CHECKED_STORE_KEY = 'gmgn_twitter_checked_v1';
 const CHECKED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const checkedThisProcess = new Map<string, number>();
+const RETRY_STORE_KEY = 'gmgn_twitter_retry_v1';
+const RETRY_DELAYS_MS = [6 * 60 * 60_000, 24 * 60 * 60_000, 7 * 24 * 60 * 60_000] as const;
+type RetryState = { failures: number; nextRetryAt: number; stopped: boolean; lastError: string };
+const retryThisProcess = new Map<string, RetryState>();
 
 function loadCheckedMap() {
   try {
@@ -207,6 +225,10 @@ function loadCheckedMap() {
 
 function rememberChecked(addressLower: string) {
   checkedThisProcess.set(addressLower, Date.now());
+  persistCheckedMap();
+}
+
+function persistCheckedMap() {
   try {
     const db = getDb();
     const now = Date.now();
@@ -225,14 +247,71 @@ function rememberChecked(addressLower: string) {
   }
 }
 
+function persistRetryMap() {
+  try {
+    const now = Date.now();
+    getDb().prepare(
+      `INSERT INTO app_state (key, value_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+    ).run(RETRY_STORE_KEY, JSON.stringify(Object.fromEntries(retryThisProcess)), now);
+  } catch {
+    /* best effort */
+  }
+}
+
+function loadRetryMap() {
+  try {
+    const row = getDb().prepare('SELECT value_json FROM app_state WHERE key = ? LIMIT 1')
+      .get(RETRY_STORE_KEY) as { value_json?: string } | undefined;
+    const parsed = row?.value_json ? JSON.parse(row.value_json) as Record<string, RetryState> : {};
+    for (const [address, state] of Object.entries(parsed)) {
+      if (state && Number.isFinite(state.failures) && Number.isFinite(state.nextRetryAt)) {
+        retryThisProcess.set(address, state);
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function rememberFailure(addressLower: string, error: string) {
+  const previous = retryThisProcess.get(addressLower);
+  const failures = Math.max(0, Number(previous?.failures) || 0) + 1;
+  const delay = RETRY_DELAYS_MS[Math.min(failures - 1, RETRY_DELAYS_MS.length - 1)];
+  retryThisProcess.set(addressLower, {
+    failures,
+    nextRetryAt: Date.now() + delay,
+    stopped: failures >= RETRY_DELAYS_MS.length,
+    lastError: error.slice(0, 300),
+  });
+  persistRetryMap();
+}
+
+function clearFailure(addressLower: string) {
+  if (retryThisProcess.delete(addressLower)) persistRetryMap();
+}
+
+function reopenFailedAddress(addressLower: string) {
+  clearFailure(addressLower);
+  if (checkedThisProcess.delete(addressLower)) persistCheckedMap();
+}
+
 loadCheckedMap();
+loadRetryMap();
 
 /**
  * 收集"推特为空 + 有监控地址"的用户的全部地址。 * 按用户 updated_at 升序(新进 pili 的优先),同一用户的地址相邻排列。
  * 限 MAX_ADDRESSES_PER_CYCLE 条(地址数,非用户数)。
  */
-function collectUnfilledCandidates(): Candidate[] {
+function collectUnfilledCandidates(triggered: Set<string>, force: boolean): Candidate[] {
   const db = getDb();
+  const now = Date.now();
+  const dueRetries = [...retryThisProcess.entries()]
+    .filter(([, state]) => !state.stopped && state.nextRetryAt <= now)
+    .map(([address]) => address);
+  const allowed = new Set([...triggered, ...dueRetries]);
+  if (!force && allowed.size === 0) return [];
   const rows = db
     .prepare(
       `SELECT u.id AS user_id, a.address AS address
@@ -241,13 +320,16 @@ function collectUnfilledCandidates(): Candidate[] {
         WHERE (u.twitter IS NULL OR u.twitter = '')
           AND a.monitoring_enabled = 1
           AND a.address IS NOT NULL AND a.address != ''
-        AND a.address NOT IN (SELECT value FROM json_each(?))
+          AND (? = 1 OR lower(a.address) IN (SELECT value FROM json_each(?)))
+          AND lower(a.address) NOT IN (SELECT value FROM json_each(?))
         ORDER BY u.updated_at ASC, a.address ASC
         LIMIT ?`
     )
     // json_each(?) 在前、LIMIT ? 在后 —— 参数顺序必须与占位符一致。
     // 只排除仍在 TTL 内的已查地址。
     .all(
+      force ? 1 : 0,
+      JSON.stringify([...allowed]),
       JSON.stringify(
         [...checkedThisProcess.entries()]
           .filter(([, at]) => Date.now() - at < CHECKED_TTL_MS)

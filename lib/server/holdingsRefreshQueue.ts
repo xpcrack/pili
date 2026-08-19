@@ -39,7 +39,6 @@ function getMinRefreshAgeMs() {
 
 const DEFAULT_QUIET_INTERVAL_MS = 4 * 60 * 60_000;
 const DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS = 12 * 60 * 60_000;
-const DEFAULT_ACTIVE_WINDOW_MS = 24 * 60 * 60_000;
 
 /**
  * Quiet wallets (no on-chain activity within the active window) re-sync on
@@ -51,13 +50,6 @@ function getQuietIntervalMs() {
   const configured = Number.parseInt(process.env.HOLDINGS_QUIET_INTERVAL_MS || '', 10);
   if (Number.isFinite(configured) && configured > 0) return Math.max(60_000, configured);
   return DEFAULT_QUIET_INTERVAL_MS;
-}
-
-/** A wallet with no on-chain trade within this window is treated as quiet. */
-function getActiveWindowMs() {
-  const configured = Number.parseInt(process.env.HOLDINGS_ACTIVE_WINDOW_MS || '', 10);
-  if (Number.isFinite(configured) && configured > 0) return configured;
-  return DEFAULT_ACTIVE_WINDOW_MS;
 }
 
 export type EnqueueHoldingsRefreshInput = {
@@ -96,7 +88,9 @@ function getDebounceMs(envDebounce?: number) {
 function normalizeQueueChain(chain: string) {
   const normalized = chain.trim().toLowerCase();
   if (normalized === 'sol') return 'solana';
-  if (normalized === 'eth') return 'ethereum';
+  if (normalized === 'eth' || normalized === 'ethereum' || normalized === 'bsc' || normalized === 'base') {
+    return 'evm';
+  }
   return normalized;
 }
 
@@ -306,7 +300,13 @@ function ensurePersistentQueue(db: DbHandle) {
   } catch {
     // Existing/current schema already has it.
   }
-  for (const [alias, canonical] of [['sol', 'solana'], ['eth', 'ethereum']] as const) {
+  for (const [alias, canonical] of [
+    ['sol', 'solana'],
+    ['eth', 'evm'],
+    ['ethereum', 'evm'],
+    ['bsc', 'evm'],
+    ['base', 'evm'],
+  ] as const) {
     db.exec(`
       INSERT INTO holdings_refresh_jobs (
         wallet_chain, address, chain, user_id, priority, due_at_ms, lease_token,
@@ -361,10 +361,17 @@ function upsertPersistentJob(
   return { enqueued: true, key };
 }
 
-/** Durable event enqueue: survives worker restarts and coalesces wallet×chain. */
-export function enqueueHoldingsRefresh(input: EnqueueHoldingsRefreshInput) {
+/** Durable verification enqueue: one EVM wallet job covers ETH/BSC/Base. */
+export function enqueueHoldingsRefresh(
+  input: EnqueueHoldingsRefreshInput,
+  options: { delayMs?: number } = {},
+) {
   const nowMs = Date.now();
-  return upsertPersistentJob(getDb(), input, EVENT_PRIORITY, nowMs + getDebounceMs(), nowMs);
+  const requestedDelay = options.delayMs;
+  const delayMs = typeof requestedDelay === 'number' && Number.isFinite(requestedDelay)
+    ? Math.max(0, requestedDelay)
+    : getDebounceMs();
+  return upsertPersistentJob(getDb(), input, EVENT_PRIORITY, nowMs + delayMs, nowMs);
 }
 
 function seedPersistentQueue(db: DbHandle, nowMs: number) {
@@ -373,10 +380,7 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
     return 0;
   }
   lastRosterSeedAtMs = nowMs;
-  const intervalMs = Number.parseInt(process.env.HOLDINGS_REFRESH_INTERVAL_MS || '', 10);
-  const refreshIntervalMs = Number.isFinite(intervalMs) && intervalMs > 0
-    ? Math.max(60_000, intervalMs)
-    : 30 * 60_000;
+  const refreshIntervalMs = getQuietIntervalMs();
   const rows = db.prepare(
     `SELECT ta.address, ta.address_lower, ta.chain, ta.user_id,
             MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at,
@@ -410,27 +414,24 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
 
   // Native chains read the last on-chain trade from the canonical events table
   // (indexed lookup); robinhood carries MAX(event_time_ms) from the feed above.
-  const latestTradeStmt = db.prepare(
-    `SELECT MAX(timestamp) AS latest_ts
-     FROM events
-     WHERE source = 'blockchain'
-       AND chain = ?
-       AND TRIM(COALESCE(address, '')) <> ''
-       AND LOWER(address) = ?`
-  );
-
-  const quietIntervalMs = getQuietIntervalMs();
-  const activeWindowMs = getActiveWindowMs();
-
+  const grouped = new Map<string, typeof rows[number]>();
   for (const row of rows) {
-    const isRobinhood = row.chain === 'robinhood';
-    const lastTradeAt = isRobinhood
-      ? row.last_trade_at
-      : (latestTradeStmt.get(row.chain, row.address_lower) as { latest_ts: number | null } | undefined)?.latest_ts ?? null;
-    const active = lastTradeAt != null && lastTradeAt >= nowMs - activeWindowMs;
-    const intervalMs = isRobinhood
-      ? (active ? refreshIntervalMs : DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS)
-      : (active ? refreshIntervalMs : quietIntervalMs);
+    const canonicalChain = normalizeQueueChain(row.chain);
+    const key = `${canonicalChain}:${row.address_lower}`;
+    const prior = grouped.get(key);
+    if (!prior) {
+      grouped.set(key, { ...row, chain: canonicalChain });
+      continue;
+    }
+    const priorAt = prior.last_success_at == null ? null : Number(prior.last_success_at);
+    const rowAt = row.last_success_at == null ? null : Number(row.last_success_at);
+    prior.last_success_at = priorAt == null || rowAt == null ? null : Math.min(priorAt, rowAt);
+  }
+
+  for (const row of grouped.values()) {
+    const intervalMs = row.chain === 'robinhood'
+      ? DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS
+      : refreshIntervalMs;
     // Preserve real age in due_at so an old wallet cannot remain at a fixed
     // roster position behind newer wallets every cycle.
     const dueAtMs = row.last_success_at == null
@@ -442,7 +443,7 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
       userId: row.user_id,
     }, SCHEDULE_PRIORITY, dueAtMs, nowMs);
   }
-  return rows.length;
+  return grouped.size;
 }
 
 type HoldingsRefreshProvider = 'native' | 'gmgn';
@@ -587,7 +588,9 @@ export async function runHoldingsRefreshQueueCycle(options: {
 
   const finishedAt = now();
   if (result.status === 'idle') {
-    const intervalMs = Math.max(60_000, Number.parseInt(process.env.HOLDINGS_REFRESH_INTERVAL_MS || '', 10) || 30 * 60_000);
+    const intervalMs = job.chain === 'robinhood'
+      ? DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS
+      : getQuietIntervalMs();
     db.prepare(
       `UPDATE holdings_refresh_jobs
        SET priority = CASE WHEN rerun_requested = 1 THEN priority ELSE 0 END,
@@ -624,6 +627,9 @@ export async function runHoldingsRefreshQueueCycle(options: {
       processed: 1,
       walletChain: job.wallet_chain,
       holdingsRowCount: result.holdingsRowCount,
+      provider: result.provider,
+      requestedChainCount: result.requestedChainCount,
+      upstreamRequestCount: result.upstreamRequestCount,
       queueTotal: stats.total,
       queueDue: stats.due ?? 0,
       oldestDueAt: stats.oldest_due_at,
