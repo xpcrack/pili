@@ -360,6 +360,9 @@ CREATE TABLE IF NOT EXISTS current_holdings (
   price_usd REAL,
   value_usd REAL,
   liquidity_usd REAL,
+  source TEXT NOT NULL DEFAULT 'authoritative',
+  provisional_updated_at INTEGER,
+  authoritative_refreshed_at INTEGER,
   refreshed_at INTEGER NOT NULL,
   UNIQUE(tracked_address_lower, chain, token_address_lower)
 );
@@ -390,6 +393,19 @@ ON current_holdings_wallet_status(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_holdings_value
 ON current_holdings(value_usd);
+
+CREATE TABLE IF NOT EXISTS xxyy_holdings_applications (
+  event_key TEXT PRIMARY KEY,
+  tracked_address_lower TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  token_address_lower TEXT,
+  event_time_ms INTEGER NOT NULL,
+  outcome TEXT NOT NULL,
+  applied_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_xxyy_holdings_applications_wallet
+ON xxyy_holdings_applications(tracked_address_lower, chain, event_time_ms);
 
 CREATE TABLE IF NOT EXISTS holder_snapshot_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

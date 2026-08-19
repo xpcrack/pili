@@ -42,21 +42,21 @@ async function main() {
     };
 
     enqueueHoldingsRefresh({ address: 'WalletEvent', chain: 'base', userId: 'u1' });
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 1000 WHERE wallet_chain = 'base:walletevent'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 1000 WHERE wallet_chain = 'evm:walletevent'`).run();
     await runHoldingsRefreshQueueCycle({ db, now: () => 1000, refreshWallet });
-    assert.equal(calls[0], 'base:walletevent', 'event priority must beat scheduled stale work');
+    assert.equal(calls[0], 'evm:walletevent', 'event priority must beat scheduled stale work');
 
     await runHoldingsRefreshQueueCycle({ db, now: () => 1000, refreshWallet });
-    assert.equal(calls[1], 'base:walletscheduled', 'scheduled wallet must be processed incrementally');
+    assert.equal(calls[1], 'evm:walletscheduled', 'scheduled wallet must be processed incrementally');
 
     enqueueHoldingsRefresh({ address: 'WalletRestart', chain: 'base', userId: 'u1' });
     const persisted = db.prepare(
-      `SELECT wallet_chain FROM holdings_refresh_jobs WHERE wallet_chain = 'base:walletrestart'`
+      `SELECT wallet_chain FROM holdings_refresh_jobs WHERE wallet_chain = 'evm:walletrestart'`
     ).get() as { wallet_chain: string } | undefined;
-    assert.equal(persisted?.wallet_chain, 'base:walletrestart', 'enqueue must survive process memory loss');
+    assert.equal(persisted?.wallet_chain, 'evm:walletrestart', 'enqueue must survive process memory loss');
 
     let failCalls = 0;
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 2000 WHERE wallet_chain = 'base:walletrestart'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 2000 WHERE wallet_chain = 'evm:walletrestart'`).run();
     await runHoldingsRefreshQueueCycle({
       db,
       now: () => 2000,
@@ -74,7 +74,7 @@ async function main() {
     });
     const failed = db.prepare(
       `SELECT attempts, due_at_ms, lease_token FROM holdings_refresh_jobs
-       WHERE wallet_chain = 'base:walletrestart'`
+       WHERE wallet_chain = 'evm:walletrestart'`
     ).get() as { attempts: number; due_at_ms: number; lease_token: string | null };
     assert.equal(failCalls, 1);
     assert.equal(failed.attempts, 1);
@@ -82,7 +82,7 @@ async function main() {
     assert.equal(failed.lease_token, null, 'failed jobs must release their lease');
 
     enqueueHoldingsRefresh({ address: 'WalletTrailing', chain: 'base', userId: 'u1' });
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 70000 WHERE wallet_chain = 'base:wallettrailing'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 70000 WHERE wallet_chain = 'evm:wallettrailing'`).run();
     let trailingEvent = false;
     await runHoldingsRefreshQueueCycle({
       db,
@@ -107,7 +107,7 @@ async function main() {
     });
     const trailing = db.prepare(
       `SELECT priority, due_at_ms, lease_token FROM holdings_refresh_jobs
-       WHERE wallet_chain = 'base:wallettrailing'`
+       WHERE wallet_chain = 'evm:wallettrailing'`
     ).get() as { priority: number; due_at_ms: number; lease_token: string | null };
     assert.equal(trailing.priority, 100, 'an event arriving in-flight must retain priority');
     assert.ok(trailing.due_at_ms < 70001 + 60000, 'an in-flight event must request a trailing run');
@@ -157,7 +157,7 @@ async function main() {
     // not be re-claimed even when its job is due — caps event-driven refresh rate.
     process.env.HOLDINGS_MIN_REFRESH_AGE_MS = '120000';
     enqueueHoldingsRefresh({ address: 'WalletMinAge', chain: 'base', userId: 'u1' });
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 0 WHERE wallet_chain = 'base:walletminage'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 0 WHERE wallet_chain = 'evm:walletminage'`).run();
     let minAgeCalls = 0;
     const minAgeRefresh = async (params: { address: string; chain: string }) => {
       minAgeCalls += 1;
@@ -172,10 +172,10 @@ async function main() {
     };
     await runHoldingsRefreshQueueCycle({ db, now: () => 1000, refreshWallet: minAgeRefresh });
     assert.equal(minAgeCalls, 1, 'initial refresh must run once');
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 2000 WHERE wallet_chain = 'base:walletminage'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 2000 WHERE wallet_chain = 'evm:walletminage'`).run();
     await runHoldingsRefreshQueueCycle({ db, now: () => 2000, refreshWallet: minAgeRefresh });
     assert.equal(minAgeCalls, 1, 'min-age guard must block a refresh within the window');
-    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 121000 WHERE wallet_chain = 'base:walletminage'`).run();
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 121000 WHERE wallet_chain = 'evm:walletminage'`).run();
     await runHoldingsRefreshQueueCycle({ db, now: () => 121000, refreshWallet: minAgeRefresh });
     assert.equal(minAgeCalls, 2, 'refresh must resume once min-age has elapsed');
 

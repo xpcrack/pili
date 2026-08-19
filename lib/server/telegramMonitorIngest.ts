@@ -12,6 +12,7 @@ import { parseXxyyTelegramText } from '@/lib/server/xxyyTelegramParser';
 import { upsertTelegramMonitorEvent } from '@/lib/server/telegramMonitorRepo';
 import { isEvmChain } from '@/lib/addressBook';
 import { projectAndPersistTelegramMonitorUpdate } from '@/lib/server/telegramMonitorProjectionService';
+import { applyXxyyProvisionalHolding } from '@/lib/server/xxyyProvisionalHoldings';
 import {
   collectTelegramMessageLinks,
   extractTelegramMessage,
@@ -345,6 +346,39 @@ export async function ingestTelegramMonitorUpdate(
 
   if (!saved.ok) {
     throw new Error(`telegram monitor event save failed: ${saved.reason}`);
+  }
+
+  const holdingAddress =
+    (trackedMatch.address.address || '').trim() ||
+    (parsed.trackedWalletAddress || '').trim();
+  const holdingEventKey = parsed.txHash
+    ? [
+        'xxyy-tx',
+        parsed.chain,
+        holdingAddress.toLowerCase(),
+        parsed.txHash.toLowerCase(),
+        parsed.tokenAddress.toLowerCase(),
+      ].join(':')
+    : `xxyy-msg:${sourceChatId || 'unknown'}:${sourceMessageId ?? eventTimeMs}`;
+  try {
+    applyXxyyProvisionalHolding({
+      eventKey: holdingEventKey,
+      address: holdingAddress,
+      userId: trackedMatch.user.id,
+      chain: parsed.chain,
+      tokenAddress: parsed.tokenAddress,
+      tokenSymbol: parsed.tokenSymbol,
+      tokenAmount: parsed.tokenAmount,
+      priceUsd: parsed.priceUsd,
+      action: parsed.action,
+      actionVariant: parsed.actionVariant,
+      eventTimeMs,
+    });
+  } catch (error) {
+    console.warn('[telegram-monitor-ingest] provisional holdings apply failed', {
+      eventKey: holdingEventKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const xxyyFeedMode = readXxyyFeedMode();

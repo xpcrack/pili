@@ -10,9 +10,7 @@ async function main() {
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
   // Small deterministic windows so assertions stay readable.
-  process.env.HOLDINGS_REFRESH_INTERVAL_MS = '60000'; // active = 60s
-  process.env.HOLDINGS_QUIET_INTERVAL_MS = '240000'; // quiet = 4min
-  process.env.HOLDINGS_ACTIVE_WINDOW_MS = '60000'; // active = traded within 60s
+  process.env.HOLDINGS_QUIET_INTERVAL_MS = '240000'; // native fallback = 4min
 
   try {
     const { getDb } = await import('@/lib/server/sqlite');
@@ -82,14 +80,14 @@ async function main() {
     await runHoldingsRefreshQueueCycle({ db, now: () => 1_000_000, refreshWallet });
 
     const active = db.prepare(
-      `SELECT due_at_ms FROM holdings_refresh_jobs WHERE wallet_chain = 'base:walletactive'`
+      `SELECT due_at_ms FROM holdings_refresh_jobs WHERE wallet_chain = 'evm:walletactive'`
     ).get() as { due_at_ms: number } | undefined;
     const quiet = db.prepare(
-      `SELECT due_at_ms FROM holdings_refresh_jobs WHERE wallet_chain = 'base:walletquiet'`
+      `SELECT due_at_ms FROM holdings_refresh_jobs WHERE wallet_chain = 'evm:walletquiet'`
     ).get() as { due_at_ms: number } | undefined;
 
-    assert.equal(active?.due_at_ms, 1_000_000 + 60_000, 'active wallet keeps the fast interval');
-    assert.equal(quiet?.due_at_ms, 1_000_000 + 240_000, 'quiet wallet falls back to the slow interval');
+    assert.equal(active?.due_at_ms, 1_000_000 + 240_000, 'recent trades no longer create a 30-minute polling loop');
+    assert.equal(quiet?.due_at_ms, 1_000_000 + 240_000, 'native wallets share the low-frequency fallback');
 
     console.log('holdings adaptive interval tests: ok');
   } finally {

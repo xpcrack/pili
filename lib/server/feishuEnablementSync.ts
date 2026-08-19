@@ -52,6 +52,8 @@ export type FeishuEnablementSyncResult = {
   twittersCorrected: number;
   /** newly enabled / rostered addresses queued for 14d GMGN timeline backfill */
   timelineBackfillQueued?: number;
+  /** This cycle's newly added or re-enabled addresses for GMGN identity lookup. */
+  gmgnTwitterCandidates?: string[];
   error?: string;
 };
 
@@ -755,6 +757,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
       twittersBackfilled,
       twittersCorrected,
       timelineBackfillQueued,
+      gmgnTwitterCandidates: [...timelineBackfillAddrs.values()],
     };
   } catch (error) {
     return emptyResult(

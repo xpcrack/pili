@@ -110,6 +110,7 @@ interface OkxTotalValuePayload {
 }
 
 interface OkxAddressAssetPayload {
+  chainIndex?: string;
   tokenContractAddress?: string;
   tokenAddress?: string;
   tokenAddr?: string;
@@ -133,6 +134,7 @@ interface OkxAddressAssetDetailsPayload {
   code?: string;
   msg?: string;
   data?: Array<{
+    chainIndex?: string;
     tokenAssets?: OkxAddressAssetPayload[];
   }>;
 }
@@ -199,6 +201,12 @@ export interface OkxAddressAssetDetail {
   priceUsd: number;
   valueUsd: number;
 }
+
+export type OkxBalanceChain = 'bsc' | 'ethereum' | 'base' | 'solana';
+
+const OKX_INDEX_TO_CHAIN: Record<string, OkxBalanceChain> = Object.fromEntries(
+  Object.entries(CHAIN_TO_OKX_INDEX).map(([chain, index]) => [index, chain as OkxBalanceChain])
+);
 
 const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<ChainType, Record<string, string>> = {
   bsc: {
@@ -940,6 +948,33 @@ function buildOkxAddressAssetDetail(
   };
 }
 
+export function parseOkxAddressAssetsByChain(
+  address: string,
+  requestedChains: OkxBalanceChain[],
+  rawPayload: unknown,
+) {
+  const chains = [...new Set(requestedChains)];
+  const chainIndexes = chains.map((chain) => CHAIN_TO_OKX_INDEX[chain]);
+  const payload = rawPayload as OkxAddressAssetDetailsPayload;
+  const assets = (payload.data || [])
+    .flatMap((row) => (row.tokenAssets || []).map((asset) => ({
+      asset,
+      chainIndex: asset.chainIndex || row.chainIndex || (chains.length === 1 ? chainIndexes[0] : ''),
+    })))
+    .map(({ asset, chainIndex }) => {
+      const assetChain = OKX_INDEX_TO_CHAIN[String(chainIndex || '')];
+      if (!assetChain || !chains.includes(assetChain)) return null;
+      return buildOkxAddressAssetDetail(address, assetChain, asset);
+    })
+    .filter((asset): asset is OkxAddressAssetDetail => Boolean(asset))
+    .sort((left, right) => right.valueUsd - left.valueUsd || left.assetKey.localeCompare(right.assetKey));
+  const assetsByChain = Object.fromEntries(
+    chains.map((chain) => [chain, [] as OkxAddressAssetDetail[]])
+  ) as Record<OkxBalanceChain, OkxAddressAssetDetail[]>;
+  for (const asset of assets) assetsByChain[asset.chain as OkxBalanceChain].push(asset);
+  return { assets, assetsByChain };
+}
+
 export async function fetchOkxTotalValueByAddress(address: string, chain: string) {
   const chainIndex = CHAIN_TO_OKX_INDEX[chain];
 
@@ -1051,24 +1086,36 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
   };
 }
 
-export async function fetchOkxAddressAssetDetails(address: string, chain: ChainType) {
-  const chainIndex = CHAIN_TO_OKX_INDEX[chain];
-  if (!chainIndex) {
+export async function fetchOkxAddressAssetDetailsMulti(
+  address: string,
+  requestedChains: OkxBalanceChain[],
+) {
+  const chains = [...new Set(requestedChains)].filter((chain) => Boolean(CHAIN_TO_OKX_INDEX[chain]));
+  const chainIndexes = chains.map((chain) => CHAIN_TO_OKX_INDEX[chain]);
+  const emptyByChain = Object.fromEntries(
+    chains.map((chain) => [chain, [] as OkxAddressAssetDetail[]])
+  ) as Record<OkxBalanceChain, OkxAddressAssetDetail[]>;
+  if (!chains.length) {
     return {
       ok: false,
       configured: getOkxCredentials().configured,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
-      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
+      assetsByChain: emptyByChain,
+      chainSuccess: {} as Record<OkxBalanceChain, boolean>,
+      error: '未提供受支持链，当前仅支持 BSC / Ethereum / Base / Solana',
     };
   }
 
-  if (!isValidTrackedAddress(address, chain)) {
+  const validationChain = chains.includes('solana') ? 'solana' : 'ethereum';
+  if (!isValidTrackedAddress(address, validationChain)) {
     return {
       ok: false,
       configured: getOkxCredentials().configured,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: `地址格式无效，已跳过 OKX 请求: ${address}`,
     };
   }
@@ -1079,13 +1126,15 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
       configured: false,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: '未配置 OKX API 凭证',
     };
   }
 
   const params = new URLSearchParams({
     address,
-    chains: chainIndex,
+    chains: chainIndexes.join(','),
   });
   const requestPathWithQuery = `/api/v6/dex/balance/all-token-balances-by-address?${params.toString()}`;
 
@@ -1116,6 +1165,8 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
       configured: true,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: `OKX 网络错误: ${
         error instanceof Error && error.name === 'AbortError'
           ? `请求超时（>${OKX_REQUEST_TIMEOUT_MS}ms）`
@@ -1133,6 +1184,8 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
       configured: true,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: `OKX API ${response.status}: ${errorText.slice(0, 120)}`,
     };
   }
@@ -1147,6 +1200,8 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
         configured: true,
         totalAssetUsd: null as number | null,
         assets: [] as OkxAddressAssetDetail[],
+        assetsByChain: emptyByChain,
+        chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
         error: 'OKX API 空响应',
       };
     }
@@ -1157,6 +1212,8 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
       configured: true,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: 'OKX API 响应不是合法 JSON',
     };
   }
@@ -1166,15 +1223,14 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
       configured: true,
       totalAssetUsd: null as number | null,
       assets: [] as OkxAddressAssetDetail[],
+      assetsByChain: emptyByChain,
+      chainSuccess: Object.fromEntries(chains.map((chain) => [chain, false])) as Record<OkxBalanceChain, boolean>,
       error: `OKX API 业务错误 ${payload.code}: ${payload.msg || '未知错误'}`,
     };
   }
 
-  const assets = (payload.data || [])
-    .flatMap((row) => row.tokenAssets || [])
-    .map((asset) => buildOkxAddressAssetDetail(address, chain, asset))
-    .filter((asset): asset is OkxAddressAssetDetail => Boolean(asset))
-    .sort((left, right) => right.valueUsd - left.valueUsd || left.assetKey.localeCompare(right.assetKey));
+  const { assets, assetsByChain } = parseOkxAddressAssetsByChain(address, chains, payload);
+  const chainSuccess = Object.fromEntries(chains.map((chain) => [chain, true])) as Record<OkxBalanceChain, boolean>;
 
   const totalAssetUsd = assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
 
@@ -1183,6 +1239,19 @@ export async function fetchOkxAddressAssetDetails(address: string, chain: ChainT
     configured: true,
     totalAssetUsd,
     assets,
+    assetsByChain,
+    chainSuccess,
     error: null as string | null,
+  };
+}
+
+export async function fetchOkxAddressAssetDetails(address: string, chain: ChainType) {
+  const result = await fetchOkxAddressAssetDetailsMulti(address, [chain as OkxBalanceChain]);
+  return {
+    ok: result.ok,
+    configured: result.configured,
+    totalAssetUsd: result.totalAssetUsd,
+    assets: result.ok ? result.assetsByChain[chain as OkxBalanceChain] ?? [] : [],
+    error: result.error,
   };
 }
