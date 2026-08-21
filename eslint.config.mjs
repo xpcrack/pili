@@ -8,6 +8,7 @@ const eslintConfig = defineConfig([
     "build/**",
     "dist/**",
     ".worktrees/**",
+    ".claude/**",
     "node_modules/**",
   ]),
 ]);

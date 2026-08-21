@@ -1,4 +1,7 @@
 import { fetchOkxTokenHistoricalPriceBeforeTimestamp } from '@/lib/okx';
+import { parsePositiveFiniteNumber } from '@/lib/positiveNumber';
+
+export { parsePositiveFiniteNumber } from '@/lib/positiveNumber';
 
 const STABLE_SYMBOLS = new Set(['USDT', 'USDC', 'DAI']);
 
@@ -43,20 +46,6 @@ export interface ResolveTradeAmountUsdAtTxDeps {
 
 function normalizeSymbol(symbol: string | null | undefined) {
   return (symbol || '').trim().toUpperCase();
-}
-
-/** Shared positive amount parse (number or comma-separated string). */
-export function parsePositiveFiniteNumber(value: string | number | null | undefined) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) && value > 0 ? value : null;
-  }
-
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const parsed = Number.parseFloat(value.trim().replaceAll(',', ''));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function roundUsd(value: number) {
@@ -116,10 +105,19 @@ export async function resolveTradeAmountUsdAtTx(
   if (isNativeQuote && quoteAmount !== null && nativeMeta) {
     const fetchHistoricalTokenPrice = deps.fetchHistoricalTokenPrice ?? fetchOkxTokenHistoricalPriceBeforeTimestamp;
     const priceLookupChain = nativeMeta.priceChain || chain;
-    const pricePoint = await fetchHistoricalTokenPrice(priceLookupChain, nativeMeta.address, params.txTimestampMs);
+    try {
+      const pricePoint = await fetchHistoricalTokenPrice(priceLookupChain, nativeMeta.address, params.txTimestampMs);
 
-    if (typeof pricePoint?.priceUsd === 'number' && Number.isFinite(pricePoint.priceUsd) && pricePoint.priceUsd > 0) {
-      return roundUsd(quoteAmount * pricePoint.priceUsd);
+      if (typeof pricePoint?.priceUsd === 'number' && Number.isFinite(pricePoint.priceUsd) && pricePoint.priceUsd > 0) {
+        return roundUsd(quoteAmount * pricePoint.priceUsd);
+      }
+    } catch (error) {
+      // B7: OKX 超时/代理失败/DNS 失败时不能 reject 整个函数——否则已有
+      // explicitPriceUsd 的交易也无法算出 USD。降级走显式价格回退。
+      console.warn(
+        '[tradeUsd] historical price lookup failed, falling back to explicit price:',
+        error instanceof Error ? error.message : error
+      );
     }
   }
 

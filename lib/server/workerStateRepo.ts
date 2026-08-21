@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getDb, withSqliteBusyRetry } from '@/lib/server/sqlite';
+import { getDb, getFastFailWriteDb, withSqliteBusyRetry } from '@/lib/server/sqlite';
 
 /**
  * Bookkeeping writes (heartbeat, status, cursor) must never take a worker down.
@@ -73,7 +73,7 @@ export function upsertWorkerStatus(input: {
          worker_type = excluded.worker_type,
          status = excluded.status,
          last_heartbeat_at_ms = excluded.last_heartbeat_at_ms,
-         last_update_id = excluded.last_update_id,
+         last_update_id = COALESCE(excluded.last_update_id, worker_status.last_update_id),
          last_error = excluded.last_error,
          updated_at_ms = excluded.updated_at_ms`
     ).run(
@@ -91,8 +91,11 @@ export function upsertWorkerStatus(input: {
 }
 
 export function touchWorkerHeartbeat(workerKey: string) {
-  runBookkeepingWrite('touchWorkerHeartbeat', () => {
-    const db = getDb();
+  // Heartbeats run from a timer and are deliberately best-effort. Retrying a
+  // lock here blocks the worker's event loop for seconds and can make the
+  // lease heartbeat miss its own TTL. The next tick will retry instead.
+  try {
+    const db = getFastFailWriteDb();
     const now = Date.now();
     db.prepare(
       `UPDATE worker_status
@@ -100,7 +103,12 @@ export function touchWorkerHeartbeat(workerKey: string) {
            updated_at_ms = ?
        WHERE worker_key = ?`
     ).run(now, now, workerKey);
-  });
+  } catch (error) {
+    console.warn(
+      '[workerStateRepo] touchWorkerHeartbeat failed (non-fatal):',
+      error instanceof Error ? error.message : error
+    );
+  }
 }
 
 export function acquireWorkerLease(input: {

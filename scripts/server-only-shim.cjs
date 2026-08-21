@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
 const Module = require('node:module');
 
 const originalLoad = Module._load;

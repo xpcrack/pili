@@ -1,6 +1,6 @@
 import type { Activity } from '@/types';
 import { formatTradeAmountUsdLabel } from '@/lib/assetFormat';
-import { parsePositiveFiniteNumber } from '@/lib/tradeUsd';
+import { parsePositiveFiniteNumber } from '@/lib/positiveNumber';
 
 export type TradeValueDisplayMode = 'native' | 'usd';
 

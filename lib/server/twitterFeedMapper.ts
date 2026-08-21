@@ -300,7 +300,16 @@ export function projectTwitterTweetsToFeed(options: {
   const pendingTweetIds = tweetCandidates
     .filter((tweet) => {
       const enrich = enrichmentByTweetId.get(tweet.tweetId);
-      return !enrich || enrich.translationStatus === 'pending' || enrich.translationStatus === 'processing';
+      if (!enrich) return true;
+      if (enrich.translationStatus === 'pending' || enrich.translationStatus === 'processing') return true;
+      // B5: 毒丸退避——上一次处理刚失败且最近 30 分钟内已尝试过，则本轮跳过，
+      // 避免同一个持续抛错的推文在每个投影周期都重跑整批 LLM/vision/DexScreener。
+      if (enrich.lastError) {
+        const lastProcessedAt = enrich.lastProcessedAtMs ?? 0;
+        if (Date.now() - lastProcessedAt < 30 * 60_000) return false;
+        return true;
+      }
+      return false;
     })
     .map((t) => t.tweetId);
 

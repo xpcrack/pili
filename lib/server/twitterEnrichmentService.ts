@@ -22,7 +22,7 @@ import {
   extractQuotedTextFromSourceJson,
 } from '@/lib/server/tweetSourceTexts';
 import { extractMentionsFromImageUrls, type VisionEnrichmentModel } from '@/lib/server/visionEnrichmentModel';
-import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
+import { enrichMentionsMarketData, type EnrichableMention } from '@/lib/server/tweetTokenEnrichment';
 import { fetchFromDexScreener } from '@/lib/server/dexscreener';
 import {
   barkOfficialTwitterCollisionOnce,
@@ -444,37 +444,70 @@ async function runEnrichmentForTweet(params: {
     };
   });
 
-  const enrichedMentionsRaw = (await enrichMentionsMarketData({
-    mentions: withSentiment,
-    tweetCreatedAtMs: params.tweet.createdAtMs,
-    concurrency: 3,
-  })).filter((mention) => {
-    // Solana wallet addresses match the same base58 regex as token CAs.
-    // After DexScreener lookup, wallets have no chain → drop them.
-    if (mention.matchSource === 'ca' && !mention.chain && !mention.tokenSymbol) {
-      return false;
-    }
-    return true;
-  });
+  let enrichedMentions: EnrichableMention[] = withSentiment as unknown as EnrichableMention[];
+  try {
+    const enrichedMentionsRaw = (await enrichMentionsMarketData({
+      mentions: withSentiment,
+      tweetCreatedAtMs: params.tweet.createdAtMs,
+      concurrency: 3,
+    })).filter((mention) => {
+      // Solana wallet addresses match the same base58 regex as token CAs.
+      // After DexScreener lookup, wallets have no chain → drop them.
+      if (mention.matchSource === 'ca' && !mention.chain && !mention.tokenSymbol) {
+        return false;
+      }
+      return true;
+    });
 
-  // 排除「在 newone 代币池里、MC<100K、且无 pili 监控地址同车」的小币。
-  // 三条同时成立才丢弃；任一未知(不在池/MC未解析)都保留，避免误杀。
-  // 候选地址 = 剩余 mentions 的落地地址，去重后一次 SQL 查谁仍有同车，再逐条判。
-  const poolAddresses = getPrimaryPoolAddressSet();
-  const candidateAddresses = enrichedMentionsRaw
-    .map((m) => m.tokenAddress)
-    .filter((v): v is string => Boolean(v && v.trim()));
-  const addressesWithRiders = findAddressesWithTrackedRiders(candidateAddresses);
+    // 帖子里直接贴了 CA（0x… / Base58）的 mention 是高信号：直接解析出 ticker + 市值并展示，
+    // 不参与下面的「小币噪声」过滤（否则 MC<100K 且无同车的新币会被整条丢进 feed）。
+    const directCaAddresses = new Set(
+      withSentiment
+        .filter((m) => m.matchSource === 'ca' || m.matchSource === 'both')
+        .map((m) => (m.tokenAddress || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
 
-  const enrichedMentions = enrichedMentionsRaw.filter((mention) => {
+    // 排除「在 newone 代币池里、MC<100K、且无 pili 监控地址同车」的小币。
+    // 三条同时成立才丢弃；任一未知(不在池/MC未解析)都保留，避免误杀。
+    // 候选地址 = 剩余 mentions 的落地地址，去重后一次 SQL 查谁仍有同车，再逐条判。
+    const poolAddresses = getPrimaryPoolAddressSet();
+    const candidateAddresses = enrichedMentionsRaw
+      .map((m) => m.tokenAddress)
+      .filter((v): v is string => Boolean(v && v.trim()));
+    const addressesWithRiders = findAddressesWithTrackedRiders(candidateAddresses);
+
+    enrichedMentions = enrichedMentionsRaw.filter((mention) => {
     const addr = (mention.tokenAddress || '').trim().toLowerCase();
+    // 直接贴 CA 的帖子：保留（已解析 ticker + 市值），不做小币噪声过滤。
+    if (directCaAddresses.has(addr)) return true;
     const inPool = poolAddresses.has(addr);
     if (!inPool) return true;
     const mc = mention.marketCapUsd;
     if (!(typeof mc === 'number' && mc > 0 && mc < 100_000)) return true;
     // 有任意 pili 监控地址当前持仓即视为有同车 → 保留
     return addressesWithRiders.has(addr);
-  });
+    });
+  } catch (error) {
+    // B5: DexScreener / 同车查询抛错不能让整条推文卡在 'processing'（projector 会
+    // 反复重收造成毒丸放大）。降级为仅保留文本 mention，跳过 market-data 富化。
+    lastError = error instanceof Error ? error.message : 'market_data_failed';
+    console.warn(
+      '[enrichment] market data enrichment failed:',
+      params.tweet.tweetId,
+      lastError
+    );
+    // 降级：保留文本 mention，market-data 字段全部置空。
+    enrichedMentions = withSentiment.map((mention) => ({
+      ...mention,
+      chain: mention.chain ?? null,
+      marketCapUsd: null,
+      marketCapAtPostUsd: null,
+      marketCapAtPostEstimated: false,
+      marketCapSource: null,
+      resolvedAtMs: null,
+    }));
+  }
 
   replaceTwitterTweetTokenMentions({
     tweetId: params.tweet.tweetId,
@@ -545,7 +578,6 @@ async function runEnrichmentForTweet(params: {
   // Translation may fail independently without blocking ticker/MC/quote work.
   return true;
 }
-
 export async function runTweetEnrichmentForTweetIds(params: {
   tweetIds: string[];
   model?: TweetEnrichmentModel;
@@ -587,17 +619,28 @@ export async function runTweetEnrichmentForTweetIds(params: {
   let succeeded = 0;
   let failed = 0;
   for (const tweet of tweets) {
-    const ok = await runEnrichmentForTweet({
-      tweet,
-      model,
-      visionModel: params.visionModel,
-      enqueueQuoteTweetIds: quoteTweetIdsToEnqueue,
-      skipFastPublish: true,
-    });
-    if (ok) {
-      succeeded += 1;
-    } else {
+    // B5: 单条推文抛错不能炸掉整批——否则同批剩余推文全部跳过，且异常冒泡
+    // 会中断调用方（projector）的后续处理。对齐下方引号推文循环的隔离写法。
+    try {
+      const ok = await runEnrichmentForTweet({
+        tweet,
+        model,
+        visionModel: params.visionModel,
+        enqueueQuoteTweetIds: quoteTweetIdsToEnqueue,
+        skipFastPublish: true,
+      });
+      if (ok) {
+        succeeded += 1;
+      } else {
+        failed += 1;
+      }
+    } catch (err) {
       failed += 1;
+      console.warn(
+        '[enrichment] tweet enrich failed:',
+        tweet.tweetId,
+        err instanceof Error ? err.message : err
+      );
     }
   }
 

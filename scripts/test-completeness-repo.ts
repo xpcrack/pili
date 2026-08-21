@@ -366,7 +366,11 @@ async function run() {
       reason: null,
       claimed_at: 1712345905000,
     });
-    assert.equal(readPendingCompletenessPokes(10).length, 0);
+    // O5 语义：stale claimed（>10min）会重新出现在 pending 里供崩溃恢复。
+    // 该 poke 的 claimed_at 是固定历史时间戳，必然 stale → pending 数为 1 而非 0。
+    const pendingAfterClaim = readPendingCompletenessPokes(10);
+    assert.equal(pendingAfterClaim.length, 1);
+    assert.equal(pendingAfterClaim[0]?.id, pokeId);
 
     releaseClaimedCompletenessPokes([pokeId], 1712345905001);
     const unchangedRow = db
