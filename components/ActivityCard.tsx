@@ -286,13 +286,13 @@ export const ActivityCard = memo(function ActivityCard({
       <Card
         data-feed-card
         data-trade-row
-        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        className="group relative cursor-pointer gap-0 rounded-none bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
         <FeedSourceRail color={feedSourceColor} />
         <CardContent className="px-0 py-0">
           <div
-            className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[28px_100px_120px_48px_68px_minmax(72px,1fr)_80px] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
+            className="feed-trade-row grid min-h-10 items-center gap-x-1.5 border-b border-white/[0.035] px-3 py-1.5 text-[12.5px] tabular-nums grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
           >
             <Avatar className="h-7 w-7 shrink-0 md:order-2">
               <AvatarImage src={getUserAvatar(user)} alt={user.name} />
@@ -327,11 +327,11 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="flex min-w-0 items-center gap-1.5 md:order-4">
+            <div className="flex min-w-0 items-center gap-1.5 overflow-hidden md:order-4">
               {canCopyTokenCa ? (
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-1.5 rounded px-0.5 transition-colors hover:bg-yellow-500/10"
+                  className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded px-0.5 transition-colors hover:bg-yellow-500/10"
                   title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -349,7 +349,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                  <span className="min-w-0 truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </button>
               ) : (
                 <>
@@ -359,7 +359,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                  <span className="min-w-0 truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </>
               )}
               {isMergedTradeCard ? (
@@ -456,7 +456,7 @@ export const ActivityCard = memo(function ActivityCard({
       <Card
         data-feed-card
         data-transfer-row
-        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        className="group relative cursor-pointer gap-0 rounded-none bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
         <FeedSourceRail color={feedSourceColor} />
@@ -497,11 +497,11 @@ export const ActivityCard = memo(function ActivityCard({
               </div>
             </div>
 
-            <div className="flex min-w-0 items-center gap-1.5 md:order-4">
+            <div className="flex min-w-0 items-center gap-1.5 overflow-hidden md:order-4">
               {canCopyTokenCa ? (
                 <button
                   type="button"
-                  className="flex min-w-0 items-center gap-1.5 rounded px-0.5 transition-colors hover:bg-yellow-500/10"
+                  className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded px-0.5 transition-colors hover:bg-yellow-500/10"
                   title={`左键复制 ${displayTokenSymbol} CA，右键打开 GMGN: ${tokenCa}`}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -519,7 +519,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                  <span className="min-w-0 truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </button>
               ) : (
                 <>
@@ -529,7 +529,7 @@ export const ActivityCard = memo(function ActivityCard({
                       {displayTokenSymbol.slice(0, 1)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
+                  <span className="min-w-0 truncate font-bold tracking-wide text-yellow-400">{displayTokenSymbol}</span>
                 </>
               )}
             </div>
@@ -670,7 +670,7 @@ export const ActivityCard = memo(function ActivityCard({
       <Card
         data-feed-card
         data-social-row
-        className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+        className="group relative cursor-pointer gap-0 rounded-none bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
         onClick={onClick}
       >
         <FeedSourceRail color={feedSourceColor} />
@@ -794,7 +794,7 @@ export const ActivityCard = memo(function ActivityCard({
   return (
     <Card
       data-feed-card
-      className="group relative cursor-pointer gap-0 rounded-none border-0 bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
+      className="group relative cursor-pointer gap-0 rounded-none bg-transparent py-0 shadow-none ring-0 transition-colors hover:bg-white/[0.035]"
       onClick={onClick}
     >
       <FeedSourceRail color={feedSourceColor} />
