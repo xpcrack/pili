@@ -644,20 +644,29 @@ export default function Home() {
                       <span className="text-zinc-600">仅对已加载的动态生效</span>
                     ) : null}
                   </div>
-                  <div id="feed-list" className="rounded-xl border border-zinc-800/70 bg-zinc-950/70">
+                  <div id="feed-list" className="overflow-x-auto rounded-xl border border-zinc-800/70 bg-zinc-950/70">
                     <div className={searchFilters.typeFilters.trade ? 'min-w-[700px]' : undefined}>
                       {searchFilters.typeFilters.trade ? (
                         <div
-                          className="sticky top-14 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)] grid-cols-[28px_100px_120px_48px_68px_minmax(72px,1fr)_80px] md:grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
+                          className="sticky top-0 z-20 grid min-h-[30px] items-center gap-x-1.5 border-b border-white/[0.07] bg-zinc-950 px-3 text-[11px] text-zinc-500 shadow-[0_1px_0_0_rgba(255,255,255,0.06)] grid-cols-[80px_28px_100px_120px_48px_68px_minmax(72px,1fr)]"
                         >
-                          <div className="md:order-2" />
-                          <div className="md:order-3">人物 / 钱包</div>
-                          <div className="md:order-4">Ticker</div>
-                          <div className="text-right md:order-5">MC</div>
-                          <div className="text-right md:order-6">幅度</div>
                           <button
                             type="button"
-                            className="text-left transition-colors hover:text-zinc-300 md:order-7"
+                            className="order-1 text-right transition-colors hover:text-zinc-300 md:text-left"
+                            onClick={() =>
+                              setTimeDisplayMode((mode) => (mode === 'relative' ? 'absolute' : 'relative'))
+                            }
+                          >
+                            时间
+                          </button>
+                          <div className="order-2" />
+                          <div className="order-3">人物 / 钱包</div>
+                          <div className="order-4">Ticker</div>
+                          <div className="order-5 text-right">MC</div>
+                          <div className="order-6 text-right">幅度</div>
+                          <button
+                            type="button"
+                            className="order-7 text-left transition-colors hover:text-zinc-300"
                             title={
                               tradeValueDisplayMode === 'usd'
                                 ? '当前 USD，点击切换为代币金额'
@@ -669,20 +678,7 @@ export default function Home() {
                           >
                             {tradeValueDisplayMode === 'usd' ? 'USD' : '成交'}
                           </button>
-                          <button
-                            type="button"
-                            className="text-right transition-colors hover:text-zinc-300 md:order-1 md:text-left"
-                            title={
-                              timeDisplayMode === 'relative'
-                                ? '当前相对时间，点击切换为精确时间'
-                                : '当前精确时间，点击切换为相对时间'
-                            }
-                            onClick={() =>
-                              setTimeDisplayMode((mode) => (mode === 'relative' ? 'absolute' : 'relative'))
-                            }
-                          >
-                            时间
-                          </button>
+
                         </div>
                       ) : null}
                       <div>
