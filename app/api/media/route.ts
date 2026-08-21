@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 
-import { isAllowedMediaUrl } from '@/lib/mediaProxy';
+import {
+  fetchAllowedRedirects,
+  isAllowedMediaUrl,
+  normalizeSafeProxyImageContentType,
+  readResponseBodyLimited,
+} from '@/lib/mediaProxy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,23 +31,30 @@ async function fetchMediaBytes(url: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('image') && !contentType.includes('octet-stream')) {
+    const response = await fetchAllowedRedirects(
+      url,
+      {
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        cache: 'no-store',
+        signal: controller.signal,
+      },
+      isAllowedMediaUrl
+    );
+    if (!response?.ok) {
+      await response?.body?.cancel().catch(() => undefined);
       return null;
     }
-    const body = await response.arrayBuffer();
-    if (body.byteLength === 0 || body.byteLength > MAX_BYTES) return null;
+    const contentType = normalizeSafeProxyImageContentType(response.headers.get('content-type'));
+    if (!contentType) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const body = await readResponseBodyLimited(response, MAX_BYTES);
+    if (!body || body.byteLength === 0) return null;
     return {
       body,
-      contentType: contentType.includes('image') ? contentType : 'image/png',
+      contentType,
     };
   } catch {
     return null;
@@ -66,6 +78,7 @@ export async function GET(request: NextRequest) {
       headers: {
         'Content-Type': cached.contentType,
         'Cache-Control': 'public, max-age=3600, s-maxage=3600',
+        'X-Content-Type-Options': 'nosniff',
       },
     });
   }
@@ -93,6 +106,7 @@ export async function GET(request: NextRequest) {
     headers: {
       'Content-Type': media.contentType,
       'Cache-Control': 'public, max-age=3600, s-maxage=3600',
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }

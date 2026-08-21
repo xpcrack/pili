@@ -34,7 +34,7 @@ import { createTelegramGramjsClient } from '@/lib/server/telegramGramjsClient';
 import { readTelegramMtprotoPolicy, sleep } from '@/lib/server/telegramMtprotoPolicy';
 import { listTrackedTwitterUsers, readTwitterCursor } from '@/lib/server/twitterRepo';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
-import { acquireIngestionLease, releaseIngestionLease } from '@/lib/server/twitterRepo';
+import { acquireIngestionLease, heartbeatIngestionLease, releaseIngestionLease } from '@/lib/server/twitterRepo';
 import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 import { refreshCurrentHoldings } from '@/lib/server/holdingsRefreshRuntime';
 import { walletActivityBackfillQueue } from '@/lib/server/walletActivityBackfillQueue';
@@ -57,9 +57,23 @@ const BUSY_RETRY_DELAY_MS = 30_000;
 // ban forever — which also starves live-monitor (shares the same cooldown) and
 // breaks the on-chain feed.
 const GMGN_BAN_BACKOFF_MARGIN_MS = 10_000;
-const HOLDINGS_REFRESH_INTERVAL_MS = process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS
-  ? parseInt(process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS, 10)
-  : 60 * 60_000; // 默认 1 小时
+// B8: 严格校验——parseInt("abc")→NaN 会让刷新条件恒 false（永不刷新），
+// parseInt("1h")→1 会每个 cycle 都全量刷新打爆 GMGN 配额。非法/过小值
+// 回退默认并告警一次。
+const _RAW_HOLDINGS_INTERVAL = Number.parseInt(process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS ?? '', 10);
+const HOLDINGS_REFRESH_INTERVAL_MS =
+  Number.isFinite(_RAW_HOLDINGS_INTERVAL) && _RAW_HOLDINGS_INTERVAL >= 60_000
+    ? _RAW_HOLDINGS_INTERVAL
+    : (() => {
+        if (process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS) {
+          console.warn(
+            `[completeness-worker] invalid PILI_HOLDINGS_REFRESH_INTERVAL_MS=${process.env.PILI_HOLDINGS_REFRESH_INTERVAL_MS}, falling back to 3600000`
+          );
+        }
+        return 60 * 60_000; // 默认 1 小时
+      })();
+// B4: 刷新失败后的短重试间隔（5 分钟），避免等完整周期。
+const HOLDINGS_REFRESH_RETRY_MS = 5 * 60_000;
 
 walletActivityBackfillQueue.setShouldPause(() => countPendingLiveDoorbells() > 0);
 
@@ -334,16 +348,30 @@ export async function runCompletenessMaintenancePass(input: CompletenessMaintena
     };
   }
 
-  const run = createCompletenessRun({
-    reason: input.reason ?? null,
-    trigger: input.trigger,
-    configuredStartMs,
-  });
+  // B1: 租约只在开头 acquire 一次，而 runOnce 内部（MTProto 历史回填等）单步可能
+  // 超过 90s TTL。没有心跳续期时，第二个进入者会在 TTL 过期后抢走租约，造成并发
+  // 回填 + checkpoint 互相覆盖。每 ttl/3 续期一次；丢租约后停止启动新的 source step。
+  const leaseHeartbeatTimer = setInterval(() => {
+    const alive = heartbeatIngestionLease(WORKER_KEY, ownerId, Date.now(), WORKER_LEASE_TTL_MS);
+    if (!alive) {
+      console.warn('[completeness-worker] lease lost during maintenance pass');
+    }
+    leaseAlive = alive;
+  }, Math.floor(WORKER_LEASE_TTL_MS / 3));
+  leaseHeartbeatTimer.unref?.();
 
+  let leaseAlive = true;
+  let run: { id: number } | null = null;
   try {
+    run = createCompletenessRun({
+      reason: input.reason ?? null,
+      trigger: input.trigger,
+      configuredStartMs,
+    });
     const adapters = buildSourceAdapters();
     const service = createCompletenessMaintenanceService({
-      acquireLease: async () => true,
+      // 丢租约后不再启动新的 source step（B1）。
+      acquireLease: async () => leaseAlive,
       releaseLease: async () => {},
       readGlobalState: async () => readCompletenessGlobalState(),
       readSourceStates: async () => readCompletenessSourceStates(),
@@ -397,7 +425,23 @@ export async function runCompletenessMaintenancePass(input: CompletenessMaintena
       ...result,
       busy: false,
     };
+  } catch (error) {
+    // B2: 异常路径必须给 run 一个结束状态，否则 completeness_runs 残留永久
+    // running 记录、全局状态保留错误 activeRunId。收尾本身 best-effort，
+    // 不能吞掉原始错误（worker loop 依赖它做重试/退避）。
+    if (run) {
+      try {
+        finishCompletenessRun(run.id, 'blocked', {
+          status: 'blocked',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } catch (finishError) {
+        console.warn('[completeness-worker] failed to mark run as blocked:', finishError instanceof Error ? finishError.message : finishError);
+      }
+    }
+    throw error;
   } finally {
+    clearInterval(leaseHeartbeatTimer);
     releaseIngestionLease(WORKER_KEY, ownerId);
   }
 }
@@ -422,6 +466,7 @@ interface CompletenessMaintenanceWorkerCycleDeps {
   deleteClaimedCompletenessPokes: typeof deleteClaimedCompletenessPokes;
   runCompletenessMaintenancePass: typeof runCompletenessMaintenancePass;
   readCompletenessSourceStates: typeof readCompletenessSourceStates;
+  runWalletTimelineMaintenance: typeof runWalletTimelineMaintenance;
   now?: () => number;
 }
 
@@ -437,6 +482,7 @@ export function createCompletenessMaintenanceWorkerCycle(
     deleteClaimedCompletenessPokes,
     runCompletenessMaintenancePass,
     readCompletenessSourceStates,
+    runWalletTimelineMaintenance,
     ...overrides,
   };
 
@@ -487,7 +533,7 @@ export function createCompletenessMaintenanceWorkerCycle(
       }
 
       // Rolling 14d wallet timeline: re-enqueue stale monitored addrs, then drain queue
-      const { walletBackfill } = await runWalletTimelineMaintenance();
+      const { walletBackfill } = await deps.runWalletTimelineMaintenance();
 
       // Backfill hit the shared GMGN ban → sleep until it expires so the next
       // drain doesn't immediately renew it (which would lock out live-monitor).
@@ -523,28 +569,39 @@ export const runCompletenessMaintenanceWorkerCycle = createCompletenessMaintenan
 
 export async function runCompletenessMaintenanceWorkerLoop() {
   upsertCompletenessWorkerStatus('running');
+  // B4: 持仓刷新与完整性周期解耦——cycle 抛错时控制流不能跳过持仓刷新，
+  // 否则 Telegram/Twitter 的持续错误会连带饿死持仓数据。失败后用短间隔重试
+  // 而不是等完整 1h 周期。
+  let lastHoldingsAttemptMs = 0;
+  const maybeRefreshHoldings = async () => {
+    const nowMs = Date.now();
+    const dueMs = lastHoldingsRefreshMs > 0 && lastHoldingsRefreshMs === lastHoldingsAttemptMs
+      ? HOLDINGS_REFRESH_RETRY_MS // 上次失败 → 短重试间隔
+      : HOLDINGS_REFRESH_INTERVAL_MS;
+    if (nowMs - lastHoldingsAttemptMs < dueMs) return;
+    lastHoldingsAttemptMs = nowMs;
+    console.log('[completeness-worker] triggering holdings refresh...');
+    try {
+      const result = await refreshCurrentHoldings();
+      lastHoldingsRefreshMs = nowMs; // 仅成功后更新成功时间戳
+      console.log(`[completeness-worker] holdings refresh: ${result.summary.refreshedWalletCount} refreshed, ${result.summary.failedWalletCount} failed`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[completeness-worker] holdings refresh failed: ${message}`);
+    }
+  };
+
   while (true) {
+    let cycleSleepMs = BUSY_RETRY_DELAY_MS;
     try {
       const cycle = await runCompletenessMaintenanceWorkerCycle();
-      await sleep(cycle.sleepMs);
-
-      // 定期刷新持仓数据
-      const nowMs = Date.now();
-      if (nowMs - lastHoldingsRefreshMs >= HOLDINGS_REFRESH_INTERVAL_MS) {
-        lastHoldingsRefreshMs = nowMs;
-        console.log('[completeness-worker] triggering holdings refresh...');
-        try {
-          const result = await refreshCurrentHoldings();
-          console.log(`[completeness-worker] holdings refresh: ${result.summary.refreshedWalletCount} refreshed, ${result.summary.failedWalletCount} failed`);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`[completeness-worker] holdings refresh failed: ${message}`);
-        }
-      }
+      cycleSleepMs = cycle.sleepMs;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       upsertCompletenessWorkerStatus('error', message);
-      await sleep(BUSY_RETRY_DELAY_MS);
     }
+    // 无论 cycle 成功还是抛错，都检查持仓刷新是否到期。
+    await maybeRefreshHoldings();
+    await sleep(cycleSleepMs);
   }
 }

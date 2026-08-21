@@ -37,6 +37,7 @@ async function testBusyCycleReleasesClaimedPokes() {
   const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
+    runWalletTimelineMaintenance: async () => ({ sweep: null, walletBackfill: null }),
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
     readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(1), makePoke(2)],
@@ -75,6 +76,7 @@ async function testFailedCycleReleasesClaimedPokes() {
   const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
+    runWalletTimelineMaintenance: async () => ({ sweep: null, walletBackfill: null }),
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
     readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(3)],
@@ -106,6 +108,7 @@ async function testSuccessfulCycleAcknowledgesClaimedPokes() {
   const deleted: Array<{ ids: number[]; claimedAt: number }> = [];
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
+    runWalletTimelineMaintenance: async () => ({ sweep: null, walletBackfill: null }),
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
     readCompletenessGlobalState: () => null,
     readPendingCompletenessPokes: () => [makePoke(4)],
@@ -146,6 +149,7 @@ async function testContestedPokesDoNotRunOrCleanUpWithoutOwnership() {
   let runPassCalls = 0;
 
   const runCycle = createCompletenessMaintenanceWorkerCycle({
+    runWalletTimelineMaintenance: async () => ({ sweep: null, walletBackfill: null }),
     ensureGlobalStateConfiguredStartMs: () => 1_712_000_000_000,
     readCompletenessGlobalState: () => ({
       configuredStartMs: 1_712_000_000_000,

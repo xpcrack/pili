@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from '@/lib/server/httpCompat';
 import { normalizeTwitterHandle } from '@/lib/userProfile';
+import {
+  fetchAllowedRedirects,
+  normalizeSafeProxyImageContentType,
+  readResponseBodyLimited,
+} from '@/lib/mediaProxy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -78,13 +83,18 @@ function buildFallbackResponse(handle: string) {
     headers: {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': FALLBACK_CACHE_CONTROL,
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }
 
 function isAllowedAvatarSource(url: string) {
   try {
-    const hostname = new URL(url).hostname.toLowerCase();
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const hostname = parsed.hostname.toLowerCase();
     return (
       hostname === 'pbs.twimg.com' ||
       hostname.endsWith('.twimg.com') ||
@@ -108,27 +118,32 @@ async function fetchAvatarBytes(url: string) {
   }, AVATAR_PROBE_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
+    const response = await fetchAllowedRedirects(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+        },
+        cache: 'no-store',
+        signal: controller.signal,
       },
-      cache: 'no-store',
-      signal: controller.signal,
-    });
+      isAllowedAvatarSource
+    );
 
-    if (!response.ok) {
+    if (!response?.ok) {
+      await response?.body?.cancel().catch(() => undefined);
       return null;
     }
 
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('image')) {
+    const contentType = normalizeSafeProxyImageContentType(response.headers.get('content-type'));
+    if (!contentType) {
+      await response.body?.cancel().catch(() => undefined);
       return null;
     }
 
-    const body = await response.arrayBuffer();
-    if (body.byteLength === 0 || body.byteLength > MAX_AVATAR_BYTES) {
+    const body = await readResponseBodyLimited(response, MAX_AVATAR_BYTES);
+    if (!body || body.byteLength === 0) {
       return null;
     }
 
@@ -183,6 +198,7 @@ export async function GET(request: NextRequest) {
       headers: {
         'Content-Type': cached.contentType,
         'Cache-Control': CACHE_CONTROL,
+        'X-Content-Type-Options': 'nosniff',
       },
     });
   }
@@ -213,6 +229,7 @@ export async function GET(request: NextRequest) {
     headers: {
       'Content-Type': avatar.contentType,
       'Cache-Control': CACHE_CONTROL,
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }

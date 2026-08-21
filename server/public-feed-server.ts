@@ -10,12 +10,11 @@ import type { StatusCode } from 'hono/utils/http-status';
 
 import { loadRuntimeEnv } from '@/server/env';
 
-const PUBLIC_PORT = Number.parseInt(process.env.PUBLIC_FEED_PORT || '3014', 10) || 3014;
-const INTERNAL_API = `http://127.0.0.1:${Number.parseInt(process.env.PORT || '3013', 10) || 3013}`;
 const repoRoot = process.cwd();
-const distIndexPath = path.join(repoRoot, 'dist/client/index.html');
-
 loadRuntimeEnv(repoRoot);
+
+const PUBLIC_PORT = Number.parseInt(process.env.PUBLIC_FEED_PORT || '3014', 10) || 3014;
+const distIndexPath = path.join(repoRoot, 'dist/client/index.html');
 
 const PUBLIC_FEED_USER = (process.env.PILI_PUBLIC_FEED_USER || '').trim();
 const PUBLIC_FEED_PASSWORD = (process.env.PILI_PUBLIC_FEED_PASSWORD || '').trim();

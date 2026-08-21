@@ -14,6 +14,25 @@ function run() {
     /["']\.worktrees\/\*\*["']/,
     'eslint config should ignore checked-in .worktrees copies'
   );
+  assert.match(
+    eslintConfig,
+    /["']\.claude\/\*\*["']/,
+    'eslint config should ignore Claude worktree/build copies'
+  );
+
+  assert.equal(existsSync(join(repoRoot, 'vite.config.mts')), true, 'Vite config should use an ESM-aware extension');
+  assert.doesNotMatch(
+    readFileSync(join(repoRoot, 'server/server.ts'), 'utf8'),
+    /vite\.config\.ts/,
+    'server should not point Vite at the old CommonJS-parsed config filename'
+  );
+
+  const serverOnlyShim = readFileSync(join(repoRoot, 'scripts/server-only-shim.cjs'), 'utf8');
+  assert.doesNotMatch(
+    serverOnlyShim,
+    /@typescript-eslint\//,
+    'server-only shim must not reference rules from an uninstalled ESLint plugin'
+  );
 
   const testScript = packageJson.scripts?.test || '';
   assert.match(

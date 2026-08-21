@@ -201,7 +201,7 @@ export async function createServer(options: CreateServerOptions): Promise<Runtim
   });
 
   vite = await createViteServer({
-    configFile: path.join(options.repoRoot, 'vite.config.ts'),
+    configFile: path.join(options.repoRoot, 'vite.config.mts'),
     server: {
       host: '127.0.0.1',
       port: options.port,

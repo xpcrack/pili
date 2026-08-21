@@ -450,15 +450,18 @@ export function queueCompletenessPoke(input: {
 export function readPendingCompletenessPokes(limit: number): CompletenessPokeRow[] {
   const db = getDb();
   const safeLimit = Math.max(1, Math.floor(limit));
+  // O5: 崩溃恢复——claim 后进程崩溃的 pokes（claimed_at 超过 10 分钟）重新可认领，
+  // 否则这批记录会永久滞留 claimed 态。interval sweep 本身是兜底，这只是加速恢复。
+  const staleClaimCutoff = Date.now() - 10 * 60_000;
   const rows = db
     .prepare(
       `SELECT id, trigger, source_hint, reason, created_at, claimed_at
        FROM completeness_pokes
-       WHERE claimed_at IS NULL
+       WHERE claimed_at IS NULL OR claimed_at < ?
        ORDER BY created_at ASC, id ASC
        LIMIT ?`
     )
-    .all(safeLimit) as Array<{
+    .all(staleClaimCutoff, safeLimit) as Array<{
     id: number;
     trigger: string;
     source_hint: string | null;

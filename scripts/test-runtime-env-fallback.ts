@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -11,6 +11,12 @@ function run() {
   const worktreeRoot = path.join(repoRoot, '.worktrees', 'codex-test-env');
   const envKey = 'PILI_RUNTIME_ENV_FALLBACK_TEST';
   const originalValue = process.env[envKey];
+
+  const publicFeedSource = readFileSync(path.join(process.cwd(), 'server/public-feed-server.ts'), 'utf8');
+  const envLoadPosition = publicFeedSource.indexOf('loadRuntimeEnv(repoRoot)');
+  const portReadPosition = publicFeedSource.indexOf('process.env.PUBLIC_FEED_PORT');
+  assert.ok(envLoadPosition >= 0 && portReadPosition >= 0 && envLoadPosition < portReadPosition,
+    'public feed must load .env.local before reading PUBLIC_FEED_PORT');
 
   try {
     mkdirSync(worktreeRoot, { recursive: true });

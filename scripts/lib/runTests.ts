@@ -1,5 +1,6 @@
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 
 interface CliFlags {
@@ -91,6 +92,7 @@ function discoverTests(root: string, filter: string | null, includeLive: boolean
 }
 
 function runOne(file: string, timeoutMs: number, verbose: boolean): Promise<TestResult> {
+  const testDataDir = mkdtempSync(path.join(os.tmpdir(), 'pilipili-test-'));
   const name = path.basename(file).replace(/\.tsx?$/, '');
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -98,6 +100,8 @@ function runOne(file: string, timeoutMs: number, verbose: boolean): Promise<Test
       env: {
         ...process.env,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ./scripts/server-only-shim.cjs`.trim(),
+        PILIPILI_DATA_DIR: testDataDir,
+        PILIPILI_DB_PATH: path.join(testDataDir, 'test.sqlite'),
       },
       stdio: verbose ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'],
     });
@@ -121,6 +125,7 @@ function runOne(file: string, timeoutMs: number, verbose: boolean): Promise<Test
 
     child.on('exit', (exitCode) => {
       clearTimeout(timer);
+      rmSync(testDataDir, { recursive: true, force: true });
       resolve({
         name,
         file,
@@ -134,6 +139,7 @@ function runOne(file: string, timeoutMs: number, verbose: boolean): Promise<Test
 
     child.on('error', (error) => {
       clearTimeout(timer);
+      rmSync(testDataDir, { recursive: true, force: true });
       resolve({
         name,
         file,

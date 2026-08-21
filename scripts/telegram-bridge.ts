@@ -12,6 +12,7 @@ import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
 import {
   readTelegramIngestCursor,
   saveTelegramIngestCursor,
+  touchWorkerHeartbeat,
 } from '@/lib/server/workerStateRepo';
 import { sleep } from '@/lib/timing';
 
@@ -64,7 +65,7 @@ const lease = new WorkerLease({
   status: { set: (state, update) => setStatus(state, update?.lastError ?? null) },
   leaseTtlMs: WORKER_LEASE_TTL_MS,
   heartbeatMs: WORKER_HEARTBEAT_MS,
-  heartbeatStatus: 'running',
+  onHeartbeat: () => touchWorkerHeartbeat(WORKER_KEY),
   waitingStatus: 'waiting-for-lease',
   pokeOnAcquired: {
     trigger: 'recovery',

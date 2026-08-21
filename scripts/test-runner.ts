@@ -30,6 +30,12 @@ function describeResult(result: RunResult): string {
   return `\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
 }
 
+async function testRunnerIsolatesDatabaseByDefault() {
+  const result = await spawnRunner([`--root=${FIXTURES_ROOT}`, '--filter=db-isolation']);
+  assert.equal(result.exitCode, 0, `expected isolated DB fixture to pass${describeResult(result)}`);
+  assert.match(result.stdout, /✓ test-db-isolation/);
+}
+
 async function testPassingFixtureExits0() {
   const result = await spawnRunner([`--root=${FIXTURES_ROOT}`, '--filter=passing']);
   assert.equal(result.exitCode, 0, `expected exit 0${describeResult(result)}`);
@@ -107,6 +113,7 @@ async function testIncludeLiveOptIn() {
 }
 
 async function run() {
+  await testRunnerIsolatesDatabaseByDefault();
   await testPassingFixtureExits0();
   await testFailingFixtureExits1AndReplaysStderr();
   await testCollectAllRunsBothBeforeReportingFailure();

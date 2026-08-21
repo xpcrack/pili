@@ -21,7 +21,7 @@ import {
   heartbeatIngestionLease,
   releaseIngestionLease,
 } from '@/lib/server/twitterRepo';
-import { upsertWorkerStatus } from '@/lib/server/workerStateRepo';
+import { touchWorkerHeartbeat, upsertWorkerStatus } from '@/lib/server/workerStateRepo';
 import { sleep } from '@/lib/timing';
 
 import { loadEnvFile } from '../telegram-bridge-core';
@@ -107,6 +107,7 @@ export interface WorkerStatusUpdate {
 
 export interface WorkerStatusReporter {
   set(status: string, update?: WorkerStatusUpdate): void;
+  touch?(): void;
 }
 
 /** Returns a thin wrapper that always upserts with the same workerKey/workerType. */
@@ -123,6 +124,9 @@ export function createWorkerStatusReporter(
         lastUpdateId: update?.lastUpdateId ?? null,
         lastError: update?.lastError ?? null,
       });
+    },
+    touch() {
+      touchWorkerHeartbeat(workerKey);
     },
   };
 }
@@ -164,6 +168,7 @@ export class WorkerLease {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private leaseLost = false;
   private leaseOwned = false;
+  private heartbeatFailureCount = 0;
   private shuttingDown = false;
   private readonly owner = getWorkerOwner();
 
@@ -210,19 +215,34 @@ export class WorkerLease {
       try {
         const now = Date.now();
         if (!heartbeatIngestionLease(this.opts.workerKey, this.owner, now, ttlMs)) {
+          // B3: 丢租约后必须让状态机一致——leaseOwned 保持 true 会让任何只查
+          // isOwned()/shouldRun() 的调用方在租约已被他人接管后继续消费。
           this.leaseLost = true;
+          this.leaseOwned = false;
+          this.stopHeartbeat();
           this.opts.status.set('lease-lost', { lastError: 'worker lease heartbeat failed' });
           return;
         }
-        if (this.opts.heartbeatStatus) {
+        if (this.opts.status.touch) {
+          this.opts.status.touch();
+        } else if (this.opts.heartbeatStatus) {
           this.opts.status.set(this.opts.heartbeatStatus);
         }
         this.opts.onHeartbeat?.();
       } catch (error) {
+        // 单次 SQLite busy 只记录重试；连续失败接近 TTL 时按租约已失效处理，
+        // 否则旧实例会在整个 TTL 窗口内带着 isOwned()===true 继续跑。
+        this.heartbeatFailureCount += 1;
         console.warn(
-          `[worker-lifecycle] heartbeat failed for ${this.opts.workerKey} (non-fatal):`,
+          `[worker-lifecycle] heartbeat failed for ${this.opts.workerKey} (non-fatal, count=${this.heartbeatFailureCount}):`,
           error instanceof Error ? error.message : error
         );
+        if (this.heartbeatFailureCount * intervalMs >= ttlMs) {
+          this.leaseLost = true;
+          this.leaseOwned = false;
+          this.stopHeartbeat();
+          this.opts.status.set('lease-lost', { lastError: 'worker lease heartbeat repeatedly failed' });
+        }
       }
     }, intervalMs);
   }
@@ -245,6 +265,7 @@ export class WorkerLease {
       if (acquireIngestionLease(this.opts.workerKey, this.owner, now, ttlMs)) {
         this.leaseLost = false;
         this.leaseOwned = true;
+        this.heartbeatFailureCount = 0;
         this.opts.status.set('running');
         if (this.opts.pokeOnAcquired) {
           queueCompletenessPoke(this.opts.pokeOnAcquired);

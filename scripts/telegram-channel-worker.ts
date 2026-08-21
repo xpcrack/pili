@@ -1,6 +1,5 @@
 import { readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
-import { touchWorkerHeartbeat } from '@/lib/server/workerStateRepo';
 import { sleep } from '@/lib/timing';
 
 import './server-only-shim.cjs';
@@ -27,7 +26,6 @@ const lease = new WorkerLease({
     sourceHint: 'telegram-channel',
     reason: 'telegram channel worker lease recovered',
   },
-  onHeartbeat: () => touchWorkerHeartbeat(WORKER_KEY),
   log: (message) => console.log(`${LOG_PREFIX} ${message}`),
 });
 
