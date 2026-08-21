@@ -1205,19 +1205,6 @@ export function readEventsFeed(query: EventFeedQuery) {
   };
 }
 
-export function readEventStats() {
-  const db = getDb();
-  const total = (db.prepare('SELECT COUNT(1) AS count FROM events').get() as { count: number } | undefined)?.count || 0;
-  const sourceRows = db.prepare('SELECT source, COUNT(1) AS count FROM events GROUP BY source').all() as Array<{ source: string; count: number }>;
-  const timeRow = db.prepare('SELECT MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts FROM events').get() as { min_ts: number | null; max_ts: number | null } | undefined;
-  return {
-    total,
-    bySource: sourceRows,
-    earliestTimestamp: timeRow?.min_ts || null,
-    latestTimestamp: timeRow?.max_ts || null,
-  };
-}
-
 let latestActivityCache: { data: Record<string, number>; ts: number; refreshing: boolean } | null = null;
 const LATEST_ACTIVITY_TTL_MS = 30_000;
 

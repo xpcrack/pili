@@ -11,19 +11,19 @@ import {
 function run() {
   assert.deepEqual(
     MAIN_PAGE_ROUTE_PATHS,
-    ['/', '/manage', '/addresses'],
-    '主页面会话缓存必须只覆盖 Feed / 人物 / 地址 三个主路由'
+    ['/'],
+    '主页面会话缓存必须只覆盖 Feed 主路由'
   );
 
   assert.equal(isMainPageRoutePath('/'), true, 'Feed 路由必须被识别为主页面路由');
-  assert.equal(isMainPageRoutePath('/manage'), true, '人物路由必须被识别为主页面路由');
-  assert.equal(isMainPageRoutePath('/addresses'), true, '地址路由必须被识别为主页面路由');
-  assert.equal(isMainPageRoutePath('/tokens'), false, '代币路由不应进入本轮主页面缓存范围');
+  assert.equal(isMainPageRoutePath('/manage'), false, '人物页已下线，不应再被识别为主页面路由');
+  assert.equal(isMainPageRoutePath('/addresses'), false, '地址页已下线，不应再被识别为主页面路由');
+  assert.equal(isMainPageRoutePath('/tokens'), false, '代币路由不应进入主页面缓存范围');
 
   const emptyState = createEmptyMainPageSessionState();
   assert.deepEqual(
     emptyState,
-    { feed: null, manage: null, addresses: null },
+    { feed: null },
     '主页面缓存初始状态必须为空对象，不应默认写入伪数据'
   );
 
