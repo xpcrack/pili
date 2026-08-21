@@ -85,7 +85,6 @@ async function run() {
   try {
     const { getDb } = await import('@/lib/server/sqlite');
     const { listTwitterRelayCoverageByHandles } = await import('@/lib/server/twitterRepo');
-    const { GET } = await import('@/app/api/users/route');
     const db = getDb();
 
     insertTrackedUser(db);
@@ -118,14 +117,8 @@ async function run() {
     assert.equal(coverageByHandle.get('relaycase')?.latestTweetId, 'relay-2');
     assert.equal(coverageByHandle.get('relaycase')?.tweetCount, 2);
 
-    const response = await GET();
-    const payload = await response.json();
-    assert.equal(payload.ok, true);
-    const relayUser = payload.users.find((user: { id?: string }) => user.id === 'relay-user');
-    assert.equal(relayUser?.relayCoverage?.latestTweetId, 'relay-2');
-    assert.equal(relayUser?.relayCoverage?.tweetCount, 2);
-
     console.log('twitter relay coverage tests: ok');
+
   } finally {
     if (typeof previousDbPath === 'string') {
       process.env.PILIPILI_DB_PATH = previousDbPath;

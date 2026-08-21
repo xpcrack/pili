@@ -6,14 +6,11 @@ import { Zap } from 'lucide-react';
 import { AppLink, useAppRouter } from '@/lib/appNavigation';
 import { isMainPageRoutePath } from '@/lib/mainPageSession';
 
-export const TOP_NAV_ACTIVE_VALUES = ['feed', 'ranking', 'manage', 'addresses', 'system'] as const;
+export const TOP_NAV_ACTIVE_VALUES = ['feed', 'ranking'] as const;
 export type TopNavActive = (typeof TOP_NAV_ACTIVE_VALUES)[number];
 export const TOP_NAV_ITEMS = [
   { href: '/', label: 'Feed', active: 'feed' },
   { href: '/ranking', label: '排行', active: 'ranking' },
-  { href: '/manage', label: '人物', active: 'manage' },
-  { href: '/addresses', label: '地址', active: 'addresses' },
-  { href: '/system', label: '系统', active: 'system' },
 ] as const satisfies ReadonlyArray<{
   href: string;
   label: string;

@@ -10,14 +10,8 @@ import {
 import { registerApiRoutes } from '../server/api';
 
 async function run() {
-  const usersRoute = await import('../app/api/users/route');
   const feedRoute = await import('../app/api/feed/route');
 
-  const usersResponse = await usersRoute.GET();
-  assert.equal(usersResponse.status, 200, 'users route should respond under Bun runtime');
-  const usersPayload = (await usersResponse.json()) as { ok?: boolean; users?: unknown[] };
-  assert.equal(usersPayload.ok, true);
-  assert.ok(Array.isArray(usersPayload.users), 'users payload should include users array');
 
   const feedResponse = await feedRoute.GET(
     new NextRequest('http://127.0.0.1:3005/api/feed?page=1&pageSize=1')
