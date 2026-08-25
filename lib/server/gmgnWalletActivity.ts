@@ -254,6 +254,7 @@ export function fetchGmgnWalletActivity(opts: {
 }
 
 export type NormalizedLiveTrade = {
+  dataSource?: 'alchemy' | 'gmgn';
   chain: string;
   wallet: string;
   txHash: string | null;

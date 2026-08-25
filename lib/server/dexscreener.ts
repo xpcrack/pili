@@ -1,6 +1,15 @@
 import 'server-only';
+import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 
 const DEXSCREENER_API = 'https://api.dexscreener.com';
+let proxyAgent: EnvHttpProxyAgent | null = null;
+
+function dexFetch(input: string, init: RequestInit) {
+  const hasProxy = Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+  if (!hasProxy) return fetch(input, init);
+  proxyAgent ??= new EnvHttpProxyAgent();
+  return undiciFetch(input, { ...init, dispatcher: proxyAgent } as never) as unknown as Promise<Response>;
+}
 const MAINSTREAM_SYMBOLS = ['USDC', 'USDT', 'SOL', 'WSOL', 'ETH', 'WETH', 'BNB', 'WBNB'] as const;
 const NATIVE_TOKEN_ADDRESSES: Record<string, string | undefined> = {
   solana: 'So11111111111111111111111111111111111111112',
@@ -196,7 +205,7 @@ export async function fetchFromDexScreener(
 
   try {
     const url = `${DEXSCREENER_API}/latest/dex/tokens/${contractAddress}`;
-    const res = await fetch(url, {
+    const res = await dexFetch(url, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
@@ -253,7 +262,7 @@ export async function resolveDexScreenerChainForAddress(
   if (!trimmed) return null;
   try {
     const url = `${DEXSCREENER_API}/latest/dex/tokens/${trimmed}`;
-    const res = await fetch(url, {
+    const res = await dexFetch(url, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
@@ -321,7 +330,7 @@ export async function batchFetchFromDexScreener(
       const batch = addresses.slice(i, i + 30);
       try {
         const url = `${DEXSCREENER_API}/latest/dex/tokens/${batch.join(',')}`;
-        const res = await fetch(url, {
+        const res = await dexFetch(url, {
           headers: { Accept: 'application/json' },
           signal: AbortSignal.timeout(15_000),
         });

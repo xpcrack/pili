@@ -1,6 +1,7 @@
 /**
  * Live on-chain monitor runtime:
- *   Alchemy doorbell (CF inbox) + XXYY doorbell (SQLite queue) → GMGN activity → Feed.
+ *   Alchemy inbox → direct transfer-leg parsing → Feed (pure Alchemy mode), or
+ *   Alchemy/XXYY doorbells → GMGN activity → Feed (legacy fallback mode).
  *
  * Env:
  *   PILI_LIVE_SOURCE=dual|alchemy|xxyy   (default dual if alchemy inbox configured, else xxyy)
@@ -19,7 +20,8 @@
  */
 import 'server-only';
 
-import { pullAlchemyInbox } from '@/lib/server/alchemyInbox';
+import { parseAlchemyInboxTrades } from '@/lib/server/alchemyDirectTrade';
+import { pullAlchemyInbox, writeAlchemyInboxCursor } from '@/lib/server/alchemyInbox';
 import {
   hasPiliOwnedWebhookIds,
   readPiliAlchemyWebhookIdsFromEnv,
@@ -64,6 +66,25 @@ const DEFAULT_WATCHLIST_EVERY_MS = 15 * 60_000;
 const DEFAULT_LOOKBACK_SEC = 2 * 60 * 60;
 const DEFAULT_DOORBELL_CLAIM_LIMIT = 8;
 const DEFAULT_ACTIVITY_TIMEOUT_MS = 20_000;
+const ALCHEMY_PULL_MAX_ATTEMPTS = 3;
+
+async function pullAlchemyInboxWithRetry(
+  pull: typeof pullAlchemyInbox,
+  options: Parameters<typeof pullAlchemyInbox>[0]
+) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= ALCHEMY_PULL_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await pull(options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < ALCHEMY_PULL_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 
 function readPositiveEnvNumber(env: EnvMap, key: string, fallback: number) {
   const value = Number(env[key] || fallback);
@@ -173,6 +194,7 @@ export type LiveMonitorDeps = {
   fetchActivity?: (
     options: Parameters<typeof fetchGmgnWalletActivityAsync>[0]
   ) => ReturnType<typeof fetchGmgnWalletActivityAsync>;
+  parseDirectTrades?: typeof parseAlchemyInboxTrades;
   upsertTrades?: typeof upsertLiveMonitorTrades;
   /** Trade-triggered per-wallet holdings refresh (debounced). */
   enqueueHoldingsRefresh?: typeof enqueueHoldingsRefresh;
@@ -314,7 +336,9 @@ export async function runLiveMonitorCycle(
     (deps.gmgnCooldownRemainingMs ? () => 1 : getGmgnRecoveryFactor);
   const syncWatchlistFn = deps.syncWatchlist ?? syncAlchemyWatchlist;
   const fetchActivity = deps.fetchActivity ?? fetchGmgnWalletActivityAsync;
+  const parseDirectTrades = deps.parseDirectTrades ?? parseAlchemyInboxTrades;
   const upsertTrades = deps.upsertTrades ?? upsertLiveMonitorTrades;
+  const directAlchemy = (env.PILI_LIVE_TRADE_SOURCE || '').trim().toLowerCase() === 'alchemy';
 
   const users = listUsers();
   const { addresses, byLower } = collectWatchedAddresses(users);
@@ -395,7 +419,7 @@ export async function runLiveMonitorCycle(
     // factor < 1.0 说明 lastBanAt 在 5min 内，继续 hold 门铃不扫，给窗口清空时间。
     // （acquireGmgnGlobalToken 的慢启动已压 RPS，但 live-monitor 的并发请求
     // 仍可能撞窗口。全量跳过 5min 恢复期最干净。）
-    if (banRemainingMs > 0 || recoveryFactor(now()) < 1.0) {
+    if (!directAlchemy && (banRemainingMs > 0 || recoveryFactor(now()) < 1.0)) {
       const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
       xxyyDoorbells = doorbells.length;
       enqueueCooldownHoldings(doorbells);
@@ -417,21 +441,78 @@ export async function runLiveMonitorCycle(
     // advances its cursor after a successful response, so a failed pull is safe
     // to report as partial while the local doorbells continue below.
     let alchemyWallets: string[] = [];
+    let rawAlchemyEvents: Awaited<ReturnType<typeof pullAlchemyInbox>>['raw_events'] = [];
+    let alchemyNextId = 0;
     if (inboxCfg) {
       try {
-        const pulled = await pullInbox({
+        const pulled = await pullAlchemyInboxWithRetry(pullInbox, {
           base_url: inboxCfg.base_url,
           token: inboxCfg.token,
           watched_addresses: addresses,
-          limit: 100,
+          limit: directAlchemy ? 10 : 100,
+          write_cursor: !directAlchemy,
         });
         inboxEvents = pulled.events;
         alchemyWallets = pulled.wallets;
+        rawAlchemyEvents = pulled.raw_events;
+        alchemyNextId = pulled.next_id;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
       }
     } else if (!lastError) {
       lastError = 'missing PILI_ALCHEMY_INBOX_URL / PULL_TOKEN (xxyy doorbells still scanned)';
+    }
+
+    if (directAlchemy) {
+      const minCost = Number(env.PILI_LIVE_MIN_COST_USD || 10);
+      const trades = await parseDirectTrades({
+        events: rawAlchemyEvents,
+        watchedAddresses: addresses,
+        minCostUsd: Number.isFinite(minCost) ? minCost : 10,
+      });
+      const tradesByUser = new Map<string, { user: User; trades: NormalizedLiveTrade[] }>();
+      for (const trade of trades) {
+        const owner = byLower.get(trade.wallet.toLowerCase());
+        if (!owner) continue;
+        const group = tradesByUser.get(owner.user.id) ?? { user: owner.user, trades: [] };
+        group.trades.push(trade);
+        tradesByUser.set(owner.user.id, group);
+      }
+      for (const group of tradesByUser.values()) {
+        const result = upsertTrades({ user: group.user, trades: group.trades });
+        tradesUpserted += result.upserted;
+        for (const trade of group.trades) {
+          try {
+            enqueueRefresh({ address: trade.wallet, chain: trade.chain, userId: group.user.id });
+          } catch (error) {
+            lastError = lastError || (error instanceof Error ? error.message : String(error));
+          }
+        }
+      }
+      walletsHit = new Set(trades.map((trade) => trade.wallet.toLowerCase())).size;
+      if (doorbells.length > 0) {
+        ackDoorbells(doorbells.map((doorbell) => ({
+          walletLower: doorbell.walletLower,
+          leaseToken: doorbell.leaseToken,
+        })));
+      }
+      if (alchemyNextId > 0) writeAlchemyInboxCursor(alchemyNextId);
+      const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
+      return {
+        sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
+        status: lastError ? 'partial' : tradesUpserted > 0 ? 'busy' : 'idle',
+        lastError,
+        summary: {
+          mode,
+          watchlistSynced,
+          inboxEvents,
+          xxyyDoorbells,
+          walletsHit,
+          tradesUpserted,
+          walletsScanned: 0,
+          gmgnErrors: 0,
+        },
+      };
     }
 
     const targets = buildScanTargets({

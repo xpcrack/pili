@@ -64,6 +64,14 @@ function getKeywordTerms(keyword: string) {
     .filter(Boolean);
 }
 
+/** 空格 = 且；`|`/`｜` 分隔的组之间 = 或（每组内仍为且）。 */
+function getKeywordGroups(keyword: string) {
+  return keyword
+    .split(/[|｜]/)
+    .map((group) => getKeywordTerms(group))
+    .filter((terms) => terms.length > 0);
+}
+
 export function getRemoteFeedSearchKeyword(keyword: string) {
   const terms = getKeywordTerms(keyword);
   if (terms.length !== 1) {
@@ -71,7 +79,12 @@ export function getRemoteFeedSearchKeyword(keyword: string) {
   }
 
   const [term] = terms;
-  if (term.startsWith('ticker:') || term.startsWith('ca:')) {
+  if (
+    term.startsWith('ticker:') ||
+    term.startsWith('ca:') ||
+    term.includes('|') ||
+    term.includes('｜')
+  ) {
     return '';
   }
 
@@ -136,14 +149,14 @@ function getKeywordHaystack(item: FeedItem) {
 }
 
 function matchesKeyword(item: FeedItem, keyword: string) {
-  const terms = getKeywordTerms(keyword);
-  if (terms.length === 0) return true;
+  const groups = getKeywordGroups(keyword);
+  if (groups.length === 0) return true;
 
   const haystack = getKeywordHaystack(item);
   const tickerValues = collectTickerValues(item);
   const caValues = collectCaValues(item);
 
-  return terms.some((term) => {
+  const matchesTerm = (term: string) => {
     if (term.startsWith('ticker:')) {
       const tickerTerm = normalizeText(term.slice('ticker:'.length));
       if (!tickerTerm) return false;
@@ -157,7 +170,10 @@ function matchesKeyword(item: FeedItem, keyword: string) {
     }
 
     return haystack.some((value) => value.includes(term));
-  });
+  };
+
+  // 任一组全部命中即可（组内且，组间或）
+  return groups.some((terms) => terms.every(matchesTerm));
 }
 
 function matchesTradeThreshold(

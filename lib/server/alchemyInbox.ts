@@ -3,10 +3,19 @@
  * Cursor is pili-local (app_state) so newone and pili do not steal progress.
  */
 import 'server-only';
+import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 
 import { getDb } from '@/lib/server/sqlite';
 
 export const PILI_ALCHEMY_INBOX_CURSOR_KEY = 'alchemy:inbox:pili';
+let proxyAgent: EnvHttpProxyAgent | null = null;
+
+function inboxFetch(input: URL, init: RequestInit) {
+  const hasProxy = Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+  if (!hasProxy) return fetch(input, init);
+  proxyAgent ??= new EnvHttpProxyAgent();
+  return undiciFetch(input, { ...init, dispatcher: proxyAgent } as never) as unknown as Promise<Response>;
+}
 
 export type AlchemyInboxEvent = {
   id: number;
@@ -110,7 +119,7 @@ export async function pullAlchemyInbox(opts: {
   pullUrl.searchParams.set('after', String(sinceId));
   pullUrl.searchParams.set('limit', String(opts.limit ?? 100));
 
-  const response = await fetch(pullUrl, {
+  const response = await inboxFetch(pullUrl, {
     headers: { Authorization: `Bearer ${opts.token}` },
     signal: AbortSignal.timeout(20_000),
   });
