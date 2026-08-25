@@ -504,7 +504,7 @@ export default function Home() {
                     setSearchFilters((current) => ({ ...current, keyword: event.target.value }));
                     resetExpandStateForSearch();
                   }}
-                  placeholder="搜索人物名字、推文内容、CA 或地址"
+                  placeholder="搜索人物名字、推文内容、CA 或地址（空格=且，|=或）"
                   className="h-9 border-zinc-700 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500"
                 />
                 <button

@@ -10,7 +10,8 @@ tracked_users
 XXYY TG（bridge）→ 只写审计 + live_doorbell_queue（不解析买卖腿）
   ↘
 runtime task `live-monitor` 合并门铃
-  → GMGN portfolio activity（唯一成交解析）
+  → Alchemy payload 直解析 transfer legs（实时主路径）
+  → DexScreener 补价格 / 市值
   → events id = live-monitor:{chain}:{wallet}:{tx}:{token}
 ```
 
@@ -19,6 +20,7 @@ runtime task `live-monitor` 合并门铃
 | 变量 | 说明 |
 |------|------|
 | `PILI_LIVE_SOURCE` | `dual` / `alchemy` / `xxyy`。未设时：有 inbox url+token → dual，否则 xxyy |
+| `PILI_LIVE_TRADE_SOURCE` | `alchemy` 时直接解析 Alchemy payload，不调用 GMGN realtime activity |
 | `PILI_XXYY_FEED` | `doorbell`（默认，alchemy/dual）/ `project`（旧 XXYY 直写 feed）/ `off` |
 | `PILI_LIVE_DOORBELL_DEBOUNCE_MS` | XXYY 门铃 trailing debounce，默认 2000 |
 | `PILI_LIVE_XXYY_CHAINS` | 仅 `PILI_XXYY_FEED=project` 时生效；alchemy 默认 `robinhood` |
@@ -43,7 +45,7 @@ Address Activity 是否支持 RH 以 **Alchemy Dashboard** 为准。
 
 1. dual + 不设 `PILI_LIVE_XXYY_CHAINS` → 双写对比  
 2. dual + `PILI_LIVE_XXYY_CHAINS=robinhood` → 非 RH 只靠 live  
-3. alchemy + RH webhook 或 RH 仍 xxyy  
+3. `PILI_LIVE_SOURCE=alchemy` + `PILI_LIVE_TRADE_SOURCE=alchemy` + `PILI_XXYY_FEED=off` → 纯 Alchemy 实时 Feed  
 4. 回滚：`PILI_LIVE_SOURCE=xxyy`
 
 **切源前先跑覆盖率**（见 [live-vs-xxyy-coverage.md](./live-vs-xxyy-coverage.md)）：

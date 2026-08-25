@@ -480,7 +480,7 @@ export function createDefaultRuntimeTasks(
   tasks.push(
     createLoopTask({
       key: 'live-monitor',
-      label: 'Live Monitor (Alchemy+GMGN)',
+      label: 'Live Monitor',
       cycle: async () => {
         const result = await runLiveMonitorCycleImpl();
         return {

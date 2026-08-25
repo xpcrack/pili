@@ -14,6 +14,7 @@ import type { Activity, User } from '@/types';
 
 export const LIVE_MONITOR_ID_PREFIX = 'live-monitor:';
 export const LIVE_MONITOR_INGEST_SOURCE = 'live-monitor-alchemy-gmgn';
+export const ALCHEMY_DIRECT_INGEST_SOURCE = 'live-monitor-alchemy';
 
 export function buildLiveMonitorActivityId(params: {
   chain: string;
@@ -102,6 +103,7 @@ export function buildLiveMonitorActivity(params: {
   resolvePositionDelta?: boolean;
 }): Activity {
   const { user, trade } = params;
+  const isAlchemyDirect = trade.dataSource === 'alchemy';
   const { action, actionLabel, actionVariant } = sideToAction(trade.side, trade.isOpenOrClose);
   const quoteAmount =
     typeof trade.costUsd === 'number' && Number.isFinite(trade.costUsd) ? trade.costUsd : null;
@@ -163,10 +165,14 @@ export function buildLiveMonitorActivity(params: {
     title: '链上监控交易',
     metadata: {
       ...base.metadata,
-      liveSource: 'alchemy-gmgn',
+      liveSource: isAlchemyDirect ? 'alchemy' : 'alchemy-gmgn',
       monitorTxAggregateKey: liveId,
       // Prefer GMGN MC when present; never claim telegram-monitor-exact.
-      marketCapAtTxSource: marketCapUsd != null ? 'gmgn-activity' : undefined,
+      marketCapAtTxSource: marketCapUsd != null
+        ? isAlchemyDirect
+          ? 'dexscreener'
+          : 'gmgn-activity'
+        : undefined,
       tradeAmountUsdAtTx: quoteAmount ?? base.metadata.tradeAmountUsdAtTx,
       ...(positionDeltaRatio !== undefined ? { positionDeltaRatio } : {}),
       ...(params.skipImportanceScore ? { importance: { ...BACKFILL_IMPORTANCE_STUB } } : {}),
@@ -212,7 +218,10 @@ export function upsertLiveMonitorTrades(params: {
       resolvePositionDelta: params.resolvePositionDelta === true,
     }),
   }));
-  upsertEventsFromFeedRows(rows, LIVE_MONITOR_INGEST_SOURCE);
+  const ingestSource = params.trades.every((trade) => trade.dataSource === 'alchemy')
+    ? ALCHEMY_DIRECT_INGEST_SOURCE
+    : LIVE_MONITOR_INGEST_SOURCE;
+  upsertEventsFromFeedRows(rows, ingestSource);
   return { upserted: rows.length };
 }
 

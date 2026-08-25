@@ -185,9 +185,9 @@ export interface Activity {
     coHitAddresses?: string[];
     marketCapAtTxUsd?: number;
     tradeAmountUsdAtTx?: number;
-    marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot' | 'gmgn-activity';
-    /** Alchemy doorbell + GMGN enrichment (not XXYY TG). */
-    liveSource?: 'alchemy-gmgn';
+    marketCapAtTxSource?: 'telegram-monitor-exact' | 'estimated' | 'snapshot' | 'gmgn-activity' | 'dexscreener';
+    /** Live trade detail source. */
+    liveSource?: 'alchemy' | 'alchemy-gmgn';
     marketCapAtTxEstimated?: boolean;
     /** 相对仓位变化：0.348 = +34.8%。暂无数据时 Feed 幅度列显示「待补」。 */
     positionDeltaRatio?: number;

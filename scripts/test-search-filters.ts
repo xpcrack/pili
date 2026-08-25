@@ -155,7 +155,31 @@ function run() {
       keyword: 'alice 0xabcdef',
     }),
     true,
-    'keyword search should match user name or token address'
+    'multi-term keyword search should require every term to match (AND semantics)'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(tradeItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: 'alice nosuchterm',
+    }),
+    false,
+    'multi-term keyword search should not match when any term is missing'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(tradeItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: 'nosuchterm | alice',
+    }),
+    true,
+    'OR groups should match when any single group fully matches'
+  );
+  assert.equal(
+    matchesFeedSearchFilters(tradeItem, {
+      ...DEFAULT_FEED_SEARCH_FILTERS,
+      keyword: 'alice nosuchterm | nosuchterm2 nosuchterm3',
+    }),
+    false,
+    'OR groups should not match when every group has a missing term'
   );
   assert.equal(
     matchesFeedSearchFilters(noisyBlockchainItem, {
@@ -239,7 +263,7 @@ function run() {
   assert.equal(
     getRemoteFeedSearchKeyword('alice 0xabcdef'),
     '',
-    'multi-term keyword searches should stay client-side to preserve OR-style matching semantics'
+    'multi-term keyword searches should stay client-side for AND matching'
   );
   assert.equal(
     getRemoteFeedSearchKeyword('ticker:abc'),

@@ -41,6 +41,8 @@ export function readXxyyAllowedChains(env: EnvMap = process.env): Set<string> | 
   if (mode === 'dual') {
     const raw = (env.PILI_LIVE_XXYY_CHAINS || '').trim().toLowerCase();
     if (!raw) return null;
+    if (raw === '*' || raw === 'all') return null;
+    if (raw === 'none' || raw === '-') return new Set();
     return new Set(
       raw
         .split(',')
