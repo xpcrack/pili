@@ -24,7 +24,10 @@ function makeRequest(url: string, method: string, body?: unknown) {
   return new NextRequest(url, {
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers:
+      body === undefined
+        ? undefined
+        : { 'content-type': 'application/json', 'x-admin-token': 'test-admin-token' },
   });
 }
 
@@ -79,6 +82,9 @@ async function run() {
 
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
+  // admin auth 现为 fail-closed（默认拒绝无 token 请求），测试显式配置 token
+  const previousAdminToken = process.env.ADMIN_API_TOKEN;
+  process.env.ADMIN_API_TOKEN = 'test-admin-token';
 
   try {
     const notifier = await import('../lib/server/bidSyncNotifier');
@@ -160,6 +166,12 @@ async function run() {
       delete process.env.PILIPILI_DATA_DIR;
     } else {
       process.env.PILIPILI_DATA_DIR = previousDataDir;
+    }
+
+    if (previousAdminToken === undefined) {
+      delete process.env.ADMIN_API_TOKEN;
+    } else {
+      process.env.ADMIN_API_TOKEN = previousAdminToken;
     }
 
     rmSync(tempDir, { recursive: true, force: true });
