@@ -39,9 +39,12 @@ export function readAdminTokenFromRequest(request: NextRequest) {
 export function verifyAdminRequest(request: NextRequest) {
   const expected = getConfiguredAdminToken();
 
+  // fail-closed：未配置 ADMIN_API_TOKEN 时默认拒绝。开发便利需显式 opt-in
+  // （设 ALLOW_INSECURE_LOCAL_ADMIN=true），不再默认放行——生产 pm2 若漏设
+  // NODE_ENV=production，管理面曾等于裸奔。
   const allowInsecureLocalAdmin =
     process.env.NODE_ENV !== 'production' &&
-    normalizeEnvValue(process.env.ALLOW_INSECURE_LOCAL_ADMIN || 'true') !== 'false';
+    normalizeEnvValue(process.env.ALLOW_INSECURE_LOCAL_ADMIN || 'false') === 'true';
 
   if (!expected) {
     if (allowInsecureLocalAdmin) {

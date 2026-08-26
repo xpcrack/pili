@@ -214,10 +214,17 @@ function sleepSync(ms: number) {
  * `busy_timeout` alone does not cover write-write upgrade conflicts
  * (SQLITE_BUSY_SNAPSHOT) in WAL mode, and this repo runs 4+ writer processes
  * against one file — so every write outside a transaction should go through
- * here. Backoff is exponential with jitter, capped at 8s per attempt.
+ * here. Backoff is exponential with jitter, capped at 8s per attempt
+ * (web processes: 2 attempts / 800ms cap — see inside).
  */
 export function withSqliteBusyRetry<T>(fn: () => T, opts?: { attempts?: number; label?: string }): T {
-  const attempts = Math.max(1, opts?.attempts ?? SQLITE_INIT_BUSY_ATTEMPTS);
+  // Web 进程收敛退避：sleepSync 会冻住事件循环，8 次 × 指数退避最坏可累计 ~20s，
+  // 拖垮所有并发请求（历史上手机端"网络错误"即此模式）。web 进程只试 2 次、
+  // 单次上限 800ms；长退避留给后台 worker（busy_timeout=8s 兜底）。
+  const isWebProcess = process.env.PILIPILI_WEB_PROCESS === 'true';
+  const defaultAttempts = isWebProcess ? 2 : SQLITE_INIT_BUSY_ATTEMPTS;
+  const maxDelayMs = isWebProcess ? 800 : 8_000;
+  const attempts = Math.max(1, opts?.attempts ?? defaultAttempts);
   const label = opts?.label || 'sqlite';
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -228,7 +235,7 @@ export function withSqliteBusyRetry<T>(fn: () => T, opts?: { attempts?: number; 
       if (!isSqliteBusyError(error) || attempt >= attempts) {
         throw error;
       }
-      const delayMs = Math.min(8_000, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 150);
+      const delayMs = Math.min(maxDelayMs, 200 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 150);
       console.warn(
         `[sqlite] ${label} busy (attempt ${attempt}/${attempts}), retry in ${delayMs}ms:`,
         error instanceof Error ? error.message : error
