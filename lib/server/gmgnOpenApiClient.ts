@@ -803,6 +803,7 @@ export class GmgnOpenApiClient {
     direction?: string;
     hide_closed?: boolean | string;
     hide_airdrop?: boolean | string;
+    signal?: AbortSignal;
   }) {
     const q: GmgnQuery = {
       chain: params.chain,
@@ -820,7 +821,7 @@ export class GmgnOpenApiClient {
           : 'false',
     };
     if (params.cursor) q.cursor = params.cursor;
-    return this.requestSigned('GET', '/v1/user/wallet_holdings', q);
+    return this.requestSigned('GET', '/v1/user/wallet_holdings', q, params.signal);
   }
 }
 

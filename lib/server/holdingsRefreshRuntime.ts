@@ -432,6 +432,7 @@ async function fetchRobinhoodHoldingsWithOpenApi(
         direction: 'desc',
         hide_closed: true,
         hide_airdrop: false,
+        signal,
       });
       const page = mapOpenApiHoldingsPayload(raw);
       assets.push(...page.assets);
