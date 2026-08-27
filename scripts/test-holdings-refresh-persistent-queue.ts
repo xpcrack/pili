@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import './server-only-shim.cjs';
 
 async function main() {
+  const gmgnClientSource = readFileSync(
+    path.join(process.cwd(), 'lib/server/gmgnOpenApiClient.ts'),
+    'utf8'
+  );
+  assert.match(
+    gmgnClientSource,
+    /walletHoldings\([\s\S]*?signal\?: AbortSignal[\s\S]*?requestSigned\([^;]*params\.signal\)/,
+    'walletHoldings must propagate AbortSignal to the signed request'
+  );
+  const queueSource = readFileSync(
+    path.join(process.cwd(), 'lib/server/holdingsRefreshQueue.ts'),
+    'utf8'
+  );
+  assert.match(queueSource, /signal:\s*AbortSignal\.timeout\(jobTimeoutMs\)/);
+
   const tempDir = mkdtempSync(path.join(tmpdir(), 'pilipili-holdings-queue-'));
   process.env.PILIPILI_DATA_DIR = tempDir;
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
@@ -152,6 +167,79 @@ async function main() {
       ['solana:walletnativelane', 'robinhood:walletgmgnlane'],
       'GMGN lane must claim only Robinhood work'
     );
+
+    // Live doorbells are a continuous stream in production. They may share
+    // GMGN pacing, but must not freeze the independent Robinhood holdings
+    // consumer forever (76 due jobs accumulated behind this gate).
+    enqueueHoldingsRefresh({ address: 'WalletDoorbellBacklog', chain: 'robinhood', userId: 'u1' });
+    db.prepare(
+      `UPDATE holdings_refresh_jobs SET due_at_ms = 140000
+       WHERE wallet_chain = 'robinhood:walletdoorbellbacklog'`
+    ).run();
+    await runHoldingsRefreshQueueCycle({
+      db,
+      now: () => 140000,
+      provider: 'gmgn',
+      cooldownRemainingMs: () => 0,
+      pendingLiveDoorbells: () => 44,
+      refreshWallet: laneRefresh,
+    });
+    assert.equal(
+      laneCalls.at(-1),
+      'robinhood:walletdoorbellbacklog',
+      'pending live doorbells must not starve Robinhood holdings refresh'
+    );
+
+    enqueueHoldingsRefresh({ address: 'WalletDoorbellPaced', chain: 'robinhood', userId: 'u1' });
+    db.prepare(
+      `UPDATE holdings_refresh_jobs SET due_at_ms = 140001
+       WHERE wallet_chain = 'robinhood:walletdoorbellpaced'`
+    ).run();
+    const callsBeforePaced = laneCalls.length;
+    await runHoldingsRefreshQueueCycle({
+      db,
+      now: () => 140001,
+      provider: 'gmgn',
+      cooldownRemainingMs: () => 0,
+      pendingLiveDoorbells: () => 44,
+      refreshWallet: laneRefresh,
+    });
+    assert.equal(laneCalls.length, callsBeforePaced, 'doorbell backlog must pace holdings requests');
+    await runHoldingsRefreshQueueCycle({
+      db,
+      now: () => 200000,
+      provider: 'gmgn',
+      cooldownRemainingMs: () => 0,
+      pendingLiveDoorbells: () => 44,
+      refreshWallet: laneRefresh,
+    });
+    assert.equal(laneCalls.at(-1), 'robinhood:walletdoorbellpaced');
+
+    enqueueHoldingsRefresh({ address: 'WalletHungProvider', chain: 'robinhood', userId: 'u1' });
+    db.prepare(
+      `UPDATE holdings_refresh_jobs SET due_at_ms = 200001
+       WHERE wallet_chain = 'robinhood:wallethungprovider'`
+    ).run();
+    const hung = await runHoldingsRefreshQueueCycle({
+      db,
+      now: (() => {
+        let calls = 0;
+        return () => (calls++ === 0 ? 200001 : 200010);
+      })(),
+      provider: 'gmgn',
+      cooldownRemainingMs: () => 0,
+      pendingLiveDoorbells: () => 0,
+      jobTimeoutMs: 5,
+      refreshWallet: async () => new Promise(() => {}),
+    });
+    assert.equal(hung.status, 'error', 'hung provider must become an explicit error');
+    assert.match(hung.lastError ?? '', /timed out/i);
+    const hungJob = db.prepare(
+      `SELECT lease_token, attempts, last_error FROM holdings_refresh_jobs
+       WHERE wallet_chain = 'robinhood:wallethungprovider'`
+    ).get() as { lease_token: string | null; attempts: number; last_error: string | null };
+    assert.equal(hungJob.lease_token, null, 'timed-out job must release its lease');
+    assert.equal(hungJob.attempts, 1);
 
     // min-age guard: a wallet refreshed within HOLDINGS_MIN_REFRESH_AGE_MS must
     // not be re-claimed even when its job is due — caps event-driven refresh rate.

@@ -144,13 +144,6 @@ export function createHoldingsRefreshQueue(deps: HoldingsRefreshQueueDeps = {}) 
       return;
     }
 
-    if (isRobinhoodChain(job.chain) && countPendingLiveDoorbells() > 0) {
-      // Robinhood holdings also use GMGN. Let live activity enrichment finish
-      // first, but do not block OKX-backed EVM/Solana balance refreshes.
-      enqueue(job);
-      return;
-    }
-
     inFlight.add(key);
     active += 1;
     try {
@@ -260,6 +253,11 @@ export function createHoldingsRefreshQueue(deps: HoldingsRefreshQueueDeps = {}) 
 
 const PERSISTENT_QUEUE_POLL_MS = 1_000;
 const PERSISTENT_QUEUE_LEASE_MS = 5 * 60_000;
+const DOORBELL_HOLDINGS_FAIRNESS_MS = 60_000;
+const HOLDINGS_JOB_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.HOLDINGS_JOB_TIMEOUT_MS || 30_000)
+);
 const ROSTER_SEED_INTERVAL_MS = 5 * 60_000;
 const EVENT_PRIORITY = 100;
 const SCHEDULE_PRIORITY = 0;
@@ -509,7 +507,9 @@ export async function runHoldingsRefreshQueueCycle(options: {
   provider?: HoldingsRefreshProvider;
   refreshWallet?: (params: RefreshWalletHoldingsParams) => Promise<RefreshWalletHoldingsResult>;
   cooldownRemainingMs?: (nowMs: number) => number;
+  /** Test seam retained for callers; doorbell backlog no longer blocks holdings. */
   pendingLiveDoorbells?: () => number;
+  jobTimeoutMs?: number;
 } = {}) {
   const db = options.db ?? getDb();
   const now = options.now ?? Date.now;
@@ -542,8 +542,16 @@ export async function runHoldingsRefreshQueueCycle(options: {
   if (isRobinhoodChain(job.chain)) {
     const cooldownMs = (options.cooldownRemainingMs ?? gmgnQueueCooldownRemainingMs)(nowMs);
     const pendingDoorbells = (options.pendingLiveDoorbells ?? countPendingLiveDoorbells)();
-    if (cooldownMs > 0 || pendingDoorbells > 0) {
-      const retryAt = nowMs + Math.max(PERSISTENT_QUEUE_POLL_MS, cooldownMs || 30_000);
+    const latestSuccess = db.prepare(
+      `SELECT MAX(last_success_at_ms) AS at
+       FROM holdings_refresh_jobs WHERE chain = 'robinhood'`
+    ).get() as { at: number | null };
+    const fairnessRemainingMs = pendingDoorbells > 0 && latestSuccess.at != null
+      ? Math.max(0, Number(latestSuccess.at) + DOORBELL_HOLDINGS_FAIRNESS_MS - nowMs)
+      : 0;
+    if (cooldownMs > 0 || fairnessRemainingMs > 0) {
+      const retryDelayMs = Math.max(cooldownMs, fairnessRemainingMs, PERSISTENT_QUEUE_POLL_MS);
+      const retryAt = nowMs + retryDelayMs;
       db.prepare(
         `UPDATE holdings_refresh_jobs
          SET due_at_ms = ?, lease_token = NULL, lease_until_ms = NULL, updated_at_ms = ?
@@ -560,21 +568,34 @@ export async function runHoldingsRefreshQueueCycle(options: {
           queueTotal: stats.total,
           queueDue: stats.due ?? 0,
         },
-        lastError: cooldownMs > 0 ? `GMGN cooldown ${cooldownMs}ms` : 'live doorbells pending',
+        lastError: cooldownMs > 0
+          ? `GMGN cooldown ${cooldownMs}ms`
+          : `live doorbell fairness ${fairnessRemainingMs}ms`,
       };
     }
   }
 
   const refreshWallet = options.refreshWallet ?? refreshWalletHoldings;
+  const jobTimeoutMs = Math.max(1, options.jobTimeoutMs ?? HOLDINGS_JOB_TIMEOUT_MS);
   let result: RefreshWalletHoldingsResult;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    result = await refreshWallet({
-      address: job.address,
-      chain: job.chain,
-      userId: job.user_id,
-      db,
-      fetchTokenLiquidity: false,
-    });
+    result = await Promise.race([
+      refreshWallet({
+        address: job.address,
+        chain: job.chain,
+        userId: job.user_id,
+        db,
+        signal: AbortSignal.timeout(jobTimeoutMs),
+        fetchTokenLiquidity: false,
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`holdings refresh timed out after ${jobTimeoutMs}ms`)),
+          jobTimeoutMs,
+        );
+      }),
+    ]);
   } catch (error) {
     result = {
       status: 'error',
@@ -584,6 +605,8 @@ export async function runHoldingsRefreshQueueCycle(options: {
       totalAssetUsd: null,
       lastError: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 
   const finishedAt = now();
