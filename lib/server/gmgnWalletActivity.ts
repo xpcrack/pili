@@ -272,6 +272,8 @@ export type NormalizedLiveTrade = {
    */
   isOpenOrClose: boolean | null;
   eventTimeMs: number;
+  /** For Alchemy direct buys, the same-tx quote/native payment that proves it was a swap. */
+  paymentEvidence?: 'quote_transfer' | 'native_transfer';
 };
 
 /**

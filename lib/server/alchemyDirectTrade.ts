@@ -31,6 +31,7 @@ type RawTransfer = {
   amount: number;
   txHash: string | null;
   symbol: string | null;
+  native?: boolean;
 };
 
 function text(value: unknown): string | null {
@@ -61,14 +62,15 @@ function evmTransfers(eventNode: Record<string, unknown>): RawTransfer[] {
     const rawContract = (item.rawContract || {}) as Record<string, unknown>;
     const token = text(rawContract.address);
     const amount = number(item.value);
-    if (!token || amount == null || amount <= 0) continue;
+    if (amount == null || amount <= 0) continue;
     out.push({
       from: text(item.fromAddress),
       to: text(item.toAddress),
-      token: token.toLowerCase(),
+      token: token?.toLowerCase() || '',
       amount,
       txHash: text(item.hash),
       symbol: text(item.asset),
+      native: !token,
     });
   }
   return out;
@@ -138,7 +140,17 @@ export async function parseAlchemyInboxTrades(params: {
       const fromWallet = transfer.from ? watched.get(transfer.from.toLowerCase()) : null;
       const wallet = toWallet ?? fromWallet;
       const side = toWallet ? 'buy' : fromWallet ? 'sell' : null;
-      if (!wallet || !side || !transfer.txHash || isQuoteToken(transfer.token, transfer.symbol)) continue;
+      if (!wallet || !side || !transfer.txHash) continue;
+      // Quote/native legs prove that an inbound token was purchased.  An
+      // inbound non-quote token with no same-wallet payment is an airdrop,
+      // treasury distribution, bridge payout, etc., not a buy.
+      if (!transfer.token || isQuoteToken(transfer.token, transfer.symbol)) {
+        continue;
+      }
+      const paymentEvidence = side === 'buy'
+        ? sameTxPaymentEvidence(transfers, transfer, wallet)
+        : null;
+      if (side === 'buy' && !paymentEvidence) continue;
 
       const marketKey = `${chain}:${chain === 'solana' ? transfer.token : transfer.token.toLowerCase()}`;
       let market = marketCache.get(marketKey);
@@ -173,9 +185,30 @@ export async function parseAlchemyInboxTrades(params: {
         marketCapUsd: market && market.marketCap > 0 ? market.marketCap : null,
         isOpenOrClose: null,
         eventTimeMs: parseInboxTimestamp(inboxEvent.received_at),
+        ...(paymentEvidence ? { paymentEvidence } : {}),
       });
     }
   }
 
   return [...merged.values()].sort((left, right) => left.eventTimeMs - right.eventTimeMs);
+}
+
+function sameTxPaymentEvidence(
+  transfers: RawTransfer[],
+  target: RawTransfer,
+  wallet: string,
+): 'quote_transfer' | 'native_transfer' | null {
+  const tx = target.txHash?.toLowerCase();
+  for (const leg of transfers) {
+    if (leg === target || leg.from?.toLowerCase() !== wallet.toLowerCase()) continue;
+    if (tx && leg.txHash?.toLowerCase() !== tx) continue;
+    if (leg.native) return 'native_transfer';
+    if (
+      isQuoteToken(leg.token, leg.symbol) ||
+      /^(BNB|WBNB|ETH|WETH|SOL|WSOL|USDC|USDT|DAI|BUSD|FDUSD)$/i.test(leg.symbol || '')
+    ) {
+      return 'quote_transfer';
+    }
+  }
+  return null;
 }
