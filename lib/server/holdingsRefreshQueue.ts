@@ -12,6 +12,7 @@ import {
   type RefreshWalletHoldingsResult,
 } from '@/lib/server/holdingsRefreshRuntime';
 import { countPendingLiveDoorbells } from '@/lib/server/liveDoorbellQueue';
+import { pushBark } from '@/lib/server/barkNotify';
 import {
   gmgnConfiguredAccountBucketKeys,
   gmgnCooldownRemainingMs,
@@ -22,6 +23,8 @@ import { getDb, type DbHandle } from '@/lib/server/sqlite';
 const DEFAULT_DEBOUNCE_MS = 10_000;
 const DEFAULT_MAX_CONCURRENT = 1;
 const DEFAULT_TRANSIENT_RETRY_DELAY_MS = 1_000;
+/** 死信阈值：连续失败 N 次后标 dead_letter，退出退避循环（2026-08-28 死信机制）。 */
+const MAX_REFRESH_ATTEMPTS_BEFORE_DEAD_LETTER = 10;
 const MAX_TRANSIENT_RETRIES = 1;
 const DEFAULT_MIN_REFRESH_AGE_MS = 120_000;
 
@@ -298,6 +301,13 @@ function ensurePersistentQueue(db: DbHandle) {
   } catch {
     // Existing/current schema already has it.
   }
+  try {
+    // 死信状态（2026-08-28）：'active'（默认，可被认领）| 'dead_letter'（失败 N 次，
+    // 不再被 claim；人工排查后 UPDATE status='active', attempts=0 重放）。
+    db.exec(`ALTER TABLE holdings_refresh_jobs ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
+  } catch {
+    // Existing/current schema already has it.
+  }
   for (const [alias, canonical] of [
     ['sol', 'solana'],
     ['eth', 'evm'],
@@ -466,6 +476,7 @@ function claimPersistentJob(
        WHERE due_at_ms <= ?
          AND (lease_until_ms IS NULL OR lease_until_ms <= ?)
          AND (last_success_at_ms IS NULL OR last_success_at_ms + ? <= ?)
+         AND status = 'active'
          ${providerClause}
        ORDER BY priority DESC, COALESCE(last_success_at_ms, 0) ASC, due_at_ms ASC
        LIMIT 1`
@@ -498,6 +509,16 @@ function queueStats(db: DbHandle, nowMs: number) {
             MIN(CASE WHEN due_at_ms <= ? THEN due_at_ms END) AS oldest_due_at
      FROM holdings_refresh_jobs`
   ).get(nowMs, nowMs) as { total: number; due: number | null; oldest_due_at: number | null };
+}
+
+/** 死信告警：钱包连续失败进死信时推 Bark（运维组）。失败不阻塞队列。 */
+function notifyDeadLetter(walletChain: string, address: string, attempts: number, error: string): void {
+  void pushBark({
+    title: '持仓刷新任务进死信',
+    body: `${walletChain} ${address.slice(0, 10)}… 连续失败 ${attempts} 次：${error.slice(0, 120)}`,
+    group: '运维',
+    level: 'passive',
+  }).catch(() => {});
 }
 
 /** One durable queue cycle. Periodic roster scans only seed jobs; they never block on a full sweep. */
@@ -624,22 +645,45 @@ export async function runHoldingsRefreshQueueCycle(options: {
     ).run(finishedAt + intervalMs, finishedAt, finishedAt, job.wallet_chain, job.leaseToken);
   } else {
     const attempts = job.attempts + 1;
-    const retryMs = Math.min(30 * 60_000, 60_000 * 2 ** Math.min(attempts - 1, 5));
-    db.prepare(
-      `UPDATE holdings_refresh_jobs
-       SET due_at_ms = CASE WHEN rerun_requested = 1 THEN MIN(due_at_ms, ?) ELSE ? END,
-           lease_token = NULL, lease_until_ms = NULL, attempts = ?, rerun_requested = 0,
-           last_error = ?, updated_at_ms = ?
-       WHERE wallet_chain = ? AND lease_token = ?`
-    ).run(
-      finishedAt + retryMs,
-      finishedAt + retryMs,
-      attempts,
-      result.lastError,
-      finishedAt,
-      job.wallet_chain,
-      job.leaseToken
-    );
+    // 死信 + 熔断（2026-08-28）：robinhood 卡死钱包（30s 超时 / gmgn-cli exit 75）
+    // 无上限重试，指数退避封顶 30min 永久烧 attempts —— 实测 30 个 never_ok
+    // 钱包在 24h 窗烧掉 1,117 次 attempts（47%），并占住 GMGN 车道吞吐与公平窗。
+    // 连续失败达到阈值 → 标记 dead_letter（可审计、可人工重放），不再进入退避循环。
+    if (attempts >= MAX_REFRESH_ATTEMPTS_BEFORE_DEAD_LETTER) {
+      const msg = result.lastError ?? 'unknown refresh failure';
+      db.prepare(
+        `UPDATE holdings_refresh_jobs
+         SET lease_token = NULL, lease_until_ms = NULL, attempts = ?,
+             rerun_requested = 0, last_error = ?, updated_at_ms = ?,
+             status = 'dead_letter'
+         WHERE wallet_chain = ? AND lease_token = ?`
+      ).run(attempts, `dead-letter: ${msg}`.slice(0, 2000), finishedAt, job.wallet_chain, job.leaseToken);
+      console.log(
+        `[holdings-refresh-queue] dead-letter ${job.wallet_chain} (${job.address}) after ${attempts} attempts: ${msg}`
+      );
+      try {
+        notifyDeadLetter(job.wallet_chain, job.address, attempts, msg);
+      } catch {
+        /* 告警失败不影响死信 */
+      }
+    } else {
+      const retryMs = Math.min(30 * 60_000, 60_000 * 2 ** Math.min(attempts - 1, 5));
+      db.prepare(
+        `UPDATE holdings_refresh_jobs
+         SET due_at_ms = CASE WHEN rerun_requested = 1 THEN MIN(due_at_ms, ?) ELSE ? END,
+             lease_token = NULL, lease_until_ms = NULL, attempts = ?, rerun_requested = 0,
+             last_error = ?, updated_at_ms = ?
+         WHERE wallet_chain = ? AND lease_token = ?`
+      ).run(
+        finishedAt + retryMs,
+        finishedAt + retryMs,
+        attempts,
+        result.lastError,
+        finishedAt,
+        job.wallet_chain,
+        job.leaseToken
+      );
+    }
   }
   const stats = queueStats(db, finishedAt);
   return {
