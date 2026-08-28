@@ -86,6 +86,15 @@ const DEFAULT_OPENCLI_DETAIL_ENRICH_LIMIT = 0;
 const DEFAULT_DOKOBOT_TIMEOUT_SEC = 45;
 const DEFAULT_6551_DAILY_LIMIT = 100;
 const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
+/** 付费/永久类错误（404 key 不存在、402 欠费）的长冷却：这类错误 5min 重试
+ *  毫无意义——key 不会自己修好。实测 4 把 6551 key 全部 404/402 死透 11 天，
+ *  仍每 5min 被重试一轮。2h 冷却把白耗压到 1/24，配额恢复后自动回用。 */
+const PAID_TIER_PROVIDER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+/** 404=key 不存在/接口下线；402=欠费。均属「不会自愈」类。 */
+function isPaidTierProviderError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /twitter_6551_http_(404|402)/.test(message);
+}
 const DEFAULT_IDENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const TWITTER_6551_CREDENTIAL_IDS = ['6551-key-1', '6551-key-2', '6551-key-3', '6551-key-4'] as const;
@@ -918,7 +927,9 @@ async function resolveTwitterIdentity(params: {
           credentialId: item.credentialId,
           nowMs: params.dependencies.now(),
           error: error instanceof Error ? error.message : 'twitter_6551_identity_failed',
-          cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
+          cooldownMs: isPaidTierProviderError(error)
+            ? PAID_TIER_PROVIDER_COOLDOWN_MS
+            : DEFAULT_PROVIDER_COOLDOWN_MS,
           dailyLimit: DEFAULT_6551_DAILY_LIMIT,
         });
         continue;
@@ -1064,6 +1075,10 @@ export function createTwitterFetcher(
               let cursor: string | null = null;
               let hasMore = false;
               let pageCount = 0;
+              // Early-stop（2026-08-28）：时间线按时间倒序返回，一旦本页最老推文
+              // 已老于 sinceMs（watermark），后续页只会产出 watermark 之前的重复
+              // 数据——实测 fetched 12-23 万条/天里 99.6% 是重复。命中即停。
+              let reachedWatermark = false;
               do {
                 const result = await dependencies.client6551.fetchUserTweets({
                   apiKey,
@@ -1083,7 +1098,19 @@ export function createTwitterFetcher(
                 collected.push(...result.tweets);
                 hasMore = result.hasMore;
                 cursor = result.nextCursor ?? null;
-                if (collected.length >= params.maxItems || !hasMore || pageCount >= 5) {
+                const oldestOnPage = result.tweets.reduce(
+                  (min, tweet) => (tweet.createdAtMs < min ? tweet.createdAtMs : min),
+                  Number.MAX_SAFE_INTEGER
+                );
+                if (Number.isFinite(oldestOnPage) && oldestOnPage < params.sinceMs) {
+                  reachedWatermark = true;
+                }
+                if (
+                  collected.length >= params.maxItems ||
+                  !hasMore ||
+                  pageCount >= 5 ||
+                  reachedWatermark
+                ) {
                   break;
                 }
               } while (true);
@@ -1110,7 +1137,9 @@ export function createTwitterFetcher(
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 error: error instanceof Error ? error.message : 'twitter_6551_fetch_failed',
-                cooldownMs: DEFAULT_PROVIDER_COOLDOWN_MS,
+                cooldownMs: isPaidTierProviderError(error)
+                  ? PAID_TIER_PROVIDER_COOLDOWN_MS
+                  : DEFAULT_PROVIDER_COOLDOWN_MS,
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
               });
               attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
@@ -1130,6 +1159,9 @@ export function createTwitterFetcher(
               let cursor: string | null = null;
               let hasMore = false;
               let pageCount = 0;
+              // Early-stop（2026-08-28）：同 6551 路径。xread 是付费 consumer API，
+              // 命中 watermark 即停，避免把 99.6% 的重复数据当新数据拉走。
+              let reachedWatermark = false;
               do {
                 const result = await dependencies.clientXread.fetchUserTweets({
                   apiKey,
@@ -1143,7 +1175,19 @@ export function createTwitterFetcher(
                 collected.push(...result.tweets);
                 hasMore = result.hasMore;
                 cursor = result.nextCursor ?? null;
-                if (collected.length >= params.maxItems || !hasMore || pageCount >= 5) {
+                const oldestOnPage = result.tweets.reduce(
+                  (min, tweet) => (tweet.createdAtMs < min ? tweet.createdAtMs : min),
+                  Number.MAX_SAFE_INTEGER
+                );
+                if (Number.isFinite(oldestOnPage) && oldestOnPage < params.sinceMs) {
+                  reachedWatermark = true;
+                }
+                if (
+                  collected.length >= params.maxItems ||
+                  !hasMore ||
+                  pageCount >= 5 ||
+                  reachedWatermark
+                ) {
                   break;
                 }
               } while (true);
