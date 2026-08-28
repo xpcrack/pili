@@ -86,14 +86,37 @@ const DEFAULT_OPENCLI_DETAIL_ENRICH_LIMIT = 0;
 const DEFAULT_DOKOBOT_TIMEOUT_SEC = 45;
 const DEFAULT_6551_DAILY_LIMIT = 100;
 const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
-/** 付费/永久类错误（404 key 不存在、402 欠费）的长冷却：这类错误 5min 重试
- *  毫无意义——key 不会自己修好。实测 4 把 6551 key 全部 404/402 死透 11 天，
- *  仍每 5min 被重试一轮。2h 冷却把白耗压到 1/24，配额恢复后自动回用。 */
+/** 付费/永久类错误的长冷却：这类错误 5min 重试毫无意义——key 不会自己修好。
+ *  实测 6551 各状态码语义（2026-08-29 用真实 key 逐一验证）：
+ *  - 401 invalid token / invalid Authorization format = key 真失效/被吊销，不会自愈 → 长冷却
+ *  - 402 insufficient quota = 当日免费额度耗尽，按北京时间自然日 00:00 自动重置 → 会自愈，短冷却
+ *  - 404 route not found = 端点路径不存在（如 twitter_tweet_detail 未开放），与 key 有效性无关 → 不锁
+ *  旧版把 402/404 一并锁 2h，导致配额跨天恢复后 key 仍被 cooldown 挡住、浪费免费额度，
+ *  整条线被迫全压到 xread 付费 API。修正为只有 401 才长冷却。 */
 const PAID_TIER_PROVIDER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
-/** 404=key 不存在/接口下线；402=欠费。均属「不会自愈」类。 */
+/**
+ * 6551 免费额度按北京时间自然日重置（00:00）。402 insufficient quota = 当日配额耗尽，
+ * 一定会随跨天自动恢复，属于「会自愈」错误。当天耗尽后既不该 5min 白烧反复试探，
+ * 也不该像 401 那样锁 2h 浪费跨天后的免费额度——最优是冷却到当天北京时间 24:00，
+ * 跨天配额一重置就立即重新吃满免费额度。
+ */
+function quotaExhaustedCooldownMs(nowMs: number): number {
+  // 计算从 nowMs 到「下一个北京时间 00:00」的毫秒数。
+  const utc8Now = nowMs + 8 * 60 * 60 * 1000;
+  const utc8DayStart = Math.floor(utc8Now / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+  const utc8NextMidnight = utc8DayStart + 24 * 60 * 60 * 1000;
+  const msUntilNextMidnightUtc8 = utc8NextMidnight - utc8Now;
+  return Math.max(60_000, msUntilNextMidnightUtc8);
+}
+/** 401=key 不存在/无效/被吊销（不会自愈，锁 2h）；402=配额耗尽（次日 00:00 重置，会自愈）。 */
 function isPaidTierProviderError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || '');
-  return /twitter_6551_http_(404|402)/.test(message);
+  return /twitter_6551_http_401/.test(message);
+}
+/** 402=insufficient quota（当日免费额度耗尽，跨天自动重置）。 */
+function isQuotaExhaustedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /twitter_6551_http_402/.test(message);
 }
 const DEFAULT_IDENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -927,9 +950,11 @@ async function resolveTwitterIdentity(params: {
           credentialId: item.credentialId,
           nowMs: params.dependencies.now(),
           error: error instanceof Error ? error.message : 'twitter_6551_identity_failed',
-          cooldownMs: isPaidTierProviderError(error)
-            ? PAID_TIER_PROVIDER_COOLDOWN_MS
-            : DEFAULT_PROVIDER_COOLDOWN_MS,
+          cooldownMs: isQuotaExhaustedError(error)
+            ? quotaExhaustedCooldownMs(params.dependencies.now())
+            : isPaidTierProviderError(error)
+              ? PAID_TIER_PROVIDER_COOLDOWN_MS
+              : DEFAULT_PROVIDER_COOLDOWN_MS,
           dailyLimit: DEFAULT_6551_DAILY_LIMIT,
         });
         continue;
@@ -1137,9 +1162,11 @@ export function createTwitterFetcher(
                 credentialId: item.credentialId,
                 nowMs: dependencies.now(),
                 error: error instanceof Error ? error.message : 'twitter_6551_fetch_failed',
-                cooldownMs: isPaidTierProviderError(error)
-                  ? PAID_TIER_PROVIDER_COOLDOWN_MS
-                  : DEFAULT_PROVIDER_COOLDOWN_MS,
+                cooldownMs: isQuotaExhaustedError(error)
+                  ? quotaExhaustedCooldownMs(dependencies.now())
+                  : isPaidTierProviderError(error)
+                    ? PAID_TIER_PROVIDER_COOLDOWN_MS
+                    : DEFAULT_PROVIDER_COOLDOWN_MS,
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
               });
               attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
