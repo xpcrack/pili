@@ -391,7 +391,7 @@ async function testFetcherDiscoversFour6551Keys() {
   );
 }
 
-async function testFetchUserRepliesRecordsTwo6551Units() {
+async function testFetchUserRepliesChargesByItemCount() {
   await withEnv(
     {
       TWITTER_6551_API_KEY_1: 'key-1',
@@ -462,9 +462,10 @@ async function testFetchUserRepliesRecordsTwo6551Units() {
       });
 
       assert.equal(result.provider, '6551');
-      assert.equal(result.chargedUnit, 2);
+      // twitter_user_tweets = 1pt/20 items, 1 条 → ceil(1/20)=1 pt（不足20向上取整）
+      assert.equal(result.chargedUnit, 1);
       assert.equal(successCalls.length, 1);
-      assert.equal(successCalls[0]?.successUnits, 2);
+      assert.equal(successCalls[0]?.successUnits, 1);
     }
   );
 }
@@ -1128,7 +1129,7 @@ async function main() {
   testFetcherResultMetadataIncludesFallbackChain();
   await testFetchUserTweetsUses6551Provider();
   await testFetcherDiscoversFour6551Keys();
-  await testFetchUserRepliesRecordsTwo6551Units();
+  await testFetchUserRepliesChargesByItemCount();
   await testStructuredProviderDoesNotClaimCoverageWhenPageHasMoreAndBoundaryNotReached();
   await testFetchUserTweetsFallsBackToXread();
   await testFetchUserTweetsFiltersStructuredTweetsToRequestedHandle();

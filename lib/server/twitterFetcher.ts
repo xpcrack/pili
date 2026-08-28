@@ -84,7 +84,11 @@ const DEFAULT_FETCH_TIMEOUT_MS = 45_000;
 const DEFAULT_OPENCLI_DETAIL_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENCLI_DETAIL_ENRICH_LIMIT = 0;
 const DEFAULT_DOKOBOT_TIMEOUT_SEC = 45;
-const DEFAULT_6551_DAILY_LIMIT = 100;
+/** 6551 Free plan 每账号每日积分上限（2026-08-29 用户后台截图核实）：
+ *  Plan Points = 5 pts/day（Daily Reset），1 point = 20 messages（推文/新闻都按条计）。
+ *  旧值 100 是设计文档早期的"每天100次请求"假设，已过时——实际每账号每天只有 5pt。
+ *  单位是 pt：twitter_user_info = 1pt/请求；twitter_user_tweets = 1pt/20条(向上取整)。 */
+const DEFAULT_6551_DAILY_LIMIT = 5;
 const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
 /** 付费/永久类错误的长冷却：这类错误 5min 重试毫无意义——key 不会自己修好。
  *  实测 6551 各状态码语义（2026-08-29 用真实 key 逐一验证）：
@@ -1093,9 +1097,12 @@ export function createTwitterFetcher(
             }
 
             try {
-              const successUnits = params.lane === 'replies' ? 2 : 1;
-              // 预算 200 / 页 100：单页只取到一半，活跃账号窗口内老推文永久
-              // 缺失、coverage 卡死。翻页直到收满预算或 provider 无更多。
+              // 计费对齐 6551 Billing Rules（2026-08-29 官方计费表核实）：
+              // twitter_user_tweets = 1pt / 20 items / request, 不足20向上取整。
+              // 旧实现固定记 1/2 分, 与真实扣费严重不符: 单页返回100条实际扣5pt,
+              // 本地却只记1分 → 本地预算虚高5倍, 服务端早已402而本地仍继续打。
+              // 改按页面返回条数折算 successUnits = ceil(items/20)。
+              const itemsPerPage = 20;
               const collected: StructuredTwitterTweet[] = [];
               let cursor: string | null = null;
               let hasMore = false;
@@ -1104,6 +1111,7 @@ export function createTwitterFetcher(
               // 已老于 sinceMs（watermark），后续页只会产出 watermark 之前的重复
               // 数据——实测 fetched 12-23 万条/天里 99.6% 是重复。命中即停。
               let reachedWatermark = false;
+              let totalChargedUnits = 0;
               do {
                 const result = await dependencies.client6551.fetchUserTweets({
                   apiKey,
@@ -1113,6 +1121,10 @@ export function createTwitterFetcher(
                   cursor,
                 });
                 pageCount += 1;
+                // twitter_user_tweets = 1pt / 20 items / request, 不足20向上取整。
+                // 每页按实际返回条数折算, 累计到 totalChargedUnits。
+                const successUnits = Math.max(1, Math.ceil(result.tweets.length / itemsPerPage));
+                totalChargedUnits += successUnits;
                 dependencies.markProviderSuccess({
                   provider: '6551',
                   credentialId: item.credentialId,
@@ -1140,7 +1152,7 @@ export function createTwitterFetcher(
                 }
               } while (true);
               const authoredTweets = filterStructuredUserTweets(collected, handle, params.lane, resolvedUserId);
-              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: successUnits * pageCount });
+              attempts.push({ provider: '6551', credentialId: item.credentialId, ok: true, chargedUnit: totalChargedUnits });
               const metadata = createFetcherResultMetadata(attempts);
               const coverageEstablished = didStructuredProviderEstablishCoverage({
                 tweets: authoredTweets,
