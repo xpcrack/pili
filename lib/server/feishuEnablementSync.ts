@@ -673,6 +673,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
     const userRows = db
       .prepare(
         `SELECT u.id AS id,
+                u.name AS name,
                 u.monitoring_enabled AS monitoring_enabled,
                 COALESCE((
                   SELECT MAX(a.monitoring_enabled)
@@ -681,7 +682,7 @@ export function syncFeishuEnablementFromNewone(opts?: {
                 ), 0) AS any_enabled
          FROM tracked_users u`
       )
-      .all() as Array<{ id: string; monitoring_enabled: number | null; any_enabled: number }>;
+      .all() as Array<{ id: string; name: string; monitoring_enabled: number | null; any_enabled: number }>;
 
     const setUser = db.prepare(
       `UPDATE tracked_users SET monitoring_enabled = ?, updated_at = ? WHERE id = ?`
@@ -689,6 +690,12 @@ export function syncFeishuEnablementFromNewone(opts?: {
     let usersEnabled = 0;
     let usersDisabled = 0;
     for (const row of userRows) {
+      // fomo 是承接"不认识的人喊单"的聚合用户，没有链上地址，
+      // 不能按 feishu 地址启用逻辑关停（否则其 feed 被 hidden）。强制常开。
+      if (row.name === 'fomo') {
+        if (row.monitoring_enabled !== 1) setUser.run(1, now, row.id);
+        continue;
+      }
       const want = row.any_enabled ? 1 : 0;
       const cur = row.monitoring_enabled == null ? 1 : row.monitoring_enabled ? 1 : 0;
       if (cur !== want) {

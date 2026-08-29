@@ -123,8 +123,12 @@ async function run() {
       post,
       fetchTweetsByIds: async () => ({ provider: 'fixture', tweets: [] }),
     });
+    if ('dropped' in ingestResult && ingestResult.dropped) {
+      throw new Error('telegram hello should not be dropped');
+    }
     const telegramEvent = readEventsFeed({ limit: 10, userId: user.id, source: 'telegram' });
-    const projectedActivity = ingestResult.projected.activity as Activity;
+    const projectedActivity = (ingestResult as { projected: { activity: Activity } }).projected
+      .activity as Activity;
     assert.ok(projectedActivity.metadata.importance?.score !== undefined);
     assert.ok(telegramEvent.feed[0]?.activity.metadata.importance?.score !== undefined);
 

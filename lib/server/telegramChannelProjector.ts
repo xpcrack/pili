@@ -2,6 +2,11 @@ import 'server-only';
 
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
+import {
+  classifyFomoChannelPost,
+  getOrCreateFomoUser,
+  resolveFomoAttributionUser,
+} from '@/lib/server/fomoChannelAttribution';
 import { extractTweetTokenMentions } from '@/lib/twitter/extractTweetTokenMentions';
 import { isLikelyEnglish } from '@/lib/server/nvidiaEnrichmentModel';
 import { enrichMentionsMarketData } from '@/lib/server/tweetTokenEnrichment';
@@ -36,13 +41,31 @@ export async function projectTelegramChannelPostToFeed(params: {
   source: TelegramChannelSource;
   post: TelegramChannelPost;
 }) {
-  const user = requireUser(params.source.userId);
+  const postText = params.post.text || '';
+
+  // fomoleaderboardfeed 类交易喊单帖：按 @handle 归属（关注的人全收 / 不认识的
+  // 只收喊单归 user:fomo / 不认识的人的交易帖丢弃标记）。其余普通频道帖走原归属。
+  const attribution = classifyFomoChannelPost(postText);
+  let user: User;
+  let fomoPumpDropped = false;
+  if (attribution.isFomoPumpPost) {
+    const resolved = resolveFomoAttributionUser({ classification: attribution });
+    if (!resolved.user) {
+      // 不认识的人的交易帖 → 丢弃（仍构造占位 activity，ingest 依据标记不落库）
+      user = getOrCreateFomoUser();
+      fomoPumpDropped = true;
+    } else {
+      user = resolved.user;
+    }
+  } else {
+    user = requireUser(params.source.userId);
+  }
+
   const title = 'Telegram 频道发帖';
   const postUrl = buildTelegramPostUrl({
     channelUsername: params.post.channelUsername || params.source.channelUsername,
     messageId: params.post.messageId,
   });
-  const postText = params.post.text || '';
   const mentions = extractTweetTokenMentions(postText, {
     bareSymbolAllowlist: getPrimaryPoolSymbolAllowlist(),
     officialTwitterByHandle: getPrimaryPoolOfficialTwitterMap(),
@@ -112,6 +135,13 @@ export async function projectTelegramChannelPostToFeed(params: {
       mentionedTokenAddresses: mentionedTokenAddresses.length > 0 ? mentionedTokenAddresses : undefined,
       tokenSentiments: tokenSentiments.length > 0 ? tokenSentiments : undefined,
       telegramSyncSource: 'telegram-channel' as const,
+      ...(attribution.isFomoPumpPost
+        ? {
+            fomoPumpKind: attribution.kind,
+            fomoTraderHandle: attribution.traderHandle || undefined,
+            ...(fomoPumpDropped ? { fomoPumpDropped: true } : {}),
+          }
+        : {}),
     },
   } satisfies Activity;
 
