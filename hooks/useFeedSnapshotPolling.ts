@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 
-const BASE_INTERVAL_MS = 5_000;
+const BASE_INTERVAL_MS = 3_000;
 const MAX_BACKOFF_MS = 60_000;
 const BACKOFF_MULTIPLIER = 2;
 const JITTER_RATIO = 0.3;
