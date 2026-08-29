@@ -116,6 +116,7 @@ export const ActivityCard = memo(function ActivityCard({
     isBlockchain,
     isTwitter,
     isTelegram,
+    isFomo,
     isNews,
     newsChannelLabel,
     hasMedia,
@@ -650,17 +651,19 @@ export const ActivityCard = memo(function ActivityCard({
     );
   }
 
-  // 推特 / TG：紧凑行（对齐交易 Feed 密度）
-  if (isTwitter || isTelegram) {
-    const socialPrimary = isTwitter ? twitterPrimaryText : telegramDisplayPrimary;
-    const sentimentChips = isTwitter ? tweetSentimentChips : telegramSentimentChips;
+  // 推特 / TG / FOMO：紧凑行（对齐交易 Feed 密度）
+  if (isTwitter || isTelegram || isFomo) {
+    const socialPrimary = isTwitter ? twitterPrimaryText : isFomo ? activity.content : telegramDisplayPrimary;
+    const sentimentChips = isTwitter ? tweetSentimentChips : isFomo ? null : telegramSentimentChips;
     const personLabel = isNews && newsChannelLabel ? newsChannelLabel : user.name;
-    const kindBadge = typeLabel || (isTwitter ? '推特' : 'TG');
+    const kindBadge = typeLabel || (isTwitter ? '推特' : isFomo ? 'FOMO' : 'TG');
     const kindBadgeClass = isNews
       ? 'border-amber-400/30 bg-amber-500/10 text-amber-200'
       : isTwitter
         ? 'border-sky-400/30 bg-sky-500/10 text-sky-200'
-        : 'border-violet-400/30 bg-violet-500/10 text-violet-200';
+        : isFomo
+          ? 'border-purple-400/30 bg-purple-500/10 text-purple-200'
+          : 'border-violet-400/30 bg-violet-500/10 text-violet-200';
     const quotedPreview = isTwitter
       ? (twitterQuotedContent || twitterQuotedOriginal || '').replace(/\s+/g, ' ').trim()
       : '';
@@ -708,7 +711,7 @@ export const ActivityCard = memo(function ActivityCard({
                   {quotedPreview}
                 </p>
               ) : null}
-              {sentimentChips.length > 0 ? (
+              {sentimentChips && sentimentChips.length > 0 ? (
                 <div className="flex flex-wrap gap-1 pt-0.5">
                   {sentimentChips.map((chip, index) => {
                     const symbol = chip.tokenSymbol

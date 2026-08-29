@@ -187,7 +187,7 @@ export function scoreFeedRowsAgainstDatabase(rows: FeedImportanceRow[]) {
      WHERE user_id = ?
        AND timestamp >= ?
        AND timestamp < ?
-       AND source IN ('twitter', 'telegram')`
+       AND source IN ('twitter', 'telegram', 'fomo')`
   );
   const walletCountStmt = db.prepare(
     `SELECT COUNT(1) AS count

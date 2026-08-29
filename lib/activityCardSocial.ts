@@ -53,7 +53,7 @@ export function cleanTwitterDisplayText(text: string) {
 }
 
 export function usesSocialBodyLayout(source: Activity['source']) {
-  return source === 'twitter' || source === 'telegram';
+  return source === 'twitter' || source === 'telegram' || source === 'fomo';
 }
 
 export function getActivityCardTypeLabel(params: {
@@ -72,6 +72,10 @@ export function getActivityCardTypeLabel(params: {
 
   if (params.source === 'telegram') {
     return 'TG';
+  }
+
+  if (params.source === 'fomo') {
+    return 'FOMO';
   }
 
   return ACTIVITY_TYPE_LABELS[params.activityType] || params.activityType;

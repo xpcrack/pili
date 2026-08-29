@@ -3,8 +3,11 @@ import 'server-only';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
 import {
+  buildFomoThesisContent,
   classifyFomoChannelPost,
+  extractFomoTradeAction,
   getOrCreateFomoUser,
+  isFomoSourceChannel,
   resolveFomoAttributionUser,
 } from '@/lib/server/fomoChannelAttribution';
 import { extractTweetTokenMentions } from '@/lib/twitter/extractTweetTokenMentions';
@@ -43,11 +46,14 @@ export async function projectTelegramChannelPostToFeed(params: {
 }) {
   const postText = params.post.text || '';
 
-  // fomoleaderboardfeed 类交易喊单帖：按 @handle 归属（关注的人全收 / 不认识的
-  // 只收喊单归 user:fomo / 不认识的人的交易帖丢弃标记）。其余普通频道帖走原归属。
+  // fomoleaderboardfeed 类交易喊单帖：按 @handle 归属。
+  //  - 喊单 thesis → source='fomo'，归关注的人或 user:fomo
+  //  - 关注的人的交易 buy/sell → source='blockchain'（作为其交易记录，像链上交易显示）
+  //  - 不认识的人的交易帖 → 丢弃标记
   const attribution = classifyFomoChannelPost(postText);
   let user: User;
   let fomoPumpDropped = false;
+  let fomoTradeAsBlockchain = false;
   if (attribution.isFomoPumpPost) {
     const resolved = resolveFomoAttributionUser({ classification: attribution });
     if (!resolved.user) {
@@ -56,6 +62,8 @@ export async function projectTelegramChannelPostToFeed(params: {
       fomoPumpDropped = true;
     } else {
       user = resolved.user;
+      // 关注的人的交易 buy/sell 不作为 fomo 类别，作为其本人的链上交易记录
+      fomoTradeAsBlockchain = resolved.user.id !== getOrCreateFomoUser().id && attribution.kind === 'trade';
     }
   } else {
     user = requireUser(params.source.userId);
@@ -99,17 +107,40 @@ export async function projectTelegramChannelPostToFeed(params: {
     matchSource: m.matchSource,
   }));
 
+  const isFomoSource = isFomoSourceChannel(params.post.channelUsername || params.source.channelUsername);
+  const isFomoPumpKind = attribution.isFomoPumpPost && attribution.kind === 'thesis';
+  // 关注的人的交易帖 → 作为其本人链上交易记录（source='blockchain', type='transfer'）。
+  const fomoTradeAction = fomoTradeAsBlockchain ? extractFomoTradeAction(postText) : null;
+
+  // 信源：交易帖(blockchain) → 交易记录；fomo 信源群喊单 → fomo；其余 → telegram。
+  const activitySource: Activity['source'] = fomoTradeAsBlockchain
+    ? 'blockchain'
+    : isFomoSource
+      ? 'fomo'
+      : 'telegram';
+  const activityType: Activity['type'] = fomoTradeAsBlockchain ? 'transfer' : 'post';
+  const activityContent =
+    fomoTradeAsBlockchain
+      ? postText || '(empty)'
+      : isFomoSource && isFomoPumpKind
+        ? buildFomoThesisContent(postText, attribution.traderHandle)
+        : postText || '(empty)';
+  const activityTitle = fomoTradeAsBlockchain ? '链上监控交易' : isFomoSource ? 'FOMO 喊单' : title;
+
   const activity = {
     id: `telegram:${params.post.channelChatId}:${params.post.messageId}`,
     userId: user.id,
-    source: 'telegram',
-    type: 'post',
-    title,
-    content: postText || '(empty)',
+    source: activitySource,
+    type: activityType,
+    title: activityTitle,
+    content: activityContent,
     timestamp: params.post.postedAtMs,
     metadata: {
       rawText: params.post.text || undefined,
       media: params.post.media.length > 0 ? params.post.media : undefined,
+      ...(fomoTradeAsBlockchain && fomoTradeAction
+        ? { txAction: fomoTradeAction, displayActionVariantLabel: fomoTradeAction === 'buy' ? '买入' : '卖出' }
+        : {}),
       replies:
         typeof params.post.replies === 'number' && Number.isFinite(params.post.replies)
           ? params.post.replies

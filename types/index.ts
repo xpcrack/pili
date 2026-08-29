@@ -1,6 +1,6 @@
 import type { ActivityImportance } from '@/lib/activityImportance';
 
-export type ActivitySource = 'twitter' | 'telegram' | 'blockchain';
+export type ActivitySource = 'twitter' | 'telegram' | 'blockchain' | 'fomo';
 export type ActivityType = 'post' | 'transfer' | 'swap' | 'nft_trade' | 'mint';
 
 export type ChainType = 'bsc' | 'solana' | 'ethereum' | 'base';

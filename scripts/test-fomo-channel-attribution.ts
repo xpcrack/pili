@@ -20,6 +20,8 @@ async function run() {
       resolveFomoAttributionUser,
       getOrCreateFomoUser,
       matchTrackedUserByHandle,
+      buildFomoThesisContent,
+      isFomoSourceChannel,
     } = await import(`../lib/server/fomoChannelAttribution.ts?m=${stamp}`);
 
     // --- 判别 ---
@@ -57,6 +59,23 @@ async function run() {
     const jiuyicallPost = '[yry]\n🟢 Buy more ETH\nToken: 12345 [TSMI]';
     const c5 = classifyFomoChannelPost(jiuyicallPost);
     assert.equal(c5.isFomoPumpPost, false, 'non-fomo formatted post should not be fomo pump');
+
+    // --- 喊单 content 格式 ---
+    // **$microduck thesis** **stringerbell** (@stringerbell) + 正文 → @stringerbell 喊单$microduck：正文
+    const microduck =
+      '**$microduck thesis** **stringerbell** (@stringerbell)\n\nFriendly piece of advice for the quick flip bros - both giga goated traders Unipcs & Bluntz are in here.\n给快速翻盘的朋友们提个醒。\nPosition: **$99,936.67**\nUnrealized PnL: **$35,867.65 (+55.98%)**';
+    const fomoContent = buildFomoThesisContent(microduck, 'stringerbell');
+    assert.equal(
+      fomoContent,
+      '@stringerbell 喊单$microduck：Friendly piece of advice for the quick flip bros - both giga goated traders Unipcs & Bluntz are in here.',
+      'fomo thesis content should be reformatted to @handle 喊单$token：body'
+    );
+
+    // --- 信源群识别 ---
+    assert.equal(isFomoSourceChannel('fomoleaderboardfeed'), true);
+    assert.equal(isFomoSourceChannel('fomoleaderboardfeed'.toUpperCase()), true);
+    assert.equal(isFomoSourceChannel('jiuyicall'), false);
+    assert.equal(isFomoSourceChannel(null), false);
 
     // --- 归属 ---
     // 先建一个"关注的人"

@@ -108,6 +108,7 @@ export function buildActivityCardViewModel(params: {
   const isBlockchain = activity.source === 'blockchain';
   const isTwitter = activity.source === 'twitter';
   const isTelegram = activity.source === 'telegram';
+  const isFomo = activity.source === 'fomo';
   const isNews = user.tags.includes('news');
   const hasMedia = Boolean(activity.metadata.media && activity.metadata.media.length > 0);
   const isTransfer = isBlockchain && activity.type === 'transfer';
@@ -256,6 +257,7 @@ export function buildActivityCardViewModel(params: {
     isBlockchain,
     isTwitter,
     isTelegram,
+    isFomo,
     isNews,
     newsChannelLabel,
     hasMedia,

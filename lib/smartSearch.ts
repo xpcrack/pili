@@ -13,6 +13,7 @@ export interface FeedSearchFilters {
     transfer: boolean;
     twitter: boolean;
     telegram: boolean;
+    fomo: boolean;
     news: boolean;
   };
   minTradeAmountUsd: string;
@@ -27,13 +28,14 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
     transfer: false,
     twitter: true,
     telegram: true,
+    fomo: true,
     news: false,
   },
   minTradeAmountUsd: '',
   minTradeMarketCapUsd: '',
 };
 
-export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'news' | 'other';
+export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'fomo' | 'news' | 'other';
 
 export function getRemoteFeedSource(
   typeFilters: FeedSearchFilters['typeFilters']
@@ -48,6 +50,9 @@ export function getRemoteFeedSource(
   }
   if (typeFilters.telegram) {
     enabledSources.push('telegram');
+  }
+  if (typeFilters.fomo) {
+    enabledSources.push('fomo');
   }
 
   return enabledSources.length === 1 ? enabledSources[0] : null;
@@ -139,7 +144,11 @@ function getKeywordHaystack(item: FeedItem) {
     item.activity.metadata.txActionLabel,
   ];
 
-  if (item.activity.source === 'twitter' || item.activity.source === 'telegram') {
+  if (
+    item.activity.source === 'twitter' ||
+    item.activity.source === 'telegram' ||
+    item.activity.source === 'fomo'
+  ) {
     values.push(item.activity.content);
   }
 
@@ -197,6 +206,9 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
   if (item.activity.source === 'telegram') {
     return 'telegram';
   }
+  if (item.activity.source === 'fomo') {
+    return 'fomo';
+  }
 
   if (isTradeDisplayAction(item.activity.metadata)) {
     return 'trade';
@@ -211,7 +223,14 @@ export function getFeedItemCategory(item: FeedItem): FeedItemCategory {
 }
 
 export function hasAnyEnabledFeedType(typeFilters: FeedSearchFilters['typeFilters']) {
-  return typeFilters.trade || typeFilters.transfer || typeFilters.twitter || typeFilters.telegram || typeFilters.news;
+  return (
+    typeFilters.trade ||
+    typeFilters.transfer ||
+    typeFilters.twitter ||
+    typeFilters.telegram ||
+    typeFilters.fomo ||
+    typeFilters.news
+  );
 }
 
 export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilters) {
@@ -230,6 +249,9 @@ export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilt
     return false;
   }
   if (category === 'telegram' && !filters.typeFilters.telegram) {
+    return false;
+  }
+  if (category === 'fomo' && !filters.typeFilters.fomo) {
     return false;
   }
   if (category === 'news' && !filters.typeFilters.news) {

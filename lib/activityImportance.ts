@@ -244,7 +244,7 @@ export function getActivityImportanceLevelLabel(score: number) {
 export function buildActivityImportanceExplanationRows(
   importance: ActivityImportance
 ): ActivityImportanceExplanationRow[] {
-  const sourceWindowLabel = importance.sourceKind === 'social' ? '社交动态（推特/TG）' : '链上动态';
+  const sourceWindowLabel = importance.sourceKind === 'social' ? '社交动态（推特/TG/FOMO）' : '链上动态';
 
   return [
     {

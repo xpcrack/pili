@@ -5,15 +5,16 @@ import type { Activity, User } from '@/types';
 import { ActivityCard } from '@/components/ActivityCard';
 import { prepareGlobalFeed } from '@/lib/feedOrdering';
 
-type SourceFilter = 'blockchain' | 'twitter' | 'telegram';
+type SourceFilter = 'blockchain' | 'twitter' | 'telegram' | 'fomo';
 
 const SOURCE_LABELS: Record<SourceFilter, string> = {
   blockchain: '交易',
   twitter: '推特',
   telegram: 'TG',
+  fomo: 'FOMO',
 };
 
-const SOURCE_ORDER: SourceFilter[] = ['blockchain', 'twitter', 'telegram'];
+const SOURCE_ORDER: SourceFilter[] = ['blockchain', 'twitter', 'telegram', 'fomo']; 
 
 interface FeedItem {
   activity: Activity;
@@ -41,11 +42,13 @@ function SourceToggle({
     blockchain: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
     twitter: 'bg-sky-500/20 text-sky-400 border-sky-500/40',
     telegram: 'bg-blue-500/20 text-blue-400 border-blue-500/40',
+    fomo: 'bg-purple-500/20 text-purple-400 border-purple-500/40',
   };
   const colorsActive: Record<SourceFilter, string> = {
     blockchain: 'bg-amber-500 text-white border-amber-500',
     twitter: 'bg-sky-500 text-white border-sky-500',
     telegram: 'bg-blue-500 text-white border-blue-500',
+    fomo: 'bg-purple-500 text-white border-purple-500',
   };
 
   return (
@@ -62,7 +65,7 @@ function SourceToggle({
 
 export default function PublicFeedPage() {
   const [enabledSources, setEnabledSources] = useState<Set<SourceFilter>>(
-    new Set(['blockchain', 'twitter', 'telegram'])
+    new Set(['blockchain', 'twitter', 'telegram', 'fomo'])
   );
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);

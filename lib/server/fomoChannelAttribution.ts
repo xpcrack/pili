@@ -77,6 +77,60 @@ export function classifyFomoChannelPost(text: string): FomoChannelAttribution {
   };
 }
 
+const FOMO_SOURCE_CHANNELS = new Set(['fomoleaderboardfeed']);
+
+/** fomo 信源群？fomoleaderboardfeed 等群出来的信息归类为独立信源 fomo（与 tg/推特并列）。 */
+export function isFomoSourceChannel(channelUsername: string | null | undefined): boolean {
+  return Boolean(channelUsername && FOMO_SOURCE_CHANNELS.has(channelUsername.trim().toLowerCase()));
+}
+
+/** 从标题行提取喊单代币符号（"**$microduck thesis**" → "microduck"；"**$牛来 thesis**" → "牛来"）。 */
+function extractFomoToken(text: string): string | null {
+  const titleLine = (text || '').split('\n')[0] || '';
+  const m = titleLine.match(/^\*\*\$([A-Za-z0-9\u4e00-\u9fff]{1,30})/);
+  if (m) return m[1];
+  const m2 = titleLine.match(/^\*\*\$([A-Za-z0-9\u4e00-\u9fff._-]{1,30})/);
+  return m2 ? m2[1] : null;
+}
+
+/** 提取喊单正文：第一条非装饰、非标题、非数据行的英文原文（跳过中文翻译/Position/PnL 等）。 */
+function extractFomoThesisBody(text: string): string | null {
+  const lines = (text || '').split('\n');
+  // 第一条非空，且不是标题行（**$ 开头），也不是数据行（Position/Unrealized/Market cap/中文翻译等）
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^\*\*\$/.test(trimmed)) continue; // 标题行
+    if (/^(position|unrealized|market cap|average cost|proceeds|remaining|realized pnl|bought|sale|return|swaps|robinhood|solana|base|bsc|ethereum)\b/i.test(trimmed)) continue;
+    if (/^[\u4e00-\u9fff]/.test(trimmed)) continue; // 中文翻译行，跳过
+    // 这是正文——截到句号/逗号结束，通常整行都是正文
+    return trimmed;
+  }
+  return null;
+}
+
+/** 构造统一喊单 content 格式：@handle 喊单$token：正文第一段。无法可靠提取 token/正文时回退原文。 */
+export function buildFomoThesisContent(text: string, traderHandle: string | null): string {
+  const token = extractFomoToken(text);
+  const body = extractFomoThesisBody(text);
+  // 提不出代币符号（格式异常）时不要产出 "喊单？：gmgn·fomo" 这类垃圾，回退原始文本。
+  if (!token) return text.trim();
+  const who = traderHandle ? `@${traderHandle}` : '未知';
+  const what = `$${token}`;
+  const content = body ? `：${body}` : '';
+  return `${who} 喊单${what}${content}`;
+}
+
+/** 从标题行提取交易方向（"**$SAYLORMOON buy**" → "buy"）。 */
+export function extractFomoTradeAction(text: string): 'buy' | 'sell' | null {
+  const titleLine = (text || '').split('\n')[0] || '';
+  const m = titleLine.match(/\*\*\s*\$\S+\s+(buy|sell)\b/i);
+  if (m) return m[1].toLowerCase() === 'buy' ? 'buy' : 'sell';
+  const m2 = titleLine.match(/\b(buy|sell)\b/i);
+  if (m2) return m2[1].toLowerCase() === 'buy' ? 'buy' : 'sell';
+  return null;
+}
+
 /** 匹配交易者 handle → 已跟踪用户（关注的人）。 */
 export function matchTrackedUserByHandle(handle: string): User | null {
   const key = normalizeKey(handle);

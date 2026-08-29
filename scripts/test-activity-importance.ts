@@ -103,7 +103,7 @@ function run() {
     explanation.map((row) => row.label),
     ['同源稀缺分', '资产权重', '总频率因子', '数据可信度因子']
   );
-  assert.equal(explanation[0]?.valueText, '近7天社交动态（推特/TG）共 3 条，同源稀缺分：0.50');
+  assert.equal(explanation[0]?.valueText, '近7天社交动态（推特/TG/FOMO）共 3 条，同源稀缺分：0.50');
   assert.equal(explanation[1]?.valueText.includes('50K USD'), true);
   assert.equal(explanation[2]?.valueText, '近7天总动态共 11 条，总频率因子：0.89');
   assert.equal(getActivityImportanceLevelLabel(noisyActor.score), '普通');
