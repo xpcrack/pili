@@ -288,6 +288,7 @@ function run() {
       transfer: false,
       twitter: false,
       telegram: true,
+      fomo: false,
       news: false,
     }),
     'telegram',
@@ -299,6 +300,7 @@ function run() {
       transfer: false,
       twitter: false,
       telegram: false,
+      fomo: false,
       news: false,
     }),
     'blockchain',
@@ -310,6 +312,7 @@ function run() {
       transfer: false,
       twitter: true,
       telegram: true,
+      fomo: false,
       news: false,
     }),
     null,
@@ -381,6 +384,7 @@ function run() {
     transfer: false,
     twitter: false,
     telegram: false,
+    fomo: false,
     news: false,
   };
   assert.equal(hasAnyEnabledFeedType(disabledTypes), false);

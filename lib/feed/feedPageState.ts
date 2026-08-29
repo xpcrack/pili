@@ -20,6 +20,7 @@ export function hasActiveFeedLocalFilters(searchFilters: FeedSearchFilters) {
     searchFilters.typeFilters.transfer !== defaults.typeFilters.transfer ||
     searchFilters.typeFilters.twitter !== defaults.typeFilters.twitter ||
     searchFilters.typeFilters.telegram !== defaults.typeFilters.telegram ||
+    searchFilters.typeFilters.fomo !== defaults.typeFilters.fomo ||
     searchFilters.typeFilters.news !== defaults.typeFilters.news ||
     searchFilters.minTradeAmountUsd.trim().length > 0 ||
     searchFilters.minTradeMarketCapUsd.trim().length > 0
