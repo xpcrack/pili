@@ -20,6 +20,11 @@ export async function ingestTelegramChannelPost(params: {
     post: params.post,
   });
 
+  // 归属决策丢弃（不认识的人的交易帖）→ 不入 feed
+  if (projected.activity.metadata.fomoPumpDropped) {
+    return { eventId: null, dropped: true };
+  }
+
   // Persist the projected activity immediately (with token mentions but no translation yet)
   upsertEventsFromFeedRows([projected], 'telegram-channel');
 

@@ -146,6 +146,7 @@ async function run() {
       source: readySource,
       post,
     });
+    assert.ok('user' in projected, 'jiuyicall post should not be dropped');
     assert.equal(projected.user.name, '旧亿');
     assert.equal(projected.activity.source, 'telegram');
     assert.equal(projected.activity.type, 'post');
