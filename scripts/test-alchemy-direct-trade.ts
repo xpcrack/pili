@@ -95,14 +95,24 @@ async function testAlchemyBnbNetworkMapsToBsc() {
   const trades = await parseAlchemyInboxTrades({
     events: [
       event({
-        activity: [{
-          fromAddress: OTHER,
-          toAddress: WATCHED,
-          value: 1000,
-          hash: '0xbnb',
-          asset: 'TEST',
-          rawContract: { address: TOKEN, rawValue: '0x1', decimals: 18 },
-        }],
+        activity: [
+          {
+            fromAddress: OTHER,
+            toAddress: WATCHED,
+            value: '1000',
+            hash: '0xbnb',
+            asset: 'TEST',
+            rawContract: { address: TOKEN, rawValue: '0x1', decimals: 18 },
+          },
+          {
+            // 支付腿：买入必须同 tx 有 quote/native 支付证明（3eed51a 后）。
+            fromAddress: WATCHED,
+            toAddress: OTHER,
+            value: '30',
+            hash: '0xbnb',
+            rawContract: { address: USDC },
+          },
+        ],
       }, 'BNB_MAINNET'),
     ],
     watchedAddresses: [WATCHED],
@@ -114,13 +124,23 @@ async function testAlchemyBnbNetworkMapsToBsc() {
 
 async function testD1TimestampIsParsedAsUtc() {
   const d1Event = event({
-    activity: [{
-      fromAddress: OTHER,
-      toAddress: WATCHED,
-      value: 1000,
-      hash: '0xutc',
-      rawContract: { address: TOKEN },
-    }],
+    activity: [
+      {
+        fromAddress: OTHER,
+        toAddress: WATCHED,
+        value: '1000',
+        hash: '0xutc',
+        rawContract: { address: TOKEN },
+      },
+      {
+        // 支付腿：买入需同 tx 支付证明，让 trade 能生成以校验时间戳解析。
+        fromAddress: WATCHED,
+        toAddress: OTHER,
+        value: '30',
+        hash: '0xutc',
+        rawContract: { address: USDC },
+      },
+    ],
   });
   d1Event.received_at = '2026-08-25 06:00:00';
   const trades = await parseAlchemyInboxTrades({
@@ -128,12 +148,14 @@ async function testD1TimestampIsParsedAsUtc() {
     watchedAddresses: [WATCHED],
     fetchMarket,
   });
+  assert.equal(trades.length, 1);
   assert.equal(trades[0]?.eventTimeMs, Date.parse('2026-08-25T06:00:00.000Z'));
 }
 
 async function testSolanaTransfer() {
   const solWallet = 'CJ5fHkNPf3yd7fKnjv5VtBJTNDAWFiRfLCutpuTAnpis';
   const mint = '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs';
+  const usdcMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   const trades = await parseAlchemyInboxTrades({
     events: [
       event(
@@ -141,6 +163,13 @@ async function testSolanaTransfer() {
           transactionData: { signature: '5sig', slot: 1 },
           tokenTransfers: [
             { fromOwner: 'OtherSolWallet', toOwner: solWallet, mint, tokenAmount: 42 },
+            {
+              // 支付腿：SOL 买入需同 tx 支付证明（3eed51a 后），用 USDC 作为 quote。
+              fromOwner: solWallet,
+              toOwner: 'OtherSolWallet',
+              mint: usdcMint,
+              tokenAmount: 50,
+            },
           ],
         },
         'SOL_MAINNET'
@@ -166,6 +195,9 @@ async function testSolanaTransfer() {
 }
 
 async function testDustAndThinLiquidityAreRejected() {
+  // 用两条腿(含支付腿)确保通过"支付证据"检查，从而真正命中
+  // minCostUsd / MIN_LIQUIDITY 的拒绝逻辑——否则会被 paymentEvidence 提前
+  // 短路，测不到 dust/thin-liquidity 判定(3eed51a 后的覆盖缺口)。
   const payload = event({
     activity: [
       {
@@ -175,6 +207,13 @@ async function testDustAndThinLiquidityAreRejected() {
         hash: '0xdust',
         rawContract: { address: TOKEN },
       },
+      {
+        fromAddress: WATCHED,
+        toAddress: OTHER,
+        value: '5',
+        hash: '0xdust',
+        rawContract: { address: USDC },
+      },
     ],
   });
   const dust = await parseAlchemyInboxTrades({
@@ -183,6 +222,7 @@ async function testDustAndThinLiquidityAreRejected() {
     fetchMarket,
     minCostUsd: 10,
   });
+  // value=1 * price=0.02 = 0.02 < minCostUsd(10) → 拒绝
   assert.equal(dust.length, 0);
 
   const thin = await parseAlchemyInboxTrades({
@@ -194,20 +234,31 @@ async function testDustAndThinLiquidityAreRejected() {
       price: 20,
     }),
   });
+  // liquidity=100 < MIN_LIQUIDITY_USD(500) → 拒绝(尽管 value=1*price=20 >= minCostUsd 默认)
   assert.equal(thin.length, 0);
 }
 
 async function testMissingMarketDataDoesNotDropTrade() {
   const trades = await parseAlchemyInboxTrades({
     events: [event({
-      activity: [{
-        fromAddress: OTHER,
-        toAddress: WATCHED,
-        value: 12,
-        asset: 'RAW',
-        hash: '0xraw',
-        rawContract: { address: TOKEN },
-      }],
+      activity: [
+        {
+          fromAddress: OTHER,
+          toAddress: WATCHED,
+          value: '12',
+          asset: 'RAW',
+          hash: '0xraw',
+          rawContract: { address: TOKEN },
+        },
+        {
+          // 支付腿：买入需同 tx 支付证明，保证 trade 能生成以校验 market=null 的兜底。
+          fromAddress: WATCHED,
+          toAddress: OTHER,
+          value: '5',
+          hash: '0xraw',
+          rawContract: { address: USDC },
+        },
+      ],
     })],
     watchedAddresses: [WATCHED],
     fetchMarket: async () => null,
