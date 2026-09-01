@@ -117,6 +117,36 @@ function run() {
     'type filters should be applied inside page state selection'
   );
 
+  // 「只看标星」：全局作用域应只保留已标星人物的动态；已选中人物不受影响。
+  const starredOnlyState = selectFeedPageState({
+    feed,
+    selectedUserId: null,
+    searchFilters: DEFAULT_FEED_SEARCH_FILTERS,
+    globalVisibleCount: 200,
+    selectedUserVisibleCount: 50,
+    starredOnly: true,
+    starredUserIds: { [bob.id]: true },
+  });
+  assert.deepEqual(
+    starredOnlyState.filteredFeed.map((item) => item.activity.id),
+    ['new-bob'],
+    'starred-only scope should keep only starred users\' activities in global mode'
+  );
+  const starredSelectedState = selectFeedPageState({
+    feed,
+    selectedUserId: alice.id,
+    searchFilters: DEFAULT_FEED_SEARCH_FILTERS,
+    globalVisibleCount: 200,
+    selectedUserVisibleCount: 50,
+    starredOnly: true,
+    starredUserIds: { [alice.id]: true },
+  });
+  assert.deepEqual(
+    starredSelectedState.filteredFeed.map((item) => item.activity.id),
+    ['new-alice', 'old-alice'],
+    'selected-user mode should ignore the starred-only scope and show the selected user'
+  );
+
   const aliasMap = buildAddressAliasMap([alice, { ...bob, addresses: [{ ...bob.addresses[0]!, name: '#cold' }] }]);
   assert.equal(aliasMap.get('alicewallet'), 'Alice#main');
   assert.equal(aliasMap.get('bobwallet'), 'Bob#cold');

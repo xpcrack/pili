@@ -2,6 +2,7 @@
 
 import { User } from '@/types';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Star } from 'lucide-react';
 import { useUserStore } from '@/store/userStore';
 import { getUserAvatar } from '@/lib/userProfile';
 
@@ -9,9 +10,11 @@ interface UserAvatarProps {
   user: User;
   isSelected?: boolean;
   onClick?: () => void;
+  /** 手动标星状态（仅在人物被标星时渲染角标） */
+  starred?: boolean;
 }
 
-export function UserAvatar({ user, isSelected, onClick }: UserAvatarProps) {
+export function UserAvatar({ user, isSelected, onClick, starred }: UserAvatarProps) {
   const hasNew = useUserStore((state) => state.hasNew[user.id]);
   const isDisabled = user.monitoringEnabled === false;
 
@@ -37,6 +40,11 @@ export function UserAvatar({ user, isSelected, onClick }: UserAvatarProps) {
         {/* 红点标记 */}
         {hasNew && !isSelected && (
           <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-red-500 ring-2 ring-zinc-950 animate-pulse" />
+        )}
+        {starred && (
+          <span className="absolute -top-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-950 ring-1 ring-amber-400/50">
+            <Star className="h-2.5 w-2.5 fill-amber-300 text-amber-300" />
+          </span>
         )}
         {isDisabled && (
           <span className="absolute -bottom-0.5 -right-1 rounded bg-zinc-700 px-1 text-[9px] leading-3 text-zinc-300 ring-1 ring-zinc-950">

@@ -16,7 +16,7 @@ import { useSelectedUserDetails } from '@/hooks/useSelectedUserDetails';
 import { useTokenInfoPrefetch } from '@/hooks/useTokenInfoPrefetch';
 import { useUserStore } from '@/store/userStore';
 import { useUsersDataStore } from '@/store/usersDataStore';
-import { User as UserIcon } from 'lucide-react';
+import { User as UserIcon, Star } from 'lucide-react';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { Input } from '@/components/ui/input';
 import {
@@ -114,7 +114,7 @@ export default function Home() {
     getRemoteFeedSource(searchFilters.typeFilters),
     searchFilters
   );
-  const { dismissNewForUser } = useUserStore();
+  const { dismissNewForUser, starredUserIds, onlyStarred, toggleStarredUser, setOnlyStarred } = useUserStore();
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const handleLoadMoreRef = useRef<() => void>(() => {});
@@ -187,8 +187,8 @@ export default function Home() {
     hasActiveLocalFilters,
     hasEnabledFeedTypes,
   } = useMemo(
-    () => selectMatchedFeed({ feed, selectedUserId, searchFilters }),
-    [feed, selectedUserId, searchFilters]
+    () => selectMatchedFeed({ feed, selectedUserId, searchFilters, starredOnly: onlyStarred, starredUserIds }),
+    [feed, selectedUserId, searchFilters, onlyStarred, starredUserIds]
   );
   // Quality ranking runs here, on the window already loaded — the server feed
   // query is index-pinned and must not grow a computed ORDER BY.
@@ -229,12 +229,23 @@ export default function Home() {
       return a.name.localeCompare(b.name, 'zh-CN');
     });
 
+    // 「只看标星」：左侧栏只留已标星的人物；当前选中的保留，避免切不回。
+    if (onlyStarred) {
+      const starredOnly = sorted.filter(
+        (user) => starredUserIds[user.id] === true || user.id === selectedUserId
+      );
+      if (hasActiveLocalFilters) {
+        return starredOnly.filter((user) => visibleUserIds.has(user.id));
+      }
+      return starredOnly;
+    }
+
     if (hasActiveLocalFilters) {
       return sorted.filter((user) => visibleUserIds.has(user.id));
     }
 
     return sorted;
-  }, [users, selectedUserId, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds]);
+  }, [users, selectedUserId, sidebarSortMode, latestActivityAtByUser, hasActiveLocalFilters, visibleUserIds, onlyStarred, starredUserIds]);
 
   const addressAliasMap = useMemo(() => buildAddressAliasMap(users), [users]);
 
@@ -459,6 +470,24 @@ export default function Home() {
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
           <aside className="w-full md:sticky md:top-20 md:h-[calc(100vh-5rem)] md:w-[230px] md:shrink-0 md:overflow-y-auto md:overscroll-contain">
+            <button
+              type="button"
+              onClick={() => setOnlyStarred(!onlyStarred)}
+              className={`mb-2 flex w-full items-center justify-between gap-2 rounded-[9px] border px-3 py-1.5 text-[11.5px] transition-colors ${
+                onlyStarred
+                  ? 'border-amber-400/30 bg-amber-400/[0.07] text-amber-200'
+                  : 'border-white/[0.07] bg-black/20 text-zinc-400 hover:text-zinc-200'
+              }`}
+              title="只显示你在每个交易员上手动标星的人物与他们的动态"
+            >
+              <span className="flex items-center gap-1.5">
+                <Star className={`h-3.5 w-3.5 ${onlyStarred ? 'fill-amber-300 text-amber-300' : 'text-zinc-500'}`} />
+                只看标星
+              </span>
+              <span className={`text-[10px] ${onlyStarred ? 'text-amber-300' : 'text-zinc-600'}`}>
+                {onlyStarred ? '已开启' : '关闭'}
+              </span>
+            </button>
             <div className="mb-2 grid grid-cols-2 gap-0.5 rounded-[9px] border border-white/[0.07] bg-black/20 p-0.5">
               <button
                 onClick={() => setSidebarSortMode('asset')}
@@ -486,6 +515,8 @@ export default function Home() {
               selectedUserId={selectedUserId}
               latestActivityAtByUser={latestActivityAtByUser}
               onSelectUser={handleSelectUser}
+              starredUserIds={starredUserIds}
+              onToggleStarredUser={toggleStarredUser}
             />
           </aside>
 

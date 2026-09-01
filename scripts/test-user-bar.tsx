@@ -33,6 +33,8 @@ function run() {
       selectedUserId={null}
       latestActivityAtByUser={new Map()}
       onSelectUser={() => {}}
+      starredUserIds={{}}
+      onToggleStarredUser={() => {}}
     />
   );
 
