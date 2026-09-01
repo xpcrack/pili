@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { getDb, withSqliteBusyRetry, withTransaction } from '@/lib/server/sqlite';
+import { LIQUID_ASSET_SYMBOLS } from '@/lib/assetSymbols';
 import {
   aggregateUserPnl,
   computeCompoundQualityScore,
@@ -34,6 +35,13 @@ export type { UserPnlRankingRow };
  */
 
 const TRADE_VARIANTS = new Set<PnlTradeVariant>(['open', 'add', 'reduce', 'close']);
+
+// Marketless tokens (no real DEX pool) must not inject a fabricated OKX price
+// into unrealized PnL. Mirror the sidebar total's guard (trackedUsersRepo.ts):
+// only count prices for tokens that either have liquidity ≥ $5k, or are the
+// native/stable asset set that DexScreener doesn't track but are unambiguously
+// liquid (SOL/BNB/ETH/USDT/USDC...).
+const LIQUID_ASSET_MIN_LIQUIDITY_USD = 5_000;
 
 export interface WalletPnlRunResult {
   scannedRows: number;
@@ -227,9 +235,13 @@ function loadCurrentPrices(): Map<string, number> {
     .prepare(
       `SELECT chain, tracked_address_lower, token_address_lower, price_usd
        FROM current_holdings
-       WHERE price_usd IS NOT NULL AND price_usd > 0`
+       WHERE price_usd IS NOT NULL AND price_usd > 0
+         AND (
+           COALESCE(liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD}
+           OR upper(COALESCE(symbol, '')) IN (${LIQUID_ASSET_SYMBOLS.map(() => '?').join(', ')})
+         )`
     )
-    .all() as Array<{
+    .all(...([...LIQUID_ASSET_SYMBOLS] as string[])) as Array<{
     chain: string;
     tracked_address_lower: string;
     token_address_lower: string;

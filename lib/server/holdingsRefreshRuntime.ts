@@ -548,6 +548,27 @@ function readPreviousHoldings(
   }
 }
 
+/**
+ * Implausible-price gate. Robinhood equity tokens top out in the hundreds of
+ * dollars; memecoins above $1k are essentially always a feed bug (seen: MESSI
+ * HOOD at $1.9e17, COKE at $8.9e12). Majors that legitimately exceed the cap
+ * are exempted by symbol.
+ */
+const IMPLAUSIBLE_PRICE_CAP_USD = 5_000;
+const PRICE_EXEMPT_SYMBOLS = new Set([
+  'WBTC', 'BTC', 'WETH', 'ETH', 'SOL', 'BNB', 'ETHFI', 'AAVE',
+]);
+
+export function isImplausiblePrice(
+  priceUsd: number | null | undefined,
+  symbol?: string | null,
+): boolean {
+  const price = Number(priceUsd);
+  if (!Number.isFinite(price) || price <= 0) return false; // zero/invalid → handled elsewhere
+  if (price <= IMPLAUSIBLE_PRICE_CAP_USD) return false;
+  return !PRICE_EXEMPT_SYMBOLS.has((symbol ?? '').toUpperCase());
+}
+
 function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
   const insert = db.prepare(`
     INSERT OR REPLACE INTO current_holdings
@@ -558,6 +579,11 @@ function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const holding of holdings) {
+    // Price sanity gate: upstream feeds occasionally emit garbage prices
+    // (e.g. MESSI HOOD at $1.9e17) that poison totals for every holder.
+    // Stable/native majors are exempt; anything else above the cap is dropped
+    // so absence falls back to last-good data instead of a fake valuation.
+    if (isImplausiblePrice(holding.price_usd, holding.symbol)) continue;
     insert.run(
       holding.tracked_address,
       holding.tracked_address_lower,
