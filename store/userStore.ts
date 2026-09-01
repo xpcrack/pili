@@ -9,6 +9,10 @@ interface UserState {
   hasNew: Record<string, boolean>;
   // 当前选中的用户（用于弹窗）
   selectedUserId: string | null;
+  // 手动标星的交易员（true=已标星）
+  starredUserIds: Record<string, boolean>;
+  // 左侧栏「只看标星」开关
+  onlyStarred: boolean;
   
   // 操作方法
   setLastSeen: (userId: string, timestamp: number) => void;
@@ -16,6 +20,8 @@ interface UserState {
   checkAndUpdateNewStatus: (userId: string, latestActivityTime: number) => void;
   selectUser: (userId: string | null) => void;
   dismissNewForUser: (userId: string) => void;
+  toggleStarredUser: (userId: string) => void;
+  setOnlyStarred: (value: boolean) => void;
 }
 
 export const useUserStore = create<UserState>()(
@@ -24,6 +30,8 @@ export const useUserStore = create<UserState>()(
       lastSeenAt: {},
       hasNew: {},
       selectedUserId: null,
+      starredUserIds: {},
+      onlyStarred: false,
 
       setLastSeen: (userId, timestamp) => set((state) => ({
         lastSeenAt: { ...state.lastSeenAt, [userId]: timestamp }
@@ -50,11 +58,21 @@ export const useUserStore = create<UserState>()(
       dismissNewForUser: (userId) => set((state) => ({
         hasNew: { ...state.hasNew, [userId]: false },
         lastSeenAt: { ...state.lastSeenAt, [userId]: Date.now() }
-      }))
+      })),
+
+      toggleStarredUser: (userId) => set((state) => ({
+        starredUserIds: { ...state.starredUserIds, [userId]: !state.starredUserIds[userId] }
+      })),
+
+      setOnlyStarred: (value) => set({ onlyStarred: value })
     }),
     {
       name: 'web3-dashboard-storage',
-      partialize: (state) => ({ lastSeenAt: state.lastSeenAt }),
+      partialize: (state) => ({
+        lastSeenAt: state.lastSeenAt,
+        starredUserIds: state.starredUserIds,
+        onlyStarred: state.onlyStarred,
+      }),
       storage: createSafePersistStorage()
     }
   )

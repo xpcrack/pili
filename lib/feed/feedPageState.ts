@@ -50,17 +50,24 @@ export function selectMatchedFeed(params: {
   feed: FeedPageItem[];
   selectedUserId: string | null;
   searchFilters: FeedSearchFilters;
+  /** 只看标星交易员（客户端持久化的手动标星集合） */
+  starredOnly?: boolean;
+  starredUserIds?: Record<string, boolean>;
 }) {
-  const selectedUserFeed = params.selectedUserId
-    ? params.feed.filter((item) => item.user.id === params.selectedUserId)
-    : params.feed;
-  const orderedFeed = params.selectedUserId
-    ? prepareUserFeed(selectedUserFeed)
-    : prepareGlobalFeed(selectedUserFeed);
+  // 作用域：选中某人→只看该人；否则全局（可选叠加「只看标星」）。
+  // 搜索/类型筛选在作用域之上再做，且只在窗口内生效。
+  const starredUserIds = params.starredUserIds ?? {};
+  let scope = params.feed;
+  if (params.selectedUserId) {
+    scope = params.feed.filter((item) => item.user.id === params.selectedUserId);
+  } else if (params.starredOnly) {
+    scope = params.feed.filter((item) => starredUserIds[item.user.id] === true);
+  }
+  const orderedFeed = params.selectedUserId ? prepareUserFeed(scope) : prepareGlobalFeed(scope);
   const matchedFeed = orderedFeed.filter((item) => matchesFeedSearchFilters(item, params.searchFilters));
 
   return {
-    selectedUserFeed,
+    selectedUserFeed: scope,
     orderedFeed,
     matchedFeed,
     visibleUserIds: new Set(matchedFeed.map((item) => item.user.id)),
@@ -75,6 +82,8 @@ export function selectFeedPageState(params: {
   searchFilters: FeedSearchFilters;
   globalVisibleCount: number;
   selectedUserVisibleCount: number;
+  starredOnly?: boolean;
+  starredUserIds?: Record<string, boolean>;
 }) {
   const matched = selectMatchedFeed(params);
   const visibleCount = params.selectedUserId

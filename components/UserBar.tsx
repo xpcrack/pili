@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { User } from '@/types';
 import { UserAvatar } from './UserAvatar';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
-import { Activity } from 'lucide-react';
+import { Activity, Star } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useUserStore } from '@/store/userStore';
 import { getUserAvatar } from '@/lib/userProfile';
@@ -16,6 +16,8 @@ interface UserBarProps {
   selectedUserId: string | null;
   latestActivityAtByUser: Map<string, number>;
   onSelectUser: (user: User | null) => void;
+  starredUserIds: Record<string, boolean>;
+  onToggleStarredUser: (userId: string) => void;
 }
 
 function latestActivityTextColor(timestamp: number, now: number) {
@@ -30,7 +32,7 @@ function latestActivityTextColor(timestamp: number, now: number) {
   return 'text-zinc-500';
 }
 
-export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelectUser }: UserBarProps) {
+export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelectUser, starredUserIds, onToggleStarredUser }: UserBarProps) {
   const isAllSelected = selectedUserId === null;
   const hasNew = useUserStore((state) => state.hasNew);
   const [now, setNow] = useState(0);
@@ -84,6 +86,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                 user={user}
                 isSelected={selectedUserId === user.id}
                 onClick={() => onSelectUser(user)}
+                starred={starredUserIds[user.id] === true}
               />
             ))}
           </div>
@@ -126,6 +129,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
 
             {users.map((user) => {
               const isSelected = selectedUserId === user.id;
+              const isStarred = starredUserIds[user.id] === true;
               const latestActivityAt = latestActivityAtByUser.get(user.id) ?? 0;
               const latestActivityText = formatRelativeTimeCompact(latestActivityAt, now);
               const latestActivityColor = latestActivityTextColor(latestActivityAt, now);
@@ -140,7 +144,7 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                 <button
                   key={user.id}
                   onClick={() => onSelectUser(user)}
-                  className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
+                  className={`grid w-full grid-cols-[28px_minmax(0,1fr)_auto_auto_auto] items-center gap-3 rounded-[9px] border px-2 py-1.5 text-left transition-colors ${
                     isSelected
                       ? 'border-sky-400/20 bg-sky-400/[0.07] text-sky-100'
                       : 'border-transparent text-zinc-300 hover:bg-white/[0.035]'
@@ -196,6 +200,29 @@ export function UserBar({ users, selectedUserId, latestActivityAtByUser, onSelec
                       })()}
                     </span>
                   )}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={isStarred ? '取消标星' : '标星'}
+                    title={isStarred ? '取消标星' : '标星'}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleStarredUser(user.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onToggleStarredUser(user.id);
+                      }
+                    }}
+                    className={`shrink-0 cursor-pointer rounded p-0.5 transition-colors hover:bg-white/[0.06] ${
+                      isStarred ? 'text-amber-300' : 'text-zinc-600 hover:text-zinc-300'
+                    }`}
+                  >
+                    <Star className={`h-3.5 w-3.5 ${isStarred ? 'fill-amber-300' : ''}`} />
+                  </span>
                   <div className={`shrink-0 text-[10.5px] ${isSelected ? 'text-sky-300' : latestActivityColor}`}>
                     {latestActivityText}
                   </div>
