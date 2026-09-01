@@ -219,6 +219,7 @@ export function createLoopTask(options: LoopTaskOptions): TaskDefinition {
           state.status = 'error';
           state.lastError = truncateError(error);
           state.lastFinishedAt = Date.now();
+          console.error(`[runtime-task:${options.key}] cycle failed: ${truncateError(error)}`);
           // Must reschedule: otherwise a single throw leaves nextRunAt=null forever
           // (holdings-refresh died after OKX empty JSON and froze quiet-wallet bags).
           if (options.autoStart !== false && !stopped && queuedRequests.length === 0) {
