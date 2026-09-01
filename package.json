@@ -33,6 +33,7 @@
     "pnl:report": "NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/report-wallet-pnl.ts",
     "test": "tsx scripts/lib/runTests.ts",
     "check": "npx tsc --noEmit && npm test -- --filter=runtime-task-registry && npm test -- --filter=runtime-env-fallback && npm test -- --filter=runtime-data-fallback && npm test -- --filter=telegram-bridge-runtime && PATH=\"$HOME/.bun/bin:$PATH\" bun scripts/test-bun-route-compat.ts && PATH=\"$HOME/.bun/bin:$PATH\" bun scripts/test-bun-holdings-refresh.ts && PATH=\"$HOME/.bun/bin:$PATH\" bun run build",
+    "inbox:backfill": "NODE_USE_ENV_PROXY=1 HTTPS_PROXY=${HTTPS_PROXY:-http://127.0.0.1:7897} HTTP_PROXY=${HTTP_PROXY:-http://127.0.0.1:7897} NO_PROXY=${NO_PROXY:-127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12} NODE_OPTIONS='--require ./scripts/server-only-shim.cjs' tsx scripts/backfill-alchemy-inbox-api.ts",
     "db:space-report": "tsx scripts/db-space-report.ts",
     "db:space-cleanup": "tsx scripts/db-space-cleanup.ts",
     "runtime:status": "tsx scripts/runtime-mode.ts status",
