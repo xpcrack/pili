@@ -42,6 +42,10 @@ const MAX_GLOBAL_FEED_ITEMS = FEED_PAGE_BATCH_SIZE;
 const MIN_SELECTED_USER_FEED_ITEMS = FEED_PAGE_BATCH_SIZE;
 const FEED_TIME_DISPLAY_MODE_STORAGE_KEY = 'pilipili:feed-time-display-mode';
 const TRADE_VALUE_DISPLAY_MODE_STORAGE_KEY = 'pilipili:trade-value-display-mode';
+// 筛选/只看标星视图下，一旦匹配数低于该阈值就自动续拉，直到凑够 ~一屏或 hasMore=false。
+// 解决「只看标星」时初始窗口匹配稀疏 → 页面不增高 → 滚动 sentinel 永远不触发 → 无法加载更多。
+const FILTERED_FEED_AUTO_LOAD_MIN = 20;
+const FILTERED_FEED_AUTO_LOAD_MAX_ROUNDS = 5;
 
 function getActivityRenderKey(userId: string, activityId: string, scopedKey: string) {
   return scopedKey ? `${scopedKey}::${activityId}` : `${userId}:${activityId}`;
@@ -118,6 +122,8 @@ export default function Home() {
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const handleLoadMoreRef = useRef<() => void>(() => {});
+  /** 只看标星/筛选时自动续拉的连续轮次计数，避免极端情况下死循环拉空。 */
+  const autoLoadMoreRoundsRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -254,6 +260,7 @@ export default function Home() {
     setSelectedUserVisibleCount(MIN_SELECTED_USER_FEED_ITEMS);
     setExpandFeedback(null);
     setIsExpanding(false);
+    autoLoadMoreRoundsRef.current = 0;
   };
 
   // 处理选择用户
@@ -436,6 +443,39 @@ export default function Home() {
       observer.disconnect();
     };
   }, [hasMore, isInitialLoading]);
+
+  // 只看标星 / 筛选视图下，匹配结果可能极稀疏（甚至初始窗口为 0），导致
+  // filteredFeed 不增长 → 页面不增高 → 滚动 sentinel 永远停在视口内 → 无法再加载。
+  // 这里在「筛选视图 + 结果 < 阈值 + 还有更多」时自动续拉，直到凑够或 hasMore=false。
+  useEffect(() => {
+    if (!isClient) return;
+    if (!hasMore || isInitialLoading || isExpanding || loading) return;
+    // 仅作用于筛选/只看标星/只看高手这类「稀疏结果」视图；普通全量 feed 交给滚动 sentinel。
+    const isSparseView = Boolean(selectedUserId) || onlyStarred || highQualityOnly || hasActiveLocalFilters;
+    if (!isSparseView) {
+      autoLoadMoreRoundsRef.current = 0;
+      return;
+    }
+    if (filteredFeed.length >= FILTERED_FEED_AUTO_LOAD_MIN) {
+      autoLoadMoreRoundsRef.current = 0;
+      return;
+    }
+    if (autoLoadMoreRoundsRef.current >= FILTERED_FEED_AUTO_LOAD_MAX_ROUNDS) return;
+    autoLoadMoreRoundsRef.current += 1;
+    handleLoadMoreRef.current();
+    // 依赖 hasMore 变化后重新评估；轮次计数防止极端死循环。
+  }, [
+    filteredFeed.length,
+    hasActiveLocalFilters,
+    hasMore,
+    highQualityOnly,
+    isClient,
+    isExpanding,
+    isInitialLoading,
+    loading,
+    onlyStarred,
+    selectedUserId,
+  ]);
 
   if (!isClient) {
     return (
