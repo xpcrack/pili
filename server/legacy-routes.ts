@@ -2,7 +2,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono } from 'hono';
 import { NextRequest } from '@/lib/server/httpCompat';
 
-type RouteMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type RouteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 type RouteModule = Record<string, unknown>;
 
 interface LegacyRouteDefinition {
@@ -18,9 +18,16 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'POST', path: '/feed/prewarm', load: () => import('@/app/api/feed/prewarm/route') },
   { method: 'POST', path: '/users/import', load: () => import('@/app/api/users/import/route') },
   { method: 'GET', path: '/users/:id', load: () => import('@/app/api/users/[id]/route') },
+  { method: 'GET', path: '/users/:id/insights', load: () => import('@/app/api/users/[id]/insights/route') },
   { method: 'GET', path: '/ranking', load: () => import('@/app/api/ranking/route') },
   { method: 'GET', path: '/sync', load: () => import('@/app/api/sync/route') },
   { method: 'POST', path: '/sync', load: () => import('@/app/api/sync/route') },
+  { method: 'POST', path: '/fomo/token', load: () => import('@/app/api/fomo/token/route') },
+  { method: 'GET', path: '/fomo/bind', load: () => import('@/app/api/fomo/bind/route') },
+  { method: 'POST', path: '/fomo/bind', load: () => import('@/app/api/fomo/bind/route') },
+  { method: 'PUT', path: '/fomo/bind', load: () => import('@/app/api/fomo/bind/route') },
+  { method: 'GET', path: '/fomo/status', load: () => import('@/app/api/fomo/status/route') },
+  { method: 'POST', path: '/fomo/status', load: () => import('@/app/api/fomo/status/route') },
   { method: 'GET', path: '/internal/bid/users', load: () => import('@/app/api/internal/bid/users/route') },
   { method: 'GET', path: '/internal/bid/trades', load: () => import('@/app/api/internal/bid/trades/route') },
   { method: 'GET', path: '/internal/bid/onchain-events', load: () => import('@/app/api/internal/bid/onchain-events/route') },

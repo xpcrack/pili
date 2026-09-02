@@ -11,6 +11,8 @@ import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
 import { runTradeSignalCycle } from '@/lib/server/tradeSignalService';
 import { runWalletPnlCycle } from '@/lib/server/walletPnlService';
 import { runTwitterIdentityBackfillCycle } from '@/lib/server/twitterIdentityBackfillRuntime';
+import { runFomoTradesCycle, runFomoPositionsCycle, runFomoStatsCycle } from '@/lib/server/fomoRuntime';
+import { runSpendMonitorCycle } from '@/lib/server/spendMonitorRuntime';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
 
@@ -327,6 +329,10 @@ interface DefaultRuntimeTaskDeps {
   runWalletPnlCycle?: typeof runWalletPnlCycle;
   runTradeSignalCycle?: typeof runTradeSignalCycle;
   runTwitterIdentityBackfillCycle?: typeof runTwitterIdentityBackfillCycle;
+  runFomoTradesCycle?: typeof runFomoTradesCycle;
+  runFomoPositionsCycle?: typeof runFomoPositionsCycle;
+  runFomoStatsCycle?: typeof runFomoStatsCycle;
+  runSpendMonitorCycle?: typeof runSpendMonitorCycle;
   syncFeishuEnablement?: typeof syncFeishuEnablementFromNewone;
 }
 
@@ -347,6 +353,10 @@ export function createDefaultRuntimeTasks(
   const runTradeSignalCycleImpl = deps.runTradeSignalCycle ?? runTradeSignalCycle;
   const runTwitterIdentityBackfillCycleImpl =
     deps.runTwitterIdentityBackfillCycle ?? runTwitterIdentityBackfillCycle;
+  const runFomoTradesCycleImpl = deps.runFomoTradesCycle ?? runFomoTradesCycle;
+  const runFomoPositionsCycleImpl = deps.runFomoPositionsCycle ?? runFomoPositionsCycle;
+  const runFomoStatsCycleImpl = deps.runFomoStatsCycle ?? runFomoStatsCycle;
+  const runSpendMonitorCycleImpl = deps.runSpendMonitorCycle ?? runSpendMonitorCycle;
   const syncEnablement = deps.syncFeishuEnablement ?? syncFeishuEnablementFromNewone;
 
   const tasks: TaskDefinition[] = [];
@@ -545,6 +555,24 @@ export function createDefaultRuntimeTasks(
         },
       })
     );
+
+    // 花费监控：检测重点人物（默认 ROP）的「净花费」——做 LP / 买入时必付的
+    // quote/native 币。GMGN wallet_activity 与 Alchemy webhook 都不认这类动作、
+    // 但余额必然变化，故用 OKX 交易接口轮询净花费达阈值即通知。仅后台 worker 跑。
+    tasks.push(
+      createLoopTask({
+        key: 'spend-monitor',
+        label: 'Spend Monitor',
+        cycle: async () => {
+          const result = await runSpendMonitorCycleImpl();
+          return {
+            sleepMs: result.sleepMs,
+            status: result.status,
+            detail: result.detail,
+          };
+        },
+      })
+    );
   }
 
   if (options.embedTelegramTasks !== false) {
@@ -575,6 +603,53 @@ export function createDefaultRuntimeTasks(
       label: 'Twitter Identity Backfill',
       cycle: async () => {
         const result = await runTwitterIdentityBackfillCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
+        };
+      },
+    })
+  );
+
+  // FOMO(fomo.family) 数据接入：成交轮询（含喊单投影）、持仓快照、7d 战绩。
+  // 依赖 tracked_users.fomo_user_id 绑定 + admin 端点推送的 JWT；未绑定时 idle 空转。
+  tasks.push(
+    createLoopTask({
+      key: 'fomo-trades',
+      label: 'FOMO Trades',
+      cycle: async () => {
+        const result = await runFomoTradesCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
+        };
+      },
+    })
+  );
+
+  tasks.push(
+    createLoopTask({
+      key: 'fomo-positions',
+      label: 'FOMO Positions',
+      cycle: async () => {
+        const result = await runFomoPositionsCycleImpl();
+        return {
+          sleepMs: result.sleepMs,
+          status: result.status,
+          detail: result.detail,
+        };
+      },
+    })
+  );
+
+  tasks.push(
+    createLoopTask({
+      key: 'fomo-stats',
+      label: 'FOMO Stats',
+      cycle: async () => {
+        const result = await runFomoStatsCycleImpl();
         return {
           sleepMs: result.sleepMs,
           status: result.status,

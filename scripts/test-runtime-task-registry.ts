@@ -467,8 +467,12 @@ async function testDefaultTaskOrderIsStable() {
       'position-delta-fill',
       'wallet-pnl',
       'trade-signal',
+      'spend-monitor',
       'telegram-bridge',
       'twitter-identity-backfill',
+      'fomo-trades',
+      'fomo-positions',
+      'fomo-stats',
     ]
   );
 
@@ -528,7 +532,11 @@ async function testDefaultTaskOrderIsStable() {
     'position-delta-fill',
     'wallet-pnl',
     'trade-signal',
+    'spend-monitor',
     'twitter-identity-backfill',
+    'fomo-trades',
+    'fomo-positions',
+    'fomo-stats',
   ]);
 
   // The web runtime opts out explicitly: PnL is a synchronous full-history walk

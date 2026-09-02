@@ -1486,6 +1486,7 @@ function initializeDb(db: SqlDatabase) {
       db.exec('DROP TABLE user_pnl_stats');
     }
     db.exec(SCHEMA_SQL);
+    db.exec(FOMO_SCHEMA_SQL);
     ensureTelegramChannelSourceColumns(db);
     ensureTelegramChannelPostSchema(db);
     ensureTelegramMonitorEventColumns(db);
@@ -1495,6 +1496,7 @@ function initializeDb(db: SqlDatabase) {
     ensureActivityJudgmentColumns(db);
     ensureTwitterSyncCursorColumns(db);
     ensureTwitterIdentityColumns(db);
+    ensureFomoIdentityColumns(db);
     ensureTwitterEnrichmentColumns(db);
     ensureTelegramsJsonColumn(db);
     ensureMonitoringEnabledColumns(db);
@@ -1818,6 +1820,65 @@ function ensureTwitterIdentityColumns(db: SqlDatabase) {
      ON twitter_tweets(author_user_id, created_at_ms DESC)`
   );
 }
+
+/** FOMO 身份映射列：把 FOMO 侧 user id/handle 挂到 tracked_users 上。 */
+function ensureFomoIdentityColumns(db: SqlDatabase) {
+  ensureColumn(db, 'tracked_users', 'fomo_user_id', 'TEXT');
+  ensureColumn(db, 'tracked_users', 'fomo_handle', 'TEXT');
+}
+
+/** FOMO 数据表：成交、持仓时间序列、用户战绩。沿用 CREATE TABLE IF NOT EXISTS 模式。 */
+const FOMO_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS fomo_trades (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  user_handle TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_symbol TEXT,
+  network_id INTEGER,
+  chain TEXT,
+  side TEXT NOT NULL,
+  human_token_amount REAL,
+  avg_entry_price REAL,
+  avg_exit_price REAL,
+  realized_pnl_usd REAL,
+  sum_swap_open REAL,
+  sum_swap_closed REAL,
+  opened_at INTEGER,
+  closed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  event_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fomo_trades_user_closed
+ON fomo_trades(user_id, closed_at DESC);
+
+CREATE TABLE IF NOT EXISTS fomo_position_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  token_address TEXT NOT NULL,
+  token_symbol TEXT,
+  human_amount REAL,
+  value_usd REAL,
+  pnl_usd REAL,
+  network_id INTEGER,
+  chain TEXT,
+  snapshot_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fomo_position_snapshots_user_token_ts
+ON fomo_position_snapshots(user_id, token_address, snapshot_at DESC);
+
+CREATE TABLE IF NOT EXISTS fomo_user_stats (
+  user_id TEXT PRIMARY KEY,
+  user_handle TEXT NOT NULL,
+  realized_pnl_7d_usd REAL,
+  win_rate_7d REAL,
+  num_trades_7d INTEGER,
+  total_volume_7d REAL,
+  snapshot_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
 
 function ensureTwitterEnrichmentColumns(db: SqlDatabase) {
   ensureColumn(db, 'twitter_tweet_enrichments', 'quoted_translation_zh', 'TEXT');
