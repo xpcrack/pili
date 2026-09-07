@@ -447,12 +447,18 @@ export function queueCompletenessPoke(input: {
   return Number(result.lastInsertRowid);
 }
 
+/**
+ * O5: 崩溃恢复窗口——claimed_at 早于该 cutoff 的 poke 视为死认领，可重新认领。
+ * read 与 claim 必须共用同一 cutoff：口径漂移会让 read 永远选中却永远
+ * claim 不到的队头（2026-09 之前 read/claim 各写一份 10min 曾导致
+ * timeline 维护整体饿死，见 run 36160 后的停摆）。
+ */
+export const POKE_CLAIM_STALE_MS = 10 * 60_000;
+
 export function readPendingCompletenessPokes(limit: number): CompletenessPokeRow[] {
   const db = getDb();
   const safeLimit = Math.max(1, Math.floor(limit));
-  // O5: 崩溃恢复——claim 后进程崩溃的 pokes（claimed_at 超过 10 分钟）重新可认领，
-  // 否则这批记录会永久滞留 claimed 态。interval sweep 本身是兜底，这只是加速恢复。
-  const staleClaimCutoff = Date.now() - 10 * 60_000;
+  const staleClaimCutoff = Date.now() - POKE_CLAIM_STALE_MS;
   const rows = db
     .prepare(
       `SELECT id, trigger, source_hint, reason, created_at, claimed_at
@@ -496,11 +502,11 @@ export function claimCompletenessPokes(ids: number[], claimedAt: number): number
     .prepare(
     `UPDATE completeness_pokes
      SET claimed_at = ?
-     WHERE claimed_at IS NULL
+     WHERE (claimed_at IS NULL OR claimed_at < ?)
        AND id IN (${placeholders})
      RETURNING id`
   )
-    .all(normalizedClaimedAt, ...normalizedIds) as Array<{ id: number }>;
+    .all(normalizedClaimedAt, normalizedClaimedAt - POKE_CLAIM_STALE_MS, ...normalizedIds) as Array<{ id: number }>;
   return claimedRows
     .map((row) => normalizePositiveInteger(row.id))
     .filter((id): id is number => typeof id === 'number');

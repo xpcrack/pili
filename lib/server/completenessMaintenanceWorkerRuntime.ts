@@ -74,8 +74,14 @@ const HOLDINGS_REFRESH_INTERVAL_MS =
       })();
 // B4: 刷新失败后的短重试间隔（5 分钟），避免等完整周期。
 const HOLDINGS_REFRESH_RETRY_MS = 5 * 60_000;
-
-walletActivityBackfillQueue.setShouldPause(() => countPendingLiveDoorbells() > 0);
+/** Backfill yields to live traffic only when doorbell backlog is significant.
+ * 阈值必须高于稳态积压：活跃交易者持续 ring + nack 重试使队列常驻在
+ * claim limit（40）附近；用 >0 判定会让 timeline 回填永久饿死
+ * （2026-07 底至 09 初实际停摆）。 */
+const DOORBELL_PENDING_BACKFILL_PAUSE = 100;
+walletActivityBackfillQueue.setShouldPause(
+  () => countPendingLiveDoorbells() > DOORBELL_PENDING_BACKFILL_PAUSE
+);
 
 function walletTimelineMaintenanceEnabled() {
   // pili is the complete local database for observed wallets. The rolling
@@ -95,8 +101,11 @@ async function runWalletTimelineMaintenance() {
     console.log('[completeness-worker] wallet-timeline-maintenance skip (self-holdings recovery)');
     return { sweep: null, walletBackfill: null };
   }
-  if (countPendingLiveDoorbells() > 0) {
-    console.log('[completeness-worker] wallet-timeline-maintenance skip (live doorbells pending)');
+  const pendingDoorbells = countPendingLiveDoorbells();
+  if (pendingDoorbells > DOORBELL_PENDING_BACKFILL_PAUSE) {
+    console.log(
+      `[completeness-worker] wallet-timeline-maintenance skip (live doorbells pending=${pendingDoorbells})`
+    );
     return { sweep: null, walletBackfill: null };
   }
   // 冷却守卫：GMGN 冷却期完全不 drain（sweep 也跳过——sweep 只是入队，
