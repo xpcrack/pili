@@ -45,6 +45,24 @@ const LOG_PREFIX = '[bridge]';
 // REALERT_MS 节流，避免隧道挂一整晚时 Bark 被轰炸）。
 const GETUPDATES_ALERT_THRESHOLD = 5;
 const GETUPDATES_REALERT_MS = 30 * 60 * 1000;
+// 批内并发度：一批 getUpdates 里的 updates 用 worker 池并发 ingest。
+// 2026-09-09 审计（scripts/oneoff/latency-audit-2026-09-08.ts）：近14天
+// 入桥延迟 p90=2.11h；backlog 消化期串行仅 5-6 条/min，高峰期生产 6+/min
+// → 追平无限慢。并发 3 + cursor 批量提交是第一步吞吐修复。
+const INGEST_CONCURRENCY = Math.max(
+  1,
+  Number.parseInt(process.env.TELEGRAM_INGEST_CONCURRENCY || '3', 10) || 3
+);
+// lag watchdog：连续 N 批平均 lag 超阈值 → Bark「TG 通道积压」。
+const LAG_ALERT_THRESHOLD_SEC = Math.max(
+  60,
+  Number.parseInt(process.env.TELEGRAM_LAG_ALERT_SEC || '300', 10) || 300
+);
+const LAG_ALERT_CONSECUTIVE_BATCHES = Math.max(
+  2,
+  Number.parseInt(process.env.TELEGRAM_LAG_ALERT_BATCHES || '3', 10) || 3
+);
+const LAG_REALERT_MS = 30 * 60 * 1000;
 const TELEGRAM_BRIDGE_CAPTURE_DIR = path.join(process.cwd(), '.data', 'telegram-bridge-captures');
 const TWITTER_RAW_CAPTURE_FILE = path.join(TELEGRAM_BRIDGE_CAPTURE_DIR, 'twitter-relay-raw.ndjson');
 // Default 60s (was 30min). Per-user due still gated by systemConfig
@@ -126,6 +144,9 @@ const PROXY_POOL = readTelegramBotApiProxyList();
 // 断流告警状态（进程内）：连续失败计数 + 上次 Bark 时间。
 let consecutiveGetUpdatesErrors = 0;
 let lastOutageAlertAtMs = 0;
+// lag watchdog 状态：连续高滞后批计数 + 上次 Bark 时间。
+let consecutiveHighLagBatches = 0;
+let lastLagAlertAtMs = 0;
 
 async function alertGetUpdatesOutage(reason: string) {
   const now = Date.now();
@@ -141,6 +162,38 @@ async function alertGetUpdatesOutage(reason: string) {
     group: 'pili-bridge',
     level: 'timeSensitive',
   }).catch(() => {});
+}
+
+/**
+ * lag watchdog：本批消息的「 TG 消息时间 → 落库时间」平均滞后。
+ * 连续 N 批（LAG_ALERT_CONSECUTIVE_BATCHES）超阈值（LAG_ALERT_THRESHOLD_SEC）
+ * → Bark「TG 通道积压」。批间不重置（只有低滞后批才清零），一条 30min
+ * REALERT 节流防轰炸。消息时间取 update.message.date / channel_post.date。
+ */
+async function checkBatchLag(lagsSec: number[]) {
+  if (lagsSec.length === 0) return;
+  const avgLag = lagsSec.reduce((sum, v) => sum + v, 0) / lagsSec.length;
+  if (avgLag * 1000 >= LAG_ALERT_THRESHOLD_SEC * 1000) {
+    consecutiveHighLagBatches += 1;
+    if (consecutiveHighLagBatches >= LAG_ALERT_CONSECUTIVE_BATCHES) {
+      const now = Date.now();
+      const throttled = now - lastLagAlertAtMs < LAG_REALERT_MS;
+      if (!throttled) {
+        lastLagAlertAtMs = now;
+        console.error(
+          `${LOG_PREFIX} ALERT: TG ingest backlog (avg lag ${avgLag.toFixed(0)}s over ${consecutiveHighLagBatches} batches, n=${lagsSec.length})`
+        );
+        void pushBark({
+          title: '⚠️ pili TG 通道积压',
+          body: `bridge 落后 ${Math.round(avgLag / 60)}min（连续 ${consecutiveHighLagBatches} 批，本批 ${lagsSec.length} 条）。同车提醒会延迟。`,
+          group: 'pili-bridge',
+          level: 'timeSensitive',
+        }).catch(() => {});
+      }
+    }
+  } else {
+    consecutiveHighLagBatches = 0;
+  }
 }
 
 const telegramApi = createTelegramBotApiClient({
@@ -217,6 +270,8 @@ async function bootstrap() {
   console.log(`${LOG_PREFIX} ingest mode: direct sqlite-backed services`);
 }
 
+// 2026-09-09 吞吐改造后 cursor 改为批级提交（见主循环 batchMaxUpdateId），
+// 此函数仅保留给 shutdown 等非热路径使用。
 function rememberProcessedUpdate(updateId: number | undefined) {
   if (typeof updateId !== 'number' || !Number.isFinite(updateId)) {
     return;
@@ -339,22 +394,55 @@ async function main() {
       }
       consecutiveGetUpdatesErrors = 0;
 
-      for (const update of updates) {
+      // 批内并发 ingest：processUpdate 的耗时大头是每条 1-2 次同步 sqlite
+      // 写（cursor/lease/status）+ projection，串行仅 5-6 条/min，backlog
+      // 消化期被高峰生产速率追平。改 worker 池并发（INGEST_CONCURRENCY），
+      // offset 只取本批最大 update_id（Telegram getUpdates 语义允许一次
+      // 确认整批），单条失败仍不卡批（8/12 死锁教训保留）。
+      const batchLagsSec: number[] = [];
+      let batchPoked = 0;
+      let batchMaxUpdateId: number | null = null;
+
+      const processOne = async (update: TelegramUpdateLike) => {
         const updateId =
           typeof update.update_id === 'number' && Number.isFinite(update.update_id)
             ? Math.floor(update.update_id)
             : null;
-        const nextOffset = typeof updateId === 'number' ? updateId + 1 : offset;
-        // 单条 update 失败绝不能卡死整批：任何异常（DexScreener 富化、
-        // SQLite busy 等）若中断批次会让 offset 停在失败处，下轮重拉同一批
-        // 又撞同一条坏消息 → 永久死锁、pending 无限堆积（8/12 断供根因）。
-        let result: Awaited<ReturnType<typeof processUpdate>> | null = null;
-        try {
-          result = await processUpdate(update);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`${LOG_PREFIX} update ${updateId ?? '?'} failed, skipped: ${message}`);
+        const message = extractMessage(update);
+        const msgDateSec = message?.date;
+        if (typeof msgDateSec === 'number' && msgDateSec > 0) {
+          batchLagsSec.push(Date.now() / 1000 - msgDateSec);
         }
+        try {
+          return { updateId, result: await processUpdate(update) };
+        } catch (error) {
+          const message2 = error instanceof Error ? error.message : String(error);
+          console.error(`${LOG_PREFIX} update ${updateId ?? '?'} failed, skipped: ${message2}`);
+          return { updateId, result: null };
+        }
+      };
+
+      const results: Awaited<ReturnType<typeof processOne>>[] = [];
+      if (INGEST_CONCURRENCY <= 1) {
+        for (const update of updates) {
+          results.push(await processOne(update));
+        }
+      } else {
+        let cursor = 0;
+        const workers = Array.from(
+          { length: Math.min(INGEST_CONCURRENCY, Math.max(updates.length, 1)) },
+          async () => {
+            while (cursor < updates.length) {
+              const index = cursor;
+              cursor += 1;
+              results.push(await processOne(updates[index]));
+            }
+          }
+        );
+        await Promise.all(workers);
+      }
+
+      for (const { updateId, result } of results) {
         if (result) {
           if (result.kind === 'telegram-monitor') {
             if ('ignored' in result.result && result.result.ignored) {
@@ -362,11 +450,7 @@ async function main() {
                 `${LOG_PREFIX} monitor ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
               );
             } else {
-              queueCompletenessPoke({
-                trigger: 'ingest',
-                sourceHint: 'telegram-bridge',
-                reason: 'telegram monitor ingest',
-              });
+              batchPoked += 1;
               const feedMode =
                 'feedMode' in result.result && result.result.feedMode
                   ? String(result.result.feedMode)
@@ -383,11 +467,7 @@ async function main() {
                 `${LOG_PREFIX} twitter-relay ignored chat=${result.chatId} source=${result.source} reason=${result.result.reason} preview=${result.preview}`
               );
             } else {
-              queueCompletenessPoke({
-                trigger: 'ingest',
-                sourceHint: 'telegram-bridge',
-                reason: 'telegram twitter relay ingest',
-              });
+              batchPoked += 1;
               console.log(
                 `${LOG_PREFIX} twitter-relay ingested chat=${result.chatId} source=${result.source} tweet=${result.payload.tweetId || '-'} projected=${result.result.projectedCount} preview=${result.preview}`
               );
@@ -403,9 +483,26 @@ async function main() {
           }
         }
 
-        rememberProcessedUpdate(updateId ?? undefined);
-        offset = nextOffset;
+        if (typeof updateId === 'number') {
+          batchMaxUpdateId = Math.max(batchMaxUpdateId ?? updateId, updateId);
+        }
       }
+
+      // 批级提交：cursor 一次、poke 一次、心跳一次（原来每条 2-3 次写）。
+      if (batchMaxUpdateId !== null) {
+        lastProcessedUpdateId = Math.max(lastProcessedUpdateId, batchMaxUpdateId);
+        saveTelegramIngestCursor(WORKER_KEY, lastProcessedUpdateId);
+        offset = batchMaxUpdateId + 1;
+        setStatus('running');
+      }
+      if (batchPoked > 0) {
+        queueCompletenessPoke({
+          trigger: 'ingest',
+          sourceHint: 'telegram-bridge',
+          reason: 'telegram monitor ingest',
+        });
+      }
+      await checkBatchLag(batchLagsSec);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus('error', message);
