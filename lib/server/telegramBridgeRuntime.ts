@@ -3,7 +3,7 @@ import 'server-only';
 import { ingestTelegramMonitorUpdate } from '@/lib/server/telegramMonitorIngest';
 import {
   createTelegramBotApiClient,
-  readTelegramBotApiProxyUrl,
+  readTelegramBotApiProxyList,
 } from '@/lib/server/telegramBotApi';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
@@ -79,7 +79,7 @@ function rememberProcessedUpdate(updateId: number | null) {
 async function telegramApi<T>(method: string, body?: Record<string, unknown>) {
   return createTelegramBotApiClient({
     token: readBridgeBotToken(),
-    proxyUrl: readTelegramBotApiProxyUrl(),
+    proxyUrl: readTelegramBotApiProxyList(),
   })<T>(method, body);
 }
 

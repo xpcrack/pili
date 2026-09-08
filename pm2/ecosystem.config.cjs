@@ -87,6 +87,10 @@ module.exports = {
         HTTPS_PROXY: 'http://127.0.0.1:7897',
         ALL_PROXY: 'http://127.0.0.1:7897',
         NO_PROXY: '127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12',
+        // 代理池：getUpdates 网络错误时按顺序 failover。7897 是 Clash
+        // 默认组；17890-17894 是 Clash listeners 绑的固定地区出口 IP，
+        // 单条隧道抽风时自动切另一个出口。2026-09-08 加。
+        TELEGRAM_BOT_API_PROXY_POOL: 'http://127.0.0.1:7897,http://127.0.0.1:17890,http://127.0.0.1:17891',
       },
       autorestart: true,
       kill_timeout: 10000,

@@ -4,8 +4,9 @@ import path from 'node:path';
 import { ingestTelegramMonitorUpdate } from '@/lib/server/telegramMonitorIngest';
 import {
   createTelegramBotApiClient,
-  readTelegramBotApiProxyUrl,
+  readTelegramBotApiProxyList,
 } from '@/lib/server/telegramBotApi';
+import { pushBark } from '@/lib/server/barkNotify';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
 import { ingestTwitterRelayPayload } from '@/lib/server/twitterRelayIngest';
 import { runTwitterSyncAction } from '@/lib/server/twitterSyncService';
@@ -40,6 +41,10 @@ const WORKER_LEASE_TTL_MS = 90_000;
 const WORKER_HEARTBEAT_MS = 30_000;
 const WORKER_KEY = 'telegram-bridge';
 const LOG_PREFIX = '[bridge]';
+// 连续 N 次 getUpdates 失败 → Bark 告警「TG 通道断流」（告警一次后按
+// REALERT_MS 节流，避免隧道挂一整晚时 Bark 被轰炸）。
+const GETUPDATES_ALERT_THRESHOLD = 5;
+const GETUPDATES_REALERT_MS = 30 * 60 * 1000;
 const TELEGRAM_BRIDGE_CAPTURE_DIR = path.join(process.cwd(), '.data', 'telegram-bridge-captures');
 const TWITTER_RAW_CAPTURE_FILE = path.join(TELEGRAM_BRIDGE_CAPTURE_DIR, 'twitter-relay-raw.ndjson');
 // Default 60s (was 30min). Per-user due still gated by systemConfig
@@ -117,9 +122,37 @@ function captureRawTwitterLikeUpdate(
   );
 }
 
+const PROXY_POOL = readTelegramBotApiProxyList();
+// 断流告警状态（进程内）：连续失败计数 + 上次 Bark 时间。
+let consecutiveGetUpdatesErrors = 0;
+let lastOutageAlertAtMs = 0;
+
+async function alertGetUpdatesOutage(reason: string) {
+  const now = Date.now();
+  const throttled = now - lastOutageAlertAtMs < GETUPDATES_REALERT_MS;
+  if (consecutiveGetUpdatesErrors < GETUPDATES_ALERT_THRESHOLD || throttled) {
+    return;
+  }
+  lastOutageAlertAtMs = now;
+  console.error(`${LOG_PREFIX} ALERT: TG getUpdates outage (${consecutiveGetUpdatesErrors} consecutive failures): ${reason}`);
+  void pushBark({
+    title: '⚠️ pili TG 通道断流',
+    body: `bridge 连续 ${consecutiveGetUpdatesErrors} 次 getUpdates 失败（代理池 ${PROXY_POOL.join(', ') || '无'}）。同车提醒会延迟。原因: ${reason.slice(0, 160)}`,
+    group: 'pili-bridge',
+    level: 'timeSensitive',
+  }).catch(() => {});
+}
+
 const telegramApi = createTelegramBotApiClient({
   token: BRIDGE_BOT_TOKEN,
-  proxyUrl: readTelegramBotApiProxyUrl(),
+  proxyUrl: PROXY_POOL,
+  onNetworkFailure: ({ attempt, proxy, error }) => {
+    if (attempt >= (Number(process.env.TG_BOT_API_MAX_ATTEMPTS) || 3)) {
+      // 一轮完整调用耗尽重试才算一次「失败」，计数在主循环的 catch 里做。
+      return;
+    }
+    console.warn(`${LOG_PREFIX} getUpdates attempt ${attempt} failed via ${proxy ?? 'direct'}: ${error.slice(0, 160)}`);
+  },
 });
 
 async function runTwitterSyncFallback(reason: 'startup' | 'interval') {
@@ -299,6 +332,13 @@ async function main() {
         allowed_updates: ['message', 'channel_post', 'edited_message', 'edited_channel_post'],
       });
 
+      if (consecutiveGetUpdatesErrors > 0) {
+        console.log(
+          `${LOG_PREFIX} getUpdates recovered after ${consecutiveGetUpdatesErrors} consecutive failures`
+        );
+      }
+      consecutiveGetUpdatesErrors = 0;
+
       for (const update of updates) {
         const updateId =
           typeof update.update_id === 'number' && Number.isFinite(update.update_id)
@@ -370,6 +410,11 @@ async function main() {
       const message = error instanceof Error ? error.message : String(error);
       setStatus('error', message);
       console.error(`${LOG_PREFIX} error: ${message}`);
+      consecutiveGetUpdatesErrors += 1;
+      // 仅当 getUpdates 本身因网络错误抛出（含代理池 failover 耗尽）时告警。
+      if (/getUpdates network failed/i.test(message)) {
+        void alertGetUpdatesOutage(message);
+      }
       await sleep(RETRY_DELAY_MS);
     }
   }

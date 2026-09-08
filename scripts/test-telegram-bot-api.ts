@@ -111,6 +111,39 @@ async function main() {
     assert.equal(calls, 1, '业务错误不应重试');
   }
 
+  // 代理池 failover：第一根代理抽风 → 重建代理到池中第二个并成功。
+  // 2026-09-08 补：bridge 由单一 7897 改为代理池后应自动切代理。
+  {
+    const agentLog: string[] = [];
+    let calls = 0;
+    const failoverClient = createTelegramBotApiClient({
+      token: 'test-token',
+      proxyUrl: ['http://127.0.0.1:7897', 'http://127.0.0.1:17890'],
+      maxAttempts: 3,
+      createProxyAgent: (url) => {
+        agentLog.push(url);
+        return { kind: 'proxy-agent', url } as never;
+      },
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        const current = agentLog[agentLog.length - 1];
+        if (current === 'http://127.0.0.1:7897') {
+          throw makeNetworkError('ECONNRESET', 'Client network socket disconnected before secure TLS connection was established');
+        }
+        assert.ok(init?.dispatcher, '切到新代理后应携带新 dispatcher');
+        return new Response(JSON.stringify({ ok: true, result: { update_id: 1 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    const retryResult = await failoverClient<{ update_id: number }>('getUpdates');
+    assert.equal(retryResult.update_id, 1);
+    assert.ok(agentLog.includes('http://127.0.0.1:7897'), '应轮过第一根代理');
+    assert.ok(agentLog.includes('http://127.0.0.1:17890'), '应切到第二根代理');
+    assert.ok(calls >= 2, '网络错误后应重试');
+  }
+
   console.log('telegram bot api tests: ok');
 }
 
