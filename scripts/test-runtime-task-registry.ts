@@ -470,9 +470,6 @@ async function testDefaultTaskOrderIsStable() {
       'spend-monitor',
       'telegram-bridge',
       'twitter-identity-backfill',
-      'fomo-trades',
-      'fomo-positions',
-      'fomo-stats',
     ]
   );
 
@@ -534,9 +531,6 @@ async function testDefaultTaskOrderIsStable() {
     'trade-signal',
     'spend-monitor',
     'twitter-identity-backfill',
-    'fomo-trades',
-    'fomo-positions',
-    'fomo-stats',
   ]);
 
   // The web runtime opts out explicitly: PnL is a synchronous full-history walk
