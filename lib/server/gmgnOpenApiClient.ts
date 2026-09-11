@@ -21,6 +21,8 @@ import {
   isGmgnBanMessage,
   noteGmgnBan,
   noteGmgnEgressBan,
+  noteGmgnEgressNetworkError,
+  noteGmgnEgressNetworkSuccess,
   noteGmgnError,
 } from '@/lib/server/gmgnRateLimit';
 import { recordGmgnRequest } from '@/lib/server/gmgnMetrics';
@@ -604,6 +606,7 @@ export class GmgnOpenApiClient {
     let released = false;
     const markSuccess = () => {
       released = true;
+      if (effectiveProxy) noteGmgnEgressNetworkSuccess(effectiveProxy);
       this.pool.markSuccess(key);
     };
     const markRateLimit = (waitSec?: number) => {
@@ -666,6 +669,10 @@ export class GmgnOpenApiClient {
         res = (await undiciFetch(url, fetchInit as never)) as unknown as Response;
       } catch (e) {
         markError();
+        // Attempt-level signal: the lane itself failed before an HTTP answer.
+        // Consecutive failures park the lane for 60s so the work migrates to
+        // other egress ports instead of burning bucket quota on a dead node.
+        noteGmgnEgressNetworkError(effectiveProxy ?? '');
         recordGmgnRequest({ ok: false, path: subPath, error: 'network' });
         throw e;
       }
