@@ -335,11 +335,84 @@ export function assertGmgnAllowed(nowMs = Date.now()): void {
   }
 }
 
+// --- per-egress network-flap breaker (in-process only) ---
+//
+// Evidence 2026-09-11: the majority of GMGN failures in the shared
+// request-events.jsonl were `network` (TLS/proxy flap), not bans. A sick Clash
+// node keeps answering url-test's ipify probe while every real GMGN request
+// through it fails — and each failure burns bucket quota. This breaker parks
+// such a lane for 60s so work migrates to the other egress ports.
+//
+// Deliberately in-process and NOT written to the shared ban-cooldown files:
+// those follow the three-writer protocol (max(60s, reset_at+5s), no ratchet)
+// and describe *upstream bans*. A local network flap is process-local
+// evidence; each process discovers a dead lane on its own within a few
+// requests, and writing it as a ban would mislead keypool.py / gmgn-cli.
+//
+// The thrown message still starts with GMGN_COOLDOWN so every existing
+// "local cooldown is not a fresh ban" guard classifies it correctly.
+
+/** Consecutive attempt-level network failures before the lane is parked. */
+const GMGN_EGRESS_NET_FAIL_LIMIT = 4;
+/** How long a flapping lane is parked before the client probes it again. */
+const GMGN_EGRESS_NET_QUARANTINE_MS = 60_000;
+
+type EgressNetBreakerState = {
+  consecutiveFails: number;
+  quarantineUntilMs: number;
+};
+
+const egressNetBreakers = new Map<string, EgressNetBreakerState>();
+
+export function gmgnEgressNetQuarantineRemainingMs(scopeKey: string, nowMs = Date.now()): number {
+  const state = egressNetBreakers.get(scopeKey);
+  if (!state) return 0;
+  return Math.max(0, state.quarantineUntilMs - nowMs);
+}
+
+/** Record one attempt-level network failure on an egress lane. Returns remaining quarantine ms. */
+export function noteGmgnEgressNetworkError(scopeKey: string, nowMs = Date.now()): number {
+  if (!scopeKey) return 0;
+  const state = egressNetBreakers.get(scopeKey) ?? {
+    consecutiveFails: 0,
+    quarantineUntilMs: 0,
+  };
+  state.consecutiveFails += 1;
+  if (state.consecutiveFails >= GMGN_EGRESS_NET_FAIL_LIMIT && state.quarantineUntilMs <= nowMs) {
+    state.quarantineUntilMs = nowMs + GMGN_EGRESS_NET_QUARANTINE_MS;
+    // Keep the streak: a still-sick lane must re-arm after a single probe,
+    // while one recovered request clears the whole entry (see noteSuccess).
+    console.warn(
+      `[gmgn] egress net-flap quarantine ${scopeKey} for ${GMGN_EGRESS_NET_QUARANTINE_MS}ms ` +
+        `(streak=${state.consecutiveFails})`
+    );
+  }
+  egressNetBreakers.set(scopeKey, state);
+  return Math.max(0, state.quarantineUntilMs - nowMs);
+}
+
+/** A successful request proves the lane healthy — clear streak and quarantine. */
+export function noteGmgnEgressNetworkSuccess(scopeKey: string): void {
+  if (!scopeKey) return;
+  egressNetBreakers.delete(scopeKey);
+}
+
+/** Tests only. */
+export function resetGmgnEgressNetBreakers(): void {
+  egressNetBreakers.clear();
+}
+
 export function gmgnEgressCooldownRemainingMs(scopeKey: string, nowMs = Date.now()): number {
   return Math.max(0, readEgressCooldownState(scopeKey).untilMs - nowMs);
 }
 
 export function assertGmgnEgressAllowed(scopeKey: string, nowMs = Date.now()): void {
+  const netLeft = gmgnEgressNetQuarantineRemainingMs(scopeKey, nowMs);
+  if (netLeft > 0) {
+    throw new Error(
+      `GMGN_COOLDOWN ${Math.ceil(netLeft / 1000)}s remaining (egress network flap quarantine)`
+    );
+  }
   const left = gmgnEgressCooldownRemainingMs(scopeKey, nowMs);
   if (left > 0) {
     throw new Error(`GMGN_COOLDOWN ${Math.ceil(left / 1000)}s remaining on fixed egress`);
