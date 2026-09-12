@@ -168,11 +168,14 @@ export async function readUserHoldingsDetails(
   }
 
   // Display filter only: fact table may keep low-liq bags for consumers (newone mirror).
+  // Robinhood 例外：GMGN 的 RH 代币 liquidity 常为 0（无 DEX 池），不代表死币——
+  // 否则整行被丢，$17k 的 RH 持仓在面板上凭空消失（2026-09-12 实测 quq榜 26 行）。
   const MIN_DISPLAY_LIQUIDITY_USD = 5_000;
   const holdings = Array.from(merged.values())
     .filter((h) => h.valueUsd >= USER_HOLDINGS_THRESHOLD_USD)
     .filter(
       (h) =>
+        h.chain === 'robinhood' ||
         h.liquidityUsd == null ||
         !Number.isFinite(h.liquidityUsd) ||
         h.liquidityUsd >= MIN_DISPLAY_LIQUIDITY_USD,

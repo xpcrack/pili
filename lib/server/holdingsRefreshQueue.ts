@@ -608,7 +608,11 @@ export async function runHoldingsRefreshQueueCycle(options: {
         userId: job.user_id,
         db,
         signal: AbortSignal.timeout(jobTimeoutMs),
-        fetchTokenLiquidity: false,
+        // 写入 liquidity_usd：否则 91% 行为 NULL，展示层 5k 流动性过滤只能
+        // 依赖浏览器打 /api/token-logo/batch 补——点击后持仓要等 2-5s 且
+        // DexScreener 解析不出的行永远不显示。DexScreener 是独立免费源，
+        // 批量 ≤30 token/请求，与 GMGN 配额无关。
+        fetchTokenLiquidity: true,
       }),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(

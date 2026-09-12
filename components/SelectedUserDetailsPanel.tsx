@@ -75,6 +75,9 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              // metricsOnly：面板只要现价/市值/流动性。跳过 logo 的 OKX/GMGN
+              // 补全链路后，40 token 一批 <1s 返回；且不烧 GMGN 配额。
+              metricsOnly: true,
               items: chunk.map((holding) => ({
                 chain: holding.chain,
                 tokenAddress: holding.tokenAddress,
@@ -203,42 +206,18 @@ export function SelectedUserDetailsPanel({
     return holding.valueUsd;
   };
 
-  // Filter out dead coins with insufficient liquidity (client-side fallback).
-  // Robinhood uses server-side GMGN liquidity only — no DexScreener for that chain.
-  // Stablecoins / native gas tokens (USDT/USDC/SOL/BNB/ETH/WETH) are always shown —
-  // DexScreener reports no liquidity for them, but they are unambiguously liquid and
-  // are counted into totalAssetUsd via the same LIQUID_ASSET_SYMBOLS list.
+  // 流动性过滤以服务端 current_holdings.liquidity_usd 为权威（刷新时已批量写入）。
+  // 未知流动性（NULL）一律显示：真实持仓宁多勿漏——藏行等于"持仓不准"，
+  // 且旧实现要等浏览器批量补流动性（2-5s）才显示，点击后持仓迟迟不出。
+  // 仅在流动性已知且 < 5000 时隐藏死币。稳定币/原生币恒显示。
+  // Robinhood 不参与流动性过滤：GMGN 对 RH 代币常报 liquidity=0（无 DEX 池），
+  // 那是「无数据」不是「死币」。
   const visibleHoldings = (details?.holdings ?? []).filter((holding) => {
-    if (isStableOrNativeSymbol(holding.symbol)) {
+    if (isStableOrNativeSymbol(holding.symbol) || holding.chain === 'robinhood') {
       return true;
     }
-    if (holding.chain === 'robinhood') {
-      return holding.liquidityUsd == null || holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
-    }
-    if (holding.liquidityUsd != null) {
-      return holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
-    }
-
-    const key = `${holding.chain}:${holding.tokenAddress}`;
-    if (!(key in holdingMetricsMap)) {
-      return false;
-    }
-
-    const fallbackLiquidityUsd = holdingMetricsMap[key]?.liquidityUsd;
-    return fallbackLiquidityUsd != null && fallbackLiquidityUsd >= LIQUIDITY_THRESHOLD_USD;
+    return holding.liquidityUsd == null || holding.liquidityUsd >= LIQUIDITY_THRESHOLD_USD;
   });
-
-  const pendingLiquidityHoldingsCount = (details?.holdings ?? []).filter((holding) => {
-    if (holding.chain === 'robinhood' || holding.liquidityUsd != null) {
-      return false;
-    }
-    if (isStableOrNativeSymbol(holding.symbol)) {
-      return false;
-    }
-    const key = `${holding.chain}:${holding.tokenAddress}`;
-    return !(key in holdingMetricsMap);
-  }).length;
-  const hasPendingLiquidityLookups = pendingLiquidityHoldingsCount > 0;
 
   const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + liveValueUsd(holding), 0);
   // holdings 明细是从 current_holdings 实时读的，totalAssetUsd 是 tracked_users 缓存的；
@@ -248,7 +227,6 @@ export function SelectedUserDetailsPanel({
   const holdingsAge = getHoldingsAgeState(details?.holdingsUpdatedAt);
   const statusLine = [
     detailsRefreshing ? '正在后台刷新持仓明细...' : null,
-    hasPendingLiquidityLookups ? '正在加载流动性数据...' : null,
     details?.holdingsUpdatedAt ? `更新于 ${formatUpdatedAt(details.holdingsUpdatedAt)}` : null,
   ]
     .filter(Boolean)
@@ -312,7 +290,7 @@ export function SelectedUserDetailsPanel({
             <span className="font-medium text-zinc-300">持仓明细</span>
             <span>已隐藏 &lt; {holdingsThresholdUsd} USD</span>
           </div>
-          {statusLine ? <div className={`truncate ${detailsRefreshing || hasPendingLiquidityLookups ? 'text-zinc-400' : 'text-zinc-500'}`}>{statusLine}</div> : null}
+          {statusLine ? <div className={`truncate ${detailsRefreshing ? 'text-zinc-400' : 'text-zinc-500'}`}>{statusLine}</div> : null}
         </div>
 
         {detailsLoading && !details ? (

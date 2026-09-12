@@ -1085,9 +1085,21 @@ export function readEventsFeed(query: EventFeedQuery) {
   const params: Array<string | number> = [];
 
   if (monitoredOnly) {
+    // 物化监控用户 id 列表，而不是把子查询塞进 WHERE。
+    // 实测（2026-09-12）：`e.user_id IN (SELECT id FROM tracked_users …)` 让全局首页
+    // COUNT 对 35.5 万行逐行求值 → 3.4s，且首个同步查询阻塞单线程 Bun，连带把
+    // /api/users/*（持仓面板）的响应推到 0.3–4s。物化成 IN (?,?,…) 后 COUNT 走索引。
+    const monitoredUserIds = (
+      db
+        .prepare(`SELECT id FROM tracked_users WHERE COALESCE(monitoring_enabled, 1) = 1`)
+        .all() as Array<{ id: string }>
+    ).map((row) => row.id);
     where.push(
-      `(e.user_id IS NULL OR e.user_id IN (SELECT id FROM tracked_users WHERE COALESCE(monitoring_enabled, 1) = 1))`
+      monitoredUserIds.length > 0
+        ? `(e.user_id IS NULL OR e.user_id IN (${monitoredUserIds.map(() => '?').join(', ')}))`
+        : 'e.user_id IS NULL',
     );
+    params.push(...monitoredUserIds);
   }
   if (source) {
     where.push('e.source = ?');
@@ -1192,18 +1204,42 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   // 动作词 LIKE 全表 COUNT 很贵；cursor 页的 COUNT 也会扫大段索引（实测 ~5s）。
   // 分页只依赖 hasMore=limit+1；客户端缺失 total 时已回退到 feed.length。
+  //
+  // 全局首页的监控总数是纯展示数字，但 exact COUNT 要扫 35-40 万行索引（实测 2.6-4s），
+  // 且 bun:sqlite 是同步的——它会阻塞单线程 Bun，把并发到达的 /api/users/*（持仓面板）
+  // 响应推到 3-4s（2026-09-12 实测：计数期间 users 3.58s，空闲 0.09s）。
+  // 因此全局无过滤的总数走进程内缓存（30min TTL）：同一进程的后续开页直接命中，
+  // 代价是展示数字最多滞后 30 分钟——每次开页省一整次全表扫描。
+  // includeTotal=false（poll 模式）不进缓存路径：调用方本就不要 total，保持 feed.length 回退。
+  const cacheableGlobalTotal =
+    query.includeTotal !== false &&
+    monitoredOnly && !userId && !q && !source && !chain && fromMs === null && toMs === null && !cursor && !actionTerm;
+  let cachedTotal: number | null = null;
+  if (
+    cacheableGlobalTotal &&
+    feedTotalCache !== null &&
+    Date.now() - feedTotalCache.at < FEED_TOTAL_TTL_MS
+  ) {
+    cachedTotal = feedTotalCache.value;
+  }
   const totalRow =
-    query.includeTotal === false || actionTerm || cursor
+    query.includeTotal === false || actionTerm || cursor || cachedTotal !== null
       ? null
       : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
+  if (totalRow && cacheableGlobalTotal) {
+    feedTotalCache = { value: totalRow.count, at: Date.now() };
+  }
 
   return {
     feed,
     hasMore: rows.length > safeLimit,
     nextCursor: feed.length > 0 ? feed[feed.length - 1].cursor : null,
-    total: totalRow?.count ?? feed.length,
+    total: cachedTotal ?? totalRow?.count ?? feed.length,
   };
 }
+
+const FEED_TOTAL_TTL_MS = 30 * 60_000;
+let feedTotalCache: { value: number; at: number } | null = null;
 
 let latestActivityCache: { data: Record<string, number>; ts: number; refreshing: boolean } | null = null;
 const LATEST_ACTIVITY_TTL_MS = 30_000;

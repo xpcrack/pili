@@ -375,6 +375,51 @@ async function run() {
     assert.equal(tendies.valueUsd, 30_000);
     assert.equal(tendies.liquidityUsd, 800_000);
 
+    // GMGN 对 Robinhood 代币常报 liquidity=0（无 DEX 池）。那是「无数据」，不是
+    // 「死币」：整行必须照常返回，否则真实 RH 持仓在面板上凭空消失
+    // （2026-09-12 实测：$17k 的 RH 持仓被 5k 流动性过滤丢掉）。
+    seedHolding({
+      trackedAddress: '0xWalletOne',
+      chain: 'robinhood' as ChainType,
+      tokenAddress: '0x00000000000000000000000000000000000000aa',
+      symbol: 'Aros',
+      name: 'Aros',
+      balance: 100,
+      priceUsd: 172.75,
+      valueUsd: 17_275,
+      refreshedAt: 10_000,
+    });
+    db.prepare(
+      `UPDATE current_holdings SET liquidity_usd = 0 WHERE chain = 'robinhood' AND token_address_lower = ?`
+    ).run('0x00000000000000000000000000000000000000aa');
+
+    // 非 RH 链保持原契约：已知流动性低于 5k 的仓位仍是死币，不返回。
+    seedHolding({
+      trackedAddress: '0xWalletOne',
+      chain: 'bsc' as ChainType,
+      tokenAddress: '0xdeadcoin00000000000000000000000000000001',
+      symbol: 'DEAD',
+      name: 'Dead Coin',
+      balance: 1_000,
+      priceUsd: 0.05,
+      valueUsd: 50,
+      refreshedAt: 10_000,
+    });
+    db.prepare(
+      `UPDATE current_holdings SET liquidity_usd = 0 WHERE chain = 'bsc' AND token_address_lower = ?`
+    ).run('0xdeadcoin00000000000000000000000000000001');
+
+    const filteredDetails = await readUserHoldingsDetails(robinhoodUser);
+    assert.ok(
+      filteredDetails.holdings.find((h) => h.symbol === 'Aros'),
+      'robinhood holding with liquidity=0 must still be returned',
+    );
+    assert.equal(
+      filteredDetails.holdings.find((h) => h.symbol === 'DEAD'),
+      undefined,
+      'non-robinhood holding with known liquidity < 5k must stay filtered out',
+    );
+
     db.prepare('DELETE FROM current_holdings').run();
     await assert.rejects(
       () => readUserHoldingsDetails(makeUser([makeAddress('0xUnknownWallet', '#9', 'bsc')])),

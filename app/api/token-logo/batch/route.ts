@@ -14,6 +14,12 @@ interface BatchItemInput {
   txHash?: string;
 }
 
+interface BatchBodyInput {
+  items?: BatchItemInput[];
+  /** 跳过 logo 补全链路（OKX/GMGN），只返回 DexScreener 现价/市值/流动性。 */
+  metricsOnly?: boolean;
+}
+
 interface BatchItemResult {
   key: string;
   chain: string;
@@ -54,15 +60,15 @@ function buildItemKey(item: {
 
 /**
  * POST /api/token-logo/batch
- * body: { items: [{ chain, tokenAddress, tokenSymbol?, txTimestamp?, txHash? }] }
+ * body: { items: [{ chain, tokenAddress, tokenSymbol?, txTimestamp?, txHash? }], metricsOnly? }
  *
  * 首屏 400 条交易各自打一次 token-logo 会把浏览器和上游都打爆。
  * 这里一次收一批，服务端按 chain+ca 串行限流，客户端只发 1 次。
  */
 export async function POST(request: NextRequest) {
-  let body: { items?: BatchItemInput[] } | null = null;
+  let body: BatchBodyInput | null = null;
   try {
-    body = (await request.json()) as { items?: BatchItemInput[] };
+    body = (await request.json()) as BatchBodyInput;
   } catch {
     return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 });
   }
@@ -163,6 +169,7 @@ export async function POST(request: NextRequest) {
             fetchTokenLogo(item.chain, item.tokenAddress, item.tokenSymbol, {
               txTimestampMs: item.txTimestampMs ?? undefined,
               txHash: item.txHash || undefined,
+              metricsOnly: body?.metricsOnly === true,
             }),
             new Promise<never>((_, reject) =>
               setTimeout(
