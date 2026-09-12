@@ -18,6 +18,7 @@ import {
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
 import { getGmgnOpenApiClient } from '@/lib/server/gmgnOpenApiClient';
+import { fetchEvmTokenBalance } from '@/lib/server/evmRpc';
 import {
   acquireGmgnHeavyJob,
   isGmgnBanMessage,
@@ -57,7 +58,7 @@ interface CurrentHoldingRecord {
   price_usd: number;
   value_usd: number;
   liquidity_usd: number | null;
-  source?: 'authoritative' | 'xxyy_provisional';
+  source?: 'authoritative' | 'xxyy_provisional' | 'rpc-token-balance';
   provisional_updated_at?: number | null;
   authoritative_refreshed_at?: number | null;
   refreshed_at: number;
@@ -549,6 +550,85 @@ function readPreviousHoldings(
 }
 
 /**
+ * RPC balanceOf fallback for robinhood (GMGN openapi + cli both dead).
+ *
+ * Re-verifies every last-known token row (including balance=0 rows —
+ * provisional deltas may have wrongly zeroed a live bag) against the chain.
+ * On-chain truth wins in both directions:
+ *   - balance > 0: restore the bag (source='rpc-token-balance'), price from the
+ *     row's last-known price_usd
+ *   - balance = 0: keep the zeroed row (a genuine sell, delta was right)
+ * Rows the RPC can't verify keep their last-known state. Only success if at
+ * least one row verified — otherwise pretend nothing happened (job retries).
+ */
+export async function reconcileRobinhoodHoldingsViaRpc(
+  db: DbHandle,
+  address: string,
+  addressLower: string,
+  userId: string,
+  refreshedAt: number,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; verified: number; error: string | null }> {
+  const previous = readPreviousHoldings(db, addressLower, ROBINHOOD_CHAIN);
+  if (previous.length === 0) {
+    return { ok: false, verified: 0, error: 'no last-known robinhood rows to verify' };
+  }
+
+  const reconciled: CurrentHoldingRecord[] = [];
+  let verified = 0;
+  for (const row of previous) {
+    const balance = await fetchEvmTokenBalance(
+      ROBINHOOD_CHAIN,
+      addressLower,
+      row.token_address_lower,
+      signal,
+    );
+    if (balance == null) {
+      // RPC could not verify this token — keep last-known row untouched
+      reconciled.push(row);
+      continue;
+    }
+    verified += 1;
+    if (balance <= 0) {
+      // On-chain zero = genuine sell; persist the zeroed row (RPC-confirmed).
+      reconciled.push({
+        ...row,
+        balance: 0,
+        value_usd: 0,
+        source: 'rpc-token-balance',
+        authoritative_refreshed_at: refreshedAt,
+        refreshed_at: refreshedAt,
+      });
+      continue;
+    }
+    const price = row.price_usd > 0 ? row.price_usd : 0;
+    reconciled.push({
+      ...row,
+      balance,
+      value_usd: balance * price,
+      source: 'rpc-token-balance',
+      authoritative_refreshed_at: refreshedAt,
+      refreshed_at: refreshedAt,
+    });
+  }
+
+  const walletStatus: CurrentHoldingWalletStatusRecord = {
+    tracked_address: address,
+    tracked_address_lower: addressLower,
+    user_id: userId,
+    chain: ROBINHOOD_CHAIN,
+    status: 'success',
+    refreshed_at: refreshedAt,
+  };
+  if (verified === 0) {
+    // RPC fully unreachable — don't pretend success; keep failed status so the job retries.
+    return { ok: false, verified: 0, error: 'rpc verified no rows (unreachable?)' };
+  }
+  replaceWalletHoldings(db, addressLower, ROBINHOOD_CHAIN, reconciled, walletStatus);
+  return { ok: true, verified, error: null };
+}
+
+/**
  * Implausible-price gate. Robinhood equity tokens top out in the hundreds of
  * dollars; memecoins above $1k are essentially always a feed bug (seen: MESSI
  * HOOD at $1.9e17, COKE at $8.9e12). Majors that legitimately exceed the cap
@@ -863,6 +943,12 @@ export async function refreshWalletHoldings(
 
     let totalRows = 0;
     let totalUsd = 0;
+    const chainPlans: Array<{
+      chain: SupportedChain;
+      holdings: CurrentHoldingRecord[];
+      status: CurrentHoldingWalletStatusRecord;
+      chainTotalUsd: number;
+    }> = [];
     for (const targetChain of evmChains) {
       const assets = result.assetsByChain[targetChain] ?? [];
       const chainHoldings: CurrentHoldingRecord[] = [];
@@ -874,20 +960,66 @@ export async function refreshWalletHoldings(
         }
         chainHoldings.push(authoritativeHolding(address, addressLower, userId, targetChain, asset, nowMs));
       }
-      const status: CurrentHoldingWalletStatusRecord = {
-        tracked_address: address,
-        tracked_address_lower: addressLower,
-        user_id: userId,
+      chainPlans.push({
         chain: targetChain,
-        status: 'success',
-        refreshed_at: nowMs,
-      };
-      replaceWalletHoldings(db, addressLower, targetChain, chainHoldings, status);
+        holdings: chainHoldings,
+        status: {
+          tracked_address: address,
+          tracked_address_lower: addressLower,
+          user_id: userId,
+          chain: targetChain,
+          status: 'success',
+          refreshed_at: nowMs,
+        },
+        chainTotalUsd: assets.reduce((sum, asset) => sum + asset.valueUsd, 0),
+      });
       totalRows += chainHoldings.length;
+    }
+
+    // 这个 EVM 多链分支在 944 行原本直接写库返回，跳过了下面单链分支的 DexScreener
+    // 流动性富集——而队列刷新的 EVM 任务用的就是 chain='evm'，所以 base/bsc/ethereum
+    // 的 liquidity_usd 恒为 NULL（2026-09-12 实测：20 分钟内 1533 行 EVM 刷新全部 NULL，
+    // 同窗口 solana 199 行有 15 行写入了流动性）。三链合并成一次批量取，键规则与单链一致。
+    if (shouldFetchLiquidity) {
+      const uniqueTokens = chainPlans.flatMap((plan) =>
+        plan.holdings.map((holding) => ({
+          contractAddress: holding.token_address,
+          chain: holding.chain,
+        })),
+      );
+      if (uniqueTokens.length > 0) {
+        try {
+          const fetchLiquidity = params.batchFetchLiquidity ?? batchFetchFromDexScreener;
+          const liquidityData = await fetchLiquidity(uniqueTokens);
+          for (const plan of chainPlans) {
+            for (const holding of plan.holdings) {
+              const liquidityKey =
+                holding.chain === 'solana' ? holding.token_address : holding.token_address_lower;
+              const data = liquidityData.get(liquidityKey);
+              if (data) {
+                holding.liquidity_usd = data.liquidity;
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[holdingsRefresh] wallet DexScreener liquidity fetch failed:', err);
+        }
+      }
+    }
+
+    for (const plan of chainPlans) {
+      replaceWalletHoldings(db, addressLower, plan.chain, plan.holdings, plan.status);
       if (updateTotals) {
-        const chainTotal = assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
         updateAssetSnapshots(
-          [{ userId, address, chain: targetChain, totalAssetUsd: chainTotal, updatedAt: nowMs }],
+          [
+            {
+              userId,
+              address,
+              chain: plan.chain,
+              totalAssetUsd: plan.chainTotalUsd,
+              updatedAt: nowMs,
+            },
+          ],
           [],
         );
       }
@@ -908,7 +1040,40 @@ export async function refreshWalletHoldings(
   if (chain === ROBINHOOD_CHAIN) {
     const result = await fetchRobinhoodHoldings(address, params.signal);
     if (!result.ok) {
-      lastError = result.error;
+      // GMGN openapi + cli both failed. Last resort: verify last-known holdings
+      // on-chain via RPC balanceOf (robinhood has no OKX coverage either).
+      // NOTE: params.signal may already be aborted (queue Promise.race 30s
+      // timeout fires while GMGN hangs, then this code still runs to
+      // completion) — give the RPC phase its own budget so it can land.
+      try {
+        const rpc = await reconcileRobinhoodHoldingsViaRpc(
+          db, address, addressLower, userId, nowMs, AbortSignal.timeout(60_000)
+        );
+        if (rpc.ok) {
+          console.log(
+            `[holdingsRefresh] robinhood RPC fallback ok ${addressLower} verified=${rpc.verified}`
+          );
+          return {
+            status: 'idle',
+            chain,
+            holdingsRowCount: rpc.verified,
+            filteredOutHoldingCount: 0,
+            totalAssetUsd: null,
+            lastError: null,
+            provider: 'gmgn',
+            requestedChainCount: 1,
+            upstreamRequestCount: 1,
+          };
+        }
+        console.warn(
+          `[holdingsRefresh] robinhood RPC fallback failed ${addressLower}: ${rpc.error}`
+        );
+        lastError = `${result.error}; rpc fallback: ${rpc.error}`;
+      } catch (rpcErr) {
+        lastError = `${result.error}; rpc fallback threw: ${
+          rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
+        }`;
+      }
       // Preserve last-good bags: only mark status failed.
       const failedStatus: CurrentHoldingWalletStatusRecord = {
         tracked_address: address,
