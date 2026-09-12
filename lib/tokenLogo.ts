@@ -31,6 +31,8 @@ interface DexscreenerPairInfo {
 interface FetchTokenLogoOptions {
   txTimestampMs?: number;
   txHash?: string;
+  /** 只要现价/市值/流动性，不做 logo 补全（OKX/GMGN 回退是 5s+ 慢路径）。 */
+  metricsOnly?: boolean;
 }
 
 export interface DexscreenerTokenInfo {
@@ -329,6 +331,21 @@ export async function fetchTokenLogo(
         }
       }
     }
+  }
+
+  // metricsOnly（持仓面板批量）：DexScreener 现价/市值/流动性就是全部所需，
+  // 跳过 OKX/GMGN logo 补全 —— 那条链路单 token 可拖 5-12s 并烧 GMGN 配额。
+  if (options?.metricsOnly) {
+    return {
+      logoUrl: fromDexscreener?.logoUrl ?? null,
+      marketCapUsd: currentMarketCapUsd,
+      liquidityUsd,
+      priceUsd: currentPriceUsd,
+      marketCapAtTxUsd,
+      marketCapAtTxEstimated,
+      marketCapAtTxSource,
+      source: fromDexscreener ? 'dexscreener' : null,
+    };
   }
 
   const preferredSource: LogoSource =
