@@ -52,6 +52,38 @@ export function resolveEnrichmentModel() {
 }
 
 /**
+ * Wall-clock budget for one enrichment request, covering the whole call
+ * including body read. The local AxonHub relay has a long tail, so a hard abort
+ * that is never recorded as an error leaves the tweet re-queued forever. Keep
+ * these overridable so a slow relay can be tuned without a code change.
+ */
+export function resolveEnrichmentTimeoutMs(
+  kind: 'enrichTweet' | 'translateOnly' | 'confirmAlias',
+): number {
+  const envKey =
+    kind === 'enrichTweet'
+      ? 'ENRICHMENT_LLM_TIMEOUT_MS'
+      : kind === 'translateOnly'
+        ? 'ENRICHMENT_LLM_TIMEOUT_MS_TRANSLATE'
+        : 'ENRICHMENT_LLM_TIMEOUT_MS_ALIAS';
+  const fallback = kind === 'enrichTweet' ? 60_000 : kind === 'translateOnly' ? 45_000 : 30_000;
+  const raw = Number((process.env[envKey] || '').trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/**
+ * A fetch abort and a timeout both surface as a bare AbortError. Label them so
+ * downstream backoff logic can tell "the relay was too slow" apart from
+ * "the relay refused".
+ */
+function describeRequestFailure(err: unknown, timeoutMs: number): string {
+  if (err instanceof Error && err.name === 'AbortError') {
+    return `aborted after ${timeoutMs}ms (request timeout)`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Heuristic: is the text likely English (or Latin-script dominant)?
  * Returns true when the text has enough Latin words and fewer CJK characters.
  */
@@ -349,6 +381,7 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
   private apiKey: string;
   private model: string;
   private baseUrl: string;
+  private lastFailureReason: string | null = null;
 
   constructor({
     apiKey,
@@ -395,10 +428,13 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     const { masked, tokens } = maskPreserveTokens(text, preserveSymbols);
     const prompt = buildEnrichmentPrompt(masked, mentions);
 
+    // Resolved before the try block: it is needed in the catch to label the
+    // abort, and a const declared inside try is not visible from catch.
+    const timeoutMs = resolveEnrichmentTimeoutMs('enrichTweet');
     try {
       const controller = new AbortController();
       // MIMO reasoning models can be slower than plain instruct
-      const timeoutId = setTimeout(() => controller.abort(), 60_000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -422,61 +458,70 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
+      try {
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          const reason = `API error ${response.status} ${response.statusText}: ${errBody.slice(0, 200)}`;
+          console.error(
+            `[enrichment-model] ${reason} model=${this.model} base=${this.baseUrl} tweet=${input.tweetId}`,
+          );
+          return { ...this.fallbackResult(mentions), error: reason };
+        }
 
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => '');
-        console.error(
-          `[enrichment-model] API error ${response.status} ${response.statusText} model=${this.model} base=${this.baseUrl}: ${errBody.slice(0, 200)}`,
+        const data = await response.json();
+        const message = data?.choices?.[0]?.message;
+        const content: string =
+          (typeof message?.content === 'string' && message.content) ||
+          (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
+          '';
+        if (!content) {
+          console.error('[enrichment-model] No content in response');
+          return { ...this.fallbackResult(mentions), error: 'empty content in response' };
+        }
+
+        const parsed = parseModelOutput(content);
+        if (!parsed) {
+          console.error('[enrichment-model] Failed to parse model output:', content.slice(0, 200));
+          return { ...this.fallbackResult(mentions), error: 'unparseable model output' };
+        }
+
+        const validSentiments: TweetEnrichmentModelOutputSentiment[] = parsed.sentiments
+          .filter((s) => VALID_SENTIMENTS.has(s.sentiment))
+          .map((s) => ({
+            tokenSymbol: s.tokenSymbol,
+            tokenAddress: s.tokenAddress,
+            sentiment: s.sentiment as 'positive' | 'negative' | 'neutral',
+            confidence: typeof s.confidence === 'number' ? s.confidence : undefined,
+          }));
+
+        const translationZh = sanitizeTranslationZh(
+          unmaskPreserveTokens(parsed.translation_zh || '', tokens)
         );
-        return this.fallbackResult(mentions);
+
+        return {
+          translationZh,
+          sentiments:
+            validSentiments.length > 0
+              ? validSentiments
+              : mentions.map((m) => ({
+                  tokenSymbol: m.tokenSymbol || undefined,
+                  tokenAddress: m.tokenAddress || undefined,
+                  sentiment: 'neutral' as const,
+                  confidence: 0.5,
+                })),
+        };
+      } finally {
+        // Cleared only after the body is read: clearing on fetch() resolve left
+        // the body-reading phase with no timeout at all.
+        clearTimeout(timeoutId);
       }
-
-      const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      const content: string =
-        (typeof message?.content === 'string' && message.content) ||
-        (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
-        '';
-      if (!content) {
-        console.error('[enrichment-model] No content in response');
-        return this.fallbackResult(mentions);
-      }
-
-      const parsed = parseModelOutput(content);
-      if (!parsed) {
-        console.error('[enrichment-model] Failed to parse model output:', content.slice(0, 200));
-        return this.fallbackResult(mentions);
-      }
-
-      const validSentiments: TweetEnrichmentModelOutputSentiment[] = parsed.sentiments
-        .filter((s) => VALID_SENTIMENTS.has(s.sentiment))
-        .map((s) => ({
-          tokenSymbol: s.tokenSymbol,
-          tokenAddress: s.tokenAddress,
-          sentiment: s.sentiment as 'positive' | 'negative' | 'neutral',
-          confidence: typeof s.confidence === 'number' ? s.confidence : undefined,
-        }));
-
-      const translationZh = sanitizeTranslationZh(
-        unmaskPreserveTokens(parsed.translation_zh || '', tokens)
-      );
-
-      return {
-        translationZh,
-        sentiments:
-          validSentiments.length > 0
-            ? validSentiments
-            : mentions.map((m) => ({
-                tokenSymbol: m.tokenSymbol || undefined,
-                tokenAddress: m.tokenAddress || undefined,
-                sentiment: 'neutral' as const,
-                confidence: 0.5,
-              })),
-      };
     } catch (err) {
-      console.error('[enrichment-model] Network/error:', err);
-      return this.fallbackResult(mentions);
+      const reason = describeRequestFailure(err, timeoutMs);
+      console.error(`[enrichment-model] request failed tweet=${input.tweetId}: ${reason}`);
+      // Surface the failure in the result: the caller persists it as last_error,
+      // which is what arms the projector's re-queue backoff. Returning a silent
+      // fallback here left timed-out tweets re-queued on every projection cycle.
+      return { ...this.fallbackResult(mentions), error: reason };
     }
   }
 
@@ -489,7 +534,8 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
     const prompt = buildAliasConfirmPrompt(text, candidates);
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30_000);
+      const timeoutMs = resolveEnrichmentTimeoutMs('confirmAlias');
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -511,26 +557,31 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => '');
-        console.warn(
-          `[enrichment-model] alias-confirm API error ${response.status}: ${errBody.slice(0, 200)}`,
-        );
-        return [];
+      try {
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          console.warn(
+            `[enrichment-model] alias-confirm API error ${response.status}: ${errBody.slice(0, 200)}`,
+          );
+          return [];
+        }
+        const data = await response.json();
+        const message = data?.choices?.[0]?.message;
+        const content: string =
+          (typeof message?.content === 'string' && message.content) ||
+          (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
+          '';
+        if (!content) return [];
+        return parseAliasConfirmOutput(content);
+      } finally {
+        // Cleared only after the body is read: clearing on fetch() resolve left
+        // the body-reading phase with no timeout at all.
+        clearTimeout(timeoutId);
       }
-      const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      const content: string =
-        (typeof message?.content === 'string' && message.content) ||
-        (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
-        '';
-      if (!content) return [];
-      return parseAliasConfirmOutput(content);
     } catch (err) {
       console.warn(
         '[enrichment-model] alias-confirm error:',
-        err instanceof Error ? err.message : err,
+        describeRequestFailure(err, resolveEnrichmentTimeoutMs('confirmAlias')),
       );
       return [];
     }
@@ -555,7 +606,8 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45_000);
+      const timeoutMs = resolveEnrichmentTimeoutMs('translateOnly');
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -576,20 +628,36 @@ export class NvidaQwenEnrichmentModel implements TweetEnrichmentModel {
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-      if (!response.ok) return null;
-      const data = await response.json();
-      const message = data?.choices?.[0]?.message;
-      const content: string =
-        (typeof message?.content === 'string' && message.content) ||
-        (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
-        '';
-      const parsed = parseModelOutput(content);
-      const rawZh = sanitizeTranslationZh(parsed?.translation_zh || extractTranslationByRegex(content));
-      return rawZh ? unmaskPreserveTokens(rawZh, tokens) : null;
-    } catch {
+      try {
+        if (!response.ok) return null;
+        const data = await response.json();
+        const message = data?.choices?.[0]?.message;
+        const content: string =
+          (typeof message?.content === 'string' && message.content) ||
+          (typeof message?.reasoning_content === 'string' && message.reasoning_content) ||
+          '';
+        const parsed = parseModelOutput(content);
+        const rawZh = sanitizeTranslationZh(parsed?.translation_zh || extractTranslationByRegex(content));
+        return rawZh ? unmaskPreserveTokens(rawZh, tokens) : null;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.lastFailureReason = describeRequestFailure(err, resolveEnrichmentTimeoutMs('translateOnly'));
+      console.warn('[enrichment-model] translateOnly failed:', this.lastFailureReason);
       return null;
     }
+  }
+
+  /**
+   * Reason the most recent translateOnly call returned null (timeout vs empty
+   * payload). translateOnly returns a bare string|null, so the failure detail
+   * has to travel via the instance to reach the persisted last_error.
+   */
+  takeLastFailureReason(): string | null {
+    const reason = this.lastFailureReason;
+    this.lastFailureReason = null;
+    return reason;
   }
 
   private fallbackResult(

@@ -198,24 +198,29 @@ async function ensureExtractedCasInPrimaryPool(mentions: ExtractedTweetTokenMent
 async function translateQuotedContent(params: {
   text: string;
   model: TweetEnrichmentModel;
-}): Promise<{ translationZh: string | null; status: TweetEnrichmentStatus }> {
+}): Promise<{ translationZh: string | null; status: TweetEnrichmentStatus; error: string | null }> {
   const text = params.text.trim();
   if (!text) {
-    return { translationZh: null, status: 'skipped' };
+    return { translationZh: null, status: 'skipped', error: null };
   }
   if (!isLikelyEnglish(text)) {
-    return { translationZh: null, status: 'skipped' };
+    return { translationZh: null, status: 'skipped', error: null };
   }
 
   try {
     const maybeTranslateOnly = params.model as TweetEnrichmentModel & {
       translateOnly?: (value: string) => Promise<string | null>;
+      takeLastFailureReason?: () => string | null;
     };
     if (typeof maybeTranslateOnly.translateOnly === 'function') {
       const translationZh = await maybeTranslateOnly.translateOnly(text);
+      // translateOnly returns a bare string|null, so it hands back the reason
+      // out-of-band; without it a timeout would look like a normal miss.
+      const error = translationZh ? null : (maybeTranslateOnly.takeLastFailureReason?.() ?? null);
       return {
         translationZh,
         status: translationZh ? 'succeeded' : 'failed',
+        error,
       };
     }
 
@@ -228,9 +233,14 @@ async function translateQuotedContent(params: {
     return {
       translationZh,
       status: translationZh ? 'succeeded' : 'failed',
+      error: translationZh ? null : (result.error ?? null),
     };
-  } catch {
-    return { translationZh: null, status: 'failed' };
+  } catch (err) {
+    return {
+      translationZh: null,
+      status: 'failed',
+      error: err instanceof Error ? err.message : 'quoted_translation_failed',
+    };
   }
 }
 
@@ -365,6 +375,12 @@ async function runEnrichmentForTweet(params: {
     translationZh = (result.translationZh || '').trim() || null;
     translationStatus = translationZh ? 'succeeded' : isLikelyEnglish(params.tweet.fullText) ? 'failed' : 'skipped';
     sentiments = result.sentiments || [];
+    // A failed relay call (timeout / 5xx / unparseable body) must land in
+    // last_error: the projector only backs off re-queuing when last_error is
+    // set, so a swallowed failure re-fires the same tweet every cycle.
+    if (!translationZh && result.error) {
+      lastError = result.error;
+    }
   } catch (error) {
     lastError = error instanceof Error ? error.message : 'unknown_enrichment_error';
     translationStatus = 'failed';
@@ -551,6 +567,11 @@ async function runEnrichmentForTweet(params: {
     } else {
       quotedTranslationZh = null;
       quotedTranslationStatus = quoted.status;
+      // Quote translation failures feed the same backoff as the body call —
+      // otherwise a quote timeout alone keeps the tweet re-queued forever.
+      if (quoted.error && !lastError) {
+        lastError = `quoted: ${quoted.error}`;
+      }
     }
   } else if (quoteTweetId) {
     quotedTranslationStatus = 'skipped';
@@ -578,6 +599,36 @@ async function runEnrichmentForTweet(params: {
   // Translation may fail independently without blocking ticker/MC/quote work.
   return true;
 }
+
+/**
+ * In-flight enrichment per tweet id. Several ingestion paths (twitter sync,
+ * relay ingest, link-refs, telegram channel ingest) call the projector
+ * concurrently, and the projector re-queues any row still marked
+ * pending/processing — so without this guard the same tweet gets two identical
+ * relay requests, and losing one to the request timeout is pure waste.
+ */
+const inFlightEnrichments = new Map<string, Promise<boolean>>();
+
+function runEnrichmentDeduped(params: Parameters<typeof runEnrichmentForTweet>[0]): Promise<boolean> {
+  const tweetId = params.tweet.tweetId;
+  const existing = inFlightEnrichments.get(tweetId);
+  if (existing) {
+    return existing;
+  }
+  const run = runEnrichmentForTweet(params).finally(() => {
+    if (inFlightEnrichments.get(tweetId) === run) {
+      inFlightEnrichments.delete(tweetId);
+    }
+  });
+  inFlightEnrichments.set(tweetId, run);
+  return run;
+}
+
+/** Snapshot of tweet ids currently being enriched by this process (tests/diagnostics). */
+export function listInFlightEnrichmentTweetIds(): string[] {
+  return Array.from(inFlightEnrichments.keys());
+}
+
 export async function runTweetEnrichmentForTweetIds(params: {
   tweetIds: string[];
   model?: TweetEnrichmentModel;
@@ -622,7 +673,7 @@ export async function runTweetEnrichmentForTweetIds(params: {
     // B5: 单条推文抛错不能炸掉整批——否则同批剩余推文全部跳过，且异常冒泡
     // 会中断调用方（projector）的后续处理。对齐下方引号推文循环的隔离写法。
     try {
-      const ok = await runEnrichmentForTweet({
+      const ok = await runEnrichmentDeduped({
         tweet,
         model,
         visionModel: params.visionModel,
