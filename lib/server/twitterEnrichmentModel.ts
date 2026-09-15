@@ -18,6 +18,13 @@ export interface TweetEnrichmentModelOutputSentiment {
 export interface TweetEnrichmentModelResult {
   translationZh: string | null;
   sentiments: TweetEnrichmentModelOutputSentiment[];
+  /**
+   * Set when the request to the relay failed (timeout, transport error, bad
+   * payload). Callers persist this as the row's last_error so the projector's
+   * re-queue backoff can engage — a silent fallback would leave the tweet in
+   * 'pending'/'processing' and re-sent every cycle.
+   */
+  error?: string;
 }
 
 export interface TweetEnrichmentAliasCandidate {

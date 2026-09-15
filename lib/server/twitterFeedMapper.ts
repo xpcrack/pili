@@ -28,6 +28,45 @@ function normalize(value: string | undefined | null) {
   return (value || '').trim().toLowerCase();
 }
 
+/**
+ * Minimum age of the last attempt before a tweet stuck in
+ * pending/processing is re-enqueued for enrichment. Must stay above the
+ * slowest enrichment request (body call timeout) so an in-flight attempt is
+ * never duplicated by the next projection cycle.
+ */
+const ENRICHMENT_RETRY_FLOOR_MS = 3 * 60_000;
+
+/** How long a failed enrichment is left alone before it may be retried. */
+const ENRICHMENT_FAILURE_BACKOFF_MS = 30 * 60_000;
+
+/**
+ * Whether a tweet's enrichment should be (re)queued this projection cycle.
+ *
+ * Extracted from the projector so the retry policy is testable on its own —
+ * retries triggered from projection run fire-and-forget against the real model
+ * and cannot be observed by injecting a stub.
+ *
+ * `now` is injectable for the same reason.
+ */
+export function shouldQueueEnrichment(
+  enrich: StoredTwitterTweetEnrichment | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!enrich) return true;
+  const lastProcessedAt = enrich.lastProcessedAtMs ?? 0;
+  if (enrich.translationStatus === 'pending' || enrich.translationStatus === 'processing') {
+    // Still mid-flight (or crashed mid-flight): re-queue only once the previous
+    // attempt is stale, so an in-flight relay call is never duplicated.
+    return now - lastProcessedAt >= ENRICHMENT_RETRY_FLOOR_MS;
+  }
+  // B5: 毒丸退避——上一次处理刚失败且最近 30 分钟内已尝试过，则本轮跳过，
+  // 避免同一个持续抛错的推文在每个投影周期都重跑整批 LLM/vision/DexScreener。
+  if (enrich.lastError) {
+    return now - lastProcessedAt >= ENRICHMENT_FAILURE_BACKOFF_MS;
+  }
+  return false;
+}
+
 function uniqStrings(values: Array<string | null>) {
   const deduped = new Set<string>();
   const result: string[] = [];
@@ -298,19 +337,7 @@ export function projectTwitterTweetsToFeed(options: {
   // Trigger background enrichment for tweets that haven't been enriched yet
   // Legacy → model-v2 upgrades go through scripts/backfill-enrichment-v2.ts
   const pendingTweetIds = tweetCandidates
-    .filter((tweet) => {
-      const enrich = enrichmentByTweetId.get(tweet.tweetId);
-      if (!enrich) return true;
-      if (enrich.translationStatus === 'pending' || enrich.translationStatus === 'processing') return true;
-      // B5: 毒丸退避——上一次处理刚失败且最近 30 分钟内已尝试过，则本轮跳过，
-      // 避免同一个持续抛错的推文在每个投影周期都重跑整批 LLM/vision/DexScreener。
-      if (enrich.lastError) {
-        const lastProcessedAt = enrich.lastProcessedAtMs ?? 0;
-        if (Date.now() - lastProcessedAt < 30 * 60_000) return false;
-        return true;
-      }
-      return false;
-    })
+    .filter((tweet) => shouldQueueEnrichment(enrichmentByTweetId.get(tweet.tweetId)))
     .map((t) => t.tweetId);
 
   if (pendingTweetIds.length > 0) {
