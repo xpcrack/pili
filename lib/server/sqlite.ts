@@ -10,6 +10,18 @@ const SQLITE_BUSY_TIMEOUT_MS = 8_000;
 const SQLITE_INIT_BUSY_ATTEMPTS = 8;
 /** Bump when events_fts trigger SQL changes; gates DROP/CREATE on startup. */
 const EVENTS_FTS_TRIGGERS_FLAG = 'events_fts_triggers_v3';
+
+/**
+ * 批量写的行数上限：超过就分块提交，**单个写事务的持锁时长必须有上界**。
+ *
+ * 背景：2026-09-03 一个覆盖全量 feed 的写事务把 WAL 写锁独占几十分钟，
+ * 频道 worker 的租约心跳被饿死，TG 采集静默停摆 13 天。
+ * 见 docs/tg-channel-stall-2026-09-17.md。
+ */
+export const SQLITE_WRITE_CHUNK_ROWS = (() => {
+  const parsed = Number.parseInt((process.env.PILI_SQLITE_WRITE_CHUNK_ROWS || '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 500;
+})();
 const EVENTS_FTS_METADATA_FLAG = 'events_fts_metadata_index_v3';
 
 export interface SqlRunResult {
@@ -1910,14 +1922,53 @@ export function getDb() {
 
 export type DbHandle = SqlDatabase;
 
+/** 按 SQLITE_WRITE_CHUNK_ROWS 切块，由调用方给每一块开自己的事务。 */
+export function forEachWriteChunk<T>(items: readonly T[], write: (chunk: readonly T[]) => void): void {
+  for (let start = 0; start < items.length; start += SQLITE_WRITE_CHUNK_ROWS) {
+    write(items.slice(start, start + SQLITE_WRITE_CHUNK_ROWS));
+  }
+}
+
+/**
+ * 慢事务取证：单个写事务持锁 ≥ 阈值就告警并附调用栈。
+ * 2026-09-03 事故里一个写事务持锁几十分钟，却没有任何日志能指认是谁——这条就是为了下次直接点名。
+ * 只在慢路径抓栈，常态零开销：同一调用点 60s 内只报一次，换调用点立刻报。
+ */
+const DEFAULT_SLOW_TXN_WARN_MS = 2_000;
+let lastSlowTxnWarnAtMs = 0;
+let lastSlowTxnWarnCallsite = '';
+
+function warnIfTransactionHeldTooLong(startedAtMs: number): void {
+  const elapsedMs = Date.now() - startedAtMs;
+  const parsed = Number.parseInt((process.env.PILI_SLOW_TXN_WARN_MS || '').trim(), 10);
+  const warnMs = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SLOW_TXN_WARN_MS;
+  if (elapsedMs < warnMs) return;
+  const callsite = (new Error('slow transaction').stack || '').split('\n').slice(2, 6).join('\n');
+  const now = Date.now();
+  if (callsite === lastSlowTxnWarnCallsite && now - lastSlowTxnWarnAtMs < 60_000) return;
+  lastSlowTxnWarnAtMs = now;
+  lastSlowTxnWarnCallsite = callsite;
+  console.warn(
+    `[sqlite] slow transaction held the write lock for ${elapsedMs}ms (threshold ${warnMs}ms) at:\n${callsite}`
+  );
+}
+
 export function withTransaction<T>(fn: (db: DbHandle) => T): T {
   const db = getDb();
-  const wrapped = db.transaction(() => fn(db));
-  return wrapped();
+  const startedAt = Date.now();
+  try {
+    return db.transaction(() => fn(db))();
+  } finally {
+    warnIfTransactionHeldTooLong(startedAt);
+  }
 }
 
 export function withTransactionTyped<T>(fn: (db: SqlDatabase) => T): T {
   const db = getDb();
-  const wrapped = db.transaction(() => fn(db));
-  return wrapped();
+  const startedAt = Date.now();
+  try {
+    return db.transaction(() => fn(db))();
+  } finally {
+    warnIfTransactionHeldTooLong(startedAt);
+  }
 }
