@@ -509,7 +509,7 @@ export default function Home() {
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-start">
-          <aside className="w-full md:sticky md:top-20 md:h-[calc(100vh-5rem)] md:w-[230px] md:shrink-0 md:overflow-y-auto md:overscroll-contain">
+          <aside className="w-full md:sticky md:top-20 md:h-[calc(100vh-5rem)] md:w-[288px] md:shrink-0 md:overflow-y-auto md:overscroll-contain">
             <button
               type="button"
               onClick={() => setOnlyStarred(!onlyStarred)}
