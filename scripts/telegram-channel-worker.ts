@@ -1,6 +1,6 @@
 import { readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
-import { sleep } from '@/lib/timing';
+import { TimeoutError, sleep, withTimeout } from '@/lib/timing';
 
 import './server-only-shim.cjs';
 import {
@@ -53,7 +53,13 @@ async function run() {
       continue;
     }
 
-    const cycle = await runTelegramChannelWorkerCycle();
+    // 2026-09-03 事故：一轮 cycle 在 MTProto 断连后永久挂起（无超时），进程假活 13 天、
+    // 频道一条没进。每轮必须有硬超时：超时即退出进程由 pm2 重建连接，绝不无限等。
+    const cycle = await withTimeout(
+      () => runTelegramChannelWorkerCycle(),
+      readTelegramMtprotoPolicy().channelCycleTimeoutMs,
+      'telegram-channel-worker cycle'
+    );
     cycleCount += 1;
     if (cycle.status !== 'idle' && cycle.status !== 'partial') {
       lastActiveAt = Date.now();
@@ -92,10 +98,13 @@ async function run() {
 
 void run().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
+  const timedOut = error instanceof TimeoutError;
   if (lease.isOwned()) {
-    status.set('failed', { lastError: message });
+    status.set(timedOut ? 'cycle-timeout' : 'failed', { lastError: message });
   }
-  console.error(`${LOG_PREFIX} failed: ${message}`);
+  console.error(
+    `${LOG_PREFIX} ${timedOut ? 'cycle timed out, exiting for a fresh client' : 'failed'}: ${message}`
+  );
   lease.release();
   process.exit(1);
 });

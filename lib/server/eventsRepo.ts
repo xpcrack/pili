@@ -23,7 +23,12 @@ import {
   type TelegramMonitorTxState,
 } from '@/lib/server/telegramMonitorTxStateRepo';
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
-import { getDb, withTransaction } from '@/lib/server/sqlite';
+import {
+  SQLITE_WRITE_CHUNK_ROWS,
+  forEachWriteChunk,
+  getDb,
+  withTransaction,
+} from '@/lib/server/sqlite';
 import { bumpFeedRevision } from '@/lib/server/feedRevision';
 
 export { readFeedRevision as readEventsRevision } from '@/lib/server/feedRevision';
@@ -587,6 +592,13 @@ function isExpectedMonitorAggregateCorrection(existing: Activity, incoming: Acti
 
 export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Activity }>, ingestSource: string) {
   if (rows.length === 0) return;
+  // 分批提交：单事务覆盖全量 feed（syncService 走的是整份 feed，数万行）会把 WAL 写锁
+  // 独占到几十分钟（2026-09-03 频道采集静默停摆的根因）。分块后单事务持锁有上界；
+  // 元素引用不变，调用方数组的 in-place 同步语义保持。
+  if (rows.length > SQLITE_WRITE_CHUNK_ROWS) {
+    forEachWriteChunk(rows, (chunk) => upsertEventsFromFeedRows([...chunk], ingestSource));
+    return;
+  }
 
   // Live-monitor already owns this wallet+tx → drop telegram/xxyy shadows (dups + counter-flow).
   let candidateRows = rows;

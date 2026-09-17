@@ -9,6 +9,8 @@ export interface TelegramMtprotoPolicy {
   channelSyncLeaseTtlMs: number;
   channelWorkerMaxCyclesBeforeRestart: number;
   channelWorkerMaxIdleMsBeforeRestart: number;
+  /** 单轮 sync 硬超时：超时即退出进程重建 MTProto 连接（见 scripts/telegram-channel-worker.ts）。 */
+  channelCycleTimeoutMs: number;
 }
 
 function readPositiveInt(value: string | undefined, fallback: number) {
@@ -34,6 +36,10 @@ export function readTelegramMtprotoPolicy(): TelegramMtprotoPolicy {
     channelWorkerMaxIdleMsBeforeRestart: readPositiveInt(
       process.env.TELEGRAM_CHANNEL_WORKER_MAX_IDLE_MS_BEFORE_RESTART,
       30 * 60_000
+    ),
+    channelCycleTimeoutMs: readPositiveInt(
+      process.env.TELEGRAM_CHANNEL_CYCLE_TIMEOUT_MS,
+      180_000
     ),
   };
 }

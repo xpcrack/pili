@@ -3,7 +3,7 @@ import 'server-only';
 import { type Activity, type User } from '@/types';
 import { buildActivityScopedDedupKey } from '@/lib/activityIdentity';
 import { scoreFeedRowsChronologically } from '@/lib/server/activityImportanceService';
-import { getDb, withTransaction } from '@/lib/server/sqlite';
+import { SQLITE_WRITE_CHUNK_ROWS, forEachWriteChunk, getDb, withTransaction } from '@/lib/server/sqlite';
 import { upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 
 export interface FeedSnapshotState {
@@ -315,43 +315,57 @@ export function replaceFeedSnapshot(feed: Array<{ user: User; activity: Activity
     }))
   );
 
-  withTransaction(() => {
-    const db = getDb();
-    const now = Date.now();
-    db.prepare('DELETE FROM activity_feed').run();
-
-    const insertStmt = db.prepare(
-      `INSERT INTO activity_feed (
-        user_id,
-        activity_key,
-        timestamp,
-        tx_hash_lower,
-        chain,
-        tracked_address_lower,
-        source,
-        type,
-        user_json,
-        activity_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  // 2026-09-03 事故：这里原本是「一个事务里 DELETE 全表 + 逐行插入」——83k 行 / 300MB JSON
+  // 会把 WAL 写锁独占到几十分钟，饿死其它写进程（频道采集静默停摆的根因之一）。
+  // 现在按块提交，单事务持锁时长有上界；代价是不再原子替换（重建窗口内读者可能看到部分行），
+  // 生产调用方只以空 feed 走这条路径（syncService 的 empty snapshot）。
+  const db = getDb();
+  const now = Date.now();
+  for (;;) {
+    const deleted = withTransaction(
+      () =>
+        db
+          .prepare(`DELETE FROM activity_feed WHERE rowid IN (SELECT rowid FROM activity_feed LIMIT ?)`)
+          .run(SQLITE_WRITE_CHUNK_ROWS).changes
     );
+    if (deleted < SQLITE_WRITE_CHUNK_ROWS) break;
+  }
 
-    for (const row of scoredRows) {
-      const activityKey = row.stableId || row.activity.id;
-      insertStmt.run(
-        row.user.id,
-        activityKey,
-        row.activity.timestamp,
-        normalize(row.activity.metadata.txHash) || null,
-        normalize(row.activity.metadata.chain) || null,
-        normalize(row.activity.metadata.trackedAddress) || null,
-        row.activity.source,
-        row.activity.type,
-        JSON.stringify(row.user),
-        JSON.stringify(row.activity),
-        now
+  forEachWriteChunk(scoredRows, (chunk) => {
+    withTransaction(() => {
+      const insertStmt = db.prepare(
+        `INSERT INTO activity_feed (
+          user_id,
+          activity_key,
+          timestamp,
+          tx_hash_lower,
+          chain,
+          tracked_address_lower,
+          source,
+          type,
+          user_json,
+          activity_json,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
-    }
+
+      for (const row of chunk) {
+        const activityKey = row.stableId || row.activity.id;
+        insertStmt.run(
+          row.user.id,
+          activityKey,
+          row.activity.timestamp,
+          normalize(row.activity.metadata.txHash) || null,
+          normalize(row.activity.metadata.chain) || null,
+          normalize(row.activity.metadata.trackedAddress) || null,
+          row.activity.source,
+          row.activity.type,
+          JSON.stringify(row.user),
+          JSON.stringify(row.activity),
+          now
+        );
+      }
+    });
   });
 
   upsertEventsFromFeedRows(scoredRows, 'feed-snapshot-replace');
@@ -412,52 +426,54 @@ export function upsertFeedSnapshot(feed: Array<{ user: User; activity: Activity 
     }))
   );
 
-  withTransaction(() => {
-    const db = getDb();
-    const now = Date.now();
-
-    const insertStmt = db.prepare(
-      `INSERT INTO activity_feed (
-        user_id,
-        activity_key,
-        timestamp,
-        tx_hash_lower,
-        chain,
-        tracked_address_lower,
-        source,
-        type,
-        user_json,
-        activity_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(activity_key)
-      DO UPDATE SET
-        timestamp = excluded.timestamp,
-        tx_hash_lower = excluded.tx_hash_lower,
-        chain = excluded.chain,
-        tracked_address_lower = excluded.tracked_address_lower,
-        source = excluded.source,
-        type = excluded.type,
-        user_json = excluded.user_json,
-        activity_json = excluded.activity_json`
-    );
-
-    for (const row of scoredRows) {
-      const activityKey = row.stableId || row.activity.id;
-      insertStmt.run(
-        row.user.id,
-        activityKey,
-        row.activity.timestamp,
-        normalize(row.activity.metadata.txHash) || null,
-        normalize(row.activity.metadata.chain) || null,
-        normalize(row.activity.metadata.trackedAddress) || null,
-        row.activity.source,
-        row.activity.type,
-        JSON.stringify(row.user),
-        JSON.stringify(row.activity),
-        now
+  // 同 replaceFeedSnapshot：批量写按块提交，单事务持锁时长有上界（2026-09-03 事故）。
+  const db = getDb();
+  const now = Date.now();
+  forEachWriteChunk(scoredRows, (chunk) => {
+    withTransaction(() => {
+      const insertStmt = db.prepare(
+        `INSERT INTO activity_feed (
+          user_id,
+          activity_key,
+          timestamp,
+          tx_hash_lower,
+          chain,
+          tracked_address_lower,
+          source,
+          type,
+          user_json,
+          activity_json,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(activity_key)
+        DO UPDATE SET
+          timestamp = excluded.timestamp,
+          tx_hash_lower = excluded.tx_hash_lower,
+          chain = excluded.chain,
+          tracked_address_lower = excluded.tracked_address_lower,
+          source = excluded.source,
+          type = excluded.type,
+          user_json = excluded.user_json,
+          activity_json = excluded.activity_json`
       );
-    }
+
+      for (const row of chunk) {
+        const activityKey = row.stableId || row.activity.id;
+        insertStmt.run(
+          row.user.id,
+          activityKey,
+          row.activity.timestamp,
+          normalize(row.activity.metadata.txHash) || null,
+          normalize(row.activity.metadata.chain) || null,
+          normalize(row.activity.metadata.trackedAddress) || null,
+          row.activity.source,
+          row.activity.type,
+          JSON.stringify(row.user),
+          JSON.stringify(row.activity),
+          now
+        );
+      }
+    });
   });
 
   upsertEventsFromFeedRows(scoredRows, 'feed-snapshot-upsert');
