@@ -630,7 +630,7 @@ export async function reconcileRobinhoodHoldingsViaRpc(
 
 /**
  * Implausible-price gate. Robinhood equity tokens top out in the hundreds of
- * dollars; memecoins above $1k are essentially always a feed bug (seen: MESSI
+ * dollars; memecoins above $5k are essentially always a feed bug (seen: MESSI
  * HOOD at $1.9e17, COKE at $8.9e12). Majors that legitimately exceed the cap
  * are exempted by symbol.
  */
@@ -649,6 +649,39 @@ export function isImplausiblePrice(
   return !PRICE_EXEMPT_SYMBOLS.has((symbol ?? '').toUpperCase());
 }
 
+/**
+ * Implausible-value gate for tokens with unknown or near-zero liquidity.
+ * Price can look plausible ($1.22) but balance × price is hallucinated
+ * (e.g. VILLAIN pump: reported $12.4M, actual MC ~ $1.7K).
+ * When liquidity is null or <$5k, reject value_usd > $500k unless exempted.
+ * This catches gross hallucinations while allowing legit low-liquidity bags.
+ */
+const IMPLAUSIBLE_VALUE_CAP_USD = 500_000;
+
+export function isImplausibleValue(
+  valueUsd: number | null | undefined,
+  liquidityUsd: number | null,
+  symbol?: string | null,
+): boolean {
+  const value = Number(valueUsd);
+  if (!Number.isFinite(value) || value <= IMPLAUSIBLE_VALUE_CAP_USD) return false;
+  // Liquidity is null or very low
+  if (liquidityUsd != null && liquidityUsd >= MIN_LIQUIDITY_USD) return false;
+  return !PRICE_EXEMPT_SYMBOLS.has((symbol ?? '').toUpperCase());
+}
+/** 判定某条持仓是否会被写库门禁丢弃——总量复算与 insertHoldingsRows 共用同一标准。 */
+export function isHoldingGated(holding: {
+  price_usd: number | null | undefined;
+  value_usd: number | null | undefined;
+  liquidity_usd: number | null;
+  symbol: string | null;
+}): boolean {
+  return (
+    isImplausiblePrice(holding.price_usd, holding.symbol) ||
+    isImplausibleValue(holding.value_usd, holding.liquidity_usd, holding.symbol)
+  );
+}
+
 function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
   const insert = db.prepare(`
     INSERT OR REPLACE INTO current_holdings
@@ -659,11 +692,8 @@ function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const holding of holdings) {
-    // Price sanity gate: upstream feeds occasionally emit garbage prices
-    // (e.g. MESSI HOOD at $1.9e17) that poison totals for every holder.
-    // Stable/native majors are exempt; anything else above the cap is dropped
-    // so absence falls back to last-good data instead of a fake valuation.
-    if (isImplausiblePrice(holding.price_usd, holding.symbol)) continue;
+    // Price and value sanity gates share one predicate with total calculations.
+    if (isHoldingGated(holding)) continue;
     insert.run(
       holding.tracked_address,
       holding.tracked_address_lower,
@@ -971,7 +1001,10 @@ export async function refreshWalletHoldings(
           status: 'success',
           refreshed_at: nowMs,
         },
-        chainTotalUsd: assets.reduce((sum, asset) => sum + asset.valueUsd, 0),
+        // 总量只计写入门禁后的真实持仓，避免 OKX 幻觉价污染 total_asset_usd。
+        chainTotalUsd: chainHoldings
+          .filter((holding) => !isHoldingGated(holding))
+          .reduce((sum, asset) => sum + asset.valueUsd, 0),
       });
       totalRows += chainHoldings.length;
     }
@@ -1231,6 +1264,15 @@ export async function refreshWalletHoldings(
     status: 'success',
     refreshed_at: nowMs,
   };
+  const writtenAssetUsd = holdings
+    .filter((holding) => !isHoldingGated(holding))
+    .reduce((sum, holding) => sum + holding.value_usd, 0);
+  // 总量只计写入门禁后的真实持仓（insertHoldingsRows 同一标准）——
+  // 否则 OKX 幻觉价（如 VILLAIN $12.4M，实际 MC $1.7K）经 updateAssetSnapshots
+  // 污染 tracked_addresses / tracked_users 的 total_asset_usd。
+  if (totalAssetUsd != null) {
+    totalAssetUsd = writtenAssetUsd;
+  }
   replaceWalletHoldings(db, addressLower, chain, holdings, walletStatus);
 
   // Robinhood is not a tracked_addresses chain — only update totals for OKX chains.
