@@ -262,6 +262,7 @@ export async function ensurePrimaryPoolForAddress(params: {
   const address = (params.address || '').trim();
   if (!address) return { ok: false, entered: false, error: 'empty_address' };
   const addressLower = address.toLowerCase();
+  const symbol = (params.symbol || '').trim() || null;
   // Solana addresses are unambiguous. An EVM 0x address is shared across
   // bsc/ethereum/base/etc. as independent contracts — `0x → bsc` was a wrong
   // guess that mislabeled every base/ethereum token as bsc (e.g. QUID on base).
@@ -284,7 +285,6 @@ export async function ensurePrimaryPoolForAddress(params: {
       chain = 'solana';
     }
   }
-  const symbol = (params.symbol || '').trim() || null;
   const newonePath = resolveNewoneDbPath();
   if (!existsSync(newonePath)) {
     return { ok: false, entered: false, error: 'newone_db_missing' };
@@ -293,6 +293,14 @@ export async function ensurePrimaryPoolForAddress(params: {
   let db: NewoneSqlite | null = null;
   try {
     db = openNewone(newonePath, false);
+    if (
+      db
+        .prepare(`SELECT 1 FROM permanent_token_blocks WHERE address_lower = ? LIMIT 1`)
+        .get(addressLower)
+    ) {
+      return { ok: true, entered: false, error: 'permanent_delete_blocked' };
+    }
+
     // Prefer existing token by CA
     const existing = db
       .prepare(
@@ -406,8 +414,8 @@ export async function ensurePrimaryPoolForAddress(params: {
       // ignore
     }
   }
-}
 
+}
 /** Best-effort Bark (dual device if BARK_URLS / default). */
 export async function barkPrimaryPoolAlert(title: string, body: string) {
   await pushBark({ title, body, group: 'pili-pool' });
