@@ -1,6 +1,7 @@
 /**
- * Debounced in-memory queue for trade-triggered per-wallet holdings refresh.
- * Same wallet×chain coalesces into one OKX/GMGN pull after debounce.
+ * Debounced durable queue for trade-triggered per-wallet holdings refresh.
+ * Same wallet×chain coalesces into one OKX pull after debounce.
+ * EVM jobs cover ETH/BSC/Base/Robinhood in a single OKX request.
  */
 import 'server-only';
 
@@ -11,13 +12,7 @@ import {
   type RefreshWalletHoldingsParams,
   type RefreshWalletHoldingsResult,
 } from '@/lib/server/holdingsRefreshRuntime';
-import { countPendingLiveDoorbells } from '@/lib/server/liveDoorbellQueue';
 import { pushBark } from '@/lib/server/barkNotify';
-import {
-  gmgnConfiguredAccountBucketKeys,
-  gmgnCooldownRemainingMs,
-  gmgnEgressCooldownRemainingMs,
-} from '@/lib/server/gmgnRateLimit';
 import { getDb, type DbHandle } from '@/lib/server/sqlite';
 
 const DEFAULT_DEBOUNCE_MS = 10_000;
@@ -41,8 +36,6 @@ function getMinRefreshAgeMs() {
 }
 
 const DEFAULT_QUIET_INTERVAL_MS = 4 * 60 * 60_000;
-const DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS = 12 * 60 * 60_000;
-
 /**
  * Quiet wallets (no on-chain activity within the active window) re-sync on
  * this slower cadence instead of HOLDINGS_REFRESH_INTERVAL_MS. Their balance
@@ -91,7 +84,13 @@ function getDebounceMs(envDebounce?: number) {
 function normalizeQueueChain(chain: string) {
   const normalized = chain.trim().toLowerCase();
   if (normalized === 'sol') return 'solana';
-  if (normalized === 'eth' || normalized === 'ethereum' || normalized === 'bsc' || normalized === 'base') {
+  if (
+    normalized === 'eth'
+    || normalized === 'ethereum'
+    || normalized === 'bsc'
+    || normalized === 'base'
+    || normalized === 'robinhood'
+  ) {
     return 'evm';
   }
   return normalized;
@@ -99,10 +98,6 @@ function normalizeQueueChain(chain: string) {
 
 function jobKey(address: string, chain: string) {
   return `${normalizeQueueChain(chain)}:${address.trim().toLowerCase()}`;
-}
-
-function isRobinhoodChain(chain: string) {
-  return chain.trim().toLowerCase() === 'robinhood';
 }
 
 function isTransientRefreshFailure(result: RefreshWalletHoldingsResult) {
@@ -256,7 +251,6 @@ export function createHoldingsRefreshQueue(deps: HoldingsRefreshQueueDeps = {}) 
 
 const PERSISTENT_QUEUE_POLL_MS = 1_000;
 const PERSISTENT_QUEUE_LEASE_MS = 5 * 60_000;
-const DOORBELL_HOLDINGS_FAIRNESS_MS = 60_000;
 const HOLDINGS_JOB_TIMEOUT_MS = Math.max(
   5_000,
   Number(process.env.HOLDINGS_JOB_TIMEOUT_MS || 30_000)
@@ -314,6 +308,7 @@ function ensurePersistentQueue(db: DbHandle) {
     ['ethereum', 'evm'],
     ['bsc', 'evm'],
     ['base', 'evm'],
+    ['robinhood', 'evm'],
   ] as const) {
     db.exec(`
       INSERT INTO holdings_refresh_jobs (
@@ -369,7 +364,7 @@ function upsertPersistentJob(
   return { enqueued: true, key };
 }
 
-/** Durable verification enqueue: one EVM wallet job covers ETH/BSC/Base. */
+/** Durable verification enqueue: one EVM wallet job covers ETH/BSC/Base/Robinhood. */
 export function enqueueHoldingsRefresh(
   input: EnqueueHoldingsRefreshInput,
   options: { delayMs?: number } = {},
@@ -398,19 +393,7 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
        ON ws.tracked_address_lower = ta.address_lower AND ws.chain = ta.chain
      WHERE COALESCE(ta.monitoring_enabled, 1) = 1
        AND ta.chain IN ('solana', 'ethereum', 'bsc', 'base')
-     GROUP BY ta.address_lower, ta.chain
-     UNION ALL
-     SELECT ta.address, ta.address_lower, 'robinhood' AS chain, ta.user_id,
-            MAX(CASE WHEN ws.status = 'success' THEN ws.refreshed_at END) AS last_success_at,
-            MAX(e.event_time_ms) AS last_trade_at
-     FROM tracked_addresses ta
-     JOIN telegram_monitor_events e
-       ON e.tracked_wallet_address_lower = ta.address_lower AND e.chain = 'robinhood'
-     LEFT JOIN current_holdings_wallet_status ws
-       ON ws.tracked_address_lower = ta.address_lower AND ws.chain = 'robinhood'
-     WHERE COALESCE(ta.monitoring_enabled, 1) = 1
-       AND ta.chain IN ('ethereum', 'bsc', 'base')
-     GROUP BY ta.address_lower`
+     GROUP BY ta.address_lower, ta.chain`
   ).all() as Array<{
     address: string;
     address_lower: string;
@@ -437,9 +420,7 @@ function seedPersistentQueue(db: DbHandle, nowMs: number) {
   }
 
   for (const row of grouped.values()) {
-    const intervalMs = row.chain === 'robinhood'
-      ? DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS
-      : refreshIntervalMs;
+    const intervalMs = refreshIntervalMs;
     // Preserve real age in due_at so an old wallet cannot remain at a fixed
     // roster position behind newer wallets every cycle.
     const dueAtMs = row.last_success_at == null
@@ -465,10 +446,8 @@ function claimPersistentJob(
   const leaseToken = randomUUID();
   const minAgeMs = getMinRefreshAgeMs();
   const providerClause = provider === 'gmgn'
-    ? `AND chain = 'robinhood'`
-    : provider === 'native'
-      ? `AND chain <> 'robinhood'`
-      : '';
+    ? `AND 0`
+    : '';
   const claim = db.transaction(() => {
     const row = db.prepare(
       `SELECT wallet_chain, address, chain, user_id, attempts
@@ -490,15 +469,6 @@ function claimPersistentJob(
     return result.changes === 1 ? { ...row, leaseToken } : null;
   });
   return claim();
-}
-
-function gmgnQueueCooldownRemainingMs(nowMs: number) {
-  return Math.max(
-    gmgnCooldownRemainingMs(nowMs),
-    ...gmgnConfiguredAccountBucketKeys().map((scope) =>
-      gmgnEgressCooldownRemainingMs(scope, nowMs)
-    )
-  );
 }
 
 function queueStats(db: DbHandle, nowMs: number) {
@@ -560,42 +530,6 @@ export async function runHoldingsRefreshQueueCycle(options: {
     };
   }
 
-  if (isRobinhoodChain(job.chain)) {
-    const cooldownMs = (options.cooldownRemainingMs ?? gmgnQueueCooldownRemainingMs)(nowMs);
-    const pendingDoorbells = (options.pendingLiveDoorbells ?? countPendingLiveDoorbells)();
-    const latestSuccess = db.prepare(
-      `SELECT MAX(last_success_at_ms) AS at
-       FROM holdings_refresh_jobs WHERE chain = 'robinhood'`
-    ).get() as { at: number | null };
-    const fairnessRemainingMs = pendingDoorbells > 0 && latestSuccess.at != null
-      ? Math.max(0, Number(latestSuccess.at) + DOORBELL_HOLDINGS_FAIRNESS_MS - nowMs)
-      : 0;
-    if (cooldownMs > 0 || fairnessRemainingMs > 0) {
-      const retryDelayMs = Math.max(cooldownMs, fairnessRemainingMs, PERSISTENT_QUEUE_POLL_MS);
-      const retryAt = nowMs + retryDelayMs;
-      db.prepare(
-        `UPDATE holdings_refresh_jobs
-         SET due_at_ms = ?, lease_token = NULL, lease_until_ms = NULL, updated_at_ms = ?
-         WHERE wallet_chain = ? AND lease_token = ?`
-      ).run(retryAt, nowMs, job.wallet_chain, job.leaseToken);
-      const stats = queueStats(db, nowMs);
-      return {
-        sleepMs: PERSISTENT_QUEUE_POLL_MS,
-        status: 'idle' as const,
-        summary: {
-          seeded,
-          processed: 0,
-          deferredWalletChain: job.wallet_chain,
-          queueTotal: stats.total,
-          queueDue: stats.due ?? 0,
-        },
-        lastError: cooldownMs > 0
-          ? `GMGN cooldown ${cooldownMs}ms`
-          : `live doorbell fairness ${fairnessRemainingMs}ms`,
-      };
-    }
-  }
-
   const refreshWallet = options.refreshWallet ?? refreshWalletHoldings;
   const jobTimeoutMs = Math.max(1, options.jobTimeoutMs ?? HOLDINGS_JOB_TIMEOUT_MS);
   let result: RefreshWalletHoldingsResult;
@@ -636,9 +570,7 @@ export async function runHoldingsRefreshQueueCycle(options: {
 
   const finishedAt = now();
   if (result.status === 'idle') {
-    const intervalMs = job.chain === 'robinhood'
-      ? DEFAULT_ROBINHOOD_QUIET_INTERVAL_MS
-      : getQuietIntervalMs();
+    const intervalMs = getQuietIntervalMs();
     db.prepare(
       `UPDATE holdings_refresh_jobs
        SET priority = CASE WHEN rerun_requested = 1 THEN priority ELSE 0 END,

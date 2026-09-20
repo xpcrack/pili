@@ -18,7 +18,6 @@ import {
 import type { AddressAssetSnapshot, UserAssetSnapshot } from '@/lib/activityFeed';
 import { runGmgnCliAsync } from '@/lib/server/gmgnCli';
 import { getGmgnOpenApiClient } from '@/lib/server/gmgnOpenApiClient';
-import { fetchEvmTokenBalance } from '@/lib/server/evmRpc';
 import {
   acquireGmgnHeavyJob,
   isGmgnBanMessage,
@@ -32,6 +31,7 @@ const MIN_LIQUIDITY_USD = 5_000;
 const DEFAULT_HOLDINGS_REFRESH_INTERVAL_MS = 30 * 60_000;
 const SUPPORTED_CHAINS = ['bsc', 'ethereum', 'base', 'solana'] as const;
 const EVM_CHAINS = new Set(['bsc', 'ethereum', 'base']);
+const OKX_EVM_CHAINS = ['ethereum', 'bsc', 'base', 'robinhood'] as const;
 const ROBINHOOD_CHAIN = 'robinhood' as const;
 
 type SupportedChain = (typeof SUPPORTED_CHAINS)[number];
@@ -562,70 +562,18 @@ function readPreviousHoldings(
  * least one row verified — otherwise pretend nothing happened (job retries).
  */
 export async function reconcileRobinhoodHoldingsViaRpc(
-  db: DbHandle,
-  address: string,
-  addressLower: string,
-  userId: string,
-  refreshedAt: number,
-  signal?: AbortSignal,
+  _db: DbHandle,
+  _address: string,
+  _addressLower: string,
+  _userId: string,
+  _refreshedAt: number,
+  _signal?: AbortSignal,
 ): Promise<{ ok: boolean; verified: number; error: string | null }> {
-  const previous = readPreviousHoldings(db, addressLower, ROBINHOOD_CHAIN);
-  if (previous.length === 0) {
-    return { ok: false, verified: 0, error: 'no last-known robinhood rows to verify' };
-  }
-
-  const reconciled: CurrentHoldingRecord[] = [];
-  let verified = 0;
-  for (const row of previous) {
-    const balance = await fetchEvmTokenBalance(
-      ROBINHOOD_CHAIN,
-      addressLower,
-      row.token_address_lower,
-      signal,
-    );
-    if (balance == null) {
-      // RPC could not verify this token — keep last-known row untouched
-      reconciled.push(row);
-      continue;
-    }
-    verified += 1;
-    if (balance <= 0) {
-      // On-chain zero = genuine sell; persist the zeroed row (RPC-confirmed).
-      reconciled.push({
-        ...row,
-        balance: 0,
-        value_usd: 0,
-        source: 'rpc-token-balance',
-        authoritative_refreshed_at: refreshedAt,
-        refreshed_at: refreshedAt,
-      });
-      continue;
-    }
-    const price = row.price_usd > 0 ? row.price_usd : 0;
-    reconciled.push({
-      ...row,
-      balance,
-      value_usd: balance * price,
-      source: 'rpc-token-balance',
-      authoritative_refreshed_at: refreshedAt,
-      refreshed_at: refreshedAt,
-    });
-  }
-
-  const walletStatus: CurrentHoldingWalletStatusRecord = {
-    tracked_address: address,
-    tracked_address_lower: addressLower,
-    user_id: userId,
-    chain: ROBINHOOD_CHAIN,
-    status: 'success',
-    refreshed_at: refreshedAt,
+  return {
+    ok: false,
+    verified: 0,
+    error: 'robinhood holdings use OKX chainIndex 4663; RPC last-known fallback retired',
   };
-  if (verified === 0) {
-    // RPC fully unreachable — don't pretend success; keep failed status so the job retries.
-    return { ok: false, verified: 0, error: 'rpc verified no rows (unreachable?)' };
-  }
-  replaceWalletHoldings(db, addressLower, ROBINHOOD_CHAIN, reconciled, walletStatus);
-  return { ok: true, verified, error: null };
 }
 
 /**
@@ -675,11 +623,12 @@ export function isHoldingGated(holding: {
   value_usd: number | null | undefined;
   liquidity_usd: number | null;
   symbol: string | null;
+  chain?: string | null;
 }): boolean {
-  return (
-    isImplausiblePrice(holding.price_usd, holding.symbol) ||
-    isImplausibleValue(holding.value_usd, holding.liquidity_usd, holding.symbol)
-  );
+  if (isImplausiblePrice(holding.price_usd, holding.symbol)) return true;
+  // RH memes can be >$500k with DexScreener liq missing; OKX already priced them.
+  if ((holding.chain || '').toLowerCase() === ROBINHOOD_CHAIN) return false;
+  return isImplausibleValue(holding.value_usd, holding.liquidity_usd, holding.symbol);
 }
 
 function insertHoldingsRows(db: DbHandle, holdings: CurrentHoldingRecord[]) {
@@ -841,7 +790,7 @@ function authoritativeHolding(
   address: string,
   addressLower: string,
   userId: string,
-  chain: SupportedChain,
+  chain: HoldingsChain,
   asset: OkxAddressAssetDetail,
   refreshedAt: number,
 ): CurrentHoldingRecord {
@@ -905,7 +854,6 @@ export async function refreshWalletHoldings(
   const fetchAddressAssetDetails = params.fetchAddressAssetDetails ?? fetchOkxAddressAssetDetails;
   const fetchAddressAssetDetailsMulti =
     params.fetchAddressAssetDetailsMulti ?? fetchOkxAddressAssetDetailsMulti;
-  const fetchRobinhoodHoldings = params.fetchRobinhoodHoldings ?? fetchRobinhoodHoldingsWithCli;
   const nowMs = params.now ? params.now() : Date.now();
   const updateTotals = params.updateTotals !== false;
   const shouldFetchLiquidity = params.fetchTokenLiquidity !== false;
@@ -948,7 +896,7 @@ export async function refreshWalletHoldings(
         lastError: 'Missing OKX API credentials',
       };
     }
-    const evmChains: SupportedChain[] = ['ethereum', 'bsc', 'base'];
+    const evmChains = [...OKX_EVM_CHAINS];
     const result = await fetchAddressAssetDetailsMulti(address, evmChains);
     if (!result.ok) {
       for (const targetChain of evmChains) {
@@ -974,7 +922,7 @@ export async function refreshWalletHoldings(
     let totalRows = 0;
     let totalUsd = 0;
     const chainPlans: Array<{
-      chain: SupportedChain;
+      chain: HoldingsChain;
       holdings: CurrentHoldingRecord[];
       status: CurrentHoldingWalletStatusRecord;
       chainTotalUsd: number;
@@ -1001,18 +949,13 @@ export async function refreshWalletHoldings(
           status: 'success',
           refreshed_at: nowMs,
         },
-        // 总量只计写入门禁后的真实持仓，避免 OKX 幻觉价污染 total_asset_usd。
         chainTotalUsd: chainHoldings
           .filter((holding) => !isHoldingGated(holding))
-          .reduce((sum, asset) => sum + asset.valueUsd, 0),
+          .reduce((sum, asset) => sum + asset.value_usd, 0),
       });
       totalRows += chainHoldings.length;
     }
 
-    // 这个 EVM 多链分支在 944 行原本直接写库返回，跳过了下面单链分支的 DexScreener
-    // 流动性富集——而队列刷新的 EVM 任务用的就是 chain='evm'，所以 base/bsc/ethereum
-    // 的 liquidity_usd 恒为 NULL（2026-09-12 实测：20 分钟内 1533 行 EVM 刷新全部 NULL，
-    // 同窗口 solana 199 行有 15 行写入了流动性）。三链合并成一次批量取，键规则与单链一致。
     if (shouldFetchLiquidity) {
       const uniqueTokens = chainPlans.flatMap((plan) =>
         plan.holdings.map((holding) => ({
@@ -1042,7 +985,8 @@ export async function refreshWalletHoldings(
 
     for (const plan of chainPlans) {
       replaceWalletHoldings(db, addressLower, plan.chain, plan.holdings, plan.status);
-      if (updateTotals) {
+      // RH is not a tracked_addresses chain; user total comes from current_holdings rollup.
+      if (updateTotals && plan.chain !== ROBINHOOD_CHAIN) {
         updateAssetSnapshots(
           [
             {
@@ -1071,54 +1015,31 @@ export async function refreshWalletHoldings(
   }
 
   if (chain === ROBINHOOD_CHAIN) {
-    const result = await fetchRobinhoodHoldings(address, params.signal);
+    // Same OKX balance endpoint as the evm batch; keep a one-chain path for
+    // callers that still pass chain='robinhood' directly.
+    if (!hasOkxCredentials() && !params.fetchAddressAssetDetails) {
+      return {
+        status: 'missing-credentials',
+        chain,
+        holdingsRowCount: 0,
+        filteredOutHoldingCount: 0,
+        totalAssetUsd: null,
+        lastError: 'Missing OKX API credentials',
+      };
+    }
+    const result = await fetchAddressAssetDetails(address, chain);
     if (!result.ok) {
-      // GMGN openapi + cli both failed. Last resort: verify last-known holdings
-      // on-chain via RPC balanceOf (robinhood has no OKX coverage either).
-      // NOTE: params.signal may already be aborted (queue Promise.race 30s
-      // timeout fires while GMGN hangs, then this code still runs to
-      // completion) — give the RPC phase its own budget so it can land.
-      try {
-        const rpc = await reconcileRobinhoodHoldingsViaRpc(
-          db, address, addressLower, userId, nowMs, AbortSignal.timeout(60_000)
-        );
-        if (rpc.ok) {
-          console.log(
-            `[holdingsRefresh] robinhood RPC fallback ok ${addressLower} verified=${rpc.verified}`
-          );
-          return {
-            status: 'idle',
-            chain,
-            holdingsRowCount: rpc.verified,
-            filteredOutHoldingCount: 0,
-            totalAssetUsd: null,
-            lastError: null,
-            provider: 'gmgn',
-            requestedChainCount: 1,
-            upstreamRequestCount: 1,
-          };
-        }
-        console.warn(
-          `[holdingsRefresh] robinhood RPC fallback failed ${addressLower}: ${rpc.error}`
-        );
-        lastError = `${result.error}; rpc fallback: ${rpc.error}`;
-      } catch (rpcErr) {
-        lastError = `${result.error}; rpc fallback threw: ${
-          rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
-        }`;
-      }
-      // Preserve last-good bags: only mark status failed.
-      const failedStatus: CurrentHoldingWalletStatusRecord = {
+      lastError = result.error;
+      insertWalletStatusRows(db, [{
         tracked_address: address,
         tracked_address_lower: addressLower,
         user_id: userId,
         chain,
         status: 'failed',
         refreshed_at: nowMs,
-      };
-      insertWalletStatusRows(db, [failedStatus]);
+      }]);
       return {
-        status: 'error',
+        status: result.configured === false ? 'missing-credentials' : 'error',
         chain,
         holdingsRowCount: 0,
         filteredOutHoldingCount: 0,
@@ -1126,7 +1047,6 @@ export async function refreshWalletHoldings(
         lastError,
       };
     }
-
     success = true;
     totalAssetUsd = result.assets.reduce((sum, asset) => sum + asset.valueUsd, 0);
     for (const asset of result.assets) {
@@ -1134,24 +1054,7 @@ export async function refreshWalletHoldings(
         filteredOutHoldingCount += 1;
         continue;
       }
-      holdings.push({
-        tracked_address: address,
-        tracked_address_lower: addressLower,
-        user_id: userId,
-        chain,
-        token_address: asset.tokenAddress,
-        token_address_lower: asset.tokenAddress.toLowerCase(),
-        symbol: asset.symbol,
-        name: asset.name,
-        balance: asset.balance,
-        price_usd: asset.priceUsd,
-        value_usd: asset.valueUsd,
-        liquidity_usd: asset.liquidityUsd,
-        source: 'authoritative',
-        provisional_updated_at: null,
-        authoritative_refreshed_at: nowMs,
-        refreshed_at: nowMs,
-      });
+      holdings.push(authoritativeHolding(address, addressLower, userId, chain, asset, nowMs));
     }
   } else {
     if (!isSupportedOkxChain(chain)) {
@@ -1275,7 +1178,7 @@ export async function refreshWalletHoldings(
   }
   replaceWalletHoldings(db, addressLower, chain, holdings, walletStatus);
 
-  // Robinhood is not a tracked_addresses chain — only update totals for OKX chains.
+  // Robinhood is not a tracked_addresses chain — only update totals for address-book chains.
   if (updateTotals && chain !== ROBINHOOD_CHAIN && totalAssetUsd != null) {
     updateAssetSnapshots(
       [
@@ -1305,7 +1208,7 @@ export async function refreshWalletHoldings(
     filteredOutHoldingCount,
     totalAssetUsd,
     lastError: null,
-    provider: chain === ROBINHOOD_CHAIN ? 'gmgn' : 'okx',
+    provider: 'okx',
     requestedChainCount: 1,
     upstreamRequestCount: 1,
   };
@@ -1385,17 +1288,14 @@ export async function refreshCurrentHoldings(
 ): Promise<HoldingsRefreshRunResult> {
   const db = getDbOrDefault(options.db);
   const fetchAddressAssetDetails = options.fetchAddressAssetDetails ?? fetchOkxAddressAssetDetails;
-  const fetchRobinhoodHoldings = options.fetchRobinhoodHoldings ?? fetchRobinhoodHoldingsWithCli;
   const nowMs = options.now ? options.now() : Date.now();
 
   ensureCurrentHoldingsTable(db);
 
   const trackedAddresses = listTrackedAddresses(db);
   const uniqueTrackedAddresses = dedupeTrackedAddresses(trackedAddresses);
-  // Robinhood holdings are served exclusively by the persistent GMGN queue
-  // (holdings-refresh-gmgn runtime task / enqueueHoldingsRefresh). This full
-  // scan previously re-read every Robinhood wallet hourly with the same
-  // weight-5 signed requests, duplicating the queue — removed 2026-08-13.
+  // Robinhood is included in the per-wallet OKX EVM batch (chainIndex 4663).
+  // This full scan stays OKX-only and must not re-issue GMGN holdings calls.
   const robinhoodCandidates: TrackedAddressRow[] = [];
   const summary: HoldingsRefreshSummary = {
     trackedAddressCount: trackedAddresses.length,
