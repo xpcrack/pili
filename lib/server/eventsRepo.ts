@@ -142,8 +142,17 @@ function parseJson<T>(value: string | null | undefined) {
   }
 }
 
-function mergeCurrentUserSnapshot(user: User, currentUsersById: Map<string, User>) {
-  return currentUsersById.get(user.id) ?? user;
+function mergeCurrentUserSnapshot(
+  user: User,
+  currentUsersById: Map<string, User>,
+  preferredUserId?: string | null
+) {
+  // user_id 列是归属权威；user_json 可能落后（fomo 频道帖归属回填只更了列，漏了 JSON）。
+  return (
+    (preferredUserId ? currentUsersById.get(preferredUserId) : undefined) ??
+    currentUsersById.get(user.id) ??
+    user
+  );
 }
 
 function pickDisplaySeed(...values: Array<string | null | undefined>) {
@@ -1174,7 +1183,7 @@ export function readEventsFeed(query: EventFeedQuery) {
     ? 'FROM events e INDEXED BY idx_events_user_timestamp'
     : 'FROM events e';
 
-  const baseSql = `SELECT e.event_id, e.timestamp, e.user_json, e.activity_json
+  const baseSql = `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${fromSql}
        ${joinSql}
        ${whereSql}
@@ -1191,6 +1200,7 @@ export function readEventsFeed(query: EventFeedQuery) {
   const rows = db.prepare(baseSql).all(...finalParams) as Array<{
     event_id: string;
     timestamp: number;
+    user_id: string | null;
     user_json: string;
     activity_json: string;
   }>;
@@ -1198,7 +1208,7 @@ export function readEventsFeed(query: EventFeedQuery) {
   const sliced = rows.slice(0, safeLimit);
   const parsedRows = sliced.flatMap((row) => {
     try {
-      const user = mergeCurrentUserSnapshot(JSON.parse(row.user_json) as User, currentUsersById);
+      const user = mergeCurrentUserSnapshot(JSON.parse(row.user_json) as User, currentUsersById, row.user_id);
       const activity = JSON.parse(row.activity_json) as Activity;
       return [{ row, user, activity }];
     } catch {
