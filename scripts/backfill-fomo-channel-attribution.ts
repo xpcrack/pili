@@ -51,7 +51,7 @@ let unchanged = 0;
 const stats: Record<string, number> = {};
 
 // 先做完整计算（只读），再单事务写入，压缩锁窗口避免 SQLITE_BUSY。
-const updates: Array<{ eventId: string; userId: string; userName: string; activityJson: string }> = [];
+const updates: Array<{ eventId: string; userId: string; userName: string; userJson: string; activityJson: string }> = [];
 const deletes: string[] = [];
 
 for (const row of rows) {
@@ -87,6 +87,7 @@ for (const row of rows) {
     eventId: row.event_id,
     userId: newUserId,
     userName: newUserName,
+    userJson: JSON.stringify(resolved.user),
     activityJson: JSON.stringify(newActivity),
   });
   if (newUserId === fomoUser.id) toKeepFomo++;
@@ -99,10 +100,10 @@ for (const row of rows) {
 if (WRITE && (updates.length > 0 || deletes.length > 0)) {
   withTransaction(() => {
     const upd = db.prepare(
-      `UPDATE events SET user_id = ?, user_name = ?, activity_json = ?, updated_at = ? WHERE event_id = ?`
+      `UPDATE events SET user_id = ?, user_name = ?, user_json = ?, activity_json = ?, updated_at = ? WHERE event_id = ?`
     );
     for (const u of updates) {
-      upd.run(u.userId, u.userName, u.activityJson, Date.now(), u.eventId);
+      upd.run(u.userId, u.userName, u.userJson, u.activityJson, Date.now(), u.eventId);
     }
     const del = db.prepare(`DELETE FROM events WHERE event_id = ?`);
     for (const eventId of deletes) del.run(eventId);
