@@ -35,6 +35,7 @@ export const CHAIN_TO_OKX_INDEX: Record<string, string> = {
   ethereum: '1',
   base: '8453',
   solana: '501',
+  robinhood: '4663',
 };
 
 export function isSupportedOkxChain(chain: string) {
@@ -192,7 +193,7 @@ export interface OkxHistoricalPricePoint {
 export interface OkxAddressAssetDetail {
   userId?: string;
   address: string;
-  chain: ChainType;
+  chain: OkxBalanceChain;
   assetKey: string;
   tokenAddress: string;
   symbol: string;
@@ -202,13 +203,13 @@ export interface OkxAddressAssetDetail {
   valueUsd: number;
 }
 
-export type OkxBalanceChain = 'bsc' | 'ethereum' | 'base' | 'solana';
+export type OkxBalanceChain = 'bsc' | 'ethereum' | 'base' | 'solana' | 'robinhood';
 
 const OKX_INDEX_TO_CHAIN: Record<string, OkxBalanceChain> = Object.fromEntries(
   Object.entries(CHAIN_TO_OKX_INDEX).map(([chain, index]) => [index, chain as OkxBalanceChain])
 );
 
-const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<ChainType, Record<string, string>> = {
+const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<OkxBalanceChain, Record<string, string>> = {
   bsc: {
     BNB: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
     WBNB: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
@@ -224,6 +225,10 @@ const OKX_NATIVE_TOKEN_ADDRESS_MAP: Record<ChainType, Record<string, string>> = 
   solana: {
     SOL: 'So11111111111111111111111111111111111111112',
     WSOL: 'So11111111111111111111111111111111111111112',
+  },
+  robinhood: {
+    ETH: 'native:robinhood:eth',
+    WETH: 'native:robinhood:eth',
   },
 };
 
@@ -889,7 +894,7 @@ function parseOkxNumber(value: unknown) {
   return null;
 }
 
-function normalizeOkxAssetTokenAddress(chain: ChainType, asset: OkxAddressAssetPayload) {
+function normalizeOkxAssetTokenAddress(chain: OkxBalanceChain, asset: OkxAddressAssetPayload) {
   const rawAddress =
     asset.tokenAddress ??
     asset.tokenContractAddress ??
@@ -916,7 +921,7 @@ function normalizeOkxAssetTokenAddress(chain: ChainType, asset: OkxAddressAssetP
 
 function buildOkxAddressAssetDetail(
   address: string,
-  chain: ChainType,
+  chain: OkxBalanceChain,
   asset: OkxAddressAssetPayload
 ): OkxAddressAssetDetail | null {
   const tokenAddress = normalizeOkxAssetTokenAddress(chain, asset);
@@ -983,7 +988,7 @@ export async function fetchOkxTotalValueByAddress(address: string, chain: string
       ok: false,
       configured: getOkxCredentials().configured,
       totalAssetUsd: null as number | null,
-      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana`,
+      error: `暂不支持 ${chain}，当前仅支持 BSC / Ethereum / Base / Solana / Robinhood`,
     };
   }
 
@@ -1103,7 +1108,7 @@ export async function fetchOkxAddressAssetDetailsMulti(
       assets: [] as OkxAddressAssetDetail[],
       assetsByChain: emptyByChain,
       chainSuccess: {} as Record<OkxBalanceChain, boolean>,
-      error: '未提供受支持链，当前仅支持 BSC / Ethereum / Base / Solana',
+      error: '未提供受支持链，当前仅支持 BSC / Ethereum / Base / Solana / Robinhood',
     };
   }
 
@@ -1245,7 +1250,7 @@ export async function fetchOkxAddressAssetDetailsMulti(
   };
 }
 
-export async function fetchOkxAddressAssetDetails(address: string, chain: ChainType) {
+export async function fetchOkxAddressAssetDetails(address: string, chain: OkxBalanceChain | ChainType) {
   const result = await fetchOkxAddressAssetDetailsMulti(address, [chain as OkxBalanceChain]);
   return {
     ok: result.ok,

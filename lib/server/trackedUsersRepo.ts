@@ -97,7 +97,7 @@ function normalize(value: string | undefined) {
 }
 
 function liquidAssetWhereSql(alias: string) {
-  return `(COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
+  return `(${alias}.chain = 'robinhood' OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
 }
 
 function parseTags(value: string | null | undefined) {
