@@ -20,19 +20,20 @@ async function main() {
     const { parseOkxAddressAssetsByChain } = await import('@/lib/okx');
     const db = getDb();
 
-    const parsedMulti = parseOkxAddressAssetsByChain(WALLET, ['ethereum', 'bsc', 'base'], {
+    const parsedMulti = parseOkxAddressAssetsByChain(WALLET, ['ethereum', 'bsc', 'base', 'robinhood'], {
       data: [{
         tokenAssets: [
           { chainIndex: '1', tokenAddress: '0x3333333333333333333333333333333333333333', symbol: 'E', balance: '2', price: '3', valueUsd: '6' },
           { chainIndex: '56', tokenAddress: TOKEN, symbol: 'B', balance: '4', price: '5', valueUsd: '20' },
           { chainIndex: '8453', tokenAddress: '0x4444444444444444444444444444444444444444', symbol: 'A', balance: '6', price: '7', valueUsd: '42' },
+          { chainIndex: '4663', tokenAddress: '0xab093def657f15df31b33922a95e047add645b29', symbol: 'SHROOM', balance: '10', price: '15', valueUsd: '150' },
         ],
       }],
     });
     assert.deepEqual(
       Object.fromEntries(Object.entries(parsedMulti.assetsByChain).map(([chain, assets]) => [chain, assets.length])),
-      { ethereum: 1, bsc: 1, base: 1 },
-      'chainIndex must split one OKX response into independent chain snapshots',
+      { ethereum: 1, bsc: 1, base: 1, robinhood: 1 },
+      'chainIndex 4663 must land on robinhood in the same OKX payload',
     );
 
     const apply = (
@@ -118,19 +119,30 @@ async function main() {
           priceUsd: 10,
           valueUsd: 20,
         };
+        const rhAsset = {
+          address: WALLET,
+          chain: 'robinhood' as const,
+          assetKey: 'robinhood:0xab093def657f15df31b33922a95e047add645b29',
+          tokenAddress: '0xab093def657f15df31b33922a95e047add645b29',
+          symbol: 'SHROOM',
+          name: null,
+          balance: 10_000_000,
+          priceUsd: 0.015,
+          valueUsd: 150_000,
+        };
         return {
           ok: true as const,
           configured: true,
-          totalAssetUsd: 20,
-          assets: [ethAsset],
-          assetsByChain: { ethereum: [ethAsset], bsc: [], base: [], solana: [] },
-          chainSuccess: { ethereum: true, bsc: true, base: true, solana: false },
+          totalAssetUsd: 170_020,
+          assets: [ethAsset, rhAsset],
+          assetsByChain: { ethereum: [ethAsset], bsc: [], base: [], solana: [], robinhood: [rhAsset] },
+          chainSuccess: { ethereum: true, bsc: true, base: true, solana: false, robinhood: true },
           error: null,
         };
       },
     });
     assert.equal(refreshed.status, 'idle');
-    assert.equal(multiCalls, 1, 'ETH/BSC/Base must share one OKX request');
+    assert.equal(multiCalls, 1, 'ETH/BSC/Base/Robinhood must share one OKX request');
     assert.equal(
       (db.prepare(`SELECT COUNT(*) AS n FROM current_holdings WHERE tracked_address_lower = ? AND chain = 'bsc'`).get(WALLET) as { n: number }).n,
       0,
@@ -141,7 +153,11 @@ async function main() {
        WHERE tracked_address_lower = ? AND chain = 'ethereum'`
     ).get(WALLET) as { balance: number; source: string; authoritative_refreshed_at: number };
     assert.deepEqual(eth, { balance: 2, source: 'authoritative', authoritative_refreshed_at: 5_000 });
-
+    const shroom = db.prepare(
+      `SELECT balance, value_usd, source FROM current_holdings
+       WHERE tracked_address_lower = ? AND chain = 'robinhood'`
+    ).get(WALLET) as { balance: number; value_usd: number; source: string };
+    assert.deepEqual(shroom, { balance: 10_000_000, value_usd: 150_000, source: 'authoritative' });
     console.log('xxyy provisional holdings tests: ok');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

@@ -165,9 +165,8 @@ async function run() {
       telegram: undefined,
     });
 
-    // Robinhood wallets are owned by the persistent GMGN queue
-    // (holdings-refresh-gmgn) since 2026-08-13; the OKX full scan must not
-    // re-fetch them (weight-5 signed requests, duplicates the queue).
+    // Full OKX scan stays address-book chains only. Robinhood is refreshed by
+    // the per-wallet EVM OKX batch (chainIndex 4663), not this hourly sweep.
     let robinhoodCalls = 0;
     const rhScan = await refreshCurrentHoldings({
       now: () => 1_717_000_000_100,
@@ -197,7 +196,7 @@ async function run() {
       },
     });
 
-    assert.equal(robinhoodCalls, 0, 'full scan must not fetch Robinhood wallets (GMGN queue owns them)');
+    assert.equal(robinhoodCalls, 0, 'full scan must not fetch Robinhood via GMGN');
     assert.equal(rhScan.summary.robinhoodWalletCount, 0);
     const rhRowsAfterScan = db
       .prepare(`SELECT COUNT(*) AS n FROM current_holdings WHERE chain = 'robinhood'`)
