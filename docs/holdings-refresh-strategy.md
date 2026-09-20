@@ -1,7 +1,7 @@
 # 余额表（current_holdings）更新策略
 
 > 目标：在「及时性」「准确性」「API 调用次数」三者间取得最优平衡。
-> 状态：设计稿（2026-08-14），尚未实现。当前生产路径是 `holdings_refresh_jobs` 持久队列（2026-08-13 起 Robinhood 全量扫描已移除）。
+> 状态：2026-09-20 起 Robinhood 走 OKX Balance `chainIndex=4663`，并进 EVM 那一次 `all-token-balances-by-address`。GMGN `wallet_holdings` 不再刷新 RH。
 
 ---
 
@@ -11,30 +11,29 @@
 
 | 数据源 | 链 | 每次成本 | 限流约束 |
 |---|---|---|---|
-| OKX `all-token-balances-by-address` | bsc / eth / base / sol | **1 次调用**，一次返回全币种余额+价格+价值 | 400ms/次，2 并发，~721 地址会触发 50011（`lib/okx.ts:8-12`） |
-| GMGN `wallet_holdings`（signed） | robinhood | **weight=5**，账户桶再 ×10 | 全局 1 RPS / burst 3（`gmgnOpenApiClient.ts:34-41,597-599`） |
-| GMGN `wallet_activity` | 门铃成交解析 | weight=3 | 同上，与持仓共享同一个全局桶 |
-| DexScreener liquidity | 非 RH | 批量，独立源 | 无硬限流 |
+| OKX `all-token-balances-by-address` | bsc / eth / base / **robinhood** / sol | **1 次调用**（EVM 四链可逗号拼接：`1,56,8453,4663`），一次返回全币种余额+价格+价值 | 400ms/次，2 并发（`lib/okx.ts`） |
+| GMGN `wallet_activity` | 门铃成交解析 | weight=3 | 全局 1 RPS / burst 3 |
+| DexScreener liquidity / 现价 | 含 RH（`chainId=robinhood`） | 批量，独立源 | 无硬限流 |
 
-关键结论：**OKX 四链每钱包只有 1 次调用且返回全余额；Robinhood 每次 weight-5 signed 是全场最贵。** 四链不碰 GMGN，只有 Robinhood 碰。
+关键结论：**EVM 钱包（含 Robinhood）每刷新 1 次 OKX 调用。** 持仓不再打 GMGN signed `wallet_holdings`。
 
 ### 1.2 现有触发机制
 
 | 触发 | 机制 | 频率 | 每次 API |
 |---|---|---|---|
-| 事件驱动 | doorbell → `enqueueHoldingsRefresh`，priority 100，去抖 10s | 有成交才触发 | 1 OKX / 1 GMGN |
-| 周期对账 | `seedPersistentQueue` 每 5min 播种，`due = last_success + interval` | 每钱包×链 **30min** | 1 OKX / 1 GMGN |
-| 失败重试 | 指数退避 1min → 30min 封顶 | 按需 | 同源 |
-| GMGN 冷却 | Robinhood 队列遇 cooldown / 门铃积压即让路 | — | 0 |
+| 事件驱动 | doorbell → `enqueueHoldingsRefresh`，priority 100，去抖 10s | 有成交才触发 | 1 OKX |
+| 周期对账 | `seedPersistentQueue` 每 5min 播种，`due = last_success + interval` | 静默 4h | 1 OKX |
+| 失败重试 | 指数退避 1min → 30min 封顶，10 次死信 | 按需 | 同源 |
 
-消费者：`holdings-refresh`（native=OKX 四链）与 `holdings-refresh-gmgn`（robinhood）**隔离**，GMGN 冷却不阻塞 OKX（`holdingsRefreshQueue.ts:566-581`）。
+消费者：`holdings-refresh`（native=OKX，EVM 任务覆盖 ETH/BSC/Base/RH）。`holdings-refresh-gmgn` 仍注册但不再认领持仓任务。
 
-### 1.3 四个痛点
+用户总额：地址簿链写 `tracked_addresses.total_asset_usd`；RH 不是地址簿链，但 `listTrackedUsers` 的 liveTotal 从 `current_holdings` 汇总时 **RH 免流动性过滤**。
 
-1. **无最小刷新间隔**：去抖 10s 只合并 10s 内的突发，但"每 15s 成交一次"的持续交易会让同一钱包每 ~25s 刷一次 → 单钱包 **~3456 次/天** API 泄漏。
-2. **静默钱包白刷**：不成交的钱包余额没变，却仍按 30min 周期刷。只有价格在变，而价格可以单独解耦。
-3. **Robinhood 走 30min 周期**：weight-5 signed 是最贵调用，静默 RH 钱包不该被周期刷。
-4. **成交后要等 10-30s** 去抖+拉取，UI 才有新余额（无预测增量）。
+### 1.3 已修痛点
+
+1. **RH 余额/价格陈旧**：旧路径走 GMGN，失败后 RPC 只核 last-known 行 × 旧价。现改 OKX 4663。
+2. **RH 不进表头**：liveTotal 以前按 `liquidity_usd>=5k` 丢掉 RH。现 RH 行直接计入。
+3. **调度浪费**：RH 独立 GMGN 队列（12h / cooldown / 门铃让路）已并进 EVM OKX 请求，零额外调用。
 
 ---
 
@@ -83,11 +82,11 @@ doorbell 触发 `enqueueHoldingsRefresh`（现有机制），但加两个护栏�
 
 理由：静默钱包余额不变（没成交），4h 内不查也依然准确；只有价格变了，而价格走 Tier 0/展示层重估。门铃覆盖率 ≥98%（`live-vs-xxyy-coverage.md`），2% 漏覆盖的余额最坏 4h 后被周期对账纠正——这是可接受的准确性与调用成本的交换。
 
-### Robinhood（weight-5）专用规则
+### Robinhood
 
-- **纯事件驱动**：只有 doorbell 响才刷新，静默 RH 钱包**不参与周期对账**（或周期放宽到 12h+）。
-- 维持现有 `holdings-refresh-gmgn` 消费者 + cooldown/门铃让路逻辑不变。
-- 这是全场最大单项节省：weight-5 × 账户桶 ×10 的调用从"每 RH 钱包 48 次/天"降到"成交才 1 次"。
+- 不再单独调度。EVM `0x` 钱包的 OKX 请求带 `chains=1,56,8453,4663`。
+- 静默间隔与其它 EVM 链相同（4h）。
+- GMGN 只保留成交解析（`wallet_activity`），不刷持仓。
 
 ---
 
@@ -132,14 +131,11 @@ doorbell 触发 `enqueueHoldingsRefresh`（现有机制），但加两个护栏�
 
 假设 ~721 个 tracked 地址（OKX 注释口径），其中活跃（日成交）约 5%，Robinhood 少数。
 
-| 项 | 现状（30min 周期） | 目标 | 降幅 |
-|---|---|---|---|
-| OKX 周期对账 | 721 × 48 ≈ 34,608/天 | 静默 95% × 6/天 + 活跃 5% × 48/天 ≈ 5,800/天 | **83% ↓** |
-| OKX 事件驱动 | 高频钱包无上限（25s/次） | min-age 120s 封顶，活跃钱包 ≤30/天 | 有界 |
-| GMGN 持仓（weight-5） | RH 钱包 × 48/天 | 成交才刷（+12h 兜底） | **~96% ↓** |
-| DexScreener | 全扫描批量 | 不变（或懒加载，另计） | — |
-
-净效果：**OKX 调用 ≈ 83% 下降，GMGN 持仓调用 ≈ 96% 下降，同时活跃钱包权威余额从 30min 新鲜度提升到 < 2min。** 及时性与调用成本同时变好，代价是静默钱包余额最长 4h 才被权威快照确认（而它本来就没变）。
+| 项 | 现状 | 备注 |
+|---|---|---|
+| OKX 周期对账 | 静默 4h / 事件去抖 + min-age | EVM 含 RH，零额外调用 |
+| GMGN 持仓 | **0** | RH 已离开 `wallet_holdings` |
+| DexScreener | 批量补流动性/现价，含 `chainId=robinhood` | 与 GMGN 配额无关 |
 
 ---
 
@@ -154,8 +150,7 @@ doorbell 触发 `enqueueHoldingsRefresh`（现有机制），但加两个护栏�
 ### Phase 2 — 自适应周期间隔
 
 - `seedPersistentQueue` 按最近成交时间分流 interval（30min / 4h）。
-- Robinhood 静默钱包从周期对账中剔除（或 12h+）。
-- 验证：静默钱包 `due_at` 落在 4h 后；活跃钱包保持 30min。
+- Robinhood 跟 EVM 地址簿走同一 `evm:` 任务，不再 12h 单独车道。
 
 ### Phase 3 — Tier 0 预测增量（可选，提升及时性）
 
@@ -186,7 +181,7 @@ doorbell 触发 `enqueueHoldingsRefresh`（现有机制），但加两个护栏�
 ## 附：现有代码锚点
 
 - 队列消费：`lib/server/holdingsRefreshQueue.ts`（`seedPersistentQueue` / `claimPersistentJob` / `runHoldingsRefreshQueueCycle`）
-- 单钱包刷新：`lib/server/holdingsRefreshRuntime.ts`（`refreshWalletHoldings`，OKX/GMGN 分链）
-- 数据源：`lib/okx.ts`（`fetchOkxAddressAssetDetails`）、`lib/server/gmgnOpenApiClient.ts`（`walletHoldings`）
+- 单钱包刷新：`lib/server/holdingsRefreshRuntime.ts`（`refreshWalletHoldings`，OKX EVM 含 RH）
+- 数据源：`lib/okx.ts`（`CHAIN_TO_OKX_INDEX.robinhood = 4663`）
 - 门铃触发：`lib/server/liveMonitorRuntime.ts`（`enqueueHoldingsRefresh`）
-- 任务注册：`server/runtime-tasks.ts`（`holdings-refresh` / `holdings-refresh-gmgn`）
+- 任务注册：`server/runtime-tasks.ts`（`holdings-refresh`；`holdings-refresh-gmgn` idle）

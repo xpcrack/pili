@@ -131,16 +131,20 @@ async function main() {
     db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 90000 WHERE due_at_ms <= 80000`).run();
     enqueueHoldingsRefresh({ address: 'WalletNativeLane', chain: 'solana', userId: 'u1' });
     enqueueHoldingsRefresh({ address: 'WalletGmgnLane', chain: 'robinhood', userId: 'u1' });
+    const coalesced = db.prepare(
+      `SELECT wallet_chain FROM holdings_refresh_jobs WHERE address = 'WalletGmgnLane'`
+    ).get() as { wallet_chain: string } | undefined;
+    assert.equal(coalesced?.wallet_chain, 'evm:walletgmgnlane', 'robinhood enqueue must coalesce into the EVM OKX job');
     db.prepare(
       `UPDATE holdings_refresh_jobs SET due_at_ms = 80000
-       WHERE wallet_chain IN ('solana:walletnativelane', 'robinhood:walletgmgnlane')`
+       WHERE wallet_chain IN ('solana:walletnativelane', 'evm:walletgmgnlane')`
     ).run();
     const laneCalls: string[] = [];
     const laneRefresh = async (params: { address: string; chain: string }) => {
       laneCalls.push(`${params.chain}:${params.address.toLowerCase()}`);
       return {
         status: 'idle' as const,
-        chain: params.chain as 'solana' | 'robinhood',
+        chain: params.chain as 'solana' | 'evm',
         holdingsRowCount: 1,
         filteredOutHoldingCount: 0,
         totalAssetUsd: 10,
@@ -153,7 +157,7 @@ async function main() {
       provider: 'native',
       refreshWallet: laneRefresh,
     });
-    assert.deepEqual(laneCalls, ['solana:walletnativelane'], 'native lane must not claim GMGN work');
+    assert.deepEqual(laneCalls, ['solana:walletnativelane']);
     await runHoldingsRefreshQueueCycle({
       db,
       now: () => 80000,
@@ -162,63 +166,39 @@ async function main() {
       pendingLiveDoorbells: () => 0,
       refreshWallet: laneRefresh,
     });
-    assert.deepEqual(
-      laneCalls,
-      ['solana:walletnativelane', 'robinhood:walletgmgnlane'],
-      'GMGN lane must claim only Robinhood work'
-    );
-
-    // Live doorbells are a continuous stream in production. They may share
-    // GMGN pacing, but must not freeze the independent Robinhood holdings
-    // consumer forever (76 due jobs accumulated behind this gate).
+    assert.deepEqual(laneCalls, ['solana:walletnativelane'], 'GMGN lane must not claim Robinhood after OKX coverage');
+    await runHoldingsRefreshQueueCycle({
+      db,
+      now: () => 80000,
+      provider: 'native',
+      refreshWallet: laneRefresh,
+    });
+    assert.deepEqual(laneCalls, ['solana:walletnativelane', 'evm:walletgmgnlane']);
     enqueueHoldingsRefresh({ address: 'WalletDoorbellBacklog', chain: 'robinhood', userId: 'u1' });
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 999999 WHERE wallet_chain <> 'evm:walletdoorbellbacklog'`).run();
     db.prepare(
       `UPDATE holdings_refresh_jobs SET due_at_ms = 140000
-       WHERE wallet_chain = 'robinhood:walletdoorbellbacklog'`
+       WHERE wallet_chain = 'evm:walletdoorbellbacklog'`
     ).run();
     await runHoldingsRefreshQueueCycle({
       db,
       now: () => 140000,
-      provider: 'gmgn',
-      cooldownRemainingMs: () => 0,
+      provider: 'native',
+      cooldownRemainingMs: () => 60_000,
       pendingLiveDoorbells: () => 44,
       refreshWallet: laneRefresh,
     });
     assert.equal(
       laneCalls.at(-1),
-      'robinhood:walletdoorbellbacklog',
-      'pending live doorbells must not starve Robinhood holdings refresh'
+      'evm:walletdoorbellbacklog',
+      'GMGN cooldown must not block OKX-backed Robinhood holdings'
     );
 
-    enqueueHoldingsRefresh({ address: 'WalletDoorbellPaced', chain: 'robinhood', userId: 'u1' });
-    db.prepare(
-      `UPDATE holdings_refresh_jobs SET due_at_ms = 140001
-       WHERE wallet_chain = 'robinhood:walletdoorbellpaced'`
-    ).run();
-    const callsBeforePaced = laneCalls.length;
-    await runHoldingsRefreshQueueCycle({
-      db,
-      now: () => 140001,
-      provider: 'gmgn',
-      cooldownRemainingMs: () => 0,
-      pendingLiveDoorbells: () => 44,
-      refreshWallet: laneRefresh,
-    });
-    assert.equal(laneCalls.length, callsBeforePaced, 'doorbell backlog must pace holdings requests');
-    await runHoldingsRefreshQueueCycle({
-      db,
-      now: () => 200000,
-      provider: 'gmgn',
-      cooldownRemainingMs: () => 0,
-      pendingLiveDoorbells: () => 44,
-      refreshWallet: laneRefresh,
-    });
-    assert.equal(laneCalls.at(-1), 'robinhood:walletdoorbellpaced');
-
     enqueueHoldingsRefresh({ address: 'WalletHungProvider', chain: 'robinhood', userId: 'u1' });
+    db.prepare(`UPDATE holdings_refresh_jobs SET due_at_ms = 999999 WHERE wallet_chain <> 'evm:wallethungprovider'`).run();
     db.prepare(
       `UPDATE holdings_refresh_jobs SET due_at_ms = 200001
-       WHERE wallet_chain = 'robinhood:wallethungprovider'`
+       WHERE wallet_chain = 'evm:wallethungprovider'`
     ).run();
     const hung = await runHoldingsRefreshQueueCycle({
       db,
@@ -226,7 +206,7 @@ async function main() {
         let calls = 0;
         return () => (calls++ === 0 ? 200001 : 200010);
       })(),
-      provider: 'gmgn',
+      provider: 'native',
       cooldownRemainingMs: () => 0,
       pendingLiveDoorbells: () => 0,
       jobTimeoutMs: 5,
@@ -236,7 +216,7 @@ async function main() {
     assert.match(hung.lastError ?? '', /timed out/i);
     const hungJob = db.prepare(
       `SELECT lease_token, attempts, last_error FROM holdings_refresh_jobs
-       WHERE wallet_chain = 'robinhood:wallethungprovider'`
+       WHERE wallet_chain = 'evm:wallethungprovider'`
     ).get() as { lease_token: string | null; attempts: number; last_error: string | null };
     assert.equal(hungJob.lease_token, null, 'timed-out job must release its lease');
     assert.equal(hungJob.attempts, 1);

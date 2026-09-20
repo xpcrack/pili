@@ -88,12 +88,13 @@ const CHAIN_MAP: Record<string, string> = {
   ethereum: 'ethereum',
   bsc: 'bsc',
   base: 'base',
+  robinhood: 'robinhood',
   hyperevm: 'hyperevm',
 };
 
 function isEvmChain(chain: string) {
   // Includes hyperevm (not in addressBook.ChainType) for key normalization only.
-  return ['ethereum', 'bsc', 'base', 'hyperevm'].includes(chain.toLowerCase());
+  return ['ethereum', 'bsc', 'base', 'robinhood', 'hyperevm'].includes(chain.toLowerCase());
 }
 
 export function normalizeDexScreenerTokenKey(chain: string, address: string) {

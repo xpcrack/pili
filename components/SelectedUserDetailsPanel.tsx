@@ -48,17 +48,8 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
     let cancelled = false;
 
     (async () => {
-      // Robinhood has no DexScreener / token-logo market data yet — seed null metrics and skip network.
-      const robinhoodEntries = Object.fromEntries(
-        missingHoldings
-          .filter((holding) => holding.chain === 'robinhood')
-          .map((holding) => [
-            `${holding.chain}:${holding.tokenAddress}`,
-            { liquidityUsd: holding.liquidityUsd, marketCapUsd: null, priceUsd: null },
-          ]),
-      );
       const metricTargets = missingHoldings.filter(
-        (holding) => holding.chain !== 'robinhood' && !isStableOrNativeSymbol(holding.symbol),
+        (holding) => !isStableOrNativeSymbol(holding.symbol),
       );
 
       // Server proxy only — never call api.dexscreener.com from the browser.
@@ -109,7 +100,7 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
       }
 
       if (!cancelled) {
-        setMap((prev) => ({ ...prev, ...robinhoodEntries, ...nextEntries }));
+        setMap((prev) => ({ ...prev, ...nextEntries }));
       }
     })();
 
