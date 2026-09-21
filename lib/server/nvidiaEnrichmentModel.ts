@@ -15,9 +15,9 @@ import {
   getPrimaryPoolSymbolAllowlist,
 } from '@/lib/server/primaryPoolSymbols';
 
-/** OpenAI-compatible chat base. Prefer local AxonHub MIMO over NVIDIA NIM. */
+/** OpenAI-compatible chat base. Prefer local AxonHub relay over NVIDIA NIM. */
 export const DEFAULT_ENRICHMENT_BASE_URL = 'http://127.0.0.1:8090/v1';
-export const DEFAULT_ENRICHMENT_MODEL = 'mimo-v2.5';
+export const DEFAULT_ENRICHMENT_MODEL = 'haiku';
 /** @deprecated use DEFAULT_ENRICHMENT_MODEL */
 export const DEFAULT_NVIDIA_ENRICHMENT_MODEL = DEFAULT_ENRICHMENT_MODEL;
 
