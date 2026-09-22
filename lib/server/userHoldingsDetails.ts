@@ -175,9 +175,12 @@ export async function readUserHoldingsDetails(
     .filter((h) => h.valueUsd >= USER_HOLDINGS_THRESHOLD_USD)
     .filter(
       (h) =>
-        h.chain === 'robinhood' ||
         h.liquidityUsd == null ||
         !Number.isFinite(h.liquidityUsd) ||
+        // RH: GMGN 报 liquidity=0 = 无 DEX 池数据，不代表死币（9-12 教训）。
+        // 但实测尘埃流动性（0<liq<5k，如 4FOUR $0.0003 → $3.59M 幻觉估值）
+        // 是死币证据，与其他链一样按 5k 过滤。
+        (h.chain === 'robinhood' && h.liquidityUsd === 0) ||
         h.liquidityUsd >= MIN_DISPLAY_LIQUIDITY_USD,
     )
     .sort(
