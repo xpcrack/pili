@@ -102,6 +102,25 @@ function liquidAssetWhereSql(alias: string) {
   return `((${alias}.chain = 'robinhood' AND COALESCE(${alias}.liquidity_usd, 0) = 0) OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
 }
 
+/**
+ * TS 侧流动性判定，与 liquidAssetWhereSql 同一语义（SQL 用于 DB 汇总，
+ * 本函数用于刷新运行时的总额复算，两边必须同步改）。
+ * RH 的 liquidity NULL/0 = 无 DEX 池数据，照常计入（9-12 教训）；
+ * 实测尘埃流动性（0<liq<5k）不算。
+ */
+export function isLiquidHoldingRow(holding: {
+  chain?: string | null;
+  liquidity_usd?: number | null;
+  symbol?: string | null;
+}): boolean {
+  const chain = (holding.chain ?? '').toLowerCase();
+  const liquidity = holding.liquidity_usd;
+  if (chain === 'robinhood' && (liquidity == null || liquidity === 0)) return true;
+  if (liquidity != null && liquidity >= LIQUID_ASSET_MIN_LIQUIDITY_USD) return true;
+  const liquidSymbols: readonly string[] = LIQUID_ASSET_SYMBOLS;
+  return liquidSymbols.includes((holding.symbol ?? '').toUpperCase());
+}
+
 function parseTags(value: string | null | undefined) {
   if (!value) {
     return [] as string[];

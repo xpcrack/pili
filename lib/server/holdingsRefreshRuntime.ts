@@ -12,6 +12,7 @@ import {
   validateAndPersistPeakAssetSnapshots,
 } from '@/lib/server/assetPeakValidation';
 import {
+  isLiquidHoldingRow,
   listMonitoredUsers,
   updateAssetSnapshots,
 } from '@/lib/server/trackedUsersRepo';
@@ -988,6 +989,18 @@ export async function refreshWalletHoldings(
       }
     }
 
+    // 总额改为流动性感知：在 DexScreener 回填之后、写快照之前复算，
+    // 与 listTrackedUsers 的 liquidAssetWhereSql 汇总同一语义——
+    // 否则快照总额（流动性盲）经 max(cached, live) 永久压住真源
+    // （学长 cached $2.86M vs live $608k 即此）。
+    for (const plan of chainPlans) {
+      plan.chainTotalUsd = plan.holdings
+        .filter((holding) => !isHoldingGated(holding) && isLiquidHoldingRow(holding))
+        .reduce((sum, holding) => sum + holding.value_usd, 0);
+    }
+
+
+
     for (const plan of chainPlans) {
       replaceWalletHoldings(db, addressLower, plan.chain, plan.holdings, plan.status);
       // RH is not a tracked_addresses chain; user total comes from current_holdings rollup.
@@ -1172,8 +1185,10 @@ export async function refreshWalletHoldings(
     status: 'success',
     refreshed_at: nowMs,
   };
+  // 与多链路径及 liquidAssetWhereSql 同一语义：总额只计流动性可证/无池数据行，
+  // 防止快照总额（流动性盲）经 max(cached, live) 固化幻觉。
   const writtenAssetUsd = holdings
-    .filter((holding) => !isHoldingGated(holding))
+    .filter((holding) => !isHoldingGated(holding) && isLiquidHoldingRow(holding))
     .reduce((sum, holding) => sum + holding.value_usd, 0);
   // 总量只计写入门禁后的真实持仓（insertHoldingsRows 同一标准）——
   // 否则 OKX 幻觉价（如 VILLAIN $12.4M，实际 MC $1.7K）经 updateAssetSnapshots

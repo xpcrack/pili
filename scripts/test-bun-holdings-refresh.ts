@@ -364,7 +364,18 @@ async function run() {
       chain: 'solana',
       userId: holdingsBunUserId,
       now: () => 1_717_000_000_400,
-      fetchTokenLiquidity: false,
+      batchFetchLiquidity: async (tokens) => {
+        const data = new Map();
+        for (const token of tokens) {
+          if (token.contractAddress.startsWith('Dusty')) {
+            data.set(token.contractAddress, {
+              ticker: 'DUSTY', name: 'Dusty', price: 0.5, marketCap: 1000,
+              liquidity: 100, priceChange24h: 0, volume24h: 0,
+            });
+          }
+        }
+        return data;
+      },
       fetchAddressAssetDetails: async (address, chain) => {
         walletFetchCalls += 1;
         assert.equal(address, trackedAddress);
@@ -388,6 +399,17 @@ async function run() {
             {
               address,
               chain,
+              assetKey: `${chain}:dusty`,
+              tokenAddress: 'Dusty111111111111111111111111111111111111111',
+              symbol: 'DUSTY',
+              name: 'Dusty',
+              balance: 1_000,
+              priceUsd: 0.5,
+              valueUsd: 500,
+            },
+            {
+              address,
+              chain,
               assetKey: `${chain}:dust`,
               tokenAddress: 'Dust111111111111111111111111111111111111111',
               symbol: 'DUST',
@@ -404,10 +426,10 @@ async function run() {
 
     assert.equal(walletResult.status, 'idle');
     assert.equal(walletFetchCalls, 1);
-    assert.equal(walletResult.holdingsRowCount, 1);
-    // DUST($2) 在 MIN_HOLDING_USD 预过滤就被丢弃，总额只计存活的 USDC。
+    assert.equal(walletResult.holdingsRowCount, 2);
+    // DUST($2) 在 MIN_HOLDING_USD 预过滤就被丢弃；DUSTY($500，实测尘埃流动性
+    // 100<5k) 入库但不计总额——总额只计流动性可证/无池数据/主流币行。
     assert.equal(walletResult.totalAssetUsd, 2_200);
-
     const walletRows = db
       .prepare(
         `SELECT symbol, value_usd, refreshed_at FROM current_holdings
@@ -419,10 +441,12 @@ async function run() {
       value_usd: number;
       refreshed_at: number;
     }>;
-    assert.equal(walletRows.length, 1, 'old bag replaced; dust filtered');
+    assert.equal(walletRows.length, 2, 'old bag replaced; sub-$5 dust filtered; DUSTY row kept');
     assert.equal(walletRows[0]?.symbol, 'USDC');
     assert.equal(walletRows[0]?.value_usd, 2_200);
     assert.equal(walletRows[0]?.refreshed_at, 1_717_000_000_400);
+    assert.equal(walletRows[1]?.symbol, 'DUSTY');
+    assert.equal(walletRows[1]?.value_usd, 500);
 
     const afterOther = (
       db.prepare(`SELECT COUNT(*) as c FROM current_holdings WHERE tracked_address_lower = ?`).get(
@@ -457,7 +481,7 @@ async function run() {
         `SELECT COUNT(*) as c FROM current_holdings WHERE tracked_address_lower = ? AND chain = 'solana'`
       ).get(trackedAddress.toLowerCase()) as { c: number }
     ).c;
-    assert.equal(stillThere, 1, 'failed refresh preserves previous bags');
+    assert.equal(stillThere, 2, 'failed refresh preserves previous bags (USDC + DUSTY)');
 
     // 写库门禁的 RH 豁免矩阵：liquidity null/0 = 无池数据（RH meme 无 DEX 池
     // 是常态），>$500k 也放行；实测尘埃流动性（0<liq<5k，4FOUR 案例：
