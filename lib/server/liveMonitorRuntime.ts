@@ -37,6 +37,7 @@ import {
 import {
   ackLiveDoorbells,
   claimDueLiveDoorbells,
+  enqueueLiveDoorbell,
   nackLiveDoorbells,
   type DoorbellClaim,
   type LiveDoorbellRow,
@@ -66,6 +67,10 @@ const DEFAULT_WATCHLIST_EVERY_MS = 15 * 60_000;
 const DEFAULT_LOOKBACK_SEC = 2 * 60 * 60;
 const DEFAULT_DOORBELL_CLAIM_LIMIT = 8;
 const DEFAULT_ACTIVITY_TIMEOUT_MS = 20_000;
+/** 默认门铃补扫延迟：等 GMGN 把 swap 对手腿索引进 wallet_activity（实测 ~30–120s）。 */
+const DEFAULT_LEG_FOLLOWUP_MS = 120_000;
+/** 补扫门铃的 source 标记；该来源不再续铃，保证每条 xxyy 消息最多补扫一次。 */
+export const LEG_FOLLOWUP_SOURCE = 'leg-followup';
 const ALCHEMY_PULL_MAX_ATTEMPTS = 3;
 
 async function pullAlchemyInboxWithRetry(
@@ -89,6 +94,26 @@ async function pullAlchemyInboxWithRetry(
 function readPositiveEnvNumber(env: EnvMap, key: string, fallback: number) {
   const value = Number(env[key] || fallback);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** 0 关闭补扫；非法值回退默认。 */
+export function readLegFollowupMs(env: EnvMap): number {
+  const raw = env.PILI_LIVE_FOLLOWUP_MS;
+  if (raw != null && String(raw).trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
+  }
+  return DEFAULT_LEG_FOLLOWUP_MS;
+}
+
+/** 补扫来源不顶掉真实 xxyy 来源；真实来源随时可以顶掉补扫来源。 */
+export function mergeDoorbellSource(
+  existing: string | null,
+  incoming: string | null | undefined
+): string | null {
+  const next = (incoming || '').trim() || null;
+  if (!existing || existing === LEG_FOLLOWUP_SOURCE) return next ?? existing;
+  return existing;
 }
 
 async function fetchActivityWithTimeout<T>(
@@ -187,6 +212,8 @@ export type LiveMonitorDeps = {
   ackDoorbells?: (claims: DoorbellClaim[]) => number;
   /** Nack claimed doorbells after a failed scan (clear lease + reschedule). */
   nackDoorbells?: (claims: DoorbellClaim[], opts: { retryAfterMs: number }) => number;
+  /** Ring a (follow-up) doorbell; defaults to the shared SQLite queue. */
+  enqueueDoorbell?: typeof enqueueLiveDoorbell;
   /** GMGN ban cooldown remaining (ms). >0 ⇒ skip the whole cycle to hold doorbells. */
   gmgnCooldownRemainingMs?: () => number;
   /** Recovery factor override for tests / alternate GMGN policy owners. */
@@ -209,6 +236,8 @@ type ScanTarget = {
   chains: GmgnChain[];
   /** chains explicitly requested by an event (doorbell) — never rotation-throttled */
   eventChains: Set<string>;
+  /** 驱动本目标的门铃来源；null = 仅 alchemy inbox / watchlist 目标。 */
+  doorbellSource: string | null;
 };
 
 /**
@@ -257,6 +286,7 @@ function buildScanTargets(params: {
       address: owner.address,
       chains: inferChainsForAddress(owner.address),
       eventChains: new Set(),
+      doorbellSource: null,
     });
   }
 
@@ -273,6 +303,7 @@ function buildScanTargets(params: {
       const set = new Set<GmgnChain>([...existing.chains, ...chains]);
       existing.chains = [...set];
       for (const c of chains) existing.eventChains.add(c);
+      existing.doorbellSource = mergeDoorbellSource(existing.doorbellSource, bell.source);
       continue;
     }
     merged.set(key, {
@@ -281,6 +312,7 @@ function buildScanTargets(params: {
       address,
       chains,
       eventChains: new Set(chains),
+      doorbellSource: bell.source || 'xxyy',
     });
   }
 
@@ -330,6 +362,7 @@ export async function runLiveMonitorCycle(
   const claimDoorbells = deps.claimDoorbells ?? claimDueLiveDoorbells;
   const ackDoorbells = deps.ackDoorbells ?? ackLiveDoorbells;
   const nackDoorbellsDep = deps.nackDoorbells ?? nackLiveDoorbells;
+  const enqueueBell = deps.enqueueDoorbell ?? enqueueLiveDoorbell;
   const cooldownRemaining = deps.gmgnCooldownRemainingMs ?? gmgnCooldownRemainingMs;
   const recoveryFactor =
     deps.gmgnRecoveryFactor ??
@@ -559,6 +592,39 @@ export async function runLiveMonitorCycle(
       }
     };
 
+    const legFollowupMs = readLegFollowupMs(env);
+    // 成功扫描发现新成交后，同链补一次门铃：xxyy 消息只报 swap 的一条腿
+    // （如 "Buy musebook" 不提卖出的代币），对手腿要等 GMGN 把 tx 索引进
+    // wallet_activity（~30–120s）才可见。不补铃时卖出腿要等下一次有机扫描
+    // ——撞上 GMGN 封禁就是一小时+（2026-09-22 Rop 卖出延迟 75min 事故）。
+    // 有界性：LEG_FOLLOWUP_SOURCE 不再续铃；无新成交（upserted==0）不补铃。
+    const ringLegFollowup = (target: ScanTarget, trades: NormalizedLiveTrade[]) => {
+      const chains = target.eventChains.size > 0
+        ? [...target.eventChains]
+        : [...new Set(trades.map((t) => (t.chain || '').trim().toLowerCase()).filter(Boolean))];
+      const picked = chains.slice(0, 6);
+      for (const chain of picked) {
+        try {
+          enqueueBell({
+            address: target.address,
+            userId: target.user.id,
+            chain,
+            source: LEG_FOLLOWUP_SOURCE,
+            debounceMs: legFollowupMs,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          lastError = lastError || `leg followup enqueue failed: ${message}`;
+          console.error(`[live-monitor] leg followup enqueue failed for ${target.address}/${chain}: ${message}`);
+        }
+      }
+      if (picked.length > 0) {
+        console.log(
+          `[live-monitor] leg followup ring wallet=${target.address} chains=${picked.join(',')} due_in_ms=${legFollowupMs}`
+        );
+      }
+    };
+
     // A doorbell already proves that the wallet changed on-chain. Enqueue the
     // balance snapshot before GMGN activity enrichment so OKX-backed holdings
     // do not wait for the slower Feed reconciliation path.
@@ -571,6 +637,7 @@ export async function runLiveMonitorCycle(
     const processTarget = async (target: ScanTarget) => {
       const trades: NormalizedLiveTrade[] = [];
       let targetError: string | null = null;
+      let upsertedNew = 0;
 
       for (let index = 0; index < target.chains.length; index += 1) {
         const chain = target.chains[index]!;
@@ -618,6 +685,7 @@ export async function runLiveMonitorCycle(
         try {
           const result = upsertTrades({ user: target.user, trades });
           tradesUpserted += result.upserted;
+          upsertedNew = result.upserted;
           if (result.upserted > 0) {
             const seenWalletChains = new Set<string>();
             for (const trade of trades) {
@@ -632,8 +700,12 @@ export async function runLiveMonitorCycle(
           }
         } catch (error) {
           targetError = targetError || (error instanceof Error ? error.message : String(error));
-          lastError = error instanceof Error ? error.message : String(error);
+          lastError = lastError || (error instanceof Error ? error.message : String(error));
         }
+      }
+
+      if (upsertedNew > 0 && legFollowupMs > 0 && target.doorbellSource !== LEG_FOLLOWUP_SOURCE) {
+        ringLegFollowup(target, trades);
       }
 
       const leaseToken = leaseByWalletLower.get(target.address.toLowerCase());

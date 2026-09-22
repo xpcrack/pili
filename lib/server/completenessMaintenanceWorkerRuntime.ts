@@ -43,6 +43,7 @@ import {
   gmgnConfiguredAccountBucketKeys,
   gmgnCooldownRemainingMs,
   gmgnEgressCooldownRemainingMs,
+  gmgnLastBanAgeMs,
 } from '@/lib/server/gmgnRateLimit';
 import { sweepStaleWalletTimelines } from '@/lib/server/walletTimelineSweep';
 
@@ -57,6 +58,16 @@ const BUSY_RETRY_DELAY_MS = 30_000;
 // ban forever — which also starves live-monitor (shares the same cooldown) and
 // breaks the on-chain feed.
 const GMGN_BAN_BACKOFF_MARGIN_MS = 10_000;
+// 封禁解除后的宽限窗：live-monitor 恢复期（6min 慢启动）一过就先补扫冷却期
+// 攒下的 held doorbells（实时交易）；此时 timeline 回填若立刻全速翻页，会和
+// 实时路径抢同一份刚解封的配额，容易"续杯再封"把 live 再冻一小时
+// （2026-09-22 Rop 三笔 $AI 卖出延迟 75min 事故）。默认封禁后 10min 内
+// timeline 维护不碰 GMGN；PILI_TIMELINE_RECOVERY_GRACE_MS=0 关闭。
+const _RAW_TIMELINE_GRACE = Number(process.env.PILI_TIMELINE_RECOVERY_GRACE_MS);
+const TIMELINE_RECOVERY_GRACE_MS =
+  Number.isFinite(_RAW_TIMELINE_GRACE) && _RAW_TIMELINE_GRACE >= 0
+    ? _RAW_TIMELINE_GRACE
+    : 10 * 60_000;
 // B8: 严格校验——parseInt("abc")→NaN 会让刷新条件恒 false（永不刷新），
 // parseInt("1h")→1 会每个 cycle 都全量刷新打爆 GMGN 配额。非法/过小值
 // 回退默认并告警一次。
@@ -120,6 +131,15 @@ async function runWalletTimelineMaintenance() {
   if (coolRemaining > 0) {
     console.log(
       `[completeness-worker] wallet-timeline-maintenance skip (GMGN cooldown ${Math.ceil(coolRemaining / 1000)}s)`
+    );
+    return { sweep: null, walletBackfill: null };
+  }
+  // 封禁后宽限（基于 lastBanAt，冷却被清零/过期后依然生效）：把解封后的
+  // 第一波配额让给 live-monitor 的 doorbell 补扫，见 TIMELINE_RECOVERY_GRACE_MS。
+  const lastBanAgeMs = gmgnLastBanAgeMs();
+  if (lastBanAgeMs < TIMELINE_RECOVERY_GRACE_MS) {
+    console.log(
+      `[completeness-worker] wallet-timeline-maintenance skip (post-ban grace ${Math.ceil((TIMELINE_RECOVERY_GRACE_MS - lastBanAgeMs) / 1000)}s)`
     );
     return { sweep: null, walletBackfill: null };
   }

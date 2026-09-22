@@ -221,6 +221,18 @@ export function gmgnCooldownRemainingMs(nowMs = Date.now()): number {
   return Math.max(0, gmgnCooldownUntilMs() - nowMs);
 }
 
+/**
+ * 距最近一次记录封禁的毫秒数；从未封禁返回 +Infinity。
+ * 基于 lastBanAt（共享文件三写入者协议），即使 untilMs 已被清零/过期，
+ * 刚发生的封禁仍可被感知——与 getGmgnRecoveryFactor 同一事实源。
+ */
+export function gmgnLastBanAgeMs(nowMs = Date.now()): number {
+  const state = readFileCooldownState();
+  const lastBanAt = state.lastBanAt ? Date.parse(state.lastBanAt) : 0;
+  if (!Number.isFinite(lastBanAt) || lastBanAt <= 0) return Number.POSITIVE_INFINITY;
+  return Math.max(0, nowMs - lastBanAt);
+}
+
 /** tests only */
 export function resetGmgnCooldown(): void {
   memoryUntilMs = 0;
