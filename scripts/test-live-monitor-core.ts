@@ -17,6 +17,7 @@ import {
   readXxyyAllowedChains,
 } from '@/lib/server/liveMonitorConfig';
 import {
+  aggregateLiveTradeLegs,
   buildLiveMonitorActivityId,
   buildLiveMonitorActivity,
   isLiveMonitorActivityId,
@@ -354,12 +355,62 @@ function testLiveActivityShape() {
   console.log('PASS live activity shape');
 }
 
+function testAggregateLiveTradeLegs() {
+  const base = {
+    chain: 'robinhood',
+    wallet: '0xw',
+    txHash: '0xtx',
+    tokenAddress: '0xtok',
+    tokenSymbol: 'musebook',
+    isOpenOrClose: null,
+  } as const;
+
+  // 单腿直通
+  const single = aggregateLiveTradeLegs([
+    { ...base, side: 'buy', tokenAmount: 100, costUsd: 5, priceUsd: 0.05, marketCapUsd: 1_000, eventTimeMs: 1 },
+  ]);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].tokenAmount, 100);
+
+  // 多腿同 tx 同 side：qty/cost 求和、price 加权（复现 0x957b71 少记一半的缺陷）
+  const merged = aggregateLiveTradeLegs([
+    { ...base, side: 'buy', tokenAmount: 1_357, costUsd: 10, priceUsd: 0.01, marketCapUsd: 100, eventTimeMs: 5 },
+    { ...base, side: 'buy', tokenAmount: 1_000, costUsd: 20, priceUsd: 0.02, marketCapUsd: 100, eventTimeMs: 5 },
+    { ...base, side: 'buy', tokenAmount: 3_000, costUsd: null, priceUsd: null, marketCapUsd: 120, eventTimeMs: 5 },
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].tokenAmount, 5_357);
+  assert.equal(merged[0].costUsd, 30);
+  assert.ok(Math.abs(merged[0].priceUsd! - (0.01 * 1_357 + 0.02 * 1_000) / 2_357) < 1e-9);
+  assert.equal(merged[0].marketCapUsd, 120);
+  assert.equal(merged[0].eventTimeMs, 5);
+
+  // 同 tx 不同 side 不合并；不同 token 不合并
+  const mixed = aggregateLiveTradeLegs([
+    { ...base, side: 'buy', tokenAmount: 1, costUsd: 1, priceUsd: 1, marketCapUsd: null, eventTimeMs: 1 },
+    { ...base, side: 'sell', tokenAmount: 2, costUsd: 2, priceUsd: 1, marketCapUsd: null, eventTimeMs: 1 },
+    { ...base, tokenAddress: '0xother', side: 'buy', tokenAmount: 4, costUsd: 4, priceUsd: 1, marketCapUsd: null, eventTimeMs: 1 },
+  ]);
+  assert.equal(mixed.length, 3);
+
+  // 全 null 保持 null，不产生 0 值伪数据
+  const nullCost = aggregateLiveTradeLegs([
+    { ...base, side: 'sell', tokenAmount: null, costUsd: null, priceUsd: null, marketCapUsd: null, eventTimeMs: 9 },
+    { ...base, side: 'sell', tokenAmount: null, costUsd: null, priceUsd: null, marketCapUsd: null, eventTimeMs: 9 },
+  ]);
+  assert.equal(nullCost.length, 1);
+  assert.equal(nullCost[0].costUsd, null);
+  assert.equal(nullCost[0].tokenAmount, null);
+  console.log('PASS aggregateLiveTradeLegs');
+}
+
 async function main() {
   testSplitAddresses();
   testPayloadMatch();
   testGmgnNormalize();
   testXxyyFilter();
   testLiveActivityShape();
+  testAggregateLiveTradeLegs();
   console.log('OK live-monitor-core');
 }
 
