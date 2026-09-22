@@ -420,6 +420,48 @@ async function run() {
       'non-robinhood holding with known liquidity < 5k must stay filtered out',
     );
 
+    // RH 实测尘埃流动性（0<liq<5k）：4FOUR 案例 —— GMGN 用尘埃池价格
+    // （$0.0003 流动性撑起 $1906 币价）给死币估值 $3.59M，必须按死币过滤，
+    // 否则以「占总持仓 90%」霸榜（2026-09-22 实测）。
+    seedHolding({
+      trackedAddress: '0xWalletOne',
+      chain: 'robinhood' as ChainType,
+      tokenAddress: '0x7db3e8b5d4ebf9519b4839511185d75775e74444',
+      symbol: '4FOUR',
+      name: '4FOUR',
+      balance: 1884.3,
+      priceUsd: 1906.5,
+      valueUsd: 3_592_427,
+      refreshedAt: 10_000,
+    });
+    db.prepare(
+      `UPDATE current_holdings SET liquidity_usd = ? WHERE chain = 'robinhood' AND token_address_lower = ?`
+    ).run(0.0002677136000038245, '0x7db3e8b5d4ebf9519b4839511185d75775e74444');
+
+    // RH 无流动性数据（NULL）照常返回 —— 老契约。
+    seedHolding({
+      trackedAddress: '0xWalletOne',
+      chain: 'robinhood' as ChainType,
+      tokenAddress: '0x00000000000000000000000000000000000000bb',
+      symbol: 'NULLIQ',
+      name: 'No Liquidity Data',
+      balance: 10,
+      priceUsd: 500,
+      valueUsd: 5_000,
+      refreshedAt: 10_000,
+    });
+
+    const dustFilteredDetails = await readUserHoldingsDetails(robinhoodUser);
+    assert.equal(
+      dustFilteredDetails.holdings.find((h) => h.symbol === '4FOUR'),
+      undefined,
+      'robinhood holding with measured dust liquidity (0<liq<5k) must be filtered out like other chains',
+    );
+    assert.ok(
+      dustFilteredDetails.holdings.find((h) => h.symbol === 'NULLIQ'),
+      'robinhood holding with NULL liquidity must still be returned',
+    );
+
     db.prepare('DELETE FROM current_holdings').run();
     await assert.rejects(
       () => readUserHoldingsDetails(makeUser([makeAddress('0xUnknownWallet', '#9', 'bsc')])),

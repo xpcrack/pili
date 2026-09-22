@@ -405,7 +405,8 @@ async function run() {
     assert.equal(walletResult.status, 'idle');
     assert.equal(walletFetchCalls, 1);
     assert.equal(walletResult.holdingsRowCount, 1);
-    assert.equal(walletResult.totalAssetUsd, 2_202);
+    // DUST($2) 在 MIN_HOLDING_USD 预过滤就被丢弃，总额只计存活的 USDC。
+    assert.equal(walletResult.totalAssetUsd, 2_200);
 
     const walletRows = db
       .prepare(
@@ -433,7 +434,7 @@ async function run() {
     const walletUserTotals = db
       .prepare(`SELECT total_asset_usd FROM tracked_users WHERE id = ?`)
       .get(holdingsBunUserId) as { total_asset_usd: number };
-    assert.equal(walletUserTotals.total_asset_usd, 2_202);
+    assert.equal(walletUserTotals.total_asset_usd, 2_200);
 
     // Failure must not wipe last-good bags
     const failResult = await refreshWalletHoldings({
@@ -458,7 +459,48 @@ async function run() {
     ).c;
     assert.equal(stillThere, 1, 'failed refresh preserves previous bags');
 
+    // 写库门禁的 RH 豁免矩阵：liquidity null/0 = 无池数据（RH meme 无 DEX 池
+    // 是常态），>$500k 也放行；实测尘埃流动性（0<liq<5k，4FOUR 案例：
+    // $0.0003 池撑起 $3.59M 幻觉估值）落回通用 value gate → 丢弃。
+    const { isHoldingGated } = await import('@/lib/server/holdingsRefreshRuntime');
+    const rhBase = {
+      price_usd: 1906.5,
+      symbol: '4FOUR',
+      chain: 'robinhood',
+    };
+    assert.equal(
+      isHoldingGated({ ...rhBase, value_usd: 3_592_427, liquidity_usd: 0.0002677136000038245 }),
+      true,
+      'RH + measured dust liquidity + >$500k fiction must be gated',
+    );
+    assert.equal(
+      isHoldingGated({ ...rhBase, value_usd: 23_486, liquidity_usd: 4.88 }),
+      false,
+      'RH + measured dust liquidity + small value stays in fact table (display filters handle it)',
+    );
+    assert.equal(
+      isHoldingGated({ ...rhBase, value_usd: 3_592_427, liquidity_usd: 0 }),
+      false,
+      'RH + liquidity=0 (no pool data) + >$500k keeps the 9-12 contract',
+    );
+    assert.equal(
+      isHoldingGated({ ...rhBase, value_usd: 3_592_427, liquidity_usd: null }),
+      false,
+      'RH + NULL liquidity + >$500k keeps the 9-12 contract',
+    );
+    assert.equal(
+      isHoldingGated({ price_usd: 1906.5, symbol: 'DEAD', chain: 'bsc', value_usd: 3_592_427, liquidity_usd: 100 }),
+      true,
+      'non-RH + low liquidity + >$500k fiction stays gated',
+    );
+    assert.equal(
+      isHoldingGated({ price_usd: 1906.5, symbol: 'OKPOOL', chain: 'bsc', value_usd: 3_592_427, liquidity_usd: 600_000 }),
+      false,
+      'healthy liquidity backs large values',
+    );
+
     console.log('bun holdings refresh tests: ok');
+
   } finally {
     if (previousDbPath === undefined) {
       delete process.env.PILIPILI_DB_PATH;

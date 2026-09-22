@@ -59,7 +59,10 @@ async function run() {
 
   process.env.PILIPILI_DB_PATH = path.join(tempDir, 'test.sqlite');
 
+  // 静态导入不可行：sqlite/trackedUsersRepo 在模块加载时读取 PILIPILI_DB_PATH，
+  // 必须先设 env 再 import（模块加载边界测试）。
   try {
+    const { getDb } = await import('@/lib/server/sqlite');
     const { createTrackedUser, listTrackedUsers, updateAssetSnapshots, invalidateTrackedUsersCache } = await import(
       '@/lib/server/trackedUsersRepo'
     );
@@ -185,10 +188,47 @@ async function run() {
     );
     assert.equal(
       ignoredInvalidSnapshot.assetUpdatedAt,
+
       2_000,
       '缺少 userId 的地址资产快照应被忽略，不能推进人物资产更新时间'
     );
 
+    // liquidAssetWhereSql 的 RH 尘埃豁免：实测尘埃流动性（0<liq<5k，
+    // 4FOUR 案例：$0.0003 池撑起 $3.59M 幻觉估值）不算流动资产；
+    // NULL/0 = 无 DEX 池数据，照常计入（9-12 教训）；有真实池的 RH 行照常计入。
+    const insertHolding = getDb().prepare(`
+      INSERT INTO current_holdings
+        (tracked_address, tracked_address_lower, user_id, chain, token_address, token_address_lower,
+         symbol, name, balance, price_usd, value_usd, liquidity_usd, refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const seedHolding = (
+      chain: string,
+      tokenAddress: string,
+      symbol: string,
+      valueUsd: number,
+      liquidityUsd: number | null,
+    ) => {
+      insertHolding.run(
+        trackedUser.id, trackedUser.id, trackedUser.id,
+        chain, tokenAddress, tokenAddress.toLowerCase(),
+        symbol, symbol, 1, valueUsd, valueUsd, liquidityUsd, 1_000,
+      );
+    };
+    seedHolding('robinhood', '0x7db3e8b5d4ebf9519b4839511185d75775e74444', '4FOUR', 3_592_427, 0.0002677136000038245);
+    seedHolding('robinhood', '0xnulliq00000000000000000000000000000001', 'NULLIQ', 1_600_000, null);
+    seedHolding('robinhood', '0xzroliq00000000000000000000000000000002', 'ZROLIQ', 17_275, 0);
+    seedHolding('robinhood', '0xrealpool0000000000000000000000000000003', 'REALPOOL', 124_000, 2_266_048);
+    seedHolding('bsc', '0xdustcoin0000000000000000000000000000000004', 'DUSTCOIN', 50, 100);
+
+    invalidateTrackedUsersCache();
+    const liveRollupUser = listTrackedUsers().find((user) => user.id === trackedUser.id);
+    assert.ok(liveRollupUser, 'seeding current_holdings 后人物仍应存在');
+    assert.equal(
+      liveRollupUser.totalAssetUsd,
+      1_741_275,
+      'live 汇总应超过地址缓存（1,499,999），只计入 RH 无池数据行（1.6M+17,275+124k），排除 RH 尘埃幻觉行 $3.59M 与 bsc 尘埃行',
+    );
     console.log('tracked user asset snapshot tests: ok');
   } finally {
     if (previousDbPath === undefined) {

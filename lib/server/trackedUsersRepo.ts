@@ -97,7 +97,9 @@ function normalize(value: string | undefined) {
 }
 
 function liquidAssetWhereSql(alias: string) {
-  return `(${alias}.chain = 'robinhood' OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
+  // RH: liquidity NULL/0 = 无 DEX 池数据，照常计入（9-12 教训）；实测尘埃
+  // 流动性（0<liq<5k，如 4FOUR $0.0003 → $3.59M 幻觉）不算流动资产。
+  return `((${alias}.chain = 'robinhood' AND COALESCE(${alias}.liquidity_usd, 0) = 0) OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
 }
 
 function parseTags(value: string | null | undefined) {

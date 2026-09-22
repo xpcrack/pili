@@ -626,8 +626,13 @@ export function isHoldingGated(holding: {
   chain?: string | null;
 }): boolean {
   if (isImplausiblePrice(holding.price_usd, holding.symbol)) return true;
-  // RH memes can be >$500k with DexScreener liq missing; OKX already priced them.
-  if ((holding.chain || '').toLowerCase() === ROBINHOOD_CHAIN) return false;
+  // RH memes can be >$500k with no DEX pool（liquidity null/0 = 无池数据）。
+  // 但实测尘埃流动性（0<liq<5k，如 4FOUR $0.0003 → $3.59M）证明估值是幻想，
+  // 落回通用 value gate。
+  const chain = (holding.chain || '').toLowerCase();
+  if (chain === ROBINHOOD_CHAIN && (holding.liquidity_usd == null || holding.liquidity_usd === 0)) {
+    return false;
+  }
   return isImplausibleValue(holding.value_usd, holding.liquidity_usd, holding.symbol);
 }
 
