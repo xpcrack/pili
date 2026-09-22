@@ -180,6 +180,80 @@ export function buildLiveMonitorActivity(params: {
   };
 }
 
+/**
+ * GMGN activity returns one item per swap leg. A multi-leg tx (aggregator
+ * routing through several pools) emits N rows that all map to the same
+ * event_id (`live-monitor:<chain>:<wallet>:<tx>:<token>` — no leg index), so
+ * a per-item upsert keeps only the last leg's qty/cost and silently
+ * undercounts the trade (2026-09-22: ROP musebook tx 0x957b71 recorded
+ * $13.6K instead of $27.2K — 3 of 4 legs were overwritten). Merge legs per
+ * (dataSource, chain, wallet, tx, token, side) before upsert: amounts and
+ * costs sum, price is qty-weighted, MC keeps the max, open/close wins if any
+ * leg reports it.
+ */
+export function aggregateLiveTradeLegs(trades: NormalizedLiveTrade[]): NormalizedLiveTrade[] {
+  const byKey = new Map<string, NormalizedLiveTrade[]>();
+  for (const trade of trades) {
+    const key = [
+      trade.dataSource ?? '',
+      trade.chain,
+      trade.wallet,
+      trade.txHash ?? '',
+      trade.tokenAddress,
+      trade.side,
+    ].join('|');
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(trade);
+    else byKey.set(key, [trade]);
+  }
+  const out: NormalizedLiveTrade[] = [];
+  for (const legs of byKey.values()) {
+    const head = legs[0]!;
+    if (legs.length === 1) {
+      out.push(head);
+      continue;
+    }
+    let tokenAmount: number | null = null;
+    let costUsd: number | null = null;
+    let priceWeighted = 0;
+    let priceWeight = 0;
+    let priceFallback: number | null = null;
+    let marketCapUsd: number | null = null;
+    let isOpenOrClose: boolean | null = null;
+    let eventTimeMs = head.eventTimeMs;
+    for (const leg of legs) {
+      if (leg.tokenAmount != null && Number.isFinite(leg.tokenAmount)) {
+        tokenAmount = (tokenAmount ?? 0) + leg.tokenAmount;
+      }
+      if (leg.costUsd != null && Number.isFinite(leg.costUsd)) {
+        costUsd = (costUsd ?? 0) + leg.costUsd;
+      }
+      if (leg.priceUsd != null && Number.isFinite(leg.priceUsd)) {
+        priceFallback ??= leg.priceUsd;
+        const qty = leg.tokenAmount != null && Number.isFinite(leg.tokenAmount) ? leg.tokenAmount : 0;
+        priceWeighted += leg.priceUsd * qty;
+        priceWeight += qty;
+      }
+      if (leg.marketCapUsd != null && (marketCapUsd == null || leg.marketCapUsd > marketCapUsd)) {
+        marketCapUsd = leg.marketCapUsd;
+      }
+      if (leg.isOpenOrClose === true) isOpenOrClose = true;
+      else if (isOpenOrClose == null && leg.isOpenOrClose != null) isOpenOrClose = leg.isOpenOrClose;
+      if (leg.eventTimeMs < eventTimeMs) eventTimeMs = leg.eventTimeMs;
+    }
+    out.push({
+      ...head,
+      tokenAmount,
+      costUsd,
+      priceUsd: priceWeight > 0 ? priceWeighted / priceWeight : priceFallback,
+      marketCapUsd,
+      isOpenOrClose,
+      eventTimeMs,
+    });
+  }
+  return out;
+}
+
 export function upsertLiveMonitorTrades(params: {
   user: User;
   trades: NormalizedLiveTrade[];
@@ -200,16 +274,17 @@ export function upsertLiveMonitorTrades(params: {
    */
   fastBulk?: boolean;
 }) {
-  if (params.trades.length === 0) {
+  const trades = aggregateLiveTradeLegs(params.trades);
+  if (trades.length === 0) {
     return { upserted: 0 };
   }
   if (params.fastBulk) {
     return upsertLiveMonitorTradesFast({
       user: params.user,
-      trades: params.trades,
+      trades,
     });
   }
-  const rows = params.trades.map((trade) => ({
+  const rows = trades.map((trade) => ({
     user: params.user,
     activity: buildLiveMonitorActivity({
       user: params.user,
@@ -218,7 +293,7 @@ export function upsertLiveMonitorTrades(params: {
       resolvePositionDelta: params.resolvePositionDelta === true,
     }),
   }));
-  const ingestSource = params.trades.every((trade) => trade.dataSource === 'alchemy')
+  const ingestSource = trades.every((trade) => trade.dataSource === 'alchemy')
     ? ALCHEMY_DIRECT_INGEST_SOURCE
     : LIVE_MONITOR_INGEST_SOURCE;
   upsertEventsFromFeedRows(rows, ingestSource);
