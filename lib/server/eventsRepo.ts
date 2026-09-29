@@ -521,9 +521,15 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
     !incoming.metadata.rawText &&
     incoming.metadata.monitorReconciledSource === 'xxyy' &&
     isExpectedMonitorAggregateCorrection(existing, incoming);
+  // 展示种子只由本次写入自带的推送文案驱动。canonical 链上写入(live-monitor/
+  // OKX 对账)没有自己的 rawText 时,不得让历史推送文案(可能是拆单单腿,
+  // 金额/MC 低估数倍)解析出的展示文案覆盖结构化成交数据。
+  const incomingRawText = pickDisplaySeed(incoming.metadata.rawText);
   const mergedRawText = prefersAggregatedMonitorDisplay
-    ? pickDisplaySeed(incoming.metadata.rawText)
-    : pickDisplaySeed(incoming.metadata.rawText, existing.metadata.rawText);
+    ? incomingRawText
+    : incomingRawText ?? pickDisplaySeed(existing.metadata.rawText);
+  const displayRawText =
+    prefersCanonicalMonitorDisplay || prefersAggregatedMonitorDisplay ? undefined : incomingRawText;
 
   const mergedMetadata: Activity['metadata'] = {
     ...existing.metadata,
@@ -531,7 +537,7 @@ function mergeActivityForUpsert(user: User, incoming: Activity, existing: Activi
   };
 
   const displayMetadata = buildTradeDisplayMetadata({
-    rawText: prefersCanonicalMonitorDisplay || prefersAggregatedMonitorDisplay ? undefined : mergedRawText,
+    rawText: displayRawText,
     walletLabel: pickDisplaySeed(
       incoming.metadata.monitorWalletAliasLabel,
       incoming.metadata.monitorWalletLabel,
