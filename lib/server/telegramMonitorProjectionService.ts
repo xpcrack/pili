@@ -192,12 +192,10 @@ export async function projectAndPersistTelegramMonitorUpdate(
     }
   }
 
-  if (
-    txState &&
-    params.feedMode === 'project' &&
-    txState.chain.trim().toLowerCase() !== 'robinhood' &&
-    params.autoReconcile
-  ) {
+  // doorbell 模式同样要对账:XXYY 推送可能只是聚合器拆单里的一条腿
+  // (金额/MC 低估数倍),必须用 OKX 链上数据覆盖。project 模式原本就触发,
+  // 这里去掉 feedMode 限制,仅保留 robinhood 排除(OKX 无此链对账支持)。
+  if (txState && txState.chain.trim().toLowerCase() !== 'robinhood' && params.autoReconcile) {
     void triggerTelegramMonitorReconciliation({
       chain: txState.chain,
       trackedWalletAddress: txState.trackedWalletAddress,

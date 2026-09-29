@@ -14,6 +14,7 @@ import { runTwitterIdentityBackfillCycle } from '@/lib/server/twitterIdentityBac
 import { runSpendMonitorCycle } from '@/lib/server/spendMonitorRuntime';
 import { runTelegramBridgeCycle } from '@/lib/server/telegramBridgeRuntime';
 import { runTelegramChannelWorkerCycle } from '@/lib/server/telegramChannelWorkerRuntime';
+import { runTelegramMonitorRepairCycle } from '@/lib/server/telegramMonitorReconciler';
 
 // --- types ---
 
@@ -600,6 +601,31 @@ export function createDefaultRuntimeTasks(
           sleepMs: result.sleepMs,
           status: result.status,
           detail: result.detail,
+        };
+      },
+    })
+  );
+
+  // XXYY 推送对账:ingest 内联触发只覆盖新推送;这里持续补偿积压的 pending 行
+  // (拆单单腿导致的金额/MC 低估)。有积压时短间隔连跑,清空后转低频巡检。
+  tasks.push(
+    createLoopTask({
+      key: 'telegram-monitor-reconcile',
+      label: 'Telegram Monitor Reconcile',
+      cycle: async () => {
+        const result = await runTelegramMonitorRepairCycle();
+        const envIdleMs = Number(process.env.PILI_TELEGRAM_MONITOR_REPAIR_IDLE_MS || '');
+        const idleSleepMs = Number.isFinite(envIdleMs) && envIdleMs > 0 ? envIdleMs : 60_000;
+        return {
+          sleepMs: result.claimed > 0 ? 2_000 : idleSleepMs,
+          status: result.lastError ? 'error' : 'idle',
+          detail: {
+            claimed: result.claimed,
+            reconciled: result.reconciled,
+            failed: result.failed,
+            skipped: result.skipped,
+            lastError: result.lastError,
+          },
         };
       },
     })

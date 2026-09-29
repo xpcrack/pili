@@ -19,6 +19,7 @@ import { buildActivityFromSnapshotSync, repairCollapsedCanonicalActivity, type M
 import { buildTradeDisplayMetadata, formatDisplayTradeAmount } from '@/lib/tradeDisplay';
 import { liveMonitorOwnsWalletTx, upsertEventsFromFeedRows } from '@/lib/server/eventsRepo';
 import { scoreFeedRowsAgainstDatabase } from '@/lib/server/activityImportanceService';
+import { isSqliteBusyError } from '@/lib/server/sqlite';
 import { isOnchainStockToken } from '@/lib/onchainStockTokens';
 import {
   claimTelegramMonitorTxStatesForRepair,
@@ -337,13 +338,18 @@ async function persistReconciledMonitorActivity(params: {
   activity: Activity;
   source: 'okx-address' | 'okx-detail';
 }) {
+  const reconciliationMarketCapUsd = resolveReconciliationMarketCapUsd({
+    provisionalMarketCapUsd: params.state.provisionalMarketCapUsd,
+    provisionalPriceUsd: params.state.provisionalPriceUsd,
+    activity: params.activity,
+  });
   const decoratedActivity = decorateCanonicalMonitorActivity({
     activity: params.activity,
     trackedWalletAddress: params.state.trackedWalletAddress,
     txHash: params.state.txHash,
     status: 'reconciled',
     source: params.source,
-    marketCapUsd: params.state.provisionalMarketCapUsd,
+    marketCapUsd: reconciliationMarketCapUsd,
     rawText: params.state.provisionalRawText,
     walletLabel: params.state.provisionalWalletLabel,
     walletGroupLabel: params.state.provisionalWalletGroupLabel,
@@ -364,8 +370,9 @@ async function persistReconciledMonitorActivity(params: {
       provisionalQuoteSymbol: params.state.provisionalQuoteSymbol,
       provisionalTokenAmount: params.state.provisionalTokenAmount,
       provisionalTokenSymbol: params.state.provisionalTokenSymbol,
-      provisionalPriceUsd: params.state.provisionalPriceUsd,
-      provisionalMarketCapUsd: params.state.provisionalMarketCapUsd,
+      provisionalPriceUsd:
+        reconciliationMarketCapUsd == null ? null : params.state.provisionalPriceUsd,
+      provisionalMarketCapUsd: reconciliationMarketCapUsd,
       provisionalRawText: params.state.provisionalRawText,
       provisionalWalletLabel: params.state.provisionalWalletLabel,
       provisionalWalletGroupLabel: params.state.provisionalWalletGroupLabel,
@@ -394,6 +401,58 @@ async function persistReconciledMonitorActivity(params: {
     status: 'reconciled' as const,
     source: params.source,
   };
+}
+
+/**
+ * XXYY 推送的 MCAP/价格只反映它抓到的那一条成交腿。聚合器拆单(一笔 tx 拆
+ * 多个池同时买入)时推送会整体低估:实测案例 0xb488abd3(2026-09-29 BSC),
+ * 2 BNB 拆 3 腿共 ~1510 USDT,推送只报 0.66 BNB 一腿,MC 78.6K(真实 ~234.8K)。
+ * 对账拿到了链上真实成交价(tradeAmountUsdAtTx / tokenAmount),推送价与
+ * 链上价偏差超过容差即视为推送只覆盖部分腿,MC 置空,让下游走估算兜底。
+ */
+const PROVISIONAL_MARKET_CAP_TOLERANCE = 0.25;
+
+function resolveReconciliationMarketCapUsd(params: {
+  provisionalMarketCapUsd: number | null;
+  provisionalPriceUsd: number | null;
+  activity: Activity;
+}): number | null {
+  const { provisionalMarketCapUsd, provisionalPriceUsd, activity } = params;
+  if (
+    provisionalMarketCapUsd == null ||
+    !Number.isFinite(provisionalMarketCapUsd) ||
+    provisionalMarketCapUsd <= 0
+  ) {
+    return null;
+  }
+  const tokenAmount = Number.parseFloat(String(activity.metadata.value ?? ''));
+  const amountUsd = activity.metadata.tradeAmountUsdAtTx;
+  if (
+    !Number.isFinite(tokenAmount) ||
+    tokenAmount <= 0 ||
+    amountUsd == null ||
+    !Number.isFinite(amountUsd) ||
+    amountUsd <= 0
+  ) {
+    // 链上数据不完整,无法证伪 → 保守保留推送 MC(维持既有行为)
+    return provisionalMarketCapUsd;
+  }
+  const provisionalPrice =
+    provisionalPriceUsd != null && Number.isFinite(provisionalPriceUsd) && provisionalPriceUsd > 0
+      ? provisionalPriceUsd
+      : null;
+  if (!provisionalPrice) {
+    return provisionalMarketCapUsd;
+  }
+  const onchainPrice = amountUsd / tokenAmount;
+  const ratio = provisionalPrice / onchainPrice;
+  if (
+    ratio >= 1 - PROVISIONAL_MARKET_CAP_TOLERANCE &&
+    ratio <= 1 + PROVISIONAL_MARKET_CAP_TOLERANCE
+  ) {
+    return provisionalMarketCapUsd;
+  }
+  return null;
 }
 
 function decorateCanonicalMonitorActivity(params: {
@@ -621,16 +680,29 @@ export async function reconcileTelegramMonitorTxState(params: {
     };
   } catch (error) {
     const errorText = error instanceof Error ? error.message : 'unknown-reconciliation-error';
-    markTelegramMonitorTxStateFailed({
-      chain: state.chain,
-      trackedWalletAddress: state.trackedWalletAddress,
-      txHash: state.txHash,
-      tokenAddress: state.tokenAddress,
-      error: errorText,
-    });
+    // SQLITE_BUSY:另一进程持有写锁,保持 pending 让循环下次重试;
+    // 其余错误(API 超时、地址无效等)标 failed 停牌。
+    if (!isSqliteBusyError(error)) {
+      markTelegramMonitorTxStateFailed({
+        chain: state.chain,
+        trackedWalletAddress: state.trackedWalletAddress,
+        txHash: state.txHash,
+        tokenAddress: state.tokenAddress,
+        error: errorText,
+      });
+      return {
+        ok: false,
+        status: 'failed',
+        error: errorText,
+      };
+    }
+    console.warn(
+      `[reconcile] ${state.chain}:${state.txHash.slice(0, 10)} locked, skipping (will retry):`,
+      errorText
+    );
     return {
       ok: false,
-      status: 'failed',
+      status: 'skipped',
       error: errorText,
     };
   }
@@ -673,4 +745,61 @@ export function scheduleTelegramMonitorRepairBatch(limit = 5) {
   }
 
   return targets.length;
+}
+
+const REPAIR_BATCH_SIZE_DEFAULT = 8;
+const REPAIR_MAX_BATCH_SIZE = 32;
+
+export interface TelegramMonitorRepairCycleResult {
+  claimed: number;
+  reconciled: number;
+  failed: number;
+  skipped: number;
+  lastError: string | null;
+}
+
+/**
+ * 修复积压的 pending monitor 状态。ingest 内联对账只覆盖新推送;这里按租约
+ * 批量认领补偿历史积压。只认领 pending 且非 robinhood(链上对账不支持)的行:
+ * failed 行重试只会反复烧 OKX 配额,保持停牌,除非新推送重新内联触发。
+ */
+export async function runTelegramMonitorRepairCycle(params?: {
+  batchSize?: number;
+}): Promise<TelegramMonitorRepairCycleResult> {
+  const envBatch = Number(process.env.PILI_TELEGRAM_MONITOR_REPAIR_BATCH || '');
+  const configured =
+    Number.isFinite(envBatch) && envBatch > 0 ? Math.floor(envBatch) : REPAIR_BATCH_SIZE_DEFAULT;
+  const batchSize = Math.max(1, Math.min(params?.batchSize ?? configured, REPAIR_MAX_BATCH_SIZE));
+
+  const targets = claimTelegramMonitorTxStatesForRepair({
+    limit: batchSize,
+    leaseMs: REPAIR_CLAIM_LEASE_MS,
+    backlogOnly: true,
+  });
+
+  const results = await Promise.all(
+    targets.map((target) =>
+      triggerTelegramMonitorReconciliation({
+        chain: target.chain,
+        trackedWalletAddress: target.trackedWalletAddress,
+        txHash: target.txHash,
+      })
+    )
+  );
+
+  let reconciled = 0;
+  let failed = 0;
+  let skipped = 0;
+  let lastError: string | null = null;
+  for (const result of results) {
+    if (result.status === 'reconciled') reconciled += 1;
+    else if (result.status === 'failed') {
+      failed += 1;
+      lastError = result.error ?? lastError;
+    } else {
+      skipped += 1;
+    }
+  }
+
+  return { claimed: targets.length, reconciled, failed, skipped, lastError };
 }
