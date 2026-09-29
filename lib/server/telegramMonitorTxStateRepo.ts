@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { Activity } from '@/types';
 import { buildTelegramMonitorTxAggregateKey } from '@/lib/telegramMonitorIdentity';
-import { getDb } from '@/lib/server/sqlite';
+import { getDb, withSqliteBusyRetry } from '@/lib/server/sqlite';
 
 function normalize(value: string | null | undefined) {
   return (value || '').trim().toLowerCase();
@@ -762,6 +762,8 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
   limit: number;
   nowMs?: number;
   leaseMs?: number;
+  /** 积压修复专用:只认领 pending 且非 robinhood 的行(failed 停牌、robinhood 无对账支持)。 */
+  backlogOnly?: boolean;
 }) {
   const safeLimit = Math.max(1, Math.min(200, Math.floor(params.limit)));
   const nowMs = typeof params.nowMs === 'number' ? params.nowMs : Date.now();
@@ -770,20 +772,23 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
       ? Math.floor(params.leaseMs)
       : 60_000;
   const claimCutoffMs = nowMs - leaseMs;
+  const backlogFilter = params.backlogOnly
+    ? "\n   AND reconciliation_status = 'pending'\n   AND LOWER(chain) != 'robinhood'"
+    : '';
   const db = getDb();
 
-  const tx = db.transaction(() => {
-    const activeClaimCount = (
-      db
-        .prepare(
-          `SELECT COUNT(*) as count
-           FROM telegram_monitor_tx_states
-           WHERE reconciliation_status != 'reconciled'
-             AND repair_claimed_at IS NOT NULL
-             AND repair_claimed_at > ?`
-        )
-        .get(claimCutoffMs) as { count: number }
-    ).count;
+  const runClaim = () => {
+    // better-sqlite3 `.get()` 返回 unknown;计数行形状固定为 { count }
+    const activeClaimRow = db
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM telegram_monitor_tx_states
+         WHERE reconciliation_status != 'reconciled'
+           AND repair_claimed_at IS NOT NULL
+           AND repair_claimed_at > ?${backlogFilter}`
+      )
+      .get(claimCutoffMs) as { count: number };
+    const activeClaimCount = activeClaimRow.count;
     const availableSlots = Math.max(0, safeLimit - activeClaimCount);
     if (availableSlots === 0) {
       return [] as TelegramMonitorTxState[];
@@ -795,7 +800,7 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
          FROM telegram_monitor_tx_states
          WHERE reconciliation_status != 'reconciled'
            AND COALESCE(next_retry_at, 0) <= ?
-           AND (repair_claimed_at IS NULL OR repair_claimed_at <= ?)
+           AND (repair_claimed_at IS NULL OR repair_claimed_at <= ?)${backlogFilter}
          ORDER BY COALESCE(next_retry_at, 0) ASC,
                   COALESCE(event_time_ms, updated_at) ASC,
                   updated_at ASC
@@ -852,7 +857,23 @@ export function claimTelegramMonitorTxStatesForRepair(params: {
     }
 
     return claimed;
-  });
+  };
 
-  return tx();
+  // BEGIN IMMEDIATE:deferred 事务的写升级在 WAL 竞争下会绕过 busy_timeout 直接
+  // SQLITE_BUSY;立即拿写锁才能吃到 busy_timeout 兜底(仓库写锁纪律)。
+  return withSqliteBusyRetry(() => {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const claimed = runClaim();
+      db.exec('COMMIT');
+      return claimed;
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // 事务已由引擎回滚,忽略
+      }
+      throw error;
+    }
+  }, { label: 'telegram-monitor-repair-claim' });
 }
