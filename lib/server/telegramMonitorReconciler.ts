@@ -527,6 +527,18 @@ export interface ReconcileTelegramMonitorTxResult {
   error?: string;
 }
 
+/**
+ * 瞬态错误:保持 pending 让循环重试,不永久停牌。
+ * - OKX 网络错误(超时/fetch failed):代理或网络抖动
+ * - Timestamp request expire:OKX 签名时钟漂移 401
+ * 仅"OKX 无此交易数据"(detail/address-missing)等确定性失败才停牌。
+ */
+const RETRYABLE_RECONCILE_ERROR_PATTERNS = ['OKX 网络错误', 'Timestamp request expire'];
+
+function isRetryableReconcileError(errorText: string): boolean {
+  return RETRYABLE_RECONCILE_ERROR_PATTERNS.some((pattern) => errorText.includes(pattern));
+}
+
 export async function reconcileTelegramMonitorTxState(params: {
   chain: string;
   trackedWalletAddress: string;
@@ -666,6 +678,14 @@ export async function reconcileTelegramMonitorTxState(params: {
     const detailError = detailResult.ok ? 'detail-missing' : detailResult.error;
     const addressError = addressResult.ok ? 'address-missing' : addressResult.error;
     const errorText = [detailError, addressError].filter(Boolean).join('; ') || 'unable-to-build-canonical-activity';
+    if (isRetryableReconcileError(errorText)) {
+      // 瞬态 API 故障:保持 pending,循环下轮重试
+      return {
+        ok: false,
+        status: 'skipped',
+        error: errorText,
+      };
+    }
     markTelegramMonitorTxStateFailed({
       chain: state.chain,
       trackedWalletAddress: state.trackedWalletAddress,
