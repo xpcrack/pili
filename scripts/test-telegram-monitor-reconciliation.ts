@@ -1039,13 +1039,14 @@ async function run() {
       txHash: failingTxHash,
       force: true,
     });
-    assert.equal(failureResult.status, 'failed', 'network failures should surface as failed reconciliations');
+    // 网络失败是瞬态:保持 pending 让循环重试,不永久停牌
+    assert.equal(failureResult.status, 'skipped', 'network failures should stay pending for retry');
     const failedFeed = await readTelegramMonitorFeed(20);
     const failedRow = failedFeed.find((item) => item.activity.metadata.txHash === failingTxHash);
     assert.equal(
       failedRow?.activity.metadata.monitorReconciliationStatus,
-      'failed',
-      'failed reconciliation status should be visible in projected feed activity metadata'
+      'pending',
+      'pending reconciliation status should remain visible in projected feed activity metadata'
     );
 
     globalThis.fetch = createSuccessfulFetch() as typeof fetch;
