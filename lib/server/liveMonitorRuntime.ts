@@ -20,7 +20,7 @@
  */
 import 'server-only';
 
-import { parseAlchemyInboxTrades } from '@/lib/server/alchemyDirectTrade';
+import { confirmIntentSell, parseAlchemyInboxTrades } from '@/lib/server/alchemyDirectTrade';
 import { pullAlchemyInbox, writeAlchemyInboxCursor } from '@/lib/server/alchemyInbox';
 import {
   hasPiliOwnedWebhookIds,
@@ -636,8 +636,27 @@ export async function runLiveMonitorCycle(
 
     const processTarget = async (target: ScanTarget) => {
       const trades: NormalizedLiveTrade[] = [];
+      const seen = new Set<string>();
       let targetError: string | null = null;
       let upsertedNew = 0;
+
+      try {
+        const intentTrades = await parseAlchemyInboxTrades({
+          events: rawAlchemyEvents,
+          watchedAddresses: [target.address],
+          minCostUsd: Number.isFinite(minCost) ? minCost : 10,
+          confirmIntentSell,
+        });
+        for (const trade of intentTrades) {
+          if (trade.paymentEvidence !== 'intent_settlement') continue;
+          const key = `${trade.chain}:${trade.txHash}:${trade.tokenAddress}:${trade.side}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          trades.push(trade);
+        }
+      } catch (error) {
+        lastError = lastError || (error instanceof Error ? error.message : String(error));
+      }
 
       for (let index = 0; index < target.chains.length; index += 1) {
         const chain = target.chains[index]!;
@@ -665,6 +684,11 @@ export async function runLiveMonitorCycle(
               chain,
               min_cost_usd: Number.isFinite(minCost) ? minCost : 0,
               after_ts: afterTs,
+            }).filter((trade) => {
+              const key = `${trade.chain}:${trade.txHash}:${trade.tokenAddress}:${trade.side}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
             })
           );
         } catch (error) {
@@ -679,6 +703,7 @@ export async function runLiveMonitorCycle(
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
+
 
       if (trades.length > 0) {
         trades.sort((a, b) => a.eventTimeMs - b.eventTimeMs);
