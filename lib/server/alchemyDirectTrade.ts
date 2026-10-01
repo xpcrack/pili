@@ -22,6 +22,14 @@ const QUOTE_ADDRESSES = new Set(
     '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d',
   ].map((value) => value.toLowerCase())
 );
+const DUTCH_REACTOR = '0x000000007a1c8e570011eedf86a2a35593013cba';
+const CHAIN_RPC: Record<string, string> = {
+  ethereum: 'https://ethereum.publicnode.com',
+  base: 'https://base.publicnode.com',
+  bsc: 'https://bsc.publicnode.com',
+  robinhood: 'https://rpc.mainnet.chain.robinhood.com',
+};
+
 
 type Market = Awaited<ReturnType<typeof fetchFromDexScreener>>;
 type RawTransfer = {
@@ -119,6 +127,7 @@ export async function parseAlchemyInboxTrades(params: {
   watchedAddresses: string[];
   fetchMarket?: typeof fetchFromDexScreener;
   minCostUsd?: number;
+  confirmIntentSell?: (txHash: string, chain: string) => Promise<boolean>;
 }): Promise<NormalizedLiveTrade[]> {
   const fetchMarket = params.fetchMarket ?? fetchFromDexScreener;
   const minCostUsd = params.minCostUsd ?? 10;
@@ -144,12 +153,19 @@ export async function parseAlchemyInboxTrades(params: {
       // Quote/native legs prove that an inbound token was purchased.  An
       // inbound non-quote token with no same-wallet payment is an airdrop,
       // treasury distribution, bridge payout, etc., not a buy.
-      if (!transfer.token || isQuoteToken(transfer.token, transfer.symbol)) {
-        continue;
+      // An outbound token with no inbound asset is either a plain transfer or
+      // an intent fill whose proceeds never return to the signer. Only the
+      // latter is a sell; the receipt check is injected so tests stay offline.
+      if (side === 'sell' && !params.confirmIntentSell) continue;
+      if (side === 'sell' && params.confirmIntentSell) {
+        const confirmed = await params.confirmIntentSell(transfer.txHash, chain);
+        if (!confirmed) continue;
       }
       const paymentEvidence = side === 'buy'
         ? sameTxPaymentEvidence(transfers, transfer, wallet)
-        : null;
+        : side === 'sell'
+          ? 'intent_settlement' as const
+          : null;
       if (side === 'buy' && !paymentEvidence) continue;
 
       const marketKey = `${chain}:${chain === 'solana' ? transfer.token : transfer.token.toLowerCase()}`;
@@ -211,4 +227,17 @@ function sameTxPaymentEvidence(
     }
   }
   return null;
+}
+export async function confirmIntentSell(txHash: string, chain: string): Promise<boolean> {
+  const rpc = CHAIN_RPC[chain];
+  if (!rpc) return false;
+  const response = await fetch(rpc, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) return false;
+  const body = await response.json() as { result?: { logs?: Array<{ address?: string }> } };
+  return (body.result?.logs ?? []).some((log) => (log.address || '').toLowerCase() === DUTCH_REACTOR);
 }

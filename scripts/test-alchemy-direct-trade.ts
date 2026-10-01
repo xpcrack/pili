@@ -84,6 +84,7 @@ async function testEvmSell() {
     ],
     watchedAddresses: [WATCHED],
     fetchMarket,
+    confirmIntentSell: async () => true,
   });
 
   assert.equal(trades.length, 1);
@@ -269,6 +270,36 @@ async function testMissingMarketDataDoesNotDropTrade() {
   assert.equal(trades[0]?.costUsd, null);
   assert.equal(trades[0]?.priceUsd, null);
 }
+async function testIntentSellRequiresSettlementEvidence() {
+  const activity = [{
+    fromAddress: WATCHED,
+    toAddress: OTHER,
+    value: '1500000',
+    asset: 'SHROOM',
+    hash: '0xintent',
+    rawContract: { address: TOKEN },
+  }];
+  const plain = await parseAlchemyInboxTrades({
+    events: [event({ activity }, 'ROBINHOOD_MAINNET')],
+    watchedAddresses: [WATCHED],
+    fetchMarket,
+  });
+  assert.equal(plain.length, 0);
+
+  const intent = await parseAlchemyInboxTrades({
+    events: [event({ activity }, 'ROBINHOOD_MAINNET')],
+    watchedAddresses: [WATCHED],
+    fetchMarket,
+    confirmIntentSell: async () => true,
+  });
+  assert.equal(intent.length, 1);
+  assert.equal(intent[0]?.side, 'sell');
+  assert.equal(intent[0]?.chain, 'robinhood');
+  assert.equal(intent[0]?.tokenAmount, 1500000);
+  assert.equal(intent[0]?.costUsd, 30000);
+  assert.equal(intent[0]?.paymentEvidence, 'intent_settlement');
+}
+
 
 async function run() {
   await testEvmBuyFiltersQuoteLeg();
@@ -277,7 +308,7 @@ async function run() {
   await testD1TimestampIsParsedAsUtc();
   await testSolanaTransfer();
   await testDustAndThinLiquidityAreRejected();
-  await testMissingMarketDataDoesNotDropTrade();
+  await testIntentSellRequiresSettlementEvidence();
   console.log('alchemy direct trade tests: ok');
 }
 
