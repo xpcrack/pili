@@ -20,6 +20,27 @@ import type { TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
  */
 
 let liveClient: TelegramLiveClient | null = null;
+// 坏单例销毁后的冷却期：AUTH_KEY_DUPLICATED 场景下服务端旧连接尚未超时，
+// 立刻重连仍会 406；等一个 sync 周期再试，避免每 10s 空转新建 client。
+const RESET_COOLDOWN_MS = 60_000;
+let resetAtMs = 0;
+
+export async function resetLiveTelegramChannelClient(reason: string) {
+  const stale = liveClient;
+  liveClient = null;
+  resetAtMs = Date.now();
+  if (stale) {
+    try {
+      await stale.disconnect?.();
+    } catch (error) {
+      console.warn(
+        '[telegram-live] reset disconnect failed:',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+  console.warn(`[telegram-live] live client reset: ${reason}`);
+}
 
 export async function ensureLiveTelegramChannelClient(): Promise<{
   client: TelegramLiveClient | null;
@@ -27,16 +48,29 @@ export async function ensureLiveTelegramChannelClient(): Promise<{
 }> {
   try {
     if (!liveClient) {
+      if (resetAtMs && Date.now() - resetAtMs < RESET_COOLDOWN_MS) {
+        return { client: null, error: 'live client resetting, cooldown' };
+      }
       liveClient = await createTelegramGramjsClient();
       liveClient.addNewMessageHandler(handleLiveTelegramNewMessage);
     } else if (!liveClient.isConnected()) {
       await liveClient.reconnect();
+      if (!liveClient.isConnected()) {
+        await resetLiveTelegramChannelClient('reconnect did not restore connection');
+        return { client: null, error: 'live client reconnect failed' };
+      }
     }
     return { client: liveClient, error: null };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // 单例已坏（406 AUTH_KEY_DUPLICATED / 未授权 / 连接坏死）：销毁重建，
+    // 否则 ensure 永远失败、fallback 每 cycle 新建 client 与旧 session 撞车。
+    if (/AUTH_KEY_DUPLICATED|AUTH_KEY_UNREGISTERED|AUTH_KEY_INVALID|not authorized|session revoked|TIMEOUT|NOT_CONNECTED|Not connected/i.test(message)) {
+      await resetLiveTelegramChannelClient(message);
+    }
     return {
       client: null,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     };
   }
 }

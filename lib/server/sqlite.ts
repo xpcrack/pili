@@ -5,8 +5,10 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-// 必须 < 前端 feed 超时(25s)。30s 时请求会先被浏览器/前端掐死，只剩“超时”，看不到 locked。
-const SQLITE_BUSY_TIMEOUT_MS = 8_000;
+// 必须 < 前端 feed 超时(25s)。写锁竞争高峰（monitor ingest + reconcile 并发）下
+// 8s 会把本可等到的锁判成 SQLITE_BUSY（fail-closed 丢弃本轮写入）；
+// 15s 仍低于前端 25s 超时，不会把锁等待转化为用户可见的请求超时。
+const SQLITE_BUSY_TIMEOUT_MS = 15_000;
 const SQLITE_INIT_BUSY_ATTEMPTS = 8;
 /** Bump when events_fts trigger SQL changes; gates DROP/CREATE on startup. */
 const EVENTS_FTS_TRIGGERS_FLAG = 'events_fts_triggers_v3';
@@ -1113,6 +1115,19 @@ ON events(tweet_id);
 
 CREATE INDEX IF NOT EXISTS idx_events_tx_hash
 ON events(tx_hash);
+
+-- monitor 逻辑去重查询（upsertEventsFromFeedRows 的 existingMonitorByLogicalTxStmt /
+-- deleteDuplicateMonitorEventsStmt）此前只能走 idx_events_chain_address_timestamp,
+-- 热门地址单链 1.7 万行 + ingest_source LIKE 过滤 + 临时 B-tree 排序。
+-- 本索引把 (user_id, source, chain, address, tx_hash_lower) 等值条件全部收进索引。
+CREATE INDEX IF NOT EXISTS idx_events_user_source_chain_address_tx_monitor
+ON events(
+  user_id,
+  source,
+  chain,
+  address,
+  LOWER(COALESCE(tx_hash, ''))
+);
 
 CREATE TABLE IF NOT EXISTS feed_conflicts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

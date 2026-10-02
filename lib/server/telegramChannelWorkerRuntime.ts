@@ -4,7 +4,7 @@ import type { TelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { readTelegramClientConfig } from '@/lib/server/telegramClientConfig';
 import { createTelegramGramjsClient } from '@/lib/server/telegramGramjsClient';
 import { syncAllTelegramChannelSources } from '@/lib/server/telegramChannelSync';
-import { ensureLiveTelegramChannelClient } from '@/lib/server/telegramChannelLive';
+import { ensureLiveTelegramChannelClient, resetLiveTelegramChannelClient } from '@/lib/server/telegramChannelLive';
 import { classifyTelegramMtprotoError, readTelegramMtprotoPolicy } from '@/lib/server/telegramMtprotoPolicy';
 import type { TelegramChannelSyncClient } from '@/lib/server/telegramChannelTypes';
 import { queueCompletenessPoke } from '@/lib/server/completenessRepo';
@@ -57,22 +57,37 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
   }
 
   // 即时路径：常驻 client + updates 长连接。成功后兜底 sync 复用同一连接。
-  // 失败则回退到「每 cycle 新建 client」的旧路径，确保兜底 sync 不中断。
+  // live 失败时直接放弃本轮（cooldown 后重建），绝不再新建 per-cycle client：
+  // 同一 session 双连接会触发 406 AUTH_KEY_DUPLICATED，Telegram 判死整个 auth key。
   let useLiveClient = deps.createClient === undefined;
   let liveClient: TelegramChannelSyncClient | null = null;
   if (useLiveClient) {
     const live = await ensureLiveTelegramChannelClient();
     if (!live.client) {
-      console.warn(`[telegram-channel-worker] live client unavailable, falling back to per-cycle client: ${live.error}`);
-      useLiveClient = false;
-    } else {
-      liveClient = live.client;
+      console.warn(`[telegram-channel-worker] live client unavailable, skip cycle: ${live.error}`);
+      const classifiedLive = classifyTelegramMtprotoError(new Error(live.error || 'unknown'));
+      if (classifiedLive.kind === 'auth_required') {
+        upsertChannelWorkerStatus('auth-required', live.error);
+        return {
+          sleepMs: FAILURE_RETRY_DELAY_MS,
+          status: 'auth-required',
+          lastError: live.error,
+        };
+      }
+      upsertChannelWorkerStatus('error', live.error);
+      return {
+        sleepMs: FAILURE_RETRY_DELAY_MS,
+        status: 'error',
+        lastError: live.error,
+      };
     }
+    liveClient = live.client;
   }
 
   let client: TelegramChannelSyncClient | null = null;
   try {
     if (!useLiveClient || !liveClient) {
+      // 仅测试注入路径走这里；生产路径 useLiveClient 恒为 true。
       client = deps.createClient ? await deps.createClient() : await createTelegramGramjsClient();
     } else {
       client = liveClient;
@@ -124,6 +139,11 @@ export async function runTelegramChannelWorkerCycleWithDeps(deps: {
     const status = classified.kind === 'auth_required' ? 'auth-required' : 'error';
     upsertChannelWorkerStatus(status, classified.message);
     console.error(`[telegram-channel-worker] cycle failed: ${classified.message}`);
+    // auth/连接坏死时同步销毁 live 单例，下一 cycle 走冷却重建，
+    // 避免坏 client 被复用后每轮在 sync 内部再次 406。
+    if (classified.kind === 'auth_required') {
+      await resetLiveTelegramChannelClient(classified.message);
+    }
     return {
       sleepMs: Math.max(
         Math.min(policy.channelSyncIntervalMs, FAILURE_RETRY_DELAY_MS),
