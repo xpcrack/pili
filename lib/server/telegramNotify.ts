@@ -3,6 +3,10 @@ import 'server-only';
 import { resolveTelegramBotToken } from '@/lib/server/telegramBotToken';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
+// 无超时的 fetch 会把调用方挂死：conflictNotifier 在 upsert 事务里 fire-and-forget
+// 本函数（void flush...），代理抖动时 fetch 挂 60s+ → 事务持写锁 60s+ → 全库
+// database is locked（2026-10-02 锁雪崩根因）。所有调用方都必须有硬超时。
+const SEND_TIMEOUT_MS = 10_000;
 
 export interface TelegramTextMessageInput {
   chatId: string;
@@ -26,17 +30,27 @@ export async function sendTelegramTextMessage(params: TelegramTextMessageInput) 
   }
 
   const endpoint = `${TELEGRAM_API_BASE}/bot${relayBotToken}/sendMessage`;
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+      }),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return {
+      ok: false as const,
+      reason: 'telegram_request_failed' as const,
+      detail: `fetch failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300),
+    };
+  }
 
   if (!response.ok) {
     const detail = await response.text().catch(() => '');

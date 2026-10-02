@@ -666,7 +666,8 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
     }
   }
 
-  withTransaction(() => {
+  const transactionResult = withTransaction(() => {
+    let detectedConflictCount = 0;
     const db = getDb();
     const now = Date.now();
     const existingStmt = db.prepare(`SELECT event_id, activity_json FROM events WHERE event_id = ? LIMIT 1`);
@@ -905,7 +906,7 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
             diffJson: diff,
           });
 
-          void flushConflictNotifications(10);
+          detectedConflictCount += 1;
 
           console.info('[eventsRepo] conflict detected', {
             eventId,
@@ -1083,7 +1084,17 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
         );
       }
     }
+
+    return detectedConflictCount;
   });
+
+  // 冲突通知 flush 必须在事务外：flushConflictNotifications 内部 sendTelegramTextMessage
+  // 发起网络请求（即使 void fire-and-forget，async 回调仍会在事务关闭前执行），
+  // 网络挂起 = 事务持写锁挂起 = 全库 database is locked（2026-10-02 锁雪崩根因）。
+  // upsertConflictAndEnqueue 入队的事务已提交，这里只负责触发投递。
+  if (transactionResult > 0) {
+    void flushConflictNotifications(Math.min(20, transactionResult * 2));
+  }
 
   bumpFeedRevision();
 
