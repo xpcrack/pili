@@ -213,6 +213,14 @@ export function createWalletActivityBackfillQueue(deps: WalletActivityBackfillQu
     if (draining) {
       return { processed: 0, results: [], remaining: pending.size, stoppedOnBan: false };
     }
+    // 2026-10-04: 全局排水开关。PILI_WALLET_TIMELINE_MAINTENANCE=0 只关 sweep
+    // 入队，drain（消费积压）不受它管 —— 积压数百个 stale 时仍会持续抽 GMGN
+    // 账户桶（观测 pili 占 wallet_activity 81%，newone holdings 被饿死）。
+    // 需要彻底停 drain 时（如 bucket 饱和抢救期）设 1；队列不丢，恢复后继续。
+    if (process.env.PILI_WALLET_TIMELINE_DRAIN_DISABLED === '1') {
+      log('drain skipped (PILI_WALLET_TIMELINE_DRAIN_DISABLED=1)');
+      return { processed: 0, results: [], remaining: pending.size, stoppedOnBan: false };
+    }
     if (shouldPause()) {
       return { processed: 0, results: [], remaining: pending.size, stoppedOnBan: false };
     }
