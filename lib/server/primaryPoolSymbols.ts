@@ -50,6 +50,16 @@ export function resolveNewoneDbPath() {
   return path.resolve(process.cwd(), '..', 'newone', 'data', 'newone.sqlite');
 }
 
+/**
+ * newone ingest API base. Same-machine default needs no token (NEWONE_HTTP_ACCESS_TOKEN
+ * only guards the外网 Cloudflare Tunnel); NEWONE_API_BASE_URL / NEWONE_API_TOKEN exist
+ * for future cross-machine deploys.
+ */
+export function resolveNewoneApiBase(): string {
+  const fromEnv = (process.env.NEWONE_API_BASE_URL || '').trim();
+  return (fromEnv || 'http://127.0.0.1:3200').replace(/\/+$/, '');
+}
+
 function isBunRuntime() {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }
@@ -252,6 +262,17 @@ export function getPrimaryPoolOfficialTwitterMap(opts?: {
 /**
  * Ensure CA is an active primary-pool member in newone.
  * Returns true if newly entered or reactivated; false if already active / failed.
+ *
+ * Implementation goes through newone's ingest API (POST /api/events, event_type
+ * `social.mention`) instead of writing newone's sqlite directly. The API side owns
+ * the single guarded write path — permanent-delete blacklist, token dedupe,
+ * membership create/reactivate — so this writer can never drift from the official
+ * `ingestEvent()` rules again (the 2026-09-17 reintroduction of a permanently
+ * deleted CA happened exactly because this file used to hand-INSERT memberships).
+ * Read-only dictionary queries (loadPrimaryPoolFromDb below) still hit sqlite.
+ *
+ * No sqlite fallback on API failure: falling back would resurrect the drifting
+ * writer. Failures are logged loudly; next mention retries.
  */
 export async function ensurePrimaryPoolForAddress(params: {
   address: string;
@@ -285,136 +306,105 @@ export async function ensurePrimaryPoolForAddress(params: {
       chain = 'solana';
     }
   }
-  const newonePath = resolveNewoneDbPath();
-  if (!existsSync(newonePath)) {
-    return { ok: false, entered: false, error: 'newone_db_missing' };
-  }
 
-  let db: NewoneSqlite | null = null;
-  try {
-    db = openNewone(newonePath, false);
-    if (
-      db
-        .prepare(`SELECT 1 FROM permanent_token_blocks WHERE address_lower = ? LIMIT 1`)
-        .get(addressLower)
-    ) {
-      return { ok: true, entered: false, error: 'permanent_delete_blocked' };
-    }
-
-    // Prefer existing token by CA
-    const existing = db
-      .prepare(
-        `SELECT id, chain FROM tokens
-         WHERE address_lower = ?
-         ORDER BY CASE chain WHEN 'robinhood' THEN 1 ELSE 0 END, id ASC
-         LIMIT 1`,
-      )
-      .get(addressLower) as { id: number; chain: string } | undefined;
-
-    let tokenId: number;
-    if (existing?.id) {
-      tokenId = existing.id;
-      if (symbol) {
-        db.prepare(
-          `UPDATE tokens SET symbol = COALESCE(?, symbol) WHERE id = ?`,
-        ).run(symbol, tokenId);
-      }
-      // Correct legacy mislabeled EVM rows: the old `0x → bsc` default wrote many
-      // base/ethereum tokens into the table as bsc. If DexScreener says the real
-      // dominant chain is something else, repoint this row's chain so downstream
-      // market refresh / GMGN kline hit the right chain. (Solana rows are never
-      // touched — address is unambiguous there.)
-      if (
-        isEvm &&
-        !callerChain &&
-        existing.chain !== chain &&
-        chain !== 'bsc'
-      ) {
-        db.prepare(
-          `UPDATE tokens SET chain = ? WHERE id = ?`,
-        ).run(chain, tokenId);
-        console.log(
-          `[primary-pool] corrected chain ${existing.chain}→${chain} for ${addressLower}`,
-        );
-      }
-    } else {
-      db.prepare(
-        `INSERT INTO tokens (chain, address, address_lower, symbol, name)
-         VALUES (?, ?, ?, ?, NULL)
-         ON CONFLICT(chain, address_lower) DO UPDATE SET
-           symbol = COALESCE(excluded.symbol, tokens.symbol)`,
-      ).run(chain, address, addressLower, symbol);
-      const row = db
-        .prepare(`SELECT id FROM tokens WHERE chain = ? AND address_lower = ?`)
-        .get(chain, addressLower) as { id: number } | undefined;
-      if (!row?.id) return { ok: false, entered: false, error: 'token_insert_failed' };
-      tokenId = row.id;
-    }
-
-    const membership = db
-      .prepare(
-        `SELECT id, state FROM token_pool_memberships
-         WHERE token_id = ? AND pool_type = 'primary' AND strategy_id = 'default'`,
-      )
-      .get(tokenId) as { id: number; state: string } | undefined;
-
-    const reasonJson = JSON.stringify({
+  // The API needs an explicit chain — pili resolves it, newone trusts the provider
+  // (its ensureToken is chain-scoped and never repoints an existing row's chain).
+  //
+  // dedupe_key is hour-bucketed, not fixed: a fixed key would collapse every future
+  // mention of the same CA+reason into that one historical event, so a later
+  // re-entry never registers as its own event. Hour granularity still dedupes a
+  // single spam burst while letting a genuinely new mention land as a new event.
+  const reason = params.reason || 'social_ca_mention';
+  const hourBucket = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+  const dedupeKey = `social.mention:${chain}:${addressLower}:${reason}:${hourBucket}`;
+  const body = {
+    event_type: 'social.mention',
+    occurred_at: new Date().toISOString(),
+    dedupe_key: dedupeKey,
+    chain,
+    token_address: address,
+    symbol,
+    provider: 'pili',
+    payload: {
       source: 'pili-social-ca',
-      reason: params.reason || 'social_ca_mention',
+      reason,
       address,
       symbol,
+    },
+  };
+
+  try {
+    const base = resolveNewoneApiBase();
+    const token = (process.env.NEWONE_API_TOKEN || '').trim();
+    const res = await fetch(`${base}/api/events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
     });
-
-    if (membership) {
-      if (membership.state === 'active') {
-        // refresh cache
-        if (cache) {
-          cache.addresses.add(addressLower);
-          if (symbol) cache.symbols.add(normalizePoolSymbolKey(symbol));
-        }
-        return { ok: true, entered: false, tokenId };
-      }
-      // excluded/exited → reactivate for social CA (user rule: CA not in pool → import)
-      db.prepare(
-        `UPDATE token_pool_memberships SET
-           state = 'active',
-           entered_at = datetime('now'),
-           exited_at = NULL,
-           reason_json = ?,
-           last_evaluated_at = datetime('now'),
-           updated_at = datetime('now')
-         WHERE id = ?`,
-      ).run(reasonJson, membership.id);
-    } else {
-      db.prepare(
-        `INSERT INTO token_pool_memberships (
-           token_id, pool_type, strategy_id, state,
-           source_event_id, reason_json, rule_version, last_evaluated_at
-         ) VALUES (?, 'primary', 'default', 'active', NULL, ?, 'pili-social-ca', datetime('now'))`,
-      ).run(tokenId, reasonJson);
+    const text = await res.text();
+    if (!res.ok) {
+      const snippet = text.slice(0, 300);
+      console.warn(
+        `[primary-pool] ingest API ${res.status} for ${addressLower} reason=${params.reason || 'social_ca_mention'}: ${snippet}`,
+      );
+      return { ok: false, entered: false, error: `newone_api_${res.status}` };
     }
-
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      console.warn(
+        `[primary-pool] ingest API non-JSON response for ${addressLower}: ${text.slice(0, 300)}`,
+      );
+      return { ok: false, entered: false, error: 'newone_api_bad_json' };
+    }
+    const first = (parsed as { results?: unknown[] }).results?.[0];
+    if (!first || typeof first !== 'object') {
+      console.warn(
+        `[primary-pool] ingest API empty result for ${addressLower}: ${text.slice(0, 300)}`,
+      );
+      return { ok: false, entered: false, error: 'newone_api_no_result' };
+    }
+    const entry = first as {
+      error?: string;
+      token_id?: number;
+      pool_entered?: boolean;
+      pool_membership_id?: number | null;
+    };
+    if (typeof entry.error === 'string' && entry.error) {
+      console.warn(
+        `[primary-pool] ingest API rejected ${addressLower} reason=${params.reason || 'social_ca_mention'}: ${entry.error}`,
+      );
+      return { ok: false, entered: false, error: entry.error };
+    }
+    const tokenId = typeof entry.token_id === 'number' ? entry.token_id : undefined;
+    const membershipId = entry.pool_membership_id ?? 0;
+    if (entry.pool_entered === true) {
+      cache = null; // force reload next read so addresses/symbols sets see the newcomer
+      return { ok: true, entered: true, tokenId };
+    }
+    if (membershipId === 0) {
+      // Guarded by newone: permanent-delete blacklist (or xstocks). Kept for log
+      // compatibility with the old direct-sqlite writer.
+      return { ok: true, entered: false, error: 'permanent_delete_blocked' };
+    }
+    // Already active in pool (created/reactivated earlier).
     if (cache) {
       cache.addresses.add(addressLower);
       if (symbol) cache.symbols.add(normalizePoolSymbolKey(symbol));
-    } else {
-      cache = null; // force reload next read
     }
-    return { ok: true, entered: true, tokenId };
+    return { ok: true, entered: false, tokenId };
   } catch (err) {
-    return {
-      ok: false,
-      entered: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // ignore
-    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[primary-pool] ingest API call failed for ${addressLower} reason=${params.reason || 'social_ca_mention'}: ${message}`,
+    );
+    return { ok: false, entered: false, error: message };
   }
-
 }
 /** Best-effort Bark (dual device if BARK_URLS / default). */
 export async function barkPrimaryPoolAlert(title: string, body: string) {
