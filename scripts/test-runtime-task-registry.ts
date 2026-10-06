@@ -460,6 +460,7 @@ async function testDefaultTaskOrderIsStable() {
       'feishu-enablement-sync',
       'telegram-channel-sync',
       'completeness-maintenance',
+      'holdings-refresh-watchdog',
       'holdings-refresh',
       'holdings-refresh-gmgn',
       'holder-snapshot',
@@ -470,6 +471,7 @@ async function testDefaultTaskOrderIsStable() {
       'spend-monitor',
       'telegram-bridge',
       'twitter-identity-backfill',
+      'telegram-monitor-reconcile',
     ]
   );
 
@@ -522,6 +524,7 @@ async function testDefaultTaskOrderIsStable() {
   assert.deepEqual(tasksWithoutTelegram.map((task) => task.key), [
     'feishu-enablement-sync',
     'completeness-maintenance',
+    'holdings-refresh-watchdog',
     'holdings-refresh',
     'holdings-refresh-gmgn',
     'holder-snapshot',
@@ -531,6 +534,7 @@ async function testDefaultTaskOrderIsStable() {
     'trade-signal',
     'spend-monitor',
     'twitter-identity-backfill',
+    'telegram-monitor-reconcile',
   ]);
 
   // The web runtime opts out explicitly: PnL is a synchronous full-history walk
