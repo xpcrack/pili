@@ -481,14 +481,120 @@ function queueStats(db: DbHandle, nowMs: number) {
   ).get(nowMs, nowMs) as { total: number; due: number | null; oldest_due_at: number | null };
 }
 
-/** 死信告警：钱包连续失败进死信时推 Bark（运维组）。失败不阻塞队列。 */
-function notifyDeadLetter(walletChain: string, address: string, attempts: number, error: string): void {
+/**
+ * 死信告警聚合窗口。单钱包进死信不再各推一条 Bark——2026-10-06 事故里
+ * 442 个钱包在 1 分钟内齐爆，产生 434 条同题推送（事故信息被淹没、手机刷屏）。
+ * 改为：窗口内累计的进死信事件聚合成一条摘要，窗口到期时发出。
+ */
+const DEAD_LETTER_ALERT_WINDOW_MS = Math.max(
+  10_000,
+  Number(process.env.HOLDINGS_DEAD_LETTER_ALERT_WINDOW_MS || 300_000)
+);
+/** 摘要里最多列几个钱包样本，避免 body 超长被 Bark 截断。 */
+const DEAD_LETTER_SAMPLE_LIMIT = 5;
+
+type DeadLetterPending = { walletChain: string; address: string; attempts: number; error: string };
+type DeadLetterAlertState = {
+  wallets: DeadLetterPending[];
+  firstAtMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+/** 每个 DB 一份待聚合状态（测试注入临时 DB，不能全局共享）。 */
+const deadLetterAlertState = new WeakMap<object, DeadLetterAlertState>();
+
+function getDeadLetterAlertState(db: DbHandle): DeadLetterAlertState {
+  let state = deadLetterAlertState.get(db as object);
+  if (!state) {
+    state = { wallets: [], firstAtMs: 0, timer: null };
+    deadLetterAlertState.set(db as object, state);
+  }
+  return state;
+}
+
+/** 聚合摘要正文：N 个钱包 + 少数样本 + 首错原因。 */
+function formatDeadLetterDigest(wallets: DeadLetterPending[], windowMs: number): string {
+  const byChain = new Map<string, number>();
+  for (const w of wallets) {
+    const chain = w.walletChain.split(':')[0] || 'unknown';
+    byChain.set(chain, (byChain.get(chain) ?? 0) + 1);
+  }
+  const chainSummary = [...byChain.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([chain, n]) => `${chain} ${n}`)
+    .join(' / ');
+  const minutes = Math.max(1, Math.round(windowMs / 60_000));
+  const samples = wallets
+    .slice(0, DEAD_LETTER_SAMPLE_LIMIT)
+    .map((w) => `${w.walletChain.split(':')[0]}:${w.address.slice(0, 6)}…`)
+    .join(', ');
+  const more = wallets.length > DEAD_LETTER_SAMPLE_LIMIT
+    ? ` 等 ${wallets.length} 个`
+    : '';
+  const firstError = wallets[0]?.error?.slice(0, 100) ?? 'unknown';
+  return (
+    `${minutes} 分钟内 ${wallets.length} 个钱包进死信（${chainSummary}）。` +
+    `样本：${samples}${more}。首错：${firstError}`
+  );
+}
+
+/** 窗口到期：把累计的进死信事件作为一条摘要推送，然后清空。 */
+function flushDeadLetterAlert(db: DbHandle): void {
+  const state = getDeadLetterAlertState(db);
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  const wallets = state.wallets;
+  const windowMs = state.firstAtMs > 0 ? Date.now() - state.firstAtMs : DEAD_LETTER_ALERT_WINDOW_MS;
+  state.wallets = [];
+  state.firstAtMs = 0;
+  if (wallets.length === 0) return;
+  console.warn(
+    `[holdings-refresh-queue] dead-letter digest: ${wallets.length} wallet(s) in ${Math.round(windowMs / 1000)}s`
+  );
   void pushBark({
-    title: '持仓刷新任务进死信',
-    body: `${walletChain} ${address.slice(0, 10)}… 连续失败 ${attempts} 次：${error.slice(0, 120)}`,
+    title: `持仓刷新进死信 · ${wallets.length} 个钱包`,
+    body: formatDeadLetterDigest(wallets, windowMs),
     group: '运维',
-    level: 'passive',
+    // 死信是运维事故，不是背景噪音——聚合后单条推送，值得 ring through silent mode。
+    level: 'timeSensitive',
   }).catch(() => {});
+}
+
+/**
+ * 记录一次进死信事件。首次调用开启聚合窗口，窗口到期合并成一条 Bark。
+ * 失败不阻塞队列。
+ */
+function notifyDeadLetter(
+  db: DbHandle,
+  walletChain: string,
+  address: string,
+  attempts: number,
+  error: string
+): void {
+  try {
+    const state = getDeadLetterAlertState(db);
+    if (state.wallets.length === 0) state.firstAtMs = Date.now();
+    state.wallets.push({ walletChain, address, attempts, error });
+    if (!state.timer) {
+      state.timer = setTimeout(() => {
+        try {
+          flushDeadLetterAlert(db);
+        } catch {
+          /* 摘要推送失败不影响队列 */
+        }
+      }, DEAD_LETTER_ALERT_WINDOW_MS);
+      // 不阻止进程退出（worker 关闭时不必等告警窗口）。
+      state.timer.unref?.();
+    }
+  } catch {
+    /* 告警失败不影响死信 */
+  }
+}
+
+/** 测试用：立即冲掉待发摘要并复位。 */
+export function flushDeadLetterAlertsForTests(db: DbHandle): void {
+  flushDeadLetterAlert(db);
 }
 
 /** One durable queue cycle. Periodic roster scans only seed jobs; they never block on a full sweep. */
@@ -598,7 +704,7 @@ export async function runHoldingsRefreshQueueCycle(options: {
         `[holdings-refresh-queue] dead-letter ${job.wallet_chain} (${job.address}) after ${attempts} attempts: ${msg}`
       );
       try {
-        notifyDeadLetter(job.wallet_chain, job.address, attempts, msg);
+        notifyDeadLetter(db, job.wallet_chain, job.address, attempts, msg);
       } catch {
         /* 告警失败不影响死信 */
       }
