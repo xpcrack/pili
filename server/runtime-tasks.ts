@@ -9,6 +9,10 @@ import { runHolderSnapshotCycle } from '@/lib/server/holderSnapshotRuntime';
 import { runLiveMonitorCycle } from '@/lib/server/liveMonitorRuntime';
 import { runPositionDeltaCycle } from '@/lib/server/positionDeltaService';
 import { runTradeSignalCycle } from '@/lib/server/tradeSignalService';
+import {
+  HOLDINGS_WATCHDOG_INTERVAL_MS,
+  runHoldingsRefreshWatchdog,
+} from '@/lib/server/holdingsRefreshWatchdog';
 import { runWalletPnlCycle } from '@/lib/server/walletPnlService';
 import { runTwitterIdentityBackfillCycle } from '@/lib/server/twitterIdentityBackfillRuntime';
 import { runSpendMonitorCycle } from '@/lib/server/spendMonitorRuntime';
@@ -438,6 +442,33 @@ export function createDefaultRuntimeTasks(
             busy: result.busy,
             claimedPokeCount: result.claimedPokeCount,
             globalProvenStartMs: result.globalProvenStartMs,
+          },
+        };
+      },
+    })
+  );
+
+  // 看门狗：读队列健康，整体恶化时自愈（重放死信）+ 升级告警。
+  // 2026-10-06 事故的缺口——单个钱包进死信有告警，但「整条链路死了」没人说。
+  tasks.push(
+    createLoopTask({
+      key: 'holdings-refresh-watchdog',
+      label: 'Holdings Refresh Watchdog',
+      cycle: async () => {
+        const result = await runHoldingsRefreshWatchdog();
+        return {
+          sleepMs: HOLDINGS_WATCHDOG_INTERVAL_MS,
+          status: result.degraded ? ('error' as const) : ('idle' as const),
+          detail: {
+            lastError: result.degraded ? result.reasons.join('; ') : null,
+            degraded: result.degraded,
+            requeued: result.requeued,
+            alerted: result.alerted,
+            deadLetterRatio: Number(result.health.deadLetterRatio.toFixed(4)),
+            deadLetter: result.health.deadLetter,
+            queueTotal: result.health.total,
+            recentlySucceeded: result.health.recentlySucceeded,
+            lastSuccessAgeMs: result.health.lastSuccessAgeMs,
           },
         };
       },

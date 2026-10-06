@@ -597,6 +597,88 @@ export function flushDeadLetterAlertsForTests(db: DbHandle): void {
   flushDeadLetterAlert(db);
 }
 
+/**
+ * 队列健康快照，供看门狗（watchdog）判断「整条刷新链路是否已经死透」。
+ *
+ * 2026-10-06 事故：worker 长跑 19h，442/965 钱包（46%）冻结在 dead_letter，
+ * 最近 1h 零成功刷新，但只有「每个钱包进死信」的噪音告警，没有任何东西
+ * 指出「这条链路整体已经不可用了」。看门狗消费本快照做整体判定。
+ */
+export type HoldingsRefreshQueueHealth = {
+  total: number;
+  active: number;
+  deadLetter: number;
+  /** dead_letter / total；total=0 时为 0。 */
+  deadLetterRatio: number;
+  /** 最近一次成功刷新距今毫秒；从未成功则为 null。 */
+  lastSuccessAgeMs: number | null;
+  /** 最近 successWindowMs 内成功刷新的钱包数。 */
+  recentlySucceeded: number;
+};
+
+export function readHoldingsRefreshQueueHealth(
+  db: DbHandle,
+  nowMs: number = Date.now(),
+  successWindowMs: number = 60 * 60_000
+): HoldingsRefreshQueueHealth {
+  ensurePersistentQueue(db);
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+              SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter,
+              MAX(last_success_at_ms) AS last_success_at_ms,
+              SUM(CASE WHEN last_success_at_ms >= ? THEN 1 ELSE 0 END) AS recently_succeeded
+       FROM holdings_refresh_jobs`
+    )
+    .get(nowMs - successWindowMs) as {
+    total: number;
+    active: number | null;
+    dead_letter: number | null;
+    last_success_at_ms: number | null;
+    recently_succeeded: number | null;
+  };
+  const total = row.total ?? 0;
+  const deadLetter = row.dead_letter ?? 0;
+  const lastSuccessAt = row.last_success_at_ms;
+  return {
+    total,
+    active: row.active ?? 0,
+    deadLetter,
+    deadLetterRatio: total > 0 ? deadLetter / total : 0,
+    lastSuccessAgeMs: lastSuccessAt == null ? null : Math.max(0, nowMs - lastSuccessAt),
+    recentlySucceeded: row.recently_succeeded ?? 0,
+  };
+}
+
+/**
+ * 把死信钱包放回队列重试（看门狗自愈动作用）。
+ * attempts 归零并用随机 due_at 摊开，避免所有钱包同一秒同时打上游
+ * （2026-10-06 手工恢复时用的就是这招：442 条摊到 15 分钟窗口）。
+ * 返回被重置的行数。
+ */
+export function requeueDeadLetterJobs(
+  db: DbHandle,
+  options: { nowMs?: number; spreadMs?: number } = {}
+): number {
+  ensurePersistentQueue(db);
+  const nowMs = options.nowMs ?? Date.now();
+  const spreadMs = Math.max(0, options.spreadMs ?? 15 * 60_000);
+  const result = db
+    .prepare(
+      `UPDATE holdings_refresh_jobs
+       SET status = 'active',
+           attempts = 0,
+           rerun_requested = 0,
+           due_at_ms = ? + (ABS(RANDOM()) % MAX(1, ?)),
+           last_error = NULL,
+           updated_at_ms = ?
+       WHERE status = 'dead_letter'`
+    )
+    .run(nowMs, spreadMs, nowMs);
+  return Number(result.changes ?? 0);
+}
+
 /** One durable queue cycle. Periodic roster scans only seed jobs; they never block on a full sweep. */
 export async function runHoldingsRefreshQueueCycle(options: {
   db?: DbHandle;
