@@ -46,7 +46,7 @@ export interface TwitterFetcherSeedByHandle {
   };
 }
 
-export type TwitterFetcherProviderMode = 'auto' | '6551' | 'xread' | 'opencli' | 'dokobot' | 'fixture';
+export type TwitterFetcherProviderMode = 'auto' | '6551' | 'xread' | 'opencli' | 'dokobot' | 'fixture' | 'noop';
 
 export interface TwitterFetcherProviderPlanItem {
   provider: Exclude<TwitterFetcherProvider, 'seed' | 'noop'>;
@@ -139,7 +139,11 @@ function normalizeRealProviderMode(value: string | undefined | null): TwitterFet
     normalized === 'xread' ||
     normalized === 'opencli' ||
     normalized === 'dokobot' ||
-    normalized === 'fixture'
+    normalized === 'fixture' ||
+    // 2026-10-07: 'noop' 是合法的「不抓」模式。此前它在白名单外，会被
+    // 静默降级成 'auto' —— 设 TWITTER_FETCH_PROVIDER=noop 实际等于回到
+    // auto 路由（6551 → xread），意图被反转。修此 bug 后 noop 真能关掉直抓。
+    normalized === 'noop'
   ) {
     return normalized;
   }
@@ -1049,6 +1053,19 @@ export function createTwitterFetcher(
       if (!handle) {
         return { provider: 'noop', credentialId: null, chargedUnit: 0, fallbackChain: [], tweets: [] };
       }
+      // 2026-10-07: noop = 显式关闭推特直抓（Finn 定调 TG 转发群为主来源）。
+      // 必须在任何 provider 调用之前短路 —— 否则 91 handle × 60s 会继续
+      // 烧 opencli session 配额（见 docs/opencli-429-incident）。
+      if (providerMode === 'noop') {
+        return {
+          provider: 'noop',
+          credentialId: null,
+          chargedUnit: 0,
+          fallbackChain: [],
+          coverageEstablished: false,
+          tweets: [],
+        };
+      }
 
       const seedTweets = fetchSeedUserTweets(seedByHandle, handle, params.lane, params.sinceMs, params.maxItems);
       if (seedTweets.length > 0) {
@@ -1341,6 +1358,18 @@ export function createTwitterFetcher(
       const ids = Array.from(new Set(params.ids.map((item) => item.trim()).filter(Boolean)));
       if (ids.length === 0) {
         return { provider: 'noop', credentialId: null, chargedUnit: 0, fallbackChain: [], tweets: [] };
+      }
+      // 2026-10-07: noop 同时关掉「按 id 补详情」这条 opencli 路径
+      // （twitterFetcher.ts 的 fetchFromOpencliByIds），与 fetchUserTweets 一致。
+      if (providerMode === 'noop') {
+        return {
+          provider: 'noop',
+          credentialId: null,
+          chargedUnit: 0,
+          fallbackChain: [],
+          coverageEstablished: false,
+          tweets: [],
+        };
       }
 
       const seedMatches = fetchSeedByIds(seedByHandle, ids);
