@@ -245,9 +245,25 @@ async function runTwitterSyncFallback(reason: 'startup' | 'interval') {
   }
 }
 
+// 把 '1'|'true'|'yes'|'on' 视为开启（大小写不敏感），其余为关闭。
+function readFlag(name: string): boolean {
+  const raw = (process.env[name] || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 function startTwitterSyncSchedule() {
   if (!ADMIN_API_TOKEN) {
     console.log(`${LOG_PREFIX} twitter-sync fallback disabled: missing ADMIN_API_TOKEN`);
+    return;
+  }
+
+  // 2026-10-07: 直抓总开关。Finn 定调「推特信息主来源 = TG 转发群」，且
+  // 91 handle × 60s 的 opencli 轮询会烧光 cookie session 配额（进而拖死
+  // getUpdates 主循环，见 docs）。设 TWITTER_SYNC_FALLBACK_DISABLED=1 即
+  // 整条定时任务不启动 —— 独立于 TWITTER_FETCH_PROVIDER 的字符串语义，
+  // 避免再次出现「以为关了其实开着」。
+  if (readFlag('TWITTER_SYNC_FALLBACK_DISABLED')) {
+    console.log(`${LOG_PREFIX} twitter-sync fallback disabled: TWITTER_SYNC_FALLBACK_DISABLED=1`);
     return;
   }
 
