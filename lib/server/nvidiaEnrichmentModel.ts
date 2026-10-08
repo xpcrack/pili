@@ -16,8 +16,8 @@ import {
 } from '@/lib/server/primaryPoolSymbols';
 
 /** OpenAI-compatible chat base. Prefer local AxonHub relay over NVIDIA NIM. */
-export const DEFAULT_ENRICHMENT_BASE_URL = 'http://127.0.0.1:8090/v1';
-export const DEFAULT_ENRICHMENT_MODEL = 'haiku';
+export const DEFAULT_ENRICHMENT_BASE_URL = 'http://127.0.0.1:3425/v1';
+export const DEFAULT_ENRICHMENT_MODEL = 'group/free';
 /** @deprecated use DEFAULT_ENRICHMENT_MODEL */
 export const DEFAULT_NVIDIA_ENRICHMENT_MODEL = DEFAULT_ENRICHMENT_MODEL;
 
@@ -80,7 +80,18 @@ function describeRequestFailure(err: unknown, timeoutMs: number): string {
   if (err instanceof Error && err.name === 'AbortError') {
     return `aborted after ${timeoutMs}ms (request timeout)`;
   }
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  // undici wraps the real network error (ECONNREFUSED / ECONNRESET / EAI_AGAIN /
+  // socket hang up) in `err.cause`; without it every transport failure collapses
+  // to the information-free "fetch failed" and the DB-lock crash-loop and the
+  // dead-relay case look identical in the log.
+  const cause = (err as { cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const code = (cause as { code?: string }).code;
+    return `${err.message} (cause: ${cause.message}${code ? `, code=${code}` : ''})`;
+  }
+  if (cause !== undefined) return `${err.message} (cause: ${String(cause)})`;
+  return err.message;
 }
 
 /**

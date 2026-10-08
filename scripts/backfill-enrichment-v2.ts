@@ -6,7 +6,7 @@
 //   npx tsx scripts/backfill-enrichment-v2.ts --feed-only --days=14
 //   npx tsx scripts/backfill-enrichment-v2.ts --exclude-news
 //   npx tsx scripts/backfill-enrichment-v2.ts --force-prod-db   # only if you accept locking prod
-// Env: AXONHUB_API_KEY + AXONHUB_BASE_URL (default http://127.0.0.1:8090/v1), model haiku
+// Env: AXONHUB_API_KEY + AXONHUB_BASE_URL (default http://127.0.0.1:3425/v1 = magpie), model group/free
 // Refuses default prod DB while pili-web / telegram workers are online (see scripts/lib/prodDbGuard.ts).
 
 import { getDb } from '../lib/server/sqlite';
@@ -80,7 +80,7 @@ async function main() {
     console.warn('WARN: no AXONHUB_API_KEY/ENRICHMENT_LLM_API_KEY — translation will no-op; MC still runs.');
   } else {
     console.log(
-      `Using model=${(process.env.ENRICHMENT_LLM_MODEL || process.env.AXONHUB_MODEL || 'haiku').trim()} base=${(process.env.ENRICHMENT_LLM_BASE_URL || process.env.AXONHUB_BASE_URL || 'http://127.0.0.1:8090/v1').trim()}`
+      `Using model=${(process.env.ENRICHMENT_LLM_MODEL || process.env.AXONHUB_MODEL || 'group/free').trim()} base=${(process.env.ENRICHMENT_LLM_BASE_URL || process.env.AXONHUB_BASE_URL || 'http://127.0.0.1:3425/v1').trim()}`
     );
   }
 

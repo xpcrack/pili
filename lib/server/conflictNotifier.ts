@@ -12,7 +12,7 @@ import { sendTelegramTextMessage } from '@/lib/server/telegramNotify';
 export interface FlushConflictNotificationsResult {
   sent: number;
   skipped: number;
-  reason: 'ok' | 'missing-chat-id';
+  reason: 'ok' | 'missing-chat-id' | 'error';
 }
 
 function normalizeLimit(limit: number) {
@@ -82,6 +82,22 @@ function markRetrySafely(notificationId: number, reason: string, attemptCount: n
 export async function flushConflictNotifications(limit = 20): Promise<FlushConflictNotificationsResult> {
   await Promise.resolve();
 
+  // Hard boundary: this function is called fire-and-forget (`void flush...`) from
+  // writers that are themselves racing the feed write lock. Without this, a
+  // SQLITE_BUSY_SNAPSHOT from readPendingConflictNotifications rejects the
+  // floating promise and — with no process-level unhandledRejection handler —
+  // terminates the whole worker. Killing the process also aborts every in-flight
+  // fetch(), which is what surfaced downstream as an unexplained "fetch failed".
+  // A dropped conflict notification is always cheaper than a dead process.
+  try {
+    return await flushConflictNotificationsInner(limit);
+  } catch (error) {
+    console.error('[conflictNotifier] flush failed (non-fatal):', formatUnknownError(error));
+    return { sent: 0, skipped: 0, reason: 'error' };
+  }
+}
+
+async function flushConflictNotificationsInner(limit: number): Promise<FlushConflictNotificationsResult> {
   const chatId = readSystemConfig().conflictNotificationTelegramChatId?.trim() || '';
   if (!chatId) {
     return {

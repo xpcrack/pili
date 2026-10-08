@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { getDb, type DbHandle } from '@/lib/server/sqlite';
+import { getDb, withSqliteBusyRetry, type DbHandle } from '@/lib/server/sqlite';
 
 export type ConflictDomain = 'onchain' | 'twitter';
 export type ConflictWinner = 'api' | 'opencli';
@@ -139,7 +139,12 @@ export function upsertConflictAndEnqueue(input: UpsertConflictRecordInput) {
 export function readPendingConflictNotifications(limit: number) {
   const db = getDb();
   const safeLimit = Math.max(1, Math.floor(limit));
-  const tx = db.transaction(() => {
+  // This claim races the feed write transactions (4+ writer processes), and WAL
+  // gives SQLITE_BUSY_SNAPSHOT on write-write upgrade conflicts — which
+  // busy_timeout alone does NOT cover. Route through the shared busy-retry so a
+  // lost race backs off instead of throwing. See sqlite.ts:withSqliteBusyRetry.
+  const claim = () => {
+    const tx = db.transaction(() => {
     const now = Date.now();
     const candidates = db
       .prepare(
@@ -234,9 +239,12 @@ export function readPendingConflictNotifications(limit: number) {
         diffJson: parseDiffJson(row.diff_json),
       } satisfies PendingConflictNotificationRow;
     });
-  });
+    });
 
-  return tx();
+    return tx();
+  };
+
+  return withSqliteBusyRetry(claim, { label: 'readPendingConflictNotifications' });
 }
 
 function normalizeAttemptCount(attemptCount: number) {
