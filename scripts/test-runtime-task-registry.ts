@@ -468,8 +468,10 @@ async function testDefaultTaskOrderIsStable() {
       'wallet-pnl',
       'trade-signal',
       'spend-monitor',
+      'lp-positions-refresh',
       'telegram-bridge',
       'twitter-identity-backfill',
+      'telegram-monitor-reconcile',
     ]
   );
 
@@ -530,7 +532,9 @@ async function testDefaultTaskOrderIsStable() {
     'wallet-pnl',
     'trade-signal',
     'spend-monitor',
+    'lp-positions-refresh',
     'twitter-identity-backfill',
+    'telegram-monitor-reconcile',
   ]);
 
   // The web runtime opts out explicitly: PnL is a synchronous full-history walk

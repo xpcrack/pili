@@ -49,7 +49,11 @@ function useHoldingMetricsMap(holdings: { chain: string; tokenAddress: string; s
 
     (async () => {
       const metricTargets = missingHoldings.filter(
-        (holding) => !isStableOrNativeSymbol(holding.symbol),
+        (holding) =>
+          // LP 聚合行不是真实 token（tokenAddress = lp:uniswap-v4:<wallet>），
+          // 打 batch 端点查不到行情还白烧一次请求。
+          !holding.tokenAddress.startsWith('lp:') &&
+          !isStableOrNativeSymbol(holding.symbol),
       );
 
       // Server proxy only — never call api.dexscreener.com from the browser.
@@ -357,19 +361,33 @@ export function SelectedUserDetailsPanel({
                         {CHAIN_LABELS[holding.chain] ?? holding.chain}
                       </td>
                       <td className="py-1.5 pr-3">
-                        <button
-                          type="button"
-                          className="max-w-[12rem] truncate text-left font-semibold text-zinc-100 transition-colors hover:text-emerald-400"
-                          title="左键复制合约地址，右键打开 GMGN"
-                          onClick={() => handleCopyCa(holding.tokenAddress)}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openGmgnToken(holding.chain, holding.tokenAddress);
-                          }}
-                        >
-                          {holding.symbol}
-                        </button>
+                        {holding.isLp ? (
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="max-w-[12rem] truncate font-semibold text-zinc-100"
+                              title="Uniswap V4 流动性仓（聚合）"
+                            >
+                              {holding.symbol}
+                            </span>
+                            <span className="shrink-0 rounded bg-violet-500/15 px-1 py-0.5 text-[9.5px] font-medium text-violet-300">
+                              V4 LP
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="max-w-[12rem] truncate text-left font-semibold text-zinc-100 transition-colors hover:text-emerald-400"
+                            title="左键复制合约地址，右键打开 GMGN"
+                            onClick={() => handleCopyCa(holding.tokenAddress)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openGmgnToken(holding.chain, holding.tokenAddress);
+                            }}
+                          >
+                            {holding.symbol}
+                          </button>
+                        )}
                         {holding.name && holding.name !== holding.symbol ? (
                           <div className="truncate text-[10.5px] text-zinc-600">{holding.name}</div>
                         ) : null}

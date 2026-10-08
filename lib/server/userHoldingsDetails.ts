@@ -42,6 +42,17 @@ interface HoldingsWalletStatusRow {
   refreshed_at: number;
 }
 
+interface LpPositionRow {
+  tracked_address_lower: string;
+  token_id: number;
+  symbol: string | null;
+  name: string | null;
+  amount0_usd: number | null;
+  amount1_usd: number | null;
+  total_usd: number | null;
+  refreshed_at: number;
+}
+
 export async function readUserHoldingsDetails(
   user: User,
   options: ReadUserHoldingsDetailsOptions = {},
@@ -109,25 +120,58 @@ export async function readUserHoldingsDetails(
     )
     .all(...params) as HoldingsRow[];
 
+  // LP rows live in current_lp_positions (OKX doesn't surface V4 LP NFTs).
+  // They must survive the empty-holdings early return below: a wallet with
+  // only LP bags (no spot tokens) still deserves a populated panel.
+  const lpQueryRows =
+    robinhoodAddresses.size > 0
+      ? ((() => {
+          try {
+            return db
+              .prepare(
+                `SELECT tracked_address_lower, token_id, symbol, name,
+                        amount0_usd, amount1_usd, total_usd, refreshed_at
+                 FROM current_lp_positions
+                 WHERE tracked_address_lower IN (${Array.from(robinhoodAddresses)
+                   .map(() => '?')
+                   .join(',')})
+                   AND COALESCE(total_usd, 0) > 0`,
+              )
+              .all(...Array.from(robinhoodAddresses)) as LpPositionRow[];
+          } catch {
+            // current_lp_positions may not exist yet (before first lp-refresh run).
+            return [] as LpPositionRow[];
+          }
+        })())
+      : [];
+
   if (rows.length === 0) {
     // Table may not have been populated yet — fall back to empty
     const maxTs = (
       db.prepare('SELECT MAX(refreshed_at) as ts FROM current_holdings').get() as { ts: number | null }
     ).ts;
 
-    if (!maxTs) {
+    if (lpQueryRows.length === 0 && !maxTs) {
       throw new UserHoldingsDetailsUnavailableError(
         'current_holdings 表无数据，请等待 pili-holdings-refresh cron 运行',
       );
     }
 
+    const lpOnlyHoldings = mergeLpRows(lpQueryRows);
     return {
-      holdings: [],
-      holdingsUpdatedAt: maxTs,
+      holdings: lpOnlyHoldings,
+      holdingsUpdatedAt:
+        lpQueryRows.length > 0
+          ? lpQueryRows.reduce<number | null>(
+              (latest, row) =>
+                latest === null ? row.refreshed_at : Math.max(latest, row.refreshed_at),
+              null,
+            )
+          : maxTs,
       summary: {
-        visibleCount: 0,
+        visibleCount: lpOnlyHoldings.length,
         partial: false,
-        successfulAddressCount: 0,
+        successfulAddressCount: lpQueryRows.length > 0 ? robinhoodAddresses.size : 0,
         failedAddressCount: 0,
       },
     };
@@ -190,6 +234,15 @@ export async function readUserHoldingsDetails(
         a.tokenAddress.localeCompare(b.tokenAddress),
     );
 
+  // Append LP rows (already fetched above) — one aggregated row per wallet.
+  holdings.push(...mergeLpRows(lpQueryRows));
+  holdings.sort(
+    (a, b) =>
+      b.valueUsd - a.valueUsd ||
+      a.chain.localeCompare(b.chain) ||
+      a.tokenAddress.localeCompare(b.tokenAddress),
+  );
+
   const refreshedAt = rows.reduce<number | null>((latest, row) => {
     if (typeof row.refreshed_at !== 'number') return latest;
     return latest === null ? row.refreshed_at : Math.max(latest, row.refreshed_at);
@@ -249,4 +302,49 @@ export async function readUserHoldingsDetails(
       failedAddressCount,
     },
   };
+}
+
+/**
+ * Merge raw current_lp_positions rows into one aggregated UserHoldingRow per
+ * wallet, same semantics as newone's buildVipPortfolio leg merge. Rows below
+ * USER_HOLDINGS_THRESHOLD_USD are dropped.
+ */
+function mergeLpRows(lpRows: LpPositionRow[]): UserHoldingRow[] {
+  const lpMerged = new Map<
+    string,
+    { usd: number; count: number; symbol: Set<string>; refreshedAt: number }
+  >();
+  for (const row of lpRows) {
+    const usd = row.total_usd ?? (row.amount0_usd ?? 0) + (row.amount1_usd ?? 0);
+    if (!(usd >= USER_HOLDINGS_THRESHOLD_USD)) continue;
+    const key = row.tracked_address_lower;
+    const entry = lpMerged.get(key) ?? {
+      usd: 0,
+      count: 0,
+      symbol: new Set<string>(),
+      refreshedAt: 0,
+    };
+    entry.usd += usd;
+    entry.count += 1;
+    if (row.symbol) entry.symbol.add(row.symbol);
+    entry.refreshedAt = Math.max(entry.refreshedAt, row.refreshed_at);
+    lpMerged.set(key, entry);
+  }
+
+  const rows: UserHoldingRow[] = [];
+  for (const [addressLower, entry] of lpMerged) {
+    const symbols = Array.from(entry.symbol);
+    rows.push({
+      chain: 'robinhood',
+      tokenAddress: `lp:uniswap-v4:${addressLower}`,
+      symbol: symbols.length > 0 ? symbols.join(' + ') : 'V4-LP',
+      name: `Uniswap V4 LP ×${entry.count}`,
+      balance: entry.count,
+      priceUsd: entry.usd / Math.max(1, entry.count),
+      valueUsd: entry.usd,
+      liquidityUsd: null,
+      isLp: true,
+    });
+  }
+  return rows;
 }
