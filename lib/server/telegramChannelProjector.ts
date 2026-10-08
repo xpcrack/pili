@@ -2,6 +2,7 @@ import 'server-only';
 
 import { listTrackedUsers } from '@/lib/server/trackedUsersRepo';
 import type { TelegramChannelPost, TelegramChannelSource } from '@/lib/server/telegramChannelTypes';
+import { parseFomoTradePostFields } from '@/lib/server/fomoTradePostParsing';
 import {
   buildFomoThesisContent,
   classifyFomoChannelPost,
@@ -111,6 +112,9 @@ export async function projectTelegramChannelPostToFeed(params: {
   const isFomoPumpKind = attribution.isFomoPumpPost && attribution.kind === 'thesis';
   // 关注的人的交易帖 → 作为其本人链上交易记录（source='blockchain', type='transfer'）。
   const fomoTradeAction = fomoTradeAsBlockchain ? extractFomoTradeAction(postText) : null;
+  // GMGN 交易推送是纯文本推文，没有链上结构化数据。把 token/CA/链/成交额/市值
+  // 从推文原文解析出来（此前全空 → feed ticker 显示 UNKNOWN、MC 列显示 "**$9.03M**"）。
+  const fomoTradeFields = fomoTradeAsBlockchain ? parseFomoTradePostFields(postText) : null;
 
   // 信源：交易帖(blockchain) → 交易记录；fomo 信源群喊单 → fomo；其余 → telegram。
   const activitySource: Activity['source'] = fomoTradeAsBlockchain
@@ -140,6 +144,18 @@ export async function projectTelegramChannelPostToFeed(params: {
       media: params.post.media.length > 0 ? params.post.media : undefined,
       ...(fomoTradeAsBlockchain && fomoTradeAction
         ? { txAction: fomoTradeAction, displayActionVariantLabel: fomoTradeAction === 'buy' ? '买入' : '卖出' }
+        : {}),
+      ...(fomoTradeAsBlockchain && fomoTradeFields
+        ? {
+            token: fomoTradeFields.tokenSymbol || undefined,
+            tokenAddress: fomoTradeFields.tokenAddress || undefined,
+            chain: fomoTradeFields.chain || undefined,
+            marketCapAtTxUsd: fomoTradeFields.marketCapUsd ?? undefined,
+            marketCapAtTxSource: fomoTradeFields.marketCapUsd != null ? ('gmgn-activity' as const) : undefined,
+            tradeAmountUsdAtTx: fomoTradeFields.tradeAmountUsd ?? undefined,
+            quoteAmount: fomoTradeFields.tradeAmountUsd != null ? String(fomoTradeFields.tradeAmountUsd) : undefined,
+            quoteToken: fomoTradeFields.tradeAmountUsd != null ? 'USD' : undefined,
+          }
         : {}),
       replies:
         typeof params.post.replies === 'number' && Number.isFinite(params.post.replies)

@@ -417,7 +417,10 @@ function extractRawTradeAmount(rawText: string) {
 
 function extractRawMcapText(rawText: string) {
   const match = rawText.match(/\bM(?:CAP|arket\s*Cap)\s*:\s*([^\n\r]+)/i);
-  return match?.[1]?.trim() ? match[1].trim() : null;
+  if (!match?.[1]?.trim()) return null;
+  // GMGN 推送全文是 Telegram markdown 加粗（"Market cap: **$9.03M**"），
+  // 星号必须剥掉，否则 MC 列原样显示 "**$9.03M**"（2026-10-08 feed 事故）。
+  return match[1].trim().replace(/\*\*/g, '').trim() || null;
 }
 
 export function mapActionVariantLabel(
