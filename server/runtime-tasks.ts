@@ -1,6 +1,7 @@
 import { syncFeishuEnablementFromNewone } from '@/lib/server/feishuEnablementSync';
 import { syncTwitterFromGmgnForUnfilledUsers } from '@/lib/server/gmgnTwitterSync';
 import { runCompletenessMaintenanceWorkerCycle } from '@/lib/server/completenessMaintenanceWorkerRuntime';
+import { refreshLpPositions } from '@/lib/server/lpPositionsRefresh';
 import {
   runGmgnHoldingsRefreshQueueCycle,
   runNativeHoldingsRefreshQueueCycle,
@@ -594,6 +595,24 @@ export function createDefaultRuntimeTasks(
             sleepMs: result.sleepMs,
             status: result.status,
             detail: result.detail,
+          };
+        },
+      })
+    );
+
+    // Uniswap V4 LP 扫描（robinhood 链 raw RPC）：OKX 不报 LP NFT，独立低频任务。
+    // 仅后台 worker 跑（跟 wallet-pnl 同开关）——全量 balanceOf 筛选 ~400 钱包，
+    // balanceOf=0 的钱包秒过，有 NFT 的才做 getLogs 扫描 + 池态读取。
+    tasks.push(
+      createLoopTask({
+        key: 'lp-positions-refresh',
+        label: 'V4 LP Positions Refresh',
+        cycle: async ({ signal }) => {
+          const result = await refreshLpPositions({ signal });
+          return {
+            sleepMs: result.sleepMs,
+            status: result.status,
+            detail: { ...result.summary },
           };
         },
       })
