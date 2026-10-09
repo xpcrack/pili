@@ -23,7 +23,10 @@ export function hasActiveFeedLocalFilters(searchFilters: FeedSearchFilters) {
     searchFilters.typeFilters.fomo !== defaults.typeFilters.fomo ||
     searchFilters.typeFilters.news !== defaults.typeFilters.news ||
     searchFilters.minTradeAmountUsd.trim().length > 0 ||
-    searchFilters.minTradeMarketCapUsd.trim().length > 0
+    searchFilters.minTradeMarketCapUsd.trim().length > 0 ||
+    // CA 扩展开关：改变远端命中集，也要参与「过滤已激活」判定（触发 refetch + 空态文案）
+    searchFilters.expandTicker !== defaults.expandTicker ||
+    searchFilters.expandOfficialTweets !== defaults.expandOfficialTweets
   );
 }
 
