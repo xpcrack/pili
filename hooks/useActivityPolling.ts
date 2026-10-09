@@ -868,17 +868,24 @@ export function useActivityPolling(
     });
   }, [queryFingerprint]);
 
-  useFeedSnapshotPolling(() =>
-    fetchActivities({
-      silent: true,
-      poll: true,
-      revision: feedRevisionRef.current,
-      targetCount: FEED_POLL_MAX_TARGET,
-      syncStrategy: 'local',
-      selectedUserId: activeSelectedUserIdRef.current,
-      searchQuery: activeSearchQueryRef.current,
-      source: activeSourceRef.current,
-    })
+  // 带远程搜索词时暂停快照轮询（2026-10-09）：轮询 tick 会带词重查 FTS，
+  // bun:sqlite 同步单线程下每 3s 一发 = 搜索页开着就持续给服务端上压力，
+  // 且并发到达的查询会在服务端串行排队，拖垮同进程的其他接口。
+  // 搜索是用户主动动作，命中集由 queryFingerprint effect 按需拉取；恢复无词后轮询照常。
+  const isRemoteSearchActive = Boolean((activeSearchQuery || '').trim());
+  useFeedSnapshotPolling(
+    () =>
+      fetchActivities({
+        silent: true,
+        poll: true,
+        revision: feedRevisionRef.current,
+        targetCount: FEED_POLL_MAX_TARGET,
+        syncStrategy: 'local',
+        selectedUserId: activeSelectedUserIdRef.current,
+        searchQuery: activeSearchQueryRef.current,
+        source: activeSourceRef.current,
+      }),
+    isRemoteSearchActive
   );
 
   // 低频后台刷新触发：维持原有周期性全量同步能力。

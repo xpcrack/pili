@@ -733,7 +733,9 @@ function run() {
     source: 'test-source',
     q: 'alice',
   });
-  assert.equal(filteredByUserName.total, 3);
+  // FTS 搜索路径不再跑精确 COUNT（2026-10-09：join COUNT 物化全命中集实测 2.4s/词，
+  // total 只是展示数字），total 回退 feed.length=1；命中数靠 hasMore 表达。
+  assert.equal(filteredByUserName.total, 1);
   assert.equal(filteredByUserName.feed.length, 1);
   assert.equal(filteredByUserName.hasMore, true);
 

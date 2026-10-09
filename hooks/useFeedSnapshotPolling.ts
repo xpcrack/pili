@@ -13,9 +13,14 @@ function backoffWithJitter(failCount: number): number {
   return base + jitter;
 }
 
-export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
+export function useFeedSnapshotPolling(
+  tick: () => Promise<unknown> | void,
+  paused = false
+) {
   const tickRef = useRef(tick);
   tickRef.current = tick;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     let cancelled = false;
@@ -35,6 +40,11 @@ export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
         // page hidden: wait for visibilitychange instead of polling
         return;
       }
+      if (pausedRef.current) {
+        // paused (e.g. remote search active): skip tick, retry at base interval
+        scheduleNext(BASE_INTERVAL_MS);
+        return;
+      }
       try {
         await tickRef.current();
         failCount = 0;
@@ -48,6 +58,7 @@ export function useFeedSnapshotPolling(tick: () => Promise<unknown> | void) {
 
     function onVisibilityChange() {
       if (!cancelled && typeof document !== 'undefined' && !document.hidden) {
+        if (pausedRef.current) return;
         // A short tab switch should not create an extra request; a stale tab
         // gets exactly one catch-up poll and then returns to the normal cadence.
         const stale = lastSuccessfulTickAt === 0 || Date.now() - lastSuccessfulTickAt >= BASE_INTERVAL_MS;
