@@ -24,6 +24,7 @@ type Row = {
   action: string | null;
   token: string | null;
   metadata_json: string;
+  activity_json: string;
 };
 
 function sleepMs(ms: number) {
@@ -34,7 +35,7 @@ async function main() {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT rowid, event_id, content, action, token, metadata_json
+      `SELECT rowid, event_id, content, action, token, metadata_json, activity_json
        FROM events
        WHERE content LIKE '%Bought: **%' OR content LIKE '%Proceeds: **%'`
     )
@@ -66,7 +67,17 @@ async function main() {
     let activity: Record<string, unknown>;
     try {
       metadata = JSON.parse(row.metadata_json);
-      activity = metadata; // activity_json 与 metadata_json 同构（events 表历史约定）
+      // activity_json 必须保持完整结构 {id, source, timestamp, ..., metadata:{...}}，
+      // 与 metadata_json 绝不是同构 —— 把纯 metadata 写进 activity_json 会压扁事件，
+      // 前端搜索 matcher 读 activity.metadata 时 TypeError，CA 搜索全部空结果
+      // （2026-10-08 事故，951 行受损，修复脚本 repair-collapsed-fomo-activity-json.ts）。
+      activity = JSON.parse(row.activity_json);
+      if (!activity || typeof activity !== 'object' || !activity.metadata || typeof activity.metadata !== 'object') {
+        // 结构异常的行不动 activity_json，只回填 metadata_json 对应的列
+        activity = null as unknown as Record<string, unknown>;
+      }
+      // 以 metadata_json 为准刷新 metadata 子对象（repair 的字段权威来源）
+      activity.metadata = metadata;
     } catch {
       unparseable += 1;
       continue;
@@ -115,6 +126,10 @@ async function main() {
       continue;
     }
 
+    if (!activity) {
+      unparseable += 1;
+      continue;
+    }
     const metadataJson = JSON.stringify(metadata);
     const activityJson = JSON.stringify(activity);
     if (!APPLY) {
