@@ -47,6 +47,7 @@ async function run() {
       }],
     }),
     claimDoorbells: () => [],
+    countDueDoorbells: () => 0,
     parseDirectTrades: async () => [{
       chain: 'base',
       wallet,
@@ -98,6 +99,7 @@ async function run() {
       return { since_id: 1, next_id: 1, events: 0, wallets: [], raw_events: [] };
     },
     claimDoorbells: () => [],
+    countDueDoorbells: () => 0,
     parseDirectTrades: async () => [],
     enqueueHoldingsRefresh: () => ({ enqueued: true, key: 'base:wallet' }),
     gmgnCooldownRemainingMs: () => 0,

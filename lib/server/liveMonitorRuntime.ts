@@ -233,6 +233,9 @@ export type LiveMonitorDeps = {
   nackDoorbells?: (claims: DoorbellClaim[], opts: { retryAfterMs: number }) => number;
   /** Ring a (follow-up) doorbell; defaults to the shared SQLite queue. */
   enqueueDoorbell?: typeof enqueueLiveDoorbell;
+  /** Count claimable doorbells without leasing; defaults to the shared SQLite queue.
+   *  Injectable so tests are not coupled to whatever the real queue happens to hold. */
+  countDueDoorbells?: (nowMs: number) => number;
   /** GMGN ban cooldown remaining (ms). >0 ⇒ skip the whole cycle to hold doorbells. */
   gmgnCooldownRemainingMs?: () => number;
   /** Recovery factor override for tests / alternate GMGN policy owners. */
@@ -508,7 +511,8 @@ export async function runLiveMonitorCycle(
       directAlchemy &&
       gmgnFallbackMs >= 0 &&
       now() - lastGmgnFallbackScanAt >= gmgnFallbackMs;
-    const pendingDoorbells = directAlchemy ? countDueLiveDoorbells(now()) : 0;
+    const countDueDoorbells = deps.countDueDoorbells ?? countDueLiveDoorbells;
+    const pendingDoorbells = directAlchemy ? countDueDoorbells(now()) : 0;
     const gmgnScanAllowed = !directAlchemy || pendingDoorbells > 0 || gmgnFallbackDue;
     if (gmgnFallbackDue) {
       lastGmgnFallbackScanAt = now();
