@@ -1231,13 +1231,16 @@ export function readEventsFeed(query: EventFeedQuery) {
   // 老热词兜底：开窗后若窗内命中为 0（比如老 CA 的提及都在 30 天前），回退全史排序——
   // 命中稀少时 B-TREE 排序本来就便宜，宁可慢一点也不返回假空结果。
   // 只在非 cursor 页做：cursor 页按定义是同一查询的后续页，窗判定已由首页锁死。
+  // ⚠️ 形态必须用 CROSS JOIN（FTS 驱动）：rowid IN (SELECT rowid FROM events WHERE …)
+  // 会让 planner 物化 30 天全量 rowid（几十万行 LIST SUBQUERY + bloom filter），
+  // 产线实测 10.2s；CROSS JOIN 由 MATCH 先出命中集再回表判窗，4ms。
   if (ftsMatch && searchTimeWindowMs !== null && cursor === null) {
     const windowHitCount = (
       db
         .prepare(
-          `SELECT COUNT(*) AS count FROM events_fts
-           WHERE events_fts MATCH ?
-             AND rowid IN (SELECT rowid FROM events WHERE timestamp >= ?)`,
+          `SELECT COUNT(1) AS count FROM events_fts
+           CROSS JOIN events e ON e.rowid = events_fts.rowid
+           WHERE events_fts MATCH ? AND e.timestamp >= ?`,
         )
         .get(ftsMatch, searchTimeWindowMs) as { count: number }
     ).count;
