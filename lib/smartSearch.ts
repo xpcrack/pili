@@ -18,6 +18,15 @@ export interface FeedSearchFilters {
   };
   minTradeAmountUsd: string;
   minTradeMarketCapUsd: string;
+  /**
+   * CA 搜索扩展（两个独立开关，只在关键词像地址时有意义）：
+   * - expandTicker：把「正文只提 ticker 没贴 CA」的推文也并进命中集。
+   *   ticker 一定有（币必有 symbol），推文不一定贴 CA —— 所以和官推扩展分开。
+   * - expandOfficialTweets：把「官推相关」的推文也并进命中集（正文 @ 官推 + 官推自己发的推）。
+   *   官推不一定有（有的币没官推 / twitter_url 未填），所以也单独控制。
+   */
+  expandTicker: boolean;
+  expandOfficialTweets: boolean;
 }
 
 export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
@@ -33,9 +42,29 @@ export const DEFAULT_FEED_SEARCH_FILTERS: FeedSearchFilters = {
   },
   minTradeAmountUsd: '',
   minTradeMarketCapUsd: '',
+  expandTicker: false,
+  expandOfficialTweets: false,
 };
 
 export type FeedItemCategory = 'trade' | 'transfer' | 'twitter' | 'telegram' | 'fomo' | 'news' | 'other';
+
+const EVM_ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
+const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * 关键词是否像一个代币合约地址（EVM 0x40hex / Solana base58 32-44）。
+ * 用于决定是否显示「CA 扩展」开关（含 Ticker 提及 / 含官推推文）。
+ * Solana base58 与普通单词有重叠，只影响 UI 显隐，不影响服务端安全性 ——
+ * 服务端扩展开关对非 CA 查询自动退化（mentions 表查无该地址 = 空扩展集）。
+ */
+export function looksLikeTokenAddress(keyword: string) {
+  const trimmed = keyword.trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  if (trimmed.toLowerCase().startsWith('ca:')) {
+    return EVM_ADDRESS_PATTERN.test(trimmed.slice(3)) || SOLANA_ADDRESS_PATTERN.test(trimmed.slice(3));
+  }
+  return EVM_ADDRESS_PATTERN.test(trimmed) || SOLANA_ADDRESS_PATTERN.test(trimmed);
+}
 
 export function getRemoteFeedSource(
   typeFilters: FeedSearchFilters['typeFilters']
@@ -185,6 +214,23 @@ function matchesKeyword(item: FeedItem, keyword: string) {
   return groups.some((terms) => terms.every(matchesTerm));
 }
 
+/**
+ * CA 扩展通过通道：扩展开关打开 + 关键词是一个合约地址时，
+ * 服务端已把「ticker 提及 / 官推相关」的推文并进了远端命中集 —— 这些推的正文
+ * 不含 CA 字面量，普通 haystack 匹配会把它们滤掉。这里按结构化字段
+ * （mentionedTokenAddresses / tokenSentiments / metadata.tokenAddress，即 caValues）
+ * 放行：条目确实提到这个 CA 就算命中。
+ * 开关关闭 / keyword 不是纯地址 → 返回 false，行为与原来完全一致。
+ */
+function matchesCaExpandPass(item: FeedItem, filters: FeedSearchFilters) {
+  if (!filters.expandTicker && !filters.expandOfficialTweets) return false;
+  const keyword = filters.keyword.trim();
+  if (!keyword || /\s/.test(keyword)) return false;
+  const term = normalizeText(keyword.startsWith('ca:') ? keyword.slice(3) : keyword);
+  if (!term) return false;
+  return collectCaValues(item).some((value) => value.includes(term));
+}
+
 function matchesTradeThreshold(
   actualValue: number | undefined,
   thresholdValue: string
@@ -234,7 +280,7 @@ export function hasAnyEnabledFeedType(typeFilters: FeedSearchFilters['typeFilter
 }
 
 export function matchesFeedSearchFilters(item: FeedItem, filters: FeedSearchFilters) {
-  if (!matchesKeyword(item, filters.keyword)) {
+  if (!matchesKeyword(item, filters.keyword) && !matchesCaExpandPass(item, filters)) {
     return false;
   }
 

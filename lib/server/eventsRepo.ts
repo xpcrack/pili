@@ -16,6 +16,7 @@ import { triggerBidFeedPush } from '@/lib/server/bidFeedPushNotifier';
 import { repairCollapsedCanonicalActivitySync } from '@/lib/server/telegramMonitorActivity';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
+import { getPrimaryPoolOfficialTwitterMap } from '@/lib/server/primaryPoolSymbols';
 import {
   buildTelegramMonitorTxStateLookupKey,
   listTelegramMonitorTxStatesByKeys,
@@ -46,6 +47,19 @@ export interface EventFeedQuery {
   monitoredOnly?: boolean;
   /** When false, skip COUNT query (for poll mode where total precision isn't needed). */
   includeTotal?: boolean;
+  /**
+   * CA 搜索扩展：把「正文只提 ticker 没贴 CA」的推文也算命中
+   * （twitter_tweet_token_mentions.token_address_lower = q 且 match_source='ticker'）。
+   * official_twitter/both 的推文归 expandOfficialTweets / FTS 自身。
+   */
+  expandTicker?: boolean;
+  /**
+   * CA 搜索扩展：把「官推相关」的推文也算命中 —— ①正文 @ 官推 handle 的推
+   * （mentions.match_source='official_twitter'）②官推自己发的推
+   * （twitter_tweets.author_handle = 官推 handle，来自 newone tokens.twitter_url）。
+   * 官推 handle 集合由 q（CA）反查 primary-pool officialTwitterByHandle 得到。
+   */
+  expandOfficialTweets?: boolean;
 }
 
 const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
@@ -1103,6 +1117,70 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
   }
 }
 
+/**
+ * CA 搜索扩展的 tweet_id 命中集。q 不是 CA（mentions 表查无此地址）时返回空集，
+ * 所以无需前端做地址格式预判 —— 开关开着搜普通词也不会误扩展。
+ * 上限保护：热门币 ticker 提及可能上千，IN 列表太大会拖垮 SQL；砍到最新 N 条。
+ */
+const EXPAND_TWEET_IDS_CAP = 400;
+
+function resolveExpandTweetIds(
+  db: { prepare(sql: string): { all(...params: unknown[]): unknown[] } },
+  q: string,
+  expandTicker: boolean,
+  expandOfficial: boolean
+): string[] {
+  if (!q || (!expandTicker && !expandOfficial)) return [];
+  const qLower = q.toLowerCase();
+  const ids = new Set<string>();
+
+  // mentions 表 ~2 万行，等值扫可接受（无独立 token_address_lower 索引）
+  if (expandTicker) {
+    const rows = db
+      .prepare(
+        `SELECT tweet_id FROM twitter_tweet_token_mentions
+         WHERE token_address_lower = ? AND match_source = 'ticker'
+         ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+      )
+      .all(qLower) as Array<{ tweet_id: string }>;
+    for (const row of rows) ids.add(row.tweet_id);
+  }
+
+  if (expandOfficial) {
+    // ① 正文 @ 官推 的推（enrichment 阶段用 officialTwitterByHandle 匹配出来的）
+    const mentionRows = db
+      .prepare(
+        `SELECT tweet_id FROM twitter_tweet_token_mentions
+         WHERE token_address_lower = ? AND match_source = 'official_twitter'
+         ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+      )
+      .all(qLower) as Array<{ tweet_id: string }>;
+    for (const row of mentionRows) ids.add(row.tweet_id);
+
+    // ② 官推自己发的推（author_handle = 官推 handle，可能完全不提币）
+    const officialMap = getPrimaryPoolOfficialTwitterMap();
+    const handles = new Set<string>();
+    for (const [handle, tokens] of officialMap) {
+      if (tokens.some((tok) => tok.address.toLowerCase() === qLower)) {
+        handles.add(handle);
+      }
+    }
+    if (handles.size > 0) {
+      const placeholders = [...handles].map(() => '?').join(', ');
+      const authorRows = db
+        .prepare(
+          `SELECT tweet_id FROM twitter_tweets
+           WHERE lower(author_handle) IN (${placeholders})
+           ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+        )
+        .all(...handles) as Array<{ tweet_id: string }>;
+      for (const row of authorRows) ids.add(row.tweet_id);
+    }
+  }
+
+  return [...ids];
+}
+
 export function readEventsFeed(query: EventFeedQuery) {
   const db = getDb();
   const currentUsersById = new Map(listTrackedUsers().map((user) => [user.id, user] as const));
@@ -1167,17 +1245,39 @@ export function readEventsFeed(query: EventFeedQuery) {
   const actionTerm = q && TRADE_ACTION_KEYWORDS.has(q) ? q : null;
   const ftsMatch = !actionTerm && q ? parseQueryTerms(q) : null;
 
+  // CA 搜索扩展：开关打开时把 ticker 提及 / 官推相关的推文并进命中集。
+  // q 不是 CA（mentions 查无）时 expandTweetIds 为空集 → 行为与不扩展完全一致。
+  const expandTweetIds =
+    ftsMatch && (query.expandTicker === true || query.expandOfficialTweets === true)
+      ? resolveExpandTweetIds(db, q, query.expandTicker === true, query.expandOfficialTweets === true)
+      : [];
+
   let joinSql = '';
+  // JOIN ON 追加谓词（FTS 的 MATCH 不能出现在 WHERE 的 OR 表达式里 —— FTS5 限制：
+  // "unable to use function MATCH in the requested context"，MATCH 只能作为 JOIN ON
+  // 或顶层 WHERE 谓词），放在 ON 里配合 LEFT JOIN 再用 WHERE 放行即可表达 OR 语义。
+  const joinOnExtra: string[] = [];
   const filterParams: string[] = [];
 
   if (ftsMatch) {
-    joinSql = 'INNER JOIN events_fts ON events_fts.rowid = e.rowid';
-    where.push('events_fts MATCH ?');
-    filterParams.push(ftsMatch);
+    if (expandTweetIds.length > 0) {
+      joinSql = 'LEFT JOIN events_fts ON events_fts.rowid = e.rowid';
+      joinOnExtra.push('events_fts MATCH ?');
+      filterParams.push(ftsMatch);
+      const placeholders = expandTweetIds.map(() => '?').join(', ');
+      where.push(`(events_fts.rowid IS NOT NULL OR e.tweet_id IN (${placeholders}))`);
+      filterParams.push(...expandTweetIds);
+    } else {
+      joinSql = 'INNER JOIN events_fts ON events_fts.rowid = e.rowid';
+      where.push('events_fts MATCH ?');
+      filterParams.push(ftsMatch);
+    }
   } else if (actionTerm) {
     where.push('(e.activity_json LIKE ? OR e.content LIKE ?)');
     filterParams.push(`%"txActionLabel":"${actionTerm}"%`, `%${actionTerm}%`);
   }
+
+  const joinOnSql = joinOnExtra.length > 0 ? ` AND ${joinOnExtra.join(' AND ')}` : '';
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -1202,14 +1302,14 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   const baseSql = `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${fromSql}
-       ${joinSql}
+       ${joinSql}${joinOnSql}
        ${whereSql}
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`;
 
   const countSql = `SELECT COUNT(1) AS count
        ${countFromSql}
-       ${joinSql}
+       ${joinSql}${joinOnSql}
        ${whereSql}`;
 
   const finalParams = [...params, ...filterParams, safeLimit + 1];

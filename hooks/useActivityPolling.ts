@@ -146,6 +146,8 @@ async function collectRequestedActivityFeed(params: {
         userId: selectedUserId,
         search: searchQuery,
         source,
+        expandTicker: effectiveSearchFilters.expandTicker,
+        expandOfficialTweets: effectiveSearchFilters.expandOfficialTweets,
         syncStrategy: pageIndex === 0 ? syncStrategy : 'local',
         backfillScope: pageIndex === 0 && syncStrategy === 'backfill' ? backfillScope : undefined,
         backfillUserId: pageIndex === 0 ? selectedUserId : null,

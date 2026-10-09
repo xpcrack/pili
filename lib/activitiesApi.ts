@@ -82,6 +82,10 @@ interface FetchAllActivitiesOptions {
   userId?: string | null;
   search?: string | null;
   source?: Activity['source'] | null;
+  /** CA 搜索扩展：附带 ticker 提及的推文（服务端 twitter_tweet_token_mentions 反查） */
+  expandTicker?: boolean;
+  /** CA 搜索扩展：附带官推相关推文（@官推 + 官推自发的推） */
+  expandOfficialTweets?: boolean;
   syncStrategy?: 'refresh' | 'local' | 'backfill';
   backfillScope?: 'global' | 'user';
   backfillUserId?: string | null;
@@ -264,6 +268,12 @@ export async function fetchAllActivities(
   }
   if (typeof options?.search === 'string' && options.search.trim()) {
     query.set('search', options.search.trim());
+  }
+  if (options?.expandTicker === true) {
+    query.set('expandTicker', '1');
+  }
+  if (options?.expandOfficialTweets === true) {
+    query.set('expandOfficial', '1');
   }
   if (typeof options?.source === 'string' && options.source.trim()) {
     query.set('source', options.source.trim());

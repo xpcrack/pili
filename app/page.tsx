@@ -24,6 +24,7 @@ import {
   DEFAULT_FEED_SEARCH_FILTERS,
   getRemoteFeedSearchKeyword,
   getRemoteFeedSource,
+  looksLikeTokenAddress,
 } from '@/lib/smartSearch';
 import { buildAddressAliasMap, selectMatchedFeed } from '@/lib/feed/feedPageState';
 import { filterHighQualityOnly, sortFeedByQuality, type FeedSortMode } from '@/lib/feedQuality';
@@ -589,6 +590,41 @@ export default function Home() {
                   清空筛选
                 </button>
               </div>
+              {looksLikeTokenAddress(searchFilters.keyword) && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-zinc-500">CA 扩展：</span>
+                  {(
+                    [
+                      ['expandTicker', '含 Ticker 提及'],
+                      ['expandOfficialTweets', '含官推推文'],
+                    ] as const
+                  ).map(([key, label]) => {
+                    const active = searchFilters[key];
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        title={
+                          key === 'expandTicker'
+                            ? '一并命中「只提 $TICKER 没贴 CA」的推文（币必有 ticker，推文不一定贴 CA）'
+                            : '一并命中官推相关推文：正文 @ 官推 + 官推自己发的推（官推不一定有）'
+                        }
+                        onClick={() => {
+                          setSearchFilters((current) => ({ ...current, [key]: !current[key] }));
+                          resetExpandStateForSearch();
+                        }}
+                        className={`rounded border px-2.5 py-1 text-xs transition-colors ${
+                          active
+                            ? 'border-sky-600 bg-sky-900/40 text-sky-200'
+                            : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {[
                   ['trade', '交易'],

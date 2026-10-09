@@ -60,6 +60,9 @@ function parsePagination(request: NextRequest) {
 
   const fromMs = from && Number.isFinite(Number(from)) ? Number(from) : null;
   const toMs = to && Number.isFinite(Number(to)) ? Number(to) : null;
+  // CA 搜索扩展开关（仅对 twitter 源的推文命中集生效，q 非 CA 时自动退化为普通搜索）
+  const expandTicker = request.nextUrl.searchParams.get('expandTicker') === '1';
+  const expandOfficial = request.nextUrl.searchParams.get('expandOfficial') === '1';
 
   return {
     page: normalizedPage,
@@ -71,6 +74,8 @@ function parsePagination(request: NextRequest) {
     chain: typeof chain === 'string' && chain.trim() ? chain.trim() : null,
     fromMs,
     toMs,
+    expandTicker,
+    expandOfficial,
   };
 }
 
@@ -96,7 +101,9 @@ function buildFeedPayload(
   chain?: string | null,
   fromMs?: number | null,
   toMs?: number | null,
-  pollMode?: boolean
+  pollMode?: boolean,
+  expandTicker?: boolean,
+  expandOfficial?: boolean
 ) {
   // poll mode: client already has users/assets from first load.
   // 轻量路径：只做一次 SELECT（跳 COUNT）+ 一次缓存读取，避开锁竞争。
@@ -104,6 +111,7 @@ function buildFeedPayload(
     const snapshot = readEventsFeed({
       limit: pageSize, userId, q: search, cursor, source, chain, fromMs, toMs,
       includeTotal: false,
+      expandTicker, expandOfficialTweets: expandOfficial,
     });
     const latestActivityAtByUser = userId ? {} : readLatestActivityAtByUser();
     return {
@@ -127,6 +135,8 @@ function buildFeedPayload(
     chain,
     fromMs,
     toMs,
+    expandTicker,
+    expandOfficialTweets: expandOfficial,
   });
 
   // cursor 页（load-more）只回 feed + 分页字段，省掉 users/diagnostics/资产等 ~450KB 重复 payload
@@ -384,7 +394,7 @@ function scheduleBackfillCompanionSyncs(options: {
 
 export async function GET(request: NextRequest) {
   try {
-    const { pageSize, userId, search, cursor, source, chain, fromMs, toMs } = parsePagination(request);
+    const { pageSize, userId, search, cursor, source, chain, fromMs, toMs, expandTicker, expandOfficial } = parsePagination(request);
     const mode = getFeedMode(request);
     // Revision check MUST come first — skip all reads when unchanged.
     const revision = readEventsRevision();
@@ -451,7 +461,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs, mode === 'poll'),
+      ...buildFeedPayload(pageSize, userId, search, cursor, source, chain, fromMs, toMs, mode === 'poll', expandTicker, expandOfficial),
       revision,
     });
   } catch (error) {
