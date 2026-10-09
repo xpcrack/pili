@@ -143,19 +143,61 @@ export async function syncTelegramChannelSource(params: {
       lastError: null,
     });
 
-    const remoteMessages = await params.client.listChannelMessages({
-      source,
-      resolved,
-      minMessageId: source.lastMessageId,
-      limit: Number.parseInt(process.env.TELEGRAM_MTPROTO_CHANNEL_SYNC_LIMIT || '50', 10) || 50,
-    });
+    // Catch-up loop：单轮 limit（默认 50）在合盖/宕机断档后会把中间消息跳过——
+    // minMessageId 直接推进到最新一批的头部，断档期超出 limit 的消息永久丢失。
+    // 循环拉取直到无新消息（拉回数 < limit）或达到安全上限，全部入库后才推进终态游标。
+    // 上限防失控：正常轮次频道消息量远小于它；真的追到上限说明断档 > 40 轮容量，
+    // 留到下一轮继续（游标只推进到已入库位置，不断档信息）。
+    const perPageLimit =
+      Number.parseInt(process.env.TELEGRAM_MTPROTO_CHANNEL_SYNC_LIMIT || '50', 10) || 50;
+    const catchUpMaxMessages = Number.parseInt(
+      process.env.TELEGRAM_CHANNEL_SYNC_CATCH_UP_MAX || '2000',
+      10,
+    ) || 2000;
 
-    const storedProjectResult = await storeAndProjectTelegramChannelMessages({
-      source,
-      resolved,
-      remoteMessages,
-      fetchTweetsByIds,
-    });
+    let totalStoredCount = 0;
+    let totalProjectedCount = 0;
+    let cursorMinMessageId = source.lastMessageId;
+    let finalLastMessageId = source.lastMessageId;
+    let reachedEnd = false;
+
+    for (
+      let round = 0;
+      round < Math.ceil(catchUpMaxMessages / perPageLimit) && !reachedEnd;
+      round += 1
+    ) {
+      const remoteMessages = await params.client.listChannelMessages({
+        source,
+        resolved,
+        minMessageId: cursorMinMessageId,
+        limit: perPageLimit,
+      });
+
+      const storedProjectResult = await storeAndProjectTelegramChannelMessages({
+        source,
+        resolved,
+        remoteMessages,
+        fetchTweetsByIds,
+      });
+
+      totalStoredCount += storedProjectResult.storedCount;
+      totalProjectedCount += storedProjectResult.projectedCount;
+      if (storedProjectResult.lastMessageId !== null) {
+        finalLastMessageId = Math.max(finalLastMessageId || 0, storedProjectResult.lastMessageId);
+      }
+
+      // 本轮实际拉回数 < limit = 频道已无更多新消息 → 追平。
+      // 用实际返回数判断（而非 storedCount），空文本等被 map 跳过的消息不会误判继续。
+      if (remoteMessages.length < perPageLimit) {
+        reachedEnd = true;
+        break;
+      }
+
+      // 游标推进到本轮实际入库的最大 messageId，防止循环内某轮抛错后游标回退重拉。
+      if (storedProjectResult.lastMessageId !== null) {
+        cursorMinMessageId = storedProjectResult.lastMessageId;
+      }
+    }
 
     updateTelegramChannelSourceState(source.id, {
       channelChatId: resolved.channelChatId,
@@ -163,15 +205,15 @@ export async function syncTelegramChannelSource(params: {
       channelTitle: resolved.channelTitle,
       accessHash: resolved.accessHash,
       syncStatus: 'ready',
-      lastMessageId: storedProjectResult.lastMessageId,
+      lastMessageId: finalLastMessageId,
       lastSyncedAtMs: Date.now(),
       lastError: null,
     });
 
     return {
-      storedCount: storedProjectResult.storedCount,
-      projectedCount: storedProjectResult.projectedCount,
-      lastMessageId: storedProjectResult.lastMessageId,
+      storedCount: totalStoredCount,
+      projectedCount: totalProjectedCount,
+      lastMessageId: finalLastMessageId,
     };
   } catch (error) {
     const classified = classifyTelegramMtprotoError(error);
