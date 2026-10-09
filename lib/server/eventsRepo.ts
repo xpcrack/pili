@@ -50,6 +50,21 @@ export interface EventFeedQuery {
 
 const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
 
+/**
+ * FTS 搜索的排序时间窗（天）：命中行超窗就不再参与「最近优先」排序与返回。
+ * 背景：FTS 驱动路径的 ORDER BY 是 TEMP B-TREE，成本随命中数线性涨；
+ * 哈基米(506) 0.08s / pow(8.7k) 0.85s / sol(3.7万) 2.6s，更热词（单字母前缀、$the）
+ * 命中可上 10 万+，不设窗会重新逼近超时。搜索命中超 50 条只看最近 N 天是 Finn 的拍板。
+ * 窗外的历史命中仍然存在，只是不进搜索结果（等价于把搜索当作「最近 N 天内检索」）。
+ */
+const FTS_SEARCH_TIME_WINDOW_DAYS = 30;
+
+/**
+ * 触发时间窗的命中数阈值：≤ 此数全史排序（老 CA 可搜），> 此数只排窗内。
+ * Finn 拍板的「命中结果超 50 条就只排最近 N 天」。
+ */
+const FTS_SEARCH_WINDOW_HIT_THRESHOLD = 50;
+
 export interface EventFeedRow {
   user: User;
   activity: Activity;
@@ -1167,16 +1182,70 @@ export function readEventsFeed(query: EventFeedQuery) {
   const actionTerm = q && TRADE_ACTION_KEYWORDS.has(q) ? q : null;
   const ftsMatch = !actionTerm && q ? parseQueryTerms(q) : null;
 
+  // 搜索命中超上限时收窄到最近 N 天（Finn 2026-10-09 拍板「命中超 50 条只排最近 N 天」）：
+  // FTS 驱动路径的 ORDER BY 是 TEMP B-TREE，排序成本随命中数线性涨（sol 3.7 万命中 2.6s，
+  // 单字母前缀可上 5 万+）。先用纯 FTS 计数（只扫 doclist 不取行，5 万命中 ~0.05s）判断，
+  // 命中 ≤ 50 不开窗（老 CA 全史可搜，排序便宜）；> 50 才开窗。
+  // ⚠️ 必须在 fts MATCH 的 where/filterParams 之前 push：最终传参是 [...params, ...filterParams]，
+  // SQL 占位符顺序（cursor → 窗口 → MATCH）必须与之一致。
+  let searchTimeWindowMs: number | null = null;
+  let searchTimeWindowParamIndex = -1;
+  let searchTimeWindowWhereIndex = -1;
+  if (ftsMatch && fromMs === null && toMs === null) {
+    const ftsHitCount = (
+      db.prepare('SELECT COUNT(*) AS count FROM events_fts WHERE events_fts MATCH ?').get(ftsMatch) as {
+        count: number;
+      }
+    ).count;
+    if (ftsHitCount > FTS_SEARCH_WINDOW_HIT_THRESHOLD) {
+      searchTimeWindowMs = Date.now() - FTS_SEARCH_TIME_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      searchTimeWindowParamIndex = params.length;
+      params.push(searchTimeWindowMs);
+      searchTimeWindowWhereIndex = where.length;
+      where.push('e.timestamp >= ?');
+    }
+  }
+
   let joinSql = '';
   const filterParams: string[] = [];
 
+  // FTS 搜索走「FTS 表驱动 + rowid 回表」形态（2026-10-09）。
+  // 旧形态 `FROM events e INNER JOIN events_fts ON events_fts.rowid = e.rowid` 会让 planner
+  // 选 events 沿 idx_events_timestamp 扫全表（52.9 万行）逐行探测 FTS 匹配——
+  // 哪怕命中只有 506 条（哈基米）也要 25.6s，正好吃满前端 25s 超时。
+  // 倒转后由 FTS MATCH 输出命中 rowid 集合再按 rowid 精确回表：
+  // 哈基米 25.6s→0.08s、pow 34.4s→0.85s、sol(3.7万命中) 16.9s→2.6s。
+  // 代价是 ORDER BY 走 TEMP B-TREE（不再沿时间索引免排序），命中集超大时会变慢——
+  // 由 FTS_SEARCH_TIME_WINDOW_DAYS 时间窗兜底（只排窗内命中，见上）。
+  // 注意 ftsFromSql 必须用 CROSS JOIN 语法钉死驱动顺序，写 INNER JOIN planner 会翻回去。
+  let ftsFromSql = '';
   if (ftsMatch) {
-    joinSql = 'INNER JOIN events_fts ON events_fts.rowid = e.rowid';
+    ftsFromSql = 'FROM events_fts CROSS JOIN events e ON e.rowid = events_fts.rowid';
     where.push('events_fts MATCH ?');
     filterParams.push(ftsMatch);
   } else if (actionTerm) {
     where.push('(e.activity_json LIKE ? OR e.content LIKE ?)');
     filterParams.push(`%"txActionLabel":"${actionTerm}"%`, `%${actionTerm}%`);
+  }
+
+  // 老热词兜底：开窗后若窗内命中为 0（比如老 CA 的提及都在 30 天前），回退全史排序——
+  // 命中稀少时 B-TREE 排序本来就便宜，宁可慢一点也不返回假空结果。
+  // 只在非 cursor 页做：cursor 页按定义是同一查询的后续页，窗判定已由首页锁死。
+  if (ftsMatch && searchTimeWindowMs !== null && cursor === null) {
+    const windowHitCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM events_fts
+           WHERE events_fts MATCH ?
+             AND rowid IN (SELECT rowid FROM events WHERE timestamp >= ?)`,
+        )
+        .get(ftsMatch, searchTimeWindowMs) as { count: number }
+    ).count;
+    if (windowHitCount === 0) {
+      params.splice(searchTimeWindowParamIndex, 1);
+      where.splice(searchTimeWindowWhereIndex, 1);
+      searchTimeWindowMs = null;
+    }
   }
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -1200,14 +1269,24 @@ export function readEventsFeed(query: EventFeedQuery) {
     ? 'FROM events e INDEXED BY idx_events_user_timestamp'
     : 'FROM events e';
 
-  const baseSql = `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+  const baseSql = ftsMatch
+    ? `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+       ${ftsFromSql}
+       ${whereSql}
+       ORDER BY e.timestamp DESC, e.event_id DESC
+       LIMIT ?`
+    : `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${fromSql}
        ${joinSql}
        ${whereSql}
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`;
 
-  const countSql = `SELECT COUNT(1) AS count
+  const countSql = ftsMatch
+    ? `SELECT COUNT(1) AS count
+       ${ftsFromSql}
+       ${whereSql}`
+    : `SELECT COUNT(1) AS count
        ${countFromSql}
        ${joinSql}
        ${whereSql}`;
@@ -1261,8 +1340,11 @@ export function readEventsFeed(query: EventFeedQuery) {
   ) {
     cachedTotal = feedTotalCache.value;
   }
+  // 搜索（FTS）路径砍掉精确 COUNT（Finn 2026-10-09 拍板）：join 形态的 COUNT 要
+  // 物化完整命中集（实测 2.4s/词），但 total 只是展示数字，前端缺失时已回退 feed.length，
+  // 「≥N 条」的口径由 UI 层自行表达。动作词 LIKE 的 COUNT 早砍了，FTS 对齐。
   const totalRow =
-    query.includeTotal === false || actionTerm || cursor || cachedTotal !== null
+    query.includeTotal === false || actionTerm || ftsMatch || cursor || cachedTotal !== null
       ? null
       : (db.prepare(countSql).get(...params, ...filterParams) as { count: number } | undefined);
   if (totalRow && cacheableGlobalTotal) {
