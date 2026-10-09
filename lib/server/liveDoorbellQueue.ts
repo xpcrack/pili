@@ -272,6 +272,19 @@ export function countPendingLiveDoorbells(): number {
   return Number(row?.n || 0);
 }
 
+/** Number of doorbells currently claimable (due + unleased) — read-only, no lease stamp.
+ *  Used by live-monitor's directAlchemy throttle gate to skip a cycle without claiming. */
+export function countDueLiveDoorbells(nowMs?: number): number {
+  const at = nowMs ?? Date.now();
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(1) AS n FROM live_doorbell_queue
+       WHERE due_at_ms <= ? AND lease_expires_at_ms IS NULL`
+    )
+    .get(at) as { n?: number } | undefined;
+  return Number(row?.n || 0);
+}
+
 /** Test helper. */
 export function resetLiveDoorbellQueueForTests() {
   getDb().prepare(`DELETE FROM live_doorbell_queue`).run();
