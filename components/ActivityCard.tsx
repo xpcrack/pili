@@ -21,6 +21,7 @@ import {
   getRelativeTimeState,
 } from '@/lib/timeFormat';
 import { highlightSocialContent } from '@/lib/socialContentHighlight';
+import { useOfficialHandles } from '@/hooks/useOfficialHandles';
 import { formatCompactMarketCap, type TradeValueDisplayMode, tradeUsdBarPercent } from '@/lib/tradeDisplay';
 import {
   buildTokenAvatarKey,
@@ -109,6 +110,8 @@ export const ActivityCard = memo(function ActivityCard({
     txHash: activity.metadata.txHash || '',
   });
   const { info: resolvedTokenInfo, avatar: cachedTokenAvatar } = useTokenInfo(tokenInfoKey, tokenAvatarKey);
+  // 官推 handle 集合（模块级缓存，首帧为空集合，拉到后全局重渲染一次）
+  const officialHandles = useOfficialHandles();
   const resolvedTokenAvatarRaw =
     cachedTokenAvatar !== undefined ? cachedTokenAvatar : resolvedTokenInfo.logoUrl;
   const resolvedTokenAvatar = toProxiedMediaUrl(resolvedTokenAvatarRaw);
@@ -667,7 +670,19 @@ export const ActivityCard = memo(function ActivityCard({
     const quotedPreview = isTwitter
       ? (twitterQuotedContent || twitterQuotedOriginal || '').replace(/\s+/g, ' ').trim()
       : '';
-    const quoteAuthor = twitterQuotedAuthorHandle ? `引用 @${twitterQuotedAuthorHandle}` : '引用';
+    // 引用作者 handle 官推蓝标（与其他 @mention 同口径）
+    const quoteAuthorNode = twitterQuotedAuthorHandle ? (
+      <>
+        <span className="text-zinc-400">引用 </span>
+        {highlightSocialContent(
+          `@${twitterQuotedAuthorHandle}`,
+          undefined,
+          officialHandles
+        )}
+      </>
+    ) : (
+      <span className="text-zinc-400">引用</span>
+    );
 
     return (
       <Card
@@ -701,14 +716,14 @@ export const ActivityCard = memo(function ActivityCard({
             <div className="min-w-0 flex-1 space-y-1 md:order-4">
               {socialPrimary ? (
                 <p className="line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] leading-[1.35] text-zinc-100">
-                  {highlightSocialContent(socialPrimary, activity.metadata.tokenSentiments)}
+                  {highlightSocialContent(socialPrimary, activity.metadata.tokenSentiments, officialHandles)}
                 </p>
               ) : null}
               {quotedPreview ? (
                 <p className="line-clamp-1 text-[11.5px] leading-snug text-zinc-500">
-                  <span className="text-zinc-400">{quoteAuthor}</span>
+                  {quoteAuthorNode}
                   <span className="mx-1 text-zinc-600">·</span>
-                  {quotedPreview}
+                  {highlightSocialContent(quotedPreview, undefined, officialHandles)}
                 </p>
               ) : null}
               {sentimentChips && sentimentChips.length > 0 ? (

@@ -13,20 +13,26 @@ const EVM_CA_PATTERN = /\b(0x[a-fA-F0-9]{40})\b/g;
 // Solana CA: base58, 32-44 chars, not inside a word
 const SOL_CA_PATTERN = /\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/g;
 
+// Twitter @handle（X 规则：1-15 位字母数字下划线）。「项目官推」蓝标用。
+const MENTION_PATTERN = /@([A-Za-z0-9_]{1,15})/g;
+
 function truncateCa(ca: string): string {
   if (ca.length <= 12) return ca;
   return `${ca.slice(0, 6)}...${ca.slice(-4)}`;
 }
 
 interface HighlightSegment {
-  type: 'text' | 'ticker' | 'ca';
+  type: 'text' | 'ticker' | 'ca' | 'official-mention';
   content: string;
   fullContent: string; // untruncated for CA
   index: number;
   length: number;
 }
 
-function findHighlightSegments(text: string): HighlightSegment[] {
+function findHighlightSegments(
+  text: string,
+  officialHandles?: Set<string>
+): HighlightSegment[] {
   const segments: HighlightSegment[] = [];
 
   // Find all tickers
@@ -63,6 +69,22 @@ function findHighlightSegments(text: string): HighlightSegment[] {
     });
   }
 
+  // 官推 @mention：只标集合内的 handle（蓝色区分项目方 vs trader/路人）。
+  // 集合外的 @ 不标（保持正文原样，避免满屏噪音）。
+  if (officialHandles && officialHandles.size > 0) {
+    for (const match of text.matchAll(MENTION_PATTERN)) {
+      const handle = (match[1] || '').toLowerCase();
+      if (!handle || !officialHandles.has(handle)) continue;
+      segments.push({
+        type: 'official-mention',
+        content: match[0],
+        fullContent: match[0],
+        index: match.index ?? 0,
+        length: match[0].length,
+      });
+    }
+  }
+
   // Sort by index, dedupe overlapping
   segments.sort((a, b) => a.index - b.index);
   const deduped: HighlightSegment[] = [];
@@ -76,10 +98,14 @@ function findHighlightSegments(text: string): HighlightSegment[] {
   return deduped;
 }
 
-export function highlightSocialContent(text: string, _mentions?: SocialContentMention[]): ReactNode[] {
+export function highlightSocialContent(
+  text: string,
+  _mentions?: SocialContentMention[],
+  officialHandles?: Set<string>
+): ReactNode[] {
   if (!text.trim()) return [];
 
-  const highlights = findHighlightSegments(text);
+  const highlights = findHighlightSegments(text, officialHandles);
 
   if (highlights.length === 0) {
     return [text];
@@ -109,6 +135,20 @@ export function highlightSocialContent(text: string, _mentions?: SocialContentMe
           onClick={(e) => {
             e.stopPropagation();
             void navigator.clipboard.writeText(seg.fullContent);
+          }}
+        >
+          {seg.content}
+        </span>
+      );
+    } else if (seg.type === 'official-mention') {
+      nodes.push(
+        <span
+          key={`om-${seg.index}`}
+          className="cursor-pointer font-semibold text-sky-400 hover:text-sky-300"
+          title={`${seg.content} —— 一级池项目官推`}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.open(`https://x.com/${seg.fullContent.slice(1)}`, '_blank', 'noopener');
           }}
         >
           {seg.content}
