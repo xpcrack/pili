@@ -3,6 +3,7 @@ import 'server-only';
 import { isEvmAddress } from '@/lib/addressBook';
 import {
   USER_HOLDINGS_THRESHOLD_USD,
+  type LpLegInfo,
   type UserHoldingRow,
   type UserHoldingsSummary,
 } from '@/lib/userDetails';
@@ -47,6 +48,16 @@ interface LpPositionRow {
   token_id: number;
   symbol: string | null;
   name: string | null;
+  currency0: string | null;
+  currency1: string | null;
+  token0_symbol: string | null;
+  token1_symbol: string | null;
+  fee: number | null;
+  tick_lower: number | null;
+  tick_upper: number | null;
+  full_range: number | null;
+  amount0_human: number | null;
+  amount1_human: number | null;
   amount0_usd: number | null;
   amount1_usd: number | null;
   total_usd: number | null;
@@ -120,9 +131,33 @@ export async function readUserHoldingsDetails(
     )
     .all(...params) as HoldingsRow[];
 
-  // LP rows live in current_lp_positions (OKX doesn't surface V4 LP NFTs).
-  // They must survive the empty-holdings early return below: a wallet with
-  // only LP bags (no spot tokens) still deserves a populated panel.
+  // Robinhood-lp 投影行（lpPositionsRefresh 每腿一行，chain='robinhood-lp'）。
+  // 直接加进 rows 一起按 (chain, token_address_lower) 合并——它的 token_address
+  // 是真实 token 合约，与 OKX/spot 的 robinhood 行同 key 合并后即「直接持有 + LP」总量。
+  if (robinhoodAddresses.size > 0) {
+    try {
+      const lpProjectionRows = db
+        .prepare(
+          `SELECT tracked_address_lower, chain, token_address, token_address_lower, symbol, name,
+                  balance, price_usd, value_usd, liquidity_usd, refreshed_at
+           FROM current_holdings
+           WHERE chain = 'robinhood-lp'
+             AND tracked_address_lower IN (${Array.from(robinhoodAddresses)
+               .map(() => '?')
+               .join(',')})`,
+        )
+        .all(...Array.from(robinhoodAddresses)) as HoldingsRow[];
+      // 旧版聚合行（token_address='lp:uniswap-v4'）在新投影覆盖前可能残留，排除。
+      rows.push(
+        ...lpProjectionRows.filter((row) => row.token_address_lower !== 'lp:uniswap-v4'),
+      );
+    } catch {
+      // current_holdings may not exist yet — handled by the rows.length === 0 path.
+    }
+  }
+
+  // LP 腿明细（hover tooltip 数据源）：从 current_lp_positions 取每条仓的两腿，
+  // 后面 attachLpLegs 按 (wallet, token) 挂到合并后的持仓行上。
   const lpQueryRows =
     robinhoodAddresses.size > 0
       ? ((() => {
@@ -130,6 +165,9 @@ export async function readUserHoldingsDetails(
             return db
               .prepare(
                 `SELECT tracked_address_lower, token_id, symbol, name,
+                        currency0, currency1, token0_symbol, token1_symbol,
+                        fee, tick_lower, tick_upper, full_range,
+                        amount0_human, amount1_human,
                         amount0_usd, amount1_usd, total_usd, refreshed_at
                  FROM current_lp_positions
                  WHERE tracked_address_lower IN (${Array.from(robinhoodAddresses)
@@ -157,7 +195,9 @@ export async function readUserHoldingsDetails(
       );
     }
 
-    const lpOnlyHoldings = mergeLpRows(lpQueryRows);
+    // 纯 LP 钱包：robinhood-lp 投影行已随 rows 为空而不存在（rows 为空意味着连
+    // LP 投影都没查到），此时直接从 current_lp_positions 重建每 token 的 LP 行。
+    const lpOnlyHoldings = mergeLpOnlyRows(lpQueryRows);
     return {
       holdings: lpOnlyHoldings,
       holdingsUpdatedAt:
@@ -177,38 +217,44 @@ export async function readUserHoldingsDetails(
     };
   }
 
-  // Merge by (chain, token_address_lower) — same logic as the old mergeHoldingRows
+  // Merge by (chain, token_address_lower) — same logic as the old mergeHoldingRows.
+  // robinhood-lp 行的 key 是真实 token 合约但 chain 不同，按 token 归并到 robinhood
+  // 现货行上：balance/valueUsd 累加成「直接持有 + LP」总量（balance 含 LP 数量，
+  // 前端 livePrice × balance 才是正确总价），LP 部分单独记在 lpUsd。
   const merged = new Map<string, UserHoldingRow>();
   const successfulAddresses = new Set<string>();
 
   for (const row of rows) {
     const tokenAddrNorm = (row.chain === 'solana' ? row.token_address : row.token_address_lower).trim();
-    const mergeKey = `${row.chain}:${tokenAddrNorm}`;
-
-    successfulAddresses.add(`${row.chain}:${row.tracked_address_lower}`);
+    const isLpLegRow = row.chain === 'robinhood-lp';
+    const mergeKey = `${isLpLegRow ? 'robinhood' : row.chain}:${tokenAddrNorm}`;
+    if (!isLpLegRow) successfulAddresses.add(`${row.chain}:${row.tracked_address_lower}`);
 
     const existing = merged.get(mergeKey);
     if (!existing) {
       merged.set(mergeKey, {
-        chain: row.chain as UserHoldingRow['chain'],
+        chain: isLpLegRow ? 'robinhood' : (row.chain as UserHoldingRow['chain']),
         tokenAddress: tokenAddrNorm,
         symbol: row.symbol,
         name: row.name,
         balance: row.balance,
         priceUsd: row.balance > 0 ? row.value_usd / row.balance : 0,
         valueUsd: row.value_usd,
-         liquidityUsd: row.liquidity_usd,
+        liquidityUsd: row.liquidity_usd,
+        ...(isLpLegRow ? { lpUsd: row.value_usd } : {}),
       });
       continue;
     }
 
     existing.balance += row.balance;
     existing.valueUsd += row.value_usd;
-    existing.priceUsd =
-      existing.balance > 0 ? existing.valueUsd / existing.balance : 0;
+    if (isLpLegRow) {
+      existing.lpUsd = (existing.lpUsd ?? 0) + row.value_usd;
+    }
+    existing.priceUsd = existing.balance > 0 ? existing.valueUsd / existing.balance : 0;
     if (!existing.name && row.name) existing.name = row.name;
     if (!existing.symbol && row.symbol) existing.symbol = row.symbol;
-     if (existing.liquidityUsd == null && row.liquidity_usd != null) existing.liquidityUsd = row.liquidity_usd;
+    if (existing.liquidityUsd == null && row.liquidity_usd != null) existing.liquidityUsd = row.liquidity_usd;
   }
 
   // Display filter only: fact table may keep low-liq bags for consumers (newone mirror).
@@ -234,8 +280,9 @@ export async function readUserHoldingsDetails(
         a.tokenAddress.localeCompare(b.tokenAddress),
     );
 
-  // Append LP rows (already fetched above) — one aggregated row per wallet.
-  holdings.push(...mergeLpRows(lpQueryRows));
+  // LP 腿明细挂到对应 token 行（hover tooltip），无腿明细不影响行本身。
+  attachLpLegs(holdings, lpQueryRows);
+
   holdings.sort(
     (a, b) =>
       b.valueUsd - a.valueUsd ||
@@ -305,45 +352,135 @@ export async function readUserHoldingsDetails(
 }
 
 /**
- * Merge raw current_lp_positions rows into one aggregated UserHoldingRow per
- * wallet, same semantics as newone's buildVipPortfolio leg merge. Rows below
- * USER_HOLDINGS_THRESHOLD_USD are dropped.
+ * Attach per-leg LP details to merged holding rows (hover tooltip data).
+ * A leg belongs to the row whose token address matches the leg's currency;
+ * both legs of a pool are marked on their own token's row (AI row sees the
+ * BONER side as otherSymbol, and vice versa).
+ *
+ * lpUsd 不在这里累加——robinhood-lp 投影行合并时已计入，这里只补腿明细，
+ * 否则同一笔 LP 价值被算两遍。
  */
-function mergeLpRows(lpRows: LpPositionRow[]): UserHoldingRow[] {
-  const lpMerged = new Map<
-    string,
-    { usd: number; count: number; symbol: Set<string>; refreshedAt: number }
-  >();
+function attachLpLegs(holdings: UserHoldingRow[], lpRows: LpPositionRow[]) {
+  if (lpRows.length === 0) return;
+  const byToken = new Map<string, UserHoldingRow>();
+  for (const holding of holdings) {
+    if (holding.chain !== 'robinhood') continue;
+    byToken.set(holding.tokenAddress.toLowerCase(), holding);
+  }
+
+  const zeroAddress = '0x0000000000000000000000000000000000000000';
   for (const row of lpRows) {
-    const usd = row.total_usd ?? (row.amount0_usd ?? 0) + (row.amount1_usd ?? 0);
-    if (!(usd >= USER_HOLDINGS_THRESHOLD_USD)) continue;
-    const key = row.tracked_address_lower;
-    const entry = lpMerged.get(key) ?? {
-      usd: 0,
-      count: 0,
-      symbol: new Set<string>(),
-      refreshedAt: 0,
-    };
-    entry.usd += usd;
-    entry.count += 1;
-    if (row.symbol) entry.symbol.add(row.symbol);
-    entry.refreshedAt = Math.max(entry.refreshedAt, row.refreshed_at);
-    lpMerged.set(key, entry);
+    const legs = [
+      {
+        wallet: row.tracked_address_lower,
+        tokenAddress: (row.currency0 ?? '').toLowerCase(),
+        symbol: row.token0_symbol,
+        amountHuman: row.amount0_human,
+        legUsd: row.amount0_usd,
+        otherSymbol: row.token1_symbol,
+      },
+      {
+        wallet: row.tracked_address_lower,
+        tokenAddress: (row.currency1 ?? '').toLowerCase(),
+        symbol: row.token1_symbol,
+        amountHuman: row.amount1_human,
+        legUsd: row.amount1_usd,
+        otherSymbol: row.token0_symbol,
+      },
+    ];
+    for (const leg of legs) {
+      if (!leg.tokenAddress || leg.tokenAddress === zeroAddress) continue;
+      const holding = byToken.get(leg.tokenAddress);
+      if (!holding) continue;
+      const legInfo: LpLegInfo = {
+        poolSymbol: row.symbol ?? '',
+        otherSymbol: leg.otherSymbol ?? '',
+        feePct: row.fee != null ? row.fee / 10_000 : null,
+        tickLower: row.tick_lower,
+        tickUpper: row.tick_upper,
+        fullRange: row.full_range === 1,
+        amountHuman: leg.amountHuman,
+        legUsd: leg.legUsd,
+      };
+      holding.lpLegs = [...(holding.lpLegs ?? []), legInfo];
+    }
+  }
+}
+
+/**
+ * 纯 LP 钱包兜底：current_holdings 无任何行（连 OKX/spot 都没刷出来）时，
+ * 直接从 current_lp_positions 重建每 (wallet, token) 一行的 LP 持仓，
+ * 语义与 projectIntoCurrentHoldings 的投影一致。
+ */
+function mergeLpOnlyRows(lpRows: LpPositionRow[]): UserHoldingRow[] {
+  const merged = new Map<
+    string,
+    { wallet: string; symbol: string | null; name: string | null; amount: number; usd: number; usdKnown: boolean; legs: LpLegInfo[] }
+  >();
+  const zeroAddress = '0x0000000000000000000000000000000000000000';
+  for (const row of lpRows) {
+    const legs = [
+      {
+        tokenAddress: (row.currency0 ?? '').toLowerCase(),
+        symbol: row.token0_symbol,
+        amountHuman: row.amount0_human,
+        legUsd: row.amount0_usd,
+        otherSymbol: row.token1_symbol,
+      },
+      {
+        tokenAddress: (row.currency1 ?? '').toLowerCase(),
+        symbol: row.token1_symbol,
+        amountHuman: row.amount1_human,
+        legUsd: row.amount1_usd,
+        otherSymbol: row.token0_symbol,
+      },
+    ];
+    for (const leg of legs) {
+      if (!leg.tokenAddress || leg.tokenAddress === zeroAddress) continue;
+      if (leg.legUsd == null || !(leg.legUsd >= USER_HOLDINGS_THRESHOLD_USD)) continue;
+      const key = `${row.tracked_address_lower}:${leg.tokenAddress}`;
+      const entry = merged.get(key) ?? {
+        wallet: row.tracked_address_lower,
+        symbol: leg.symbol,
+        name: row.name,
+        amount: 0,
+        usd: 0,
+        usdKnown: false,
+        legs: [],
+      };
+      entry.amount += leg.amountHuman ?? 0;
+      entry.usd += leg.legUsd;
+      entry.usdKnown = true;
+      entry.symbol = entry.symbol || leg.symbol;
+      entry.legs.push({
+        poolSymbol: row.symbol ?? '',
+        otherSymbol: leg.otherSymbol ?? '',
+        feePct: row.fee != null ? row.fee / 10_000 : null,
+        tickLower: row.tick_lower,
+        tickUpper: row.tick_upper,
+        fullRange: row.full_range === 1,
+        amountHuman: leg.amountHuman,
+        legUsd: leg.legUsd,
+      });
+      merged.set(key, entry);
+    }
   }
 
   const rows: UserHoldingRow[] = [];
-  for (const [addressLower, entry] of lpMerged) {
-    const symbols = Array.from(entry.symbol);
+  for (const [key, entry] of merged) {
+    if (!entry.usdKnown) continue;
+    const [, tokenAddress] = key.split(':');
     rows.push({
       chain: 'robinhood',
-      tokenAddress: `lp:uniswap-v4:${addressLower}`,
-      symbol: symbols.length > 0 ? symbols.join(' + ') : 'V4-LP',
-      name: `Uniswap V4 LP ×${entry.count}`,
-      balance: entry.count,
-      priceUsd: entry.usd / Math.max(1, entry.count),
+      tokenAddress,
+      symbol: entry.symbol ?? 'V4-LP',
+      name: entry.name,
+      balance: entry.amount,
+      priceUsd: entry.amount > 0 ? entry.usd / entry.amount : 0,
       valueUsd: entry.usd,
       liquidityUsd: null,
-      isLp: true,
+      lpUsd: entry.usd,
+      lpLegs: entry.legs,
     });
   }
   return rows;

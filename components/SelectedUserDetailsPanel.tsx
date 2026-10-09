@@ -9,6 +9,7 @@ import { formatUsd, formatUsdCompact } from '@/lib/assetFormat';
 import { formatCompactMarketCap } from '@/lib/tradeDisplay';
 const LIQUIDITY_THRESHOLD_USD = 5_000;
 import {
+  type LpLegInfo,
   type UserDetailsSuccessPayload,
   USER_HOLDINGS_THRESHOLD_USD,
 } from '@/lib/userDetails';
@@ -136,6 +137,49 @@ const CHAIN_LABELS: Record<string, string> = {
 
 function formatUpdatedAt(timestamp: number) {
   return new Date(timestamp).toLocaleString('zh-CN');
+}
+
+/** 1.0001^tick = token1/token0 价格（RH 链两腿均 18 decimals，无需换算）。 */
+function tickToPrice(tick: number) {
+  return Math.pow(1.0001, tick);
+}
+
+function formatPriceCompact(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  if (value >= 1_000_000 || (value < 0.0001 && value > 0)) {
+    return value.toExponential(2);
+  }
+  if (value >= 1000) return value.toFixed(0);
+  if (value >= 1) return value.toFixed(4);
+  // 保留 2 位有效数字（meme 币价格常在 1e-6 量级）
+  return value.toPrecision(2);
+}
+
+const amountCompactFormatter = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
+
+/** 单条 LP 腿的 hover 明细行（池对/费率/区间/本腿量与价值/另一腿）。 */
+function LpLegTooltipLine({ leg, tokenSymbol }: { leg: LpLegInfo; tokenSymbol: string }) {
+  const range = leg.fullRange
+    ? '全区间'
+    : leg.tickLower != null && leg.tickUpper != null
+      ? `${formatPriceCompact(tickToPrice(leg.tickLower))} ~ ${formatPriceCompact(tickToPrice(leg.tickUpper))} (tick ${leg.tickLower} ~ ${leg.tickUpper})`
+      : '—';
+  return (
+    <div className="whitespace-nowrap">
+      <span className="font-medium text-zinc-200">{leg.poolSymbol}</span>
+      <span className="text-zinc-500">
+        {' '}· 费率 {leg.feePct != null ? `${leg.feePct}%` : '—'} · 区间 {range}
+      </span>
+      <div className="text-zinc-400">
+        本腿 {tokenSymbol} {leg.amountHuman != null ? amountCompactFormatter.format(leg.amountHuman) : '—'}
+        {' '}≈ {leg.legUsd != null ? formatUsd(leg.legUsd) : '—'}
+        {leg.otherSymbol ? <span className="text-zinc-500"> · 另一腿 {leg.otherSymbol}</span> : null}
+      </div>
+    </div>
+  );
 }
 
 function getHoldingsAgeState(updatedAt: number | null | undefined) {
@@ -361,23 +405,48 @@ export function SelectedUserDetailsPanel({
                         {CHAIN_LABELS[holding.chain] ?? holding.chain}
                       </td>
                       <td className="py-1.5 pr-3">
-                        {holding.isLp ? (
+                        {holding.lpLegs && holding.lpLegs.length > 0 ? (
                           <div className="flex items-center gap-1.5">
-                            <span
-                              className="max-w-[12rem] truncate font-semibold text-zinc-100"
-                              title="Uniswap V4 流动性仓（聚合）"
+                            <button
+                              type="button"
+                              className="max-w-[12rem] truncate text-left font-semibold text-zinc-100 transition-colors hover:text-emerald-400"
+                              title="左键复制合约地址，右键打开 GMGN"
+                              onClick={() => handleCopyCa(holding.tokenAddress)}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                openGmgnToken(holding.chain, holding.tokenAddress);
+                              }}
                             >
                               {holding.symbol}
-                            </span>
-                            <span className="shrink-0 rounded bg-violet-500/15 px-1 py-0.5 text-[9.5px] font-medium text-violet-300">
-                              V4 LP
+                            </button>
+                            <span
+                              className="group relative shrink-0 cursor-help rounded bg-violet-500/15 px-1 py-0.5 text-[9.5px] font-medium text-violet-300"
+                              title="此行价值含 Uniswap V4 LP 腿部分"
+                            >
+                              LP
+                              <span
+                                className="pointer-events-none invisible absolute bottom-full left-0 z-50 mb-1 rounded border border-white/10 bg-zinc-900 px-2 py-1.5 text-left text-[11px] shadow-xl group-hover:visible"
+                              >
+                                {holding.lpLegs.map((leg, i) => (
+                                  <LpLegTooltipLine
+                                    key={i}
+                                    leg={leg}
+                                    tokenSymbol={holding.symbol}
+                                  />
+                                ))}
+                                <span className="mt-1 block text-[10px] text-zinc-500">
+                                  LP 部分 {formatUsd(holding.lpUsd ?? 0)} · 直接持有{' '}
+                                  {formatUsd(Math.max(0, liveValueUsd(holding) - (holding.lpUsd ?? 0)))}
+                                </span>
+                              </span>
                             </span>
                           </div>
                         ) : (
                           <button
                             type="button"
                             className="max-w-[12rem] truncate text-left font-semibold text-zinc-100 transition-colors hover:text-emerald-400"
-                            title="左键复制合约地址，右键打开 GMGN"
+                            title="左键复制CA，右键打开 GMGN"
                             onClick={() => handleCopyCa(holding.tokenAddress)}
                             onContextMenu={(event) => {
                               event.preventDefault();

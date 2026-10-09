@@ -2,6 +2,23 @@ import type { ChainType, User } from '@/types';
 
 export const USER_HOLDINGS_THRESHOLD_USD = 5;
 
+/** 一条 LP 仓在该 token 上的腿明细（hover tooltip 数据源）。 */
+export interface LpLegInfo {
+  /** 该腿所属仓位的池子对，如 "AI/BONER" */
+  poolSymbol: string;
+  /** 另一腿的 symbol */
+  otherSymbol: string;
+  /** 费率百分数（fee/10000，如 0.9 表示 0.9%） */
+  feePct: number | null;
+  tickLower: number | null;
+  tickUpper: number | null;
+  fullRange: boolean;
+  /** 该腿 token 数量（human 单位） */
+  amountHuman: number | null;
+  /** 该腿美元价值 */
+  legUsd: number | null;
+}
+
 export interface UserHoldingRow {
   chain: ChainType | 'robinhood';
   tokenAddress: string;
@@ -9,10 +26,13 @@ export interface UserHoldingRow {
   name: string | null;
   balance: number;
   priceUsd: number;
+  /** 直接持有 + LP 腿合计美元（LP 部分单列在 lpUsd） */
   valueUsd: number;
   liquidityUsd: number | null;
-  /** true = 聚合的 Uniswap V4 LP 仓（tokenAddress 形如 lp:uniswap-v4:<wallet>），非真实 token */
-  isLp?: boolean;
+  /** 该 token 在 LP 仓里的部分美元（直接持有部分 = valueUsd - lpUsd） */
+  lpUsd?: number;
+  /** LP 腿明细（存在即表示该行含 LP 持仓） */
+  lpLegs?: LpLegInfo[];
 }
 
 export interface UserHoldingsSummary {
