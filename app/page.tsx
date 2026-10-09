@@ -11,6 +11,7 @@ import {
 import { TopNav } from '@/components/TopNav';
 import { FeedFreshnessIndicator } from '@/components/FeedFreshnessIndicator';
 import { useActivityPolling } from '@/hooks/useActivityPolling';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useIsClient } from '@/hooks/useIsClient';
 import { useSelectedUserDetails } from '@/hooks/useSelectedUserDetails';
 import { useTokenInfoPrefetch } from '@/hooks/useTokenInfoPrefetch';
@@ -102,6 +103,17 @@ export default function Home() {
   const isClient = useIsClient();
   
   const { users } = useUsersDataStore();
+  // 远程搜索词防抖 300ms：搜索框每敲一个字都会触发一次服务端 FTS 查询，
+  // 而 bun:sqlite 是同步单线程——打字风暴 = 服务端串行排队 = 全站卡死。
+  // 本地即时过滤用的是上面的 searchFilters（未防抖），这里只节流远程词。
+  const debouncedRemoteKeyword = useDebouncedValue(
+    getRemoteFeedSearchKeyword(searchFilters.keyword),
+    300
+  );
+  const debouncedRemoteSource = useDebouncedValue(
+    getRemoteFeedSource(searchFilters.typeFilters),
+    300
+  );
   const {
     feed,
     latestActivityAtByUser,
@@ -114,8 +126,8 @@ export default function Home() {
     lastUpdate,
   } = useActivityPolling(
     selectedUserId,
-    getRemoteFeedSearchKeyword(searchFilters.keyword),
-    getRemoteFeedSource(searchFilters.typeFilters),
+    debouncedRemoteKeyword,
+    debouncedRemoteSource,
     searchFilters
   );
   const { dismissNewForUser, starredUserIds, onlyStarred, toggleStarredUser, setOnlyStarred } = useUserStore();
