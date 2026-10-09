@@ -37,6 +37,7 @@ import {
 import {
   ackLiveDoorbells,
   claimDueLiveDoorbells,
+  countDueLiveDoorbells,
   enqueueLiveDoorbell,
   nackLiveDoorbells,
   type DoorbellClaim,
@@ -71,6 +72,24 @@ const DEFAULT_ACTIVITY_TIMEOUT_MS = 20_000;
 const DEFAULT_LEG_FOLLOWUP_MS = 120_000;
 /** 补扫门铃的 source 标记；该来源不再续铃，保证每条 xxyy 消息最多补扫一次。 */
 export const LEG_FOLLOWUP_SOURCE = 'leg-followup';
+/**
+ * directAlchemy 模式下 GMGN activity 兜底扫描的最小间隔（ms）。
+ * 0 = 每轮照旧；负数 = 禁用兜底（纯 Alchemy 旧语义，测试用）。
+ * 背景（2026-10-09）：GMGN activity 扫描与持仓刷新/fibo 回填抢同一 6-key 池，
+ * 轮询型扫描把 key 打满触发 ban 升级（60min/条 lane），market 兜底陪冻。
+ * alchemy webhook 复活后 direct trades 走秒级解析，GMGN 只需要低频补漏
+ * （低于 $10 门槛、webhook 漏投、对手腿）。xxyy doorbell 事件驱动扫描不受此限。
+ */
+const DEFAULT_GMGN_FALLBACK_MS = 30 * 60_000;
+
+export function readGmgnFallbackMs(env: EnvMap): number {
+  const raw = env.PILI_LIVE_GMGN_FALLBACK_MS;
+  if (raw != null && String(raw).trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return Math.floor(n);
+  }
+  return DEFAULT_GMGN_FALLBACK_MS;
+}
 const ALCHEMY_PULL_MAX_ATTEMPTS = 3;
 
 async function pullAlchemyInboxWithRetry(
@@ -319,6 +338,18 @@ function buildScanTargets(params: {
   return [...merged.values()];
 }
 
+/**
+ * GMGN activity 兜底扫描的模块级节流状态（进程内即可：重启后立即扫一轮无害）。
+ * directAlchemy 模式下，纯 inbox/watchlist 派生目标（doorbellSource=null）的
+ * GMGN 扫描按 PILI_LIVE_GMGN_FALLBACK_MS（默认 30min）节流；xxyy/补铃驱动
+ * 的目标（事件驱动）永远立即扫。
+ */
+let lastGmgnFallbackScanAt = 0;
+
+export function resetGmgnFallbackThrottleForTest(): void {
+  lastGmgnFallbackScanAt = 0;
+}
+
 export async function runLiveMonitorCycle(
   deps: LiveMonitorDeps = {}
 ): Promise<LiveMonitorCycleResult> {
@@ -465,6 +496,24 @@ export async function runLiveMonitorCycle(
       };
     }
 
+    // GMGN activity 兜底节流（2026-10-09）：directAlchemy 主通道下，GMGN
+    // activity 扫描只在两种时机发生 —— ① xxyy 门铃事件驱动（立即，不受限）
+    // ② 纯轮询兜底（PILI_LIVE_GMGN_FALLBACK_MS，默认 30min 一轮，负数=禁用）。
+    // 它与持仓刷新/fibo 回填抢同一 6-key 池，每 5s 一轮的无差别扫描是 ban
+    // 升级（60min/lane）的主要推手。direct trades（链上自解析）每轮照常，
+    // 不受此闸影响。判定用只读 count（不 claim）：铃 claim 后不 ack/nack
+    // 会挂租约 90s 空转。
+    const gmgnFallbackMs = readGmgnFallbackMs(env);
+    const gmgnFallbackDue =
+      directAlchemy &&
+      gmgnFallbackMs >= 0 &&
+      now() - lastGmgnFallbackScanAt >= gmgnFallbackMs;
+    const pendingDoorbells = directAlchemy ? countDueLiveDoorbells(now()) : 0;
+    const gmgnScanAllowed = !directAlchemy || pendingDoorbells > 0 || gmgnFallbackDue;
+    if (gmgnFallbackDue) {
+      lastGmgnFallbackScanAt = now();
+    }
+
     const doorbells = claimDoorbells({ nowMs: now(), limit: claimLimit });
     xxyyDoorbells = doorbells.length;
 
@@ -523,33 +572,16 @@ export async function runLiveMonitorCycle(
         }
       }
       walletsHit = new Set(trades.map((trade) => trade.wallet.toLowerCase())).size;
-      if (doorbells.length > 0) {
-        ackDoorbells(doorbells.map((doorbell) => ({
-          walletLower: doorbell.walletLower,
-          leaseToken: doorbell.leaseToken,
-        })));
-      }
       if (alchemyNextId > 0) writeAlchemyInboxCursor(alchemyNextId);
-      const cycleMs = Number(env.PILI_LIVE_CYCLE_MS || DEFAULT_CYCLE_MS);
-      return {
-        sleepMs: Number.isFinite(cycleMs) ? cycleMs : DEFAULT_CYCLE_MS,
-        status: lastError ? 'partial' : tradesUpserted > 0 ? 'busy' : 'idle',
-        lastError,
-        summary: {
-          mode,
-          watchlistSynced,
-          inboxEvents,
-          xxyyDoorbells,
-          walletsHit,
-          tradesUpserted,
-          walletsScanned: 0,
-          gmgnErrors: 0,
-        },
-      };
+      // 落到下方统一扫描路径：doorbell 目标本轮立即扫（事件驱动，节流闸已在
+      // 上方放行本铃）；inbox 派生目标的 GMGN 兜底扫描由上方 30min 节流闸
+      // 控制：非兜底轮 buildScanTargets 只收 doorbells。
     }
 
     const targets = buildScanTargets({
-      alchemyWallets,
+      // directAlchemy：inbox 派生目标仅在兜底轮放行（gmgnScanAllowed 已含
+      // 「有铃=事件驱动放行」与「30min 兜底到期」两个条件）；非 direct 模式不变。
+      alchemyWallets: gmgnScanAllowed ? alchemyWallets : [],
       doorbells,
       byLower,
     });

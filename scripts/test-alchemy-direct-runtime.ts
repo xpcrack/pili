@@ -27,6 +27,8 @@ async function run() {
     env: {
       PILI_LIVE_SOURCE: 'alchemy',
       PILI_LIVE_TRADE_SOURCE: 'alchemy',
+      // -1 = 禁用 GMGN 兜底（旧「pure Alchemy 绝不调 GMGN」语义）
+      PILI_LIVE_GMGN_FALLBACK_MS: '-1',
       PILI_ALCHEMY_INBOX_URL: 'https://example.invalid/inbox',
       PILI_ALCHEMY_PULL_TOKEN: 'token',
       PILI_LIVE_CYCLE_MS: '1',
@@ -83,6 +85,8 @@ async function run() {
     env: {
       PILI_LIVE_SOURCE: 'alchemy',
       PILI_LIVE_TRADE_SOURCE: 'alchemy',
+      // -1 = 禁用 GMGN 兜底（重试场景不扫 GMGN）
+      PILI_LIVE_GMGN_FALLBACK_MS: '-1',
       PILI_ALCHEMY_INBOX_URL: 'https://example.invalid/inbox',
       PILI_ALCHEMY_PULL_TOKEN: 'token',
       PILI_LIVE_CYCLE_MS: '1',
