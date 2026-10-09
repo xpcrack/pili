@@ -12,6 +12,7 @@ import {
   collapseActivityCardText,
   getFeedSourceColor,
   getActivityCardTypeLabel,
+  getFomoCardFullBodyText,
   getTelegramCardPrimaryText,
   usesSocialBodyLayout,
 } from '@/lib/activityCardSocial';
@@ -93,6 +94,7 @@ export const ActivityCard = memo(function ActivityCard({
       : relativeTimeAgo;
   const [txCopied, setTxCopied] = useState(false);
   const [tweetLinkCopied, setTweetLinkCopied] = useState(false);
+  const [fomoBodyExpanded, setFomoBodyExpanded] = useState(false);
   const txCopyTimerRef = useRef<number | null>(null);
   const tweetCopyTimerRef = useRef<number | null>(null);
   const lastTimeDisplayModeRef = useRef<FeedTimeDisplayMode>(timeDisplayMode);
@@ -182,6 +184,7 @@ export const ActivityCard = memo(function ActivityCard({
   const twitterContent = isTwitter ? cleanTwitterDisplayText(activity.content) : activity.content;
   const twitterPrimaryText =
     isTwitter ? collapseActivityCardText(activity.metadata.translationZh || twitterContent) : primaryText;
+  const fomoFullBody = isFomo ? getFomoCardFullBodyText(activity) : '';
   const twitterQuotedOriginal = isTwitter
     ? cleanTwitterDisplayText(activity.metadata.quotedTweetContent || '')
     : '';
@@ -653,7 +656,11 @@ export const ActivityCard = memo(function ActivityCard({
 
   // 推特 / TG / FOMO：紧凑行（对齐交易 Feed 密度）
   if (isTwitter || isTelegram || isFomo) {
-    const socialPrimary = isTwitter ? twitterPrimaryText : isFomo ? activity.content : telegramDisplayPrimary;
+    const socialPrimary = isTwitter
+      ? twitterPrimaryText
+      : isFomo
+        ? fomoFullBody || activity.content
+        : telegramDisplayPrimary;
     const sentimentChips = isTwitter ? tweetSentimentChips : isFomo ? null : telegramSentimentChips;
     const personLabel = isNews && newsChannelLabel ? newsChannelLabel : user.name;
     const kindBadge = typeLabel || (isTwitter ? '推特' : isFomo ? 'FOMO' : 'TG');
@@ -700,9 +707,25 @@ export const ActivityCard = memo(function ActivityCard({
 
             <div className="min-w-0 flex-1 space-y-1 md:order-4">
               {socialPrimary ? (
-                <p className="line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] leading-[1.35] text-zinc-100">
+                <p
+                  className={`whitespace-pre-wrap break-words text-[12.5px] leading-[1.35] text-zinc-100 ${
+                    isFomo && !fomoBodyExpanded ? 'line-clamp-2' : ''
+                  }`}
+                >
                   {highlightSocialContent(socialPrimary, activity.metadata.tokenSentiments)}
                 </p>
+              ) : null}
+              {isFomo && fomoFullBody ? (
+                <button
+                  type="button"
+                  className="-ml-0.5 self-start text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setFomoBodyExpanded((prev) => !prev);
+                  }}
+                >
+                  {fomoBodyExpanded ? '收起' : '展开'}
+                </button>
               ) : null}
               {quotedPreview ? (
                 <p className="line-clamp-1 text-[11.5px] leading-snug text-zinc-500">
