@@ -107,7 +107,9 @@ function run() {
 
   assert.doesNotMatch(markup, /普通/, 'activity card should no longer render the importance level label');
   assert.doesNotMatch(markup, /https:\/\/t\.co\/MU3UISkJ0r/, 'activity card should not show the quote stub url as正文');
-  assert.match(markup, /引用 @tradexyz/, 'activity card should render the quoted author handle');
+  // quoteAuthorNode 把「引用」与 @handle 分开渲染（@handle 走官推蓝标高亮），不再连续
+  assert.match(markup, /引用\s*<\/span>@tradexyz/, 'activity card should render the quoted author handle');
+  assert.match(markup, /@tradexyz/, 'activity card should render the quoted author handle text');
   assert.match(markup, /DRAM is now live\. 20x leverage, 24\/7, 365\./, 'activity card should render the quoted tweet content');
   assert.match(markup, /data-social-row/, 'twitter cards should use compact social row layout');
   assert.match(markup, />引用</, 'twitter quote kind badge should render');
