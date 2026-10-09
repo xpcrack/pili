@@ -16,6 +16,7 @@ import { triggerBidFeedPush } from '@/lib/server/bidFeedPushNotifier';
 import { repairCollapsedCanonicalActivitySync } from '@/lib/server/telegramMonitorActivity';
 import { upsertConflictAndEnqueue } from '@/lib/server/conflictRepo';
 import { flushConflictNotifications } from '@/lib/server/conflictNotifier';
+import { getPrimaryPoolOfficialTwitterMap } from '@/lib/server/primaryPoolSymbols';
 import {
   buildTelegramMonitorTxStateLookupKey,
   listTelegramMonitorTxStatesByKeys,
@@ -46,6 +47,19 @@ export interface EventFeedQuery {
   monitoredOnly?: boolean;
   /** When false, skip COUNT query (for poll mode where total precision isn't needed). */
   includeTotal?: boolean;
+  /**
+   * CA 搜索扩展：把「正文只提 ticker 没贴 CA」的推文也算命中
+   * （twitter_tweet_token_mentions.token_address_lower = q 且 match_source='ticker'）。
+   * official_twitter/both 的推文归 expandOfficialTweets / FTS 自身。
+   */
+  expandTicker?: boolean;
+  /**
+   * CA 搜索扩展：把「官推相关」的推文也算命中 —— ①正文 @ 官推 handle 的推
+   * （mentions.match_source='official_twitter'）②官推自己发的推
+   * （twitter_tweets.author_handle = 官推 handle，来自 newone tokens.twitter_url）。
+   * 官推 handle 集合由 q（CA）反查 primary-pool officialTwitterByHandle 得到。
+   */
+  expandOfficialTweets?: boolean;
 }
 
 const TRADE_ACTION_KEYWORDS = new Set<string>(TRADE_ACTION_LABEL_VALUES);
@@ -1118,6 +1132,70 @@ export function upsertEventsFromFeedRows(rows: Array<{ user: User; activity: Act
   }
 }
 
+/**
+ * CA 搜索扩展的 tweet_id 命中集。q 不是 CA（mentions 表查无此地址）时返回空集，
+ * 所以无需前端做地址格式预判 —— 开关开着搜普通词也不会误扩展。
+ * 上限保护：热门币 ticker 提及可能上千，IN 列表太大会拖垮 SQL；砍到最新 N 条。
+ */
+const EXPAND_TWEET_IDS_CAP = 400;
+
+function resolveExpandTweetIds(
+  db: { prepare(sql: string): { all(...params: unknown[]): unknown[] } },
+  q: string,
+  expandTicker: boolean,
+  expandOfficial: boolean
+): string[] {
+  if (!q || (!expandTicker && !expandOfficial)) return [];
+  const qLower = q.toLowerCase();
+  const ids = new Set<string>();
+
+  // mentions 表 ~2 万行，等值扫可接受（无独立 token_address_lower 索引）
+  if (expandTicker) {
+    const rows = db
+      .prepare(
+        `SELECT tweet_id FROM twitter_tweet_token_mentions
+         WHERE token_address_lower = ? AND match_source = 'ticker'
+         ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+      )
+      .all(qLower) as Array<{ tweet_id: string }>;
+    for (const row of rows) ids.add(row.tweet_id);
+  }
+
+  if (expandOfficial) {
+    // ① 正文 @ 官推 的推（enrichment 阶段用 officialTwitterByHandle 匹配出来的）
+    const mentionRows = db
+      .prepare(
+        `SELECT tweet_id FROM twitter_tweet_token_mentions
+         WHERE token_address_lower = ? AND match_source = 'official_twitter'
+         ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+      )
+      .all(qLower) as Array<{ tweet_id: string }>;
+    for (const row of mentionRows) ids.add(row.tweet_id);
+
+    // ② 官推自己发的推（author_handle = 官推 handle，可能完全不提币）
+    const officialMap = getPrimaryPoolOfficialTwitterMap();
+    const handles = new Set<string>();
+    for (const [handle, tokens] of officialMap) {
+      if (tokens.some((tok) => tok.address.toLowerCase() === qLower)) {
+        handles.add(handle);
+      }
+    }
+    if (handles.size > 0) {
+      const placeholders = [...handles].map(() => '?').join(', ');
+      const authorRows = db
+        .prepare(
+          `SELECT tweet_id FROM twitter_tweets
+           WHERE lower(author_handle) IN (${placeholders})
+           ORDER BY created_at_ms DESC LIMIT ${EXPAND_TWEET_IDS_CAP}`
+        )
+        .all(...handles) as Array<{ tweet_id: string }>;
+      for (const row of authorRows) ids.add(row.tweet_id);
+    }
+  }
+
+  return [...ids];
+}
+
 export function readEventsFeed(query: EventFeedQuery) {
   const db = getDb();
   const currentUsersById = new Map(listTrackedUsers().map((user) => [user.id, user] as const));
@@ -1182,6 +1260,12 @@ export function readEventsFeed(query: EventFeedQuery) {
   const actionTerm = q && TRADE_ACTION_KEYWORDS.has(q) ? q : null;
   const ftsMatch = !actionTerm && q ? parseQueryTerms(q) : null;
 
+  // CA 搜索扩展：开关打开时把 ticker 提及 / 官推相关的推文并进命中集。
+  // q 不是 CA（mentions 查无）时 expandTweetIds 为空集 → 行为与不扩展完全一致。
+  const expandTweetIds =
+    ftsMatch && (query.expandTicker === true || query.expandOfficialTweets === true)
+      ? resolveExpandTweetIds(db, q, query.expandTicker === true, query.expandOfficialTweets === true)
+      : [];
   // 搜索命中超上限时收窄到最近 N 天（Finn 2026-10-09 拍板「命中超 50 条只排最近 N 天」）：
   // FTS 驱动路径的 ORDER BY 是 TEMP B-TREE，排序成本随命中数线性涨（sol 3.7 万命中 2.6s，
   // 单字母前缀可上 5 万+）。先用纯 FTS 计数（只扫 doclist 不取行，5 万命中 ~0.05s）判断，
@@ -1191,7 +1275,7 @@ export function readEventsFeed(query: EventFeedQuery) {
   let searchTimeWindowMs: number | null = null;
   let searchTimeWindowParamIndex = -1;
   let searchTimeWindowWhereIndex = -1;
-  if (ftsMatch && fromMs === null && toMs === null) {
+  if (ftsMatch && expandTweetIds.length === 0 && fromMs === null && toMs === null) {
     const ftsHitCount = (
       db.prepare('SELECT COUNT(*) AS count FROM events_fts WHERE events_fts MATCH ?').get(ftsMatch) as {
         count: number;
@@ -1205,9 +1289,14 @@ export function readEventsFeed(query: EventFeedQuery) {
       where.push('e.timestamp >= ?');
     }
   }
-
   let joinSql = '';
+  // JOIN ON 追加谓词（FTS 的 MATCH 不能出现在 WHERE 的 OR 表达式里 —— FTS5 限制：
+  // "unable to use function MATCH in the requested context"，MATCH 只能作为 JOIN ON
+  // 或顶层 WHERE 谓词），放在 ON 里配合 LEFT JOIN 再用 WHERE 放行即可表达 OR 语义。
+  const joinOnExtra: string[] = [];
   const filterParams: string[] = [];
+  // 扩展段：CA 扩展开关命中、但 FTS 未覆盖的推文 id 集合（走 idx_events_tweet_id 直查）。
+  let expandTweetIdUnion: string[] | null = null;
 
   // FTS 搜索走「FTS 表驱动 + rowid 回表」形态（2026-10-09）。
   // 旧形态 `FROM events e INNER JOIN events_fts ON events_fts.rowid = e.rowid` 会让 planner
@@ -1220,21 +1309,45 @@ export function readEventsFeed(query: EventFeedQuery) {
   // 注意 ftsFromSql 必须用 CROSS JOIN 语法钉死驱动顺序，写 INNER JOIN planner 会翻回去。
   let ftsFromSql = '';
   if (ftsMatch) {
-    ftsFromSql = 'FROM events_fts CROSS JOIN events e ON e.rowid = events_fts.rowid';
-    where.push('events_fts MATCH ?');
-    filterParams.push(ftsMatch);
+    if (expandTweetIds.length > 0) {
+      // 扩展形态（2026-10-09 CA 扩展开关）：命中 = FTS ∪ 扩展推文。
+      // ⚠️ 不能用单个 LEFT JOIN + (fts.rowid IS NOT NULL OR e.tweet_id IN (…)) 表达 OR：
+      // planner 会 SCAN e USING idx_events_timestamp（沿时间索引全表 52.9 万行）
+      // 逐行评估 OR 的两臂，产线实测 33.8s——正是「MATCH 不能进 WHERE 的 OR」
+      // 硬约束把这条路径逼成 events 驱动的恶果。
+      // 改为「FTS 命中 ∪ tweet_id 直查」两段各自走最优索引，应用层去重：
+      // FTS 段由 MATCH 驱动（ftsFromSql），扩展段走 idx_events_tweet_id。
+      // LIMIT 语义：两段各取 limit+1 行后合并排序裁剪，hasMore 判定下放 unionRows.length。
+      ftsFromSql = 'FROM events_fts CROSS JOIN events e ON e.rowid = events_fts.rowid';
+      where.push('events_fts MATCH ?');
+      filterParams.push(ftsMatch);
+      expandTweetIdUnion = expandTweetIds;
+    } else {
+      // 纯搜索快路径：FTS 表驱动 + rowid 回表（2026-10-09）。
+      // 旧形态 `FROM events e INNER JOIN events_fts` 会让 planner 选 events 沿时间索引
+      // 全表扫（52.9 万行）逐行探测 FTS——哈基米(命中506) 也要 25.6s，正好吃满前端超时。
+      // 倒转后由 MATCH 输出命中 rowid 集合再按 rowid 精确回表：
+      // 哈基米 25.6s→0.08s、pow 34.4s→0.85s、sol(3.7万命中) 16.9s→2.6s。
+      // 代价 ORDER BY 走 TEMP B-TREE（命中集大时变慢）——由时间窗兜底（见上）。
+      // ftsFromSql 必须用 CROSS JOIN 钉死驱动顺序，写 INNER JOIN planner 会翻回去。
+      ftsFromSql = 'FROM events_fts CROSS JOIN events e ON e.rowid = events_fts.rowid';
+      where.push('events_fts MATCH ?');
+      filterParams.push(ftsMatch);
+    }
   } else if (actionTerm) {
     where.push('(e.activity_json LIKE ? OR e.content LIKE ?)');
     filterParams.push(`%"txActionLabel":"${actionTerm}"%`, `%${actionTerm}%`);
   }
 
+  const joinOnSql = joinOnExtra.length > 0 ? ` AND ${joinOnExtra.join(' AND ')}` : '';
+
   // 老热词兜底：开窗后若窗内命中为 0（比如老 CA 的提及都在 30 天前），回退全史排序——
   // 命中稀少时 B-TREE 排序本来就便宜，宁可慢一点也不返回假空结果。
   // 只在非 cursor 页做：cursor 页按定义是同一查询的后续页，窗判定已由首页锁死。
-  // ⚠️ 形态必须用 CROSS JOIN（FTS 驱动）：rowid IN (SELECT rowid FROM events WHERE …)
-  // 会让 planner 物化 30 天全量 rowid（几十万行 LIST SUBQUERY + bloom filter），
-  // 产线实测 10.2s；CROSS JOIN 由 MATCH 先出命中集再回表判窗，4ms。
-  if (ftsMatch && searchTimeWindowMs !== null && cursor === null) {
+  if (ftsMatch && ftsFromSql !== '' && searchTimeWindowMs !== null && cursor === null) {
+    // ⚠️ 形态必须用 CROSS JOIN（FTS 驱动）：rowid IN (SELECT rowid FROM events WHERE …)
+    // 会让 planner 物化 30 天全量 rowid（几十万行 LIST SUBQUERY + bloom filter），
+    // 产线实测 10.2s；CROSS JOIN 由 MATCH 先出命中集再回表判窗，4ms。
     const windowHitCount = (
       db
         .prepare(
@@ -1272,37 +1385,69 @@ export function readEventsFeed(query: EventFeedQuery) {
     ? 'FROM events e INDEXED BY idx_events_user_timestamp'
     : 'FROM events e';
 
-  const baseSql = ftsMatch
-    ? `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+  // baseSql：FTS 场景（纯搜索+扩展）都由 ftsFromSql 驱动；非 FTS 时间线走 fromSql。
+  const baseSql =
+    ftsMatch
+      ? `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${ftsFromSql}
        ${whereSql}
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`
-    : `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+      : `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${fromSql}
-       ${joinSql}
+       ${joinSql}${joinOnSql}
        ${whereSql}
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`;
 
-  const countSql = ftsMatch
-    ? `SELECT COUNT(1) AS count
+  // countSql 与 baseSql 同构拆分：纯搜索/扩展都走 FTS 驱动形态（ftsFromSql，
+  // 扩展场景的 tweet_id 段在应用层并集，不参与 COUNT——total 只是展示数字，
+  // 前端缺失时回退 feed.length）。非 FTS（普通时间线）走 events 驱动形态。
+  const countSql =
+    ftsMatch
+      ? `SELECT COUNT(1) AS count
        ${ftsFromSql}
        ${whereSql}`
-    : `SELECT COUNT(1) AS count
+      : `SELECT COUNT(1) AS count
        ${countFromSql}
-       ${joinSql}
+       ${joinSql}${joinOnSql}
        ${whereSql}`;
 
   const finalParams = [...params, ...filterParams, safeLimit + 1];
 
-  const rows = db.prepare(baseSql).all(...finalParams) as Array<{
+  let rows = db.prepare(baseSql).all(...finalParams) as Array<{
     event_id: string;
     timestamp: number;
     user_id: string | null;
     user_json: string;
     activity_json: string;
   }>;
+
+  // 扩展段并集：tweet_id 直查走 idx_events_tweet_id（实测 32ms），按 event_id 去重后
+  // 合并排序再整体裁剪。两段各取 limit+1 只保证单段 hasMore 语义；合并后 hasMore
+  // 以裁剪前的行数为准（union 后行数仍可能少于两段之和——去重），与旧行为一致。
+  if (expandTweetIdUnion && expandTweetIdUnion.length > 0) {
+    const placeholders = expandTweetIdUnion.map(() => '?').join(', ');
+    const expandRows = db
+      .prepare(
+        `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+       FROM events e INDEXED BY idx_events_tweet_id
+       WHERE e.tweet_id IN (${placeholders})
+       ORDER BY e.timestamp DESC, e.event_id DESC
+       LIMIT ?`,
+      )
+      .all(...expandTweetIdUnion, safeLimit + 1) as typeof rows;
+    const seen = new Set(rows.map((row) => row.event_id));
+    for (const row of expandRows) {
+      if (!seen.has(row.event_id)) {
+        seen.add(row.event_id);
+        rows.push(row);
+      }
+    }
+    rows = rows
+      .sort((a, b) => (b.timestamp - a.timestamp) || (b.event_id > a.event_id ? 1 : b.event_id < a.event_id ? -1 : 0))
+      .slice(0, safeLimit + 1);
+  }
 
   const sliced = rows.slice(0, safeLimit);
   const parsedRows = sliced.flatMap((row) => {
