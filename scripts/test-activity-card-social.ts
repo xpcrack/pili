@@ -5,6 +5,7 @@ import {
   cleanTwitterDisplayText,
   collapseActivityCardText,
   getActivityCardTypeLabel,
+  getFomoCardFullBodyText,
   getTelegramCardPrimaryText,
   usesSocialBodyLayout,
 } from '@/lib/activityCardSocial';
@@ -75,6 +76,28 @@ function run() {
     '',
     'twitter card text should hide url-only quote stubs'
   );
+
+  const fomoSample = {
+    content: '@tendersalt 喊单$TikTok：Slowly but surely this pumpfun update meta is getting some interest.',
+    metadata: {
+      rawText:
+        '**$TikTok thesis** **Tendychallenge** (@TendersAlt)\n\nSlowly but surely this pumpfun update meta is getting some interest.\n\nImo the most interesting, and the one with the biggest snowball possibility is tiktok.\n\nImagine when tiktok goat traders have a real power on tiktok coins and are able to push the good ones who are paired with tiktok\n\nI\'m in love with this thesis\n这个pumpfun更新元数据正逐渐引起关注。\nPosition: **$18,557.81**\nUnrealized PnL: **-$4,577.88 (-19.79%)**\nMarket cap: **$846.11K**\nSolana: `64oAuE88tNP7KsSyaiJTKGP4sWmLMFGWLUs9eBTLYgCp`\ngmgn · fomo',
+    },
+  } as unknown as Parameters<typeof getFomoCardFullBodyText>[0];
+  const fomoBody = getFomoCardFullBodyText(fomoSample);
+  assert.ok(
+    fomoBody.includes('snowball possibility is tiktok'),
+    'fomo body should keep the full thesis text from rawText'
+  );
+  assert.ok(!fomoBody.includes('**'), 'fomo body should strip markdown bold asterisks');
+  assert.ok(!/gmgn\s*·\s*fomo/i.test(fomoBody), 'fomo body should drop the trailing gmgn signature line');
+  assert.ok(fomoBody.includes('Position: $18,557.81'), 'fomo body should keep position lines without bold markers');
+
+  const fomoFallback = getFomoCardFullBodyText({
+    content: 'fallback content',
+    metadata: {},
+  } as unknown as Parameters<typeof getFomoCardFullBodyText>[0]);
+  assert.equal(fomoFallback, 'fallback content', 'fomo body should fall back to content when rawText is missing');
 
   console.log('activity card social tests: ok');
 }

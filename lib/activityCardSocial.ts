@@ -56,6 +56,23 @@ export function usesSocialBodyLayout(source: Activity['source']) {
   return source === 'twitter' || source === 'telegram' || source === 'fomo';
 }
 
+/**
+ * FOMO 喊单帖展开正文：取 metadata.rawText（频道帖全文），剥 markdown 加粗星号与
+ * 尾部"gmgn · fomo"署名行，供卡片展开/收起显示。rawText 缺失时回退 activity.content。
+ */
+export function getFomoCardFullBodyText(activity: Pick<Activity, 'content' | 'metadata'>) {
+  const raw = (activity.metadata.rawText || '').trim();
+  const text = raw || activity.content || '';
+  if (!text) return '';
+  return collapseActivityCardText(
+    text
+      .replace(/\*\*/g, '')
+      .split('\n')
+      .filter((line) => !/^gmgn\s*·\s*fomo$/i.test(line.trim()))
+      .join('\n')
+  );
+}
+
 export function getActivityCardTypeLabel(params: {
   source: Activity['source'];
   activityType: Activity['type'];
