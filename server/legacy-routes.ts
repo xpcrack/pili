@@ -16,6 +16,7 @@ const ROUTES: LegacyRouteDefinition[] = [
   { method: 'POST', path: '/feed', load: () => import('@/app/api/feed/route') },
   { method: 'GET', path: '/feed/prewarm', load: () => import('@/app/api/feed/prewarm/route') },
   { method: 'POST', path: '/feed/prewarm', load: () => import('@/app/api/feed/prewarm/route') },
+  { method: 'GET', path: '/official-twitter-handles', load: () => import('@/app/api/official-twitter-handles/route') },
   { method: 'POST', path: '/users/import', load: () => import('@/app/api/users/import/route') },
   { method: 'GET', path: '/users/:id', load: () => import('@/app/api/users/[id]/route') },
   { method: 'GET', path: '/users/:id/insights', load: () => import('@/app/api/users/[id]/insights/route') },
