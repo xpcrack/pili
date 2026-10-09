@@ -1295,6 +1295,8 @@ export function readEventsFeed(query: EventFeedQuery) {
   // 或顶层 WHERE 谓词），放在 ON 里配合 LEFT JOIN 再用 WHERE 放行即可表达 OR 语义。
   const joinOnExtra: string[] = [];
   const filterParams: string[] = [];
+  // 扩展段：CA 扩展开关命中、但 FTS 未覆盖的推文 id 集合（走 idx_events_tweet_id 直查）。
+  let expandTweetIdUnion: string[] | null = null;
 
   // FTS 搜索走「FTS 表驱动 + rowid 回表」形态（2026-10-09）。
   // 旧形态 `FROM events e INNER JOIN events_fts ON events_fts.rowid = e.rowid` 会让 planner
@@ -1308,15 +1310,18 @@ export function readEventsFeed(query: EventFeedQuery) {
   let ftsFromSql = '';
   if (ftsMatch) {
     if (expandTweetIds.length > 0) {
-      // 扩展形态（2026-10-09 CA 扩展开关）：命中 = FTS ∪ 扩展推文，扩展推可能不被
-      // FTS 命中，必须 events 驱动才能并进结果——这条路径保留 LEFT JOIN 不走倒转。
-      // MATCH 放 JOIN ON 是 FTS5 硬约束（WHERE 的 OR 里不能用 MATCH）。
-      joinSql = 'LEFT JOIN events_fts ON events_fts.rowid = e.rowid';
-      joinOnExtra.push('events_fts MATCH ?');
+      // 扩展形态（2026-10-09 CA 扩展开关）：命中 = FTS ∪ 扩展推文。
+      // ⚠️ 不能用单个 LEFT JOIN + (fts.rowid IS NOT NULL OR e.tweet_id IN (…)) 表达 OR：
+      // planner 会 SCAN e USING idx_events_timestamp（沿时间索引全表 52.9 万行）
+      // 逐行评估 OR 的两臂，产线实测 33.8s——正是「MATCH 不能进 WHERE 的 OR」
+      // 硬约束把这条路径逼成 events 驱动的恶果。
+      // 改为「FTS 命中 ∪ tweet_id 直查」两段各自走最优索引，应用层去重：
+      // FTS 段由 MATCH 驱动（ftsFromSql），扩展段走 idx_events_tweet_id。
+      // LIMIT 语义：两段各取 limit+1 行后合并排序裁剪，hasMore 判定下放 unionRows.length。
+      ftsFromSql = 'FROM events_fts CROSS JOIN events e ON e.rowid = events_fts.rowid';
+      where.push('events_fts MATCH ?');
       filterParams.push(ftsMatch);
-      const placeholders = expandTweetIds.map(() => '?').join(', ');
-      where.push(`(events_fts.rowid IS NOT NULL OR e.tweet_id IN (${placeholders}))`);
-      filterParams.push(...expandTweetIds);
+      expandTweetIdUnion = expandTweetIds;
     } else {
       // 纯搜索快路径：FTS 表驱动 + rowid 回表（2026-10-09）。
       // 旧形态 `FROM events e INNER JOIN events_fts` 会让 planner 选 events 沿时间索引
@@ -1380,10 +1385,9 @@ export function readEventsFeed(query: EventFeedQuery) {
     ? 'FROM events e INDEXED BY idx_events_user_timestamp'
     : 'FROM events e';
 
-  // baseSql 与 countSql 同构拆分（与 countSql 同理：扩展场景 ftsFromSql 为空，
-  // JOIN 形态在 joinSql+joinOnSql 上）。
+  // baseSql：FTS 场景（纯搜索+扩展）都由 ftsFromSql 驱动；非 FTS 时间线走 fromSql。
   const baseSql =
-    ftsMatch && expandTweetIds.length === 0
+    ftsMatch
       ? `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
        ${ftsFromSql}
        ${whereSql}
@@ -1396,11 +1400,11 @@ export function readEventsFeed(query: EventFeedQuery) {
        ORDER BY e.timestamp DESC, e.event_id DESC
        LIMIT ?`;
 
-  // countSql 与 baseSql 同构拆分：纯搜索走 FTS 驱动形态（ftsFromSql），
-  // 扩展场景走 events 驱动 + LEFT JOIN（joinSql+joinOnSql）——扩展时 ftsFromSql 为空，
-  // 混用会让 COUNT 引用未 JOIN 的 events_fts → "no such column"。
+  // countSql 与 baseSql 同构拆分：纯搜索/扩展都走 FTS 驱动形态（ftsFromSql，
+  // 扩展场景的 tweet_id 段在应用层并集，不参与 COUNT——total 只是展示数字，
+  // 前端缺失时回退 feed.length）。非 FTS（普通时间线）走 events 驱动形态。
   const countSql =
-    ftsMatch && expandTweetIds.length === 0
+    ftsMatch
       ? `SELECT COUNT(1) AS count
        ${ftsFromSql}
        ${whereSql}`
@@ -1411,13 +1415,39 @@ export function readEventsFeed(query: EventFeedQuery) {
 
   const finalParams = [...params, ...filterParams, safeLimit + 1];
 
-  const rows = db.prepare(baseSql).all(...finalParams) as Array<{
+  let rows = db.prepare(baseSql).all(...finalParams) as Array<{
     event_id: string;
     timestamp: number;
     user_id: string | null;
     user_json: string;
     activity_json: string;
   }>;
+
+  // 扩展段并集：tweet_id 直查走 idx_events_tweet_id（实测 32ms），按 event_id 去重后
+  // 合并排序再整体裁剪。两段各取 limit+1 只保证单段 hasMore 语义；合并后 hasMore
+  // 以裁剪前的行数为准（union 后行数仍可能少于两段之和——去重），与旧行为一致。
+  if (expandTweetIdUnion && expandTweetIdUnion.length > 0) {
+    const placeholders = expandTweetIdUnion.map(() => '?').join(', ');
+    const expandRows = db
+      .prepare(
+        `SELECT e.event_id, e.timestamp, e.user_id, e.user_json, e.activity_json
+       FROM events e INDEXED BY idx_events_tweet_id
+       WHERE e.tweet_id IN (${placeholders})
+       ORDER BY e.timestamp DESC, e.event_id DESC
+       LIMIT ?`,
+      )
+      .all(...expandTweetIdUnion, safeLimit + 1) as typeof rows;
+    const seen = new Set(rows.map((row) => row.event_id));
+    for (const row of expandRows) {
+      if (!seen.has(row.event_id)) {
+        seen.add(row.event_id);
+        rows.push(row);
+      }
+    }
+    rows = rows
+      .sort((a, b) => (b.timestamp - a.timestamp) || (b.event_id > a.event_id ? 1 : b.event_id < a.event_id ? -1 : 0))
+      .slice(0, safeLimit + 1);
+  }
 
   const sliced = rows.slice(0, safeLimit);
   const parsedRows = sliced.flatMap((row) => {
