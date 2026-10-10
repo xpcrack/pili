@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft } from 'lucide-react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -160,6 +161,26 @@ const amountCompactFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+/**
+ * LP 腿 symbol 兜底：DexScreener/现货都解析不到 ticker 时，后端持久化 null，
+ * 旧数据则可能是 "0x7163" 这种 CA 截断 —— 两者都显示「未知代币」，
+ * 不让误导性缩写上屏（2026-10-10 用户反馈 GAGE 显示成 0x7163）。
+ */
+const CA_TRUNCATED_SYMBOL_RE = /^0x[0-9a-f]{0,6}$/i;
+function displayLegSymbol(symbol: string | null | undefined) {
+  const trimmed = symbol?.trim();
+  if (!trimmed) return '未知代币';
+  // 池对字符串（如 "0x03df/0x5fc5"）按侧兜底；单 symbol 整体判断。
+  if (trimmed.includes('/')) {
+    return trimmed
+      .split('/')
+      .map((side) => (CA_TRUNCATED_SYMBOL_RE.test(side) ? '未知代币' : side))
+      .join('/');
+  }
+  if (CA_TRUNCATED_SYMBOL_RE.test(trimmed)) return '未知代币';
+  return trimmed;
+}
+
 /** 单条 LP 腿的 hover 明细行（池对/费率/区间/本腿量与价值/另一腿）。 */
 function LpLegTooltipLine({ leg, tokenSymbol }: { leg: LpLegInfo; tokenSymbol: string }) {
   const range = leg.fullRange
@@ -169,16 +190,78 @@ function LpLegTooltipLine({ leg, tokenSymbol }: { leg: LpLegInfo; tokenSymbol: s
       : '—';
   return (
     <div className="whitespace-nowrap">
-      <span className="font-medium text-zinc-200">{leg.poolSymbol}</span>
+      <span className="font-medium text-zinc-200">{displayLegSymbol(leg.poolSymbol)}</span>
       <span className="text-zinc-500">
         {' '}· 费率 {leg.feePct != null ? `${leg.feePct}%` : '—'} · 区间 {range}
       </span>
       <div className="text-zinc-400">
         本腿 {tokenSymbol} {leg.amountHuman != null ? amountCompactFormatter.format(leg.amountHuman) : '—'}
         {' '}≈ {leg.legUsd != null ? formatUsd(leg.legUsd) : '—'}
-        {leg.otherSymbol ? <span className="text-zinc-500"> · 另一腿 {leg.otherSymbol}</span> : null}
+        {leg.otherSymbol ? <span className="text-zinc-500"> · 另一腿 {displayLegSymbol(leg.otherSymbol)}</span> : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * LP hover 明细浮层：portal 到 document.body 的 fixed 定位。
+ * 表格容器有 overflow-hidden/overflow-x-auto，CSS absolute 气泡会被裁剪或
+ * 盖住别的行（2026-10-10 用户截图）；portal 出去后不再受任何父容器裁剪。
+ * 位置由 anchor 的 getBoundingClientRect 实时算，视口边缘自动翻转方向。
+ */
+function LpLegTooltipPortal({ anchor, children }: { anchor: HTMLElement | null; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; visible: boolean }>({
+    left: 0,
+    top: 0,
+    visible: false,
+  });
+
+  const updatePosition = useCallback(() => {
+    if (!anchor || !ref.current) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    const tipRect = ref.current.getBoundingClientRect();
+    const margin = 8;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // 水平：默认与 anchor 左对齐，右边缘溢出时右对齐到 anchor 右缘并左推。
+    let left = anchorRect.left;
+    if (left + tipRect.width > viewportWidth - margin) {
+      left = Math.max(margin, anchorRect.right - tipRect.width);
+    }
+    // 垂直：默认在 anchor 上方，顶部放不下时翻到下方；都放不下时贴边。
+    let top = anchorRect.top - tipRect.height - margin;
+    if (top < margin) {
+      top = Math.min(anchorRect.bottom + margin, viewportHeight - tipRect.height - margin);
+    }
+    if (top < margin) top = margin;
+    setPos({ left, top, visible: true });
+  }, [anchor]);
+
+  useLayoutEffect(() => {
+    if (!anchor) return;
+    updatePosition();
+    // anchor 位置随滚动/窗口变化漂移，监听期间保持跟随。
+    const handle = () => updatePosition();
+    window.addEventListener('scroll', handle, true);
+    window.addEventListener('resize', handle);
+    return () => {
+      window.removeEventListener('scroll', handle, true);
+      window.removeEventListener('resize', handle);
+    };
+  }, [anchor, updatePosition]);
+
+  if (!anchor) return null;
+  return createPortal(
+    <div
+      ref={ref}
+      className="pointer-events-none fixed z-[9999] max-w-md rounded border border-white/10 bg-zinc-900 px-2 py-1.5 text-left text-[11px] shadow-xl"
+      style={{ left: pos.left, top: pos.top, visibility: pos.visible ? 'visible' : 'hidden' }}
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
@@ -233,6 +316,11 @@ export function SelectedUserDetailsPanel({
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
   const holdingMetricsMap = useHoldingMetricsMap(details?.holdings);
 
+  // LP 徽章 hover 明细：key 指向当前 hover 的持仓行，anchor 是该行 LP 徽章 DOM，
+  // 由 ref 回调登记（见下方 LP 徽章 JSX）。portal 浮层按 anchor 实时定位。
+  const lpBadgeRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [lpTooltipKey, setLpTooltipKey] = useState<string | null>(null);
+
   // Live re-valuation: balance is authoritative (only moves on trades), the stale
   // part is price. Re-price valueUsd from the batch metric's live DexScreener price
   // when available, else fall back to the snapshot. Never re-pulls the balance —
@@ -259,6 +347,12 @@ export function SelectedUserDetailsPanel({
   });
 
   const visibleHoldingsTotalUsd = visibleHoldings.reduce((sum, holding) => sum + liveValueUsd(holding), 0);
+
+  // hover 的持仓行对象 + 对应 LP 徽章 DOM（须在 visibleHoldings 之后派生）。
+  const lpTooltipHolding = lpTooltipKey
+    ? visibleHoldings.find((h) => `${h.chain}:${h.tokenAddress}` === lpTooltipKey) ?? null
+    : null;
+  const lpTooltipAnchor = lpTooltipKey ? lpBadgeRefs.current.get(lpTooltipKey) ?? null : null;
   // holdings 明细是从 current_holdings 实时读的，totalAssetUsd 是 tracked_users 缓存的；
   // 缓存可能因 peak reset / refresh 不同步而为 0，此时用 holdings 合计兜底。
   const holdingsTotalUsd = (details?.holdings ?? []).reduce((sum, h) => sum + liveValueUsd(h), 0);
@@ -418,28 +512,24 @@ export function SelectedUserDetailsPanel({
                                 openGmgnToken(holding.chain, holding.tokenAddress);
                               }}
                             >
-                              {holding.symbol}
+                              {displayLegSymbol(holding.symbol)}
                             </button>
                             <span
-                              className="group relative shrink-0 cursor-help rounded bg-violet-500/15 px-1 py-0.5 text-[9.5px] font-medium text-violet-300"
+                              className="shrink-0 cursor-help rounded bg-violet-500/15 px-1 py-0.5 text-[9.5px] font-medium text-violet-300"
                               title="此行价值含 Uniswap V4 LP 腿部分"
+                              ref={(node) => {
+                                if (!node) return;
+                                lpBadgeRefs.current.set(rowKey, node);
+                                return () => {
+                                  if (lpBadgeRefs.current.get(rowKey) === node) {
+                                    lpBadgeRefs.current.delete(rowKey);
+                                  }
+                                };
+                              }}
+                              onMouseEnter={() => setLpTooltipKey(rowKey)}
+                              onMouseLeave={() => setLpTooltipKey(null)}
                             >
                               LP
-                              <span
-                                className="pointer-events-none invisible absolute bottom-full left-0 z-50 mb-1 rounded border border-white/10 bg-zinc-900 px-2 py-1.5 text-left text-[11px] shadow-xl group-hover:visible"
-                              >
-                                {holding.lpLegs.map((leg, i) => (
-                                  <LpLegTooltipLine
-                                    key={i}
-                                    leg={leg}
-                                    tokenSymbol={holding.symbol}
-                                  />
-                                ))}
-                                <span className="mt-1 block text-[10px] text-zinc-500">
-                                  LP 部分 {formatUsd(holding.lpUsd ?? 0)} · 直接持有{' '}
-                                  {formatUsd(Math.max(0, liveValueUsd(holding) - (holding.lpUsd ?? 0)))}
-                                </span>
-                              </span>
                             </span>
                           </div>
                         ) : (
@@ -497,6 +587,21 @@ export function SelectedUserDetailsPanel({
           </div>
         ) : null}
       </section>
+      {lpTooltipHolding ? (
+        <LpLegTooltipPortal anchor={lpTooltipAnchor}>
+          {lpTooltipHolding.lpLegs?.map((leg, i) => (
+            <LpLegTooltipLine
+              key={i}
+              leg={leg}
+              tokenSymbol={lpTooltipHolding.symbol}
+            />
+          ))}
+          <span className="mt-1 block text-[10px] text-zinc-500">
+            LP 部分 {formatUsd(lpTooltipHolding.lpUsd ?? 0)} · 直接持有{' '}
+            {formatUsd(Math.max(0, liveValueUsd(lpTooltipHolding) - (lpTooltipHolding.lpUsd ?? 0)))}
+          </span>
+        </LpLegTooltipPortal>
+      ) : null}
     </div>
   );
 }

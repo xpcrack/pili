@@ -243,6 +243,62 @@ export async function fetchFromDexScreener(
 }
 
 /**
+ * Resolve a token's ticker when it never appears as a baseToken.
+ *
+ * fetchFromDexScreener 只认 baseToken 侧（quote-only 代币如 Robinhood 的 USDG
+ * 在所有池子里都当 quote，整条查询返回 null）。这里在同一个 tokens 端点响应里
+ * 按 base/quote 两侧匹配地址，取流动性最高那条池子的对应侧 symbol。
+ */
+export async function fetchDexScreenerTokenSymbol(
+  contractAddress: string,
+  chain: string
+): Promise<string | null> {
+  const chainKey = chain.toLowerCase();
+  const dexChain = CHAIN_MAP[chainKey];
+  if (!dexChain) {
+    return null;
+  }
+
+  try {
+    const url = `${DEXSCREENER_API}/latest/dex/tokens/${contractAddress}`;
+    const res = await dexFetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      return null;
+    }
+
+    const data: DexScreenerResponse = await res.json();
+    const normalized = normalizeDexScreenerTokenKey(chainKey, contractAddress);
+    let best: { symbol: string; liquidity: number } | null = null;
+    for (const pair of data.pairs ?? []) {
+      if (pair.chainId !== dexChain) continue;
+      const baseAddress = pair.baseToken?.address
+        ? normalizeDexScreenerTokenKey(chainKey, pair.baseToken.address)
+        : '';
+      const quoteAddress = pair.quoteToken?.address
+        ? normalizeDexScreenerTokenKey(chainKey, pair.quoteToken.address)
+        : '';
+      let symbol: string | undefined;
+      if (baseAddress && baseAddress === normalized) {
+        symbol = pair.baseToken?.symbol;
+      } else if (quoteAddress && quoteAddress === normalized) {
+        symbol = pair.quoteToken?.symbol;
+      }
+      if (!symbol) continue;
+      const liquidity = pair.liquidity?.usd || 0;
+      if (!best || liquidity > best.liquidity) {
+        best = { symbol, liquidity };
+      }
+    }
+    return best?.symbol ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the real chain for an address whose chain is unknown/ambiguous.
  *
  * DexScreener's `/latest/dex/tokens/{addr}` returns every pair across every

@@ -159,6 +159,7 @@ async function run() {
     };
 
     const fetchLpPositionsCalls: string[] = [];
+    const symbolFetchCalls: string[] = [];
     const result = await refreshLpPositions({
       db,
       now: () => 1_000_000,
@@ -175,6 +176,8 @@ async function run() {
         };
       },
       fetchTendiesEthUsd: async () => ({ ethUsd: 3000, tendiesUsd: 0.04 }),
+      // 两级 ticker 解析：currency1 走 baseToken ticker；currency0 无 ticker，
+      // 落到 fetchLegSymbol 双侧匹配兜底（验证 2026-10-10 symbol 为空的修复路径）。
       fetchLegPrice: async (contractAddress: string) => {
         const priceByCa: Record<string, number> = {
           '0x2e8c31162b855a2ffa90f6f8634643ad6f111e18': 0.09,
@@ -182,10 +185,18 @@ async function run() {
         };
         const price = priceByCa[contractAddress.toLowerCase()];
         if (!price) return null;
+        const isCurrency1 = contractAddress.toLowerCase() === '0x98096d17e191b3da1d5f99a6d7b3584351b11e18';
         return {
-          ticker: 'X', name: 'X', price, marketCap: 0,
+          ticker: isCurrency1 ? 'X' : '', name: 'X', price, marketCap: 0,
           liquidity: 1_000_000, priceChange24h: 0, volume24h: 0,
         };
+      },
+      // quote-only 兜底查询必须 mock（默认实现会打真实 DexScreener）
+      fetchLegSymbol: async (contractAddress: string) => {
+        symbolFetchCalls.push(contractAddress);
+        return contractAddress.toLowerCase() === '0x2e8c31162b855a2ffa90f6f8634643ad6f111e18'
+          ? 'AI'
+          : null;
       },
     });
 
@@ -197,9 +208,19 @@ async function run() {
     ensureLpPositionsTable(db);
     const lpRow = db
       .prepare('SELECT * FROM current_lp_positions WHERE tracked_address_lower = ?')
-      .get(wallet) as { total_usd: number | null; symbol: string | null; user_id: string | null };
+      .get(wallet) as {
+      total_usd: number | null;
+      symbol: string | null;
+      user_id: string | null;
+      token0_symbol: string | null;
+      token1_symbol: string | null;
+    };
     assert.ok(lpRow, 'lp row persisted');
     assert.equal(lpRow.user_id, 'u1');
+    // 腿 symbol 落盘：token0 走 fetchLegSymbol 兜底，token1 走 baseToken ticker
+    assert.equal(lpRow.token0_symbol, 'AI', 'token0 symbol via quote-side fallback');
+    assert.equal(lpRow.token1_symbol, 'X', 'token1 symbol via baseToken ticker');
+    assert.equal(lpRow.symbol, 'AI/X', 'pool symbol composed from both legs');
     assert.ok(
       Math.abs((lpRow.total_usd ?? 0) - 170_000) < 1,
       `leg-priced total: expected ~170000, got ${lpRow.total_usd}`,
@@ -265,7 +286,16 @@ async function run() {
       const leg = lpHolding.lpLegs![0];
       assert.equal(leg.feePct, 0.9, 'fee pct = 9000/10000');
       assert.ok(leg.fullRange, 'full range flag');
-      assert.ok(leg.otherSymbol === 'X', 'other leg symbol from DexScreener ticker');
+      assert.equal(leg.poolSymbol, 'AI/X', 'pool symbol composed from resolved leg tickers');
+      if (lpHolding.tokenAddress === '0x2e8c31162b855a2ffa90f6f8634643ad6f111e18') {
+        assert.equal(leg.otherSymbol, 'X', 'AI row: other leg = baseToken ticker');
+      } else {
+        assert.equal(
+          leg.otherSymbol,
+          'AI',
+          'X row: other leg = quote-side fallback symbol (was CA 截断 before fix)',
+        );
+      }
     }
 
     // 阈值以下不显示：把价格改小后重刷 → 消失
@@ -282,6 +312,7 @@ async function run() {
       }),
       fetchTendiesEthUsd: async () => ({ ethUsd: 3000, tendiesUsd: 0.04 }),
       fetchLegPrice: async () => null,
+      fetchLegSymbol: async () => null,
     });
     const details2 = await readUserHoldingsDetails(user);
     assert.ok(
@@ -303,6 +334,7 @@ async function run() {
       }),
       fetchTendiesEthUsd: async () => ({ ethUsd: 3000, tendiesUsd: 0.04 }),
       fetchLegPrice: async () => null,
+      fetchLegSymbol: async () => null,
     });
     const stale = db
       .prepare(`SELECT COUNT(*) AS c FROM current_holdings WHERE chain = 'robinhood-lp'`)
