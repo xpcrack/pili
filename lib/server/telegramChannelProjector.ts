@@ -330,11 +330,14 @@ export async function enrichTelegramChannelPost(activity: Activity): Promise<Act
       baseUrl: resolveEnrichmentBaseUrl(),
     });
 
-    const mentions = (updatedMetadata.tokenSentiments || []).map(s => ({
-      tokenSymbol: s.tokenSymbol || null,
-      tokenAddress: s.tokenAddress || null,
-      matchSource: s.matchSource || 'ticker' as const,
-    }));
+    const mentions = (updatedMetadata.tokenSentiments || [])
+      .map(s => ({
+        tokenSymbol: s.tokenSymbol || null,
+        tokenAddress: s.tokenAddress || null,
+        matchSource: s.matchSource || 'ca' as const,
+      }))
+      // 统一口径（2026-10-10）：无 CA 的 sentiment（纯 ticker 提及）不进 LLM 富化
+      .filter(m => m.tokenAddress);
 
     const result = await model.enrichTweet({
       tweetId: activity.id,

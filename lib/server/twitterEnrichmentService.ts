@@ -31,11 +31,8 @@ import {
   getPrimaryPoolOfficialTwitterMap,
   getPrimaryPoolSymbolAllowlist,
 } from '@/lib/server/primaryPoolSymbols';
-import { listMonitoredUsers } from '@/lib/server/trackedUsersRepo';
 import { findAddressesWithTrackedRiders } from '@/lib/server/trackedRiderRepo';
 import { normalizeTwitterHandle } from '@/lib/canonical';
-import { findAliasHits } from '@/lib/server/tokenAliases';
-import type { TweetEnrichmentAliasConfirmation } from '@/lib/server/twitterEnrichmentModel';
 
 /** rule-v9: rule-v8 + 排除 newone 池内 MC<100K 且无 pili 同车的小币 */
 const EXTRACTOR_VERSION = 'rule-v9';
@@ -47,22 +44,6 @@ function normalize(value: string | null | undefined) {
 
 function isValidSentiment(value: string | null | undefined): value is TweetMentionSentiment {
   return value === 'positive' || value === 'negative' || value === 'neutral';
-}
-
-/** Alias recall is KOL-scoped only (precision: low false-positive per PRD). Never throws —
- *  a failure here must not block normal mention extraction. */
-function isTweetByMonitoredKOL(tweet: StoredTwitterTweet): boolean {
-  try {
-    const handle = normalize(normalizeTwitterHandle(tweet.authorHandle || ''));
-    if (!handle) return false;
-    const users = listMonitoredUsers();
-    for (const user of users) {
-      if (normalize(normalizeTwitterHandle(user.twitter || '')) === handle) return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 function pickMentionSentiment(params: {
@@ -386,62 +367,13 @@ async function runEnrichmentForTweet(params: {
     translationStatus = 'failed';
   }
 
-  // Alias-based recall (token name / alt spelling, e.g. $Z ← "gen z" / "Z世代").
-  // KOL-scoped + Chinese-capable LLM gate (enrichTweet above is English-only).
-  const aliasMentions: Array<ExtractedTweetTokenMention & { origin: TweetMentionOrigin }> = [];
-  let aliasSentiments: TweetEnrichmentAliasConfirmation[] = [];
-  if (isTweetByMonitoredKOL(params.tweet) && typeof params.model.confirmAliasReferences === 'function') {
-    const combinedText = [params.tweet.fullText, ...collectTweetSourceTexts(params.tweet.sourceJson)]
-      .filter(Boolean)
-      .join('\n');
-    const alreadyAddr = new Set(mergedMentions.map((m) => normalize(m.tokenAddress)).filter(Boolean));
-    const alreadySym = new Set(mergedMentions.map((m) => normalize(m.tokenSymbol)).filter(Boolean));
-    const hits = findAliasHits(combinedText).filter(
-      (h) =>
-        !alreadyAddr.has(h.entry.address.toLowerCase()) &&
-        !alreadySym.has(h.entry.symbol.toLowerCase()),
-    );
-    if (hits.length > 0) {
-      try {
-        aliasSentiments = await params.model.confirmAliasReferences!({
-          text: combinedText,
-          candidates: hits.map((h) => ({
-            symbol: h.entry.symbol,
-            name: h.entry.name,
-            address: h.entry.address,
-            chain: h.entry.chain,
-            matchedAlias: h.matchedAlias,
-          })),
-        });
-      } catch (err) {
-        console.warn('[enrichment] alias confirm failed:', err instanceof Error ? err.message : err);
-        aliasSentiments = [];
-      }
-      const confirmedAddr = new Set(aliasSentiments.map((a) => a.address.toLowerCase()));
-      for (const h of hits) {
-        if (!confirmedAddr.has(h.entry.address.toLowerCase())) continue;
-        aliasMentions.push({
-          tokenAddress: h.entry.address,
-          tokenSymbol: h.entry.symbol,
-          matchSource: 'ticker',
-          rankInTweet: 0,
-          origin: 'alias',
-        });
-      }
-    }
-  }
-  const allMentions = [...mergedMentions, ...aliasMentions].map((mention, idx) => ({
+  // 统一口径（2026-10-10）：别名召回已废除。KOL 别名→LLM 确认→回填 ticker 的通道
+  // 产出的行没有「明确 CA」支撑（匹配靠 alias 表+模型判断），不再写入 mentions。
+  const allMentions = [...mergedMentions].map((mention, idx) => ({
     ...mention,
     rankInTweet: idx + 1,
   }));
-  const combinedSentiments: TweetEnrichmentModelOutputSentiment[] = [
-    ...sentiments,
-    ...aliasSentiments.map((a) => ({
-      tokenAddress: a.address,
-      sentiment: a.sentiment,
-      confidence: a.confidence,
-    })),
-  ];
+  const combinedSentiments: TweetEnrichmentModelOutputSentiment[] = [...sentiments];
 
   const withSentiment = allMentions.map((mention) => {
     const matched = pickMentionSentiment({ mention, sentiments: combinedSentiments });

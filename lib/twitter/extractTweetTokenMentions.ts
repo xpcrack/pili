@@ -272,6 +272,12 @@ function findCaCandidates(text: string) {
   return result.sort((a, b) => a.index - b.index);
 }
 
+/** 统一口径（2026-10-10）：对外暴露纯 CA 提取，供 OCR/图片等场景复用——
+ *  只认文本里明确出现的地址（EVM 0x… / Solana base58），不做任何 ticker 反查。 */
+export function extractCaCandidatesFromText(text: string) {
+  return findCaCandidates(text);
+}
+
 type TickerKind = 'marked' | 'bare' | 'official_twitter';
 
 function findTickerCandidates(
@@ -409,6 +415,8 @@ export function extractTweetTokenMentions(
       }
       return true;
     })
+    // 统一口径在出口过滤（见 extractTweetTokenMentions 末尾）：ticker 行保留参与
+    // 同帖合并（ticker 旁边贴了 CA 时 symbol 能绑上去），出口再丢无 CA 的行。
     .map((match) => ({
       type: 'ticker' as const,
       index: match.index,
@@ -483,5 +491,11 @@ export function extractTweetTokenMentions(
     results.push(caMention);
   }
 
-  return results;
+  // 统一口径（2026-10-10）：出口过滤——只收有明确 CA 支撑的 mention。
+  // 保留：ca / both / official_twitter / 同帖贴了 CA 的 ticker 行（含合并后绑上地址的）。
+  // 丢弃：纯 ticker / 裸词（tokenAddress 为 null 且非官推）——防止 $TICKER
+  // 撞池内同名 meme 的错绑进入 mentions 表。
+  return results.filter(
+    (m) => m.tokenAddress !== null || m.matchSource === 'official_twitter',
+  );
 }

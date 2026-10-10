@@ -6,8 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { isStableOrNativeSymbol } from '@/lib/assetSymbols';
-import { type ExtractedTweetTokenMention } from '@/lib/twitter/extractTweetTokenMentions';
+import { extractCaCandidatesFromText, type ExtractedTweetTokenMention } from '@/lib/twitter/extractTweetTokenMentions';
 import { getPrimaryPoolSymbolAllowlist } from '@/lib/server/primaryPoolSymbols';
 
 const execFileAsync = promisify(execFile);
@@ -19,104 +18,42 @@ export interface VisionEnrichmentModel {
   extractMentionsFromImageUrl(url: string): Promise<ExtractedTweetTokenMention[]>;
 }
 
-function normalizeOcrText(value: string) {
-  return value
-    .trim()
-    .replace(/^[$#]+/, '')
-    .replace(/[​-‍﻿]/g, '')
-    .toLowerCase();
-}
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
-function hasAsciiSymbol(text: string, symbol: string) {
-  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(symbol.toLowerCase())}([^a-z0-9]|$)`, 'i').test(text);
-}
 
-function editDistanceAtMostOne(a: string, b: string) {
-  if (a === b) return true;
-  if (Math.abs(a.length - b.length) > 1) return false;
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      i += 1;
-      j += 1;
-      continue;
-    }
-    edits += 1;
-    if (edits > 1) return false;
-    if (a.length > b.length) i += 1;
-    else if (b.length > a.length) j += 1;
-    else {
-      i += 1;
-      j += 1;
-    }
-  }
-  return edits + (a.length - i) + (b.length - j) <= 1;
-}
 
-function likelyTokenSymbol(symbol: string) {
-  if (!symbol || isStableOrNativeSymbol(symbol)) return false;
-  if (/^[a-z0-9]+$/i.test(symbol)) return symbol.length >= 4;
-  if (/^[一-鿿]+$/.test(symbol)) return symbol.length >= 2;
-  return symbol.length >= 2;
-}
 
-function isNearPairSlash(text: string, index: number, length: number) {
-  const before = text.slice(Math.max(0, index - 2), index);
-  const after = text.slice(index + length, index + length + 2);
-  return before.includes('/') || after.includes('/');
-}
 
-function mentionSymbolFromPoolKey(symbol: string) {
-  return /^[a-z0-9]+$/i.test(symbol) ? symbol.toUpperCase() : symbol;
-}
 
 export function extractPoolMentionsFromOcrTexts(
   texts: string[],
-  poolSymbols: Iterable<string> = getPrimaryPoolSymbolAllowlist()
+  _poolSymbols: Iterable<string> = getPrimaryPoolSymbolAllowlist()
 ): ExtractedTweetTokenMention[] {
-  const symbols = Array.from(poolSymbols).filter(likelyTokenSymbol);
-  if (symbols.length === 0 || texts.length === 0) return [];
+  // 统一口径（2026-10-10）：OCR 只收明确 CA（EVM/Solana 地址）。
+  // 旧的「OCR 文本撞一级池 ticker 字典」通道废除——图里出现 ROBINHOOD/SOL 等
+  // 通用词会错绑到池内同名 meme。symbol 由下游 inferChainAndTickerForAddress 回填。
+  if (texts.length === 0) return [];
 
-  const normalizedTexts = texts.map(normalizeOcrText).filter(Boolean);
-  const found = new Set<string>();
-
-  for (const symbol of symbols) {
-    const s = normalizeOcrText(symbol);
-    if (!s) continue;
-
-    for (const text of normalizedTexts) {
-      const exact = /^[a-z0-9]+$/i.test(s) ? hasAsciiSymbol(text, s) : text.includes(s);
-      if (exact) {
-        found.add(symbol);
-        break;
-      }
-
-      // Vision often confuses one CJK glyph in tiny chart headers: 币有 → 市有.
-      if (/^[一-鿿]{2,8}$/.test(s)) {
-        const hanRuns = text.match(/[一-鿿]{2,8}/g) || [];
-        if (hanRuns.some((run) => {
-          const index = text.indexOf(run);
-          return index >= 0 && isNearPairSlash(text, index, run.length) && editDistanceAtMostOne(run, s);
-        })) {
-          found.add(symbol);
-          break;
-        }
-      }
+  const found = new Map<string, number>();
+  let rank = 0;
+  for (const text of texts) {
+    if (!text) continue;
+    for (const ca of extractCaCandidatesFromText(text)) {
+      const key = ca.tokenAddress.toLowerCase();
+      if (found.has(key)) continue;
+      rank += 1;
+      found.set(key, rank);
     }
   }
 
-  return Array.from(found).map((tokenSymbol, index) => ({
-    tokenAddress: null,
-    tokenSymbol: mentionSymbolFromPoolKey(tokenSymbol),
-    matchSource: 'ticker',
-    rankInTweet: index + 1,
-  }));
+  return Array.from(found.entries())
+    .sort((a, b) => a[1] - b[1])
+    .map(([tokenAddress, rank]) => ({
+      tokenAddress,
+      tokenSymbol: null,
+      matchSource: 'ca' as const,
+      rankInTweet: rank,
+    }));
 }
 
 async function downloadImage(url: string, filePath: string) {

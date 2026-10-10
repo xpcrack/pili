@@ -12,7 +12,6 @@ import type {
   TweetMentionSentiment,
 } from '@/lib/server/twitterEnrichmentRepo';
 import { resolveTransactionTimeMarketCap } from '@/lib/tokenLogo';
-import { lookupPrimaryPoolAddressBySymbol } from '@/lib/server/primaryPoolSymbols';
 
 const EVM_CA_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 const SOL_CA_EXACT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -171,18 +170,10 @@ export async function enrichMentionMarketData(params: {
     resolvedAtMs: null,
   };
 
-  let address = (params.mention.tokenAddress || '').trim();
-  if (!address) {
-    // Ticker-only mention → try primary pool lookup
-    const symbol = (params.mention.tokenSymbol || '').trim();
-    if (!symbol) return base;
-    const lookup = lookupPrimaryPoolAddressBySymbol(symbol);
-    if (!lookup) return base;
-    base.tokenAddress = lookup.address;
-    base.chain = lookup.chain;
-    base.matchSource = 'ticker';
-    address = lookup.address;
-  }
+  // 统一口径：只收明确 CA。ticker-only（无地址）不再走一级池 symbol 反查——
+  // 那会把「聊真 BTC」错绑到池内同名 meme，整条反查通道废除（2026-10-10 Finn 定调）。
+  const address = (params.mention.tokenAddress || '').trim();
+  if (!address) return base;
 
   try {
     const resolved = await inferChainAndTickerForAddress(address);

@@ -82,7 +82,7 @@ function testExtractTweetTokenMentions() {
     })),
     [
       { tokenSymbol: 'ABC', tokenAddress: '0x1234567890abcdef1234567890abcdef12345678', matchSource: 'both' },
-      { tokenSymbol: 'XYZ', tokenAddress: null, matchSource: 'ticker' },
+      // 统一口径：$XYZ 无 CA → 不再产出 mention
     ]
   );
 
@@ -95,11 +95,8 @@ function testExtractTweetTokenMentions() {
       tokenAddress: item.tokenAddress,
       matchSource: item.matchSource,
     })),
-    [
-      { tokenSymbol: '熊猫头', tokenAddress: null, matchSource: 'ticker' },
-      { tokenSymbol: 'FOO', tokenAddress: null, matchSource: 'ticker' },
-      { tokenSymbol: 'SUNDOG', tokenAddress: null, matchSource: 'ticker' },
-    ]
+    // 统一口径：纯 $/#ticker 无 CA → 全部不产出 mention
+    []
   );
 
   // #a too short; bare Chinese name without $/# not extracted
@@ -123,7 +120,7 @@ function testExtractTweetTokenMentions() {
       tokenAddress: item.tokenAddress,
       matchSource: item.matchSource,
     })),
-    [{ tokenSymbol: 'JIMOTHY', tokenAddress: null, matchSource: 'ticker' }]
+    [] // 统一口径：裸词无 CA → 不产出
   );
 
   // @handle not a bare ticker; only official-twitter map counts
@@ -132,7 +129,7 @@ function testExtractTweetTokenMentions() {
   });
   assert.deepEqual(
     handle.map((item) => item.tokenSymbol),
-    ['JIMOTHY']
+    [] // 统一口径：$Jimothy 无 CA 也不产出
   );
 
   // @official → token mention (primary-pool official twitter)
@@ -154,7 +151,7 @@ function testExtractTweetTokenMentions() {
         tokenAddress: 'SoPePe1111111111111111111111111111111111111',
         matchSource: 'official_twitter',
       },
-      { tokenSymbol: 'FOO', tokenAddress: null, matchSource: 'ticker' },
+      // $FOO 无 CA → 不产出
     ]
   );
 
@@ -185,7 +182,7 @@ function testExtractTweetTokenMentions() {
   );
   assert.deepEqual(
     yeon.map((item) => item.tokenSymbol),
-    ['PONS', 'RWA']
+    [] // 统一口径：裸词无 CA → 不产出
   );
 
   // stopwords / chart jargon must not become tickers
@@ -202,15 +199,12 @@ function testExtractTweetTokenMentions() {
   });
   assert.deepEqual(
     mixed.map((item) => item.tokenSymbol),
-    ['JIMOTHY']
+    [] // 统一口径：$Jimothy 无 CA → 不产出
   );
 
-  // $TICKER without pool still works
+  // 统一口径：$TICKER 无 CA 不再产出（旧规则是 without pool still works）
   const dollarOnly = extractTweetTokenMentions('ape $FOOBAR now');
-  assert.deepEqual(
-    dollarOnly.map((item) => item.tokenSymbol),
-    ['FOOBAR']
-  );
+  assert.deepEqual(dollarOnly, []);
 
   // ALLCAPS shout: short English + DOGE-in-phrase drop; SWOGE (≥5 + pool) keeps
   // TESLA is ≥5 but not in pool → drop; DOGE is 4 < shout min → drop
@@ -220,7 +214,7 @@ function testExtractTweetTokenMentions() {
   );
   assert.deepEqual(
     shout.map((item) => item.tokenSymbol),
-    ['TESLA', 'SWOGE']
+    [] // 统一口径：ALLCAPS 裸词无 CA → 不产出
   );
   const shoutPoolOnly = extractTweetTokenMentions(
     'WTF TESLA ACC JUST POSTED IN THE SWOGE X COMM SAYING HES NOT STOPPING UNTIL SWOLE DOGE MEME IS EVERYWHERE',
@@ -228,7 +222,7 @@ function testExtractTweetTokenMentions() {
   );
   assert.deepEqual(
     shoutPoolOnly.map((item) => item.tokenSymbol),
-    ['SWOGE']
+    [] // 统一口径
   );
 
   // $SWOGE in shout still works without pool
@@ -238,7 +232,7 @@ function testExtractTweetTokenMentions() {
   );
   assert.deepEqual(
     shoutDollar.map((item) => item.tokenSymbol),
-    ['SWOGE']
+    [] // 统一口径：$SWOGE 无 CA → 不产出
   );
 
   // hashtag + following CA binds like $TICKER CA
@@ -315,8 +309,9 @@ async function testEnrichmentProjectionMetadata() {
   const tweetItem = feed.find((item) => item.activity.metadata.tweetId === 'tweet-enrichment-1');
 
   assert.equal(tweetItem?.activity.metadata.translationZh, '我依然看好 ABC，对 XYZ 保持中性。');
-  assert.deepEqual(tweetItem?.activity.metadata.mentionedTickers, ['ABC', 'XYZ']);
-  assert.equal(tweetItem?.activity.metadata.tokenSentiments?.[0]?.sentiment, 'positive');
+  // 统一口径：$ABC/$XYZ 均无 CA → mentions 为空 → mentionedTickers/tokenSentiments 不再产出
+  assert.deepEqual(tweetItem?.activity.metadata.mentionedTickers, undefined);
+  assert.deepEqual(tweetItem?.activity.metadata.tokenSentiments, undefined);
 }
 
 async function testQuoteRelayProjectionMetadata() {
@@ -438,10 +433,8 @@ async function testQuotedTranslationAndMcFields() {
   assert.equal(enrichment?.visionStatus, 'skipped');
 
   const mentions = listTwitterTweetTokenMentions('tweet-quote-v2');
-  assert.equal(mentions[0]?.tokenSymbol, 'PEPE');
-  assert.equal(mentions[0]?.origin, 'text');
-  // marketCap fields exist (null without CA)
-  assert.equal(mentions[0]?.marketCapAtPostUsd, null);
+  // 统一口径：$PEPE 无 CA → mentions 空
+  assert.equal(mentions.length, 0);
 
   projectTwitterTweetsToFeed({ sinceMs: 0, tweetIds: ['tweet-quote-v2'] });
   const feed = readEventsFeed({ limit: 20 }).feed;
@@ -482,10 +475,20 @@ async function testVisionOcrPoolMatching() {
     new Set(['cashcat', '币有', 'usdc'])
   );
 
+  // 统一口径：OCR 只收明确 CA（图里没贴地址 → 空）。
+  // 旧口径是撞一级池 ticker 字典（CASHCAT/币有），已废除防错绑。
   assert.deepEqual(
-    mentions.map((item) => item.tokenSymbol),
-    ['CASHCAT', '币有']
+    mentions.map((item) => ({ tokenAddress: item.tokenAddress, tokenSymbol: item.tokenSymbol })),
+    []
   );
+
+  // 有明确 CA 的 OCR 文本 → 产出 ca 行
+  const withCa = extractPoolMentionsFromOcrTexts(
+    ['buy 0xe8b5c43617cb61a897d41ab2dba7f5f2ef457777 now'],
+    new Set()
+  );
+  assert.equal(withCa.length, 1);
+  assert.equal(withCa[0]?.matchSource, 'ca');
 }
 
 async function run() {
