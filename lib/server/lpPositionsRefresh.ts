@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { batchFetchFromDexScreener, fetchFromDexScreener } from '@/lib/server/dexscreener';
+import { batchFetchFromDexScreener, fetchDexScreenerTokenSymbol, fetchFromDexScreener } from '@/lib/server/dexscreener';
 import { getDb, type DbHandle } from '@/lib/server/sqlite';
 import {
   fetchRobinhoodTendiesEthUsd,
@@ -115,6 +115,33 @@ function getDbOrDefault(db?: DbHandle) {
   return db ?? getDb();
 }
 
+/**
+ * Per-refresh symbol hints from current_holdings spot rows (chain='robinhood').
+ * 兜底顺序：DexScreener base → DexScreener quote-side → 这里的现货 symbol。
+ * OKX 侧的现货抓取对无 DEX 池的代币（如 0x4d6f）也带官方 symbol，DexScreener
+ * 查不到时这里往往还有救。
+ */
+function spotSymbolHint(db: DbHandle, currencies: string[]): Record<string, string> {
+  const addresses = currencies
+    .map((c) => c.toLowerCase())
+    .filter((c) => c.startsWith('0x') && c !== '0x0000000000000000000000000000000000000000');
+  if (addresses.length === 0) return {};
+  const placeholders = addresses.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT token_address_lower, symbol FROM current_holdings
+       WHERE chain = 'robinhood' AND token_address_lower IN (${placeholders}) AND symbol IS NOT NULL`,
+    )
+    .all(...addresses) as Array<{ token_address_lower: string; symbol: string }>;
+  const hints: Record<string, string> = {};
+  for (const row of rows) {
+    const symbol = row.symbol.trim();
+    if (!symbol || /^0x[0-9a-f]{0,6}$/i.test(symbol)) continue;
+    hints[row.token_address_lower] = symbol;
+  }
+  return hints;
+}
+
 interface TrackedEvmWallet {
   addressLower: string;
   userId: string | null;
@@ -140,16 +167,21 @@ function listTrackedEvmWallets(db: DbHandle): TrackedEvmWallet[] {
 }
 
 /**
- * Resolve USD prices for LP legs via DexScreener.
+ * Resolve USD prices + tickers for LP legs via DexScreener.
  *
  * ⚠️ 不用批量端点（/latest/dex/tokens/0xa,0xb,...）：30-pair 响应上限会把
  * 深池币之外的冷门腿整个挤掉（2026-10-08 实测：AI 的 30 个池把 UNICORN
  * 唯一的池挤出响应，LP 腿全 null）。LP 腿 ≤ 每轮几十个，逐 token 查 + 200ms
  * 间隔，单请求响应完整。
+ *
+ * ticker 两级：先 fetchFromDexScreener（baseToken 侧，多数腿够用）；quote-only
+ * 代币（如 Robinhood 的 USDG 只当 quoteToken）base 查询返回 null，再用
+ * fetchDexScreenerTokenSymbol 双侧匹配兜底 —— 否则 symbol 退化成 0x5fc5 截断。
  */
 async function fetchLegPrices(
   currencies: string[],
   singleFetch: typeof fetchFromDexScreener,
+  symbolFetch: typeof fetchDexScreenerTokenSymbol,
 ): Promise<{ prices: Record<string, number>; tickers: Record<string, string>; warnings: string[] }> {
   const unique = Array.from(new Set(currencies.map((c) => c.toLowerCase()))).filter(
     (c) => c !== '0x0000000000000000000000000000000000000000',
@@ -167,6 +199,11 @@ async function fetchLegPrices(
       }
       if (data?.ticker) {
         tickers[address.toLowerCase()] = data.ticker;
+      } else {
+        const symbol = await symbolFetch(address, 'robinhood');
+        if (symbol) {
+          tickers[address.toLowerCase()] = symbol;
+        }
       }
     } catch (error) {
       warnings.push(`dexscreener leg price ${address.slice(0, 10)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -214,6 +251,8 @@ export async function refreshLpPositions(
     fetchTendiesEthUsd?: typeof fetchRobinhoodTendiesEthUsd;
     /** 注入单币价格查询（测试）。默认 fetchFromDexScreener（逐 token，避开批量端点 30-pair 截断）。 */
     fetchLegPrice?: typeof fetchFromDexScreener;
+    /** 注入 quote-only 代币 symbol 兜底查询（测试）。默认 fetchDexScreenerTokenSymbol。 */
+    fetchLegSymbol?: typeof fetchDexScreenerTokenSymbol;
     wallets?: TrackedEvmWallet[];
   } = {},
 ): Promise<LpRefreshCycleResult> {
@@ -278,6 +317,7 @@ export async function refreshLpPositions(
     const { prices, tickers, warnings } = await fetchLegPrices(
       allLegCurrencies,
       options.fetchLegPrice ?? fetchFromDexScreener,
+      options.fetchLegSymbol ?? fetchDexScreenerTokenSymbol,
     );
     summary.priceWarnings += warnings.length;
     for (const warning of warnings) {
@@ -290,10 +330,20 @@ export async function refreshLpPositions(
         const priced = pricePosition(position, prices, tendiesEth.ethUsd);
         if (priced.totalUsd != null && priced.totalUsd < MIN_LP_POSITION_USD) continue;
         // 展示 symbol：DexScreener 有 ticker 时替换 "0x2e8c" 截断形态（AI/BONER 好认）。
+        // 两级 DexScreener 都没命中时用本库现货持仓的 symbol（OKX 侧已解析过）兜底；
+        // 都拿不到 → null，前端显示「未知代币」，绝不回退误导性的 CA 截断。
+        const symbolHint = spotSymbolHint(db, [
+          position.currency0,
+          position.currency1,
+        ]);
         const symbolFor = (currency: string, fallback: string) => {
           const lower = currency.toLowerCase();
           if (lower === '0x0000000000000000000000000000000000000000') return 'ETH';
-          return tickers[lower] ?? fallback;
+          const ticker = tickers[lower] ?? symbolHint[lower];
+          if (ticker) return ticker;
+          // 旧数据回填轮：position.tokenXSymbol 本身可能是上轮持久化的截断 CA，
+          // 原样写回会把空串/截断永久钉死 —— 改为 null 让前端显示「未知代币」。
+          return /^0x[0-9a-f]{0,6}$/i.test(fallback) ? null : fallback;
         };
         const token0Symbol = symbolFor(position.currency0, position.token0Symbol);
         const token1Symbol = symbolFor(position.currency1, position.token1Symbol);
@@ -302,7 +352,9 @@ export async function refreshLpPositions(
           user_id: wallet.userId,
           token_id: position.tokenId,
           pool_id: position.poolId,
-          symbol: `${token0Symbol}/${token1Symbol}`,
+          symbol: [token0Symbol, token1Symbol].every((s) => s != null)
+            ? `${token0Symbol}/${token1Symbol}`
+            : [token0Symbol, token1Symbol].find((s) => s != null) ?? 'LP',
           name: position.name,
           currency0: position.currency0,
           currency1: position.currency1,
