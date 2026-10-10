@@ -34,6 +34,8 @@ export interface LpPositionRow {
   name: string;
   currency0: string;
   currency1: string;
+  token0_symbol: string | null;
+  token1_symbol: string | null;
   fee: number;
   tick_lower: number;
   tick_upper: number;
@@ -75,6 +77,8 @@ export function ensureLpPositionsTable(db?: DbHandle) {
       name TEXT,
       currency0 TEXT,
       currency1 TEXT,
+      token0_symbol TEXT,
+      token1_symbol TEXT,
       fee INTEGER,
       tick_lower INTEGER,
       tick_upper INTEGER,
@@ -93,6 +97,18 @@ export function ensureLpPositionsTable(db?: DbHandle) {
     CREATE INDEX IF NOT EXISTS idx_lp_positions_address
       ON current_lp_positions(tracked_address_lower);
   `);
+  // 2026-10-10 LP 腿拆分：把两侧 symbol 持久化，readUserHoldingsDetails 直接复用，
+  // 前端不再反查。旧库缺列时补上（ALTER 重复执行会抛错，吞掉即可）。
+  try {
+    getDbOrDefault(db).exec('ALTER TABLE current_lp_positions ADD COLUMN token0_symbol TEXT');
+  } catch {
+    // Column already exists.
+  }
+  try {
+    getDbOrDefault(db).exec('ALTER TABLE current_lp_positions ADD COLUMN token1_symbol TEXT');
+  } catch {
+    // Column already exists.
+  }
 }
 
 function getDbOrDefault(db?: DbHandle) {
@@ -134,19 +150,23 @@ function listTrackedEvmWallets(db: DbHandle): TrackedEvmWallet[] {
 async function fetchLegPrices(
   currencies: string[],
   singleFetch: typeof fetchFromDexScreener,
-): Promise<{ prices: Record<string, number>; warnings: string[] }> {
+): Promise<{ prices: Record<string, number>; tickers: Record<string, string>; warnings: string[] }> {
   const unique = Array.from(new Set(currencies.map((c) => c.toLowerCase()))).filter(
     (c) => c !== '0x0000000000000000000000000000000000000000',
   );
   const prices: Record<string, number> = {};
+  const tickers: Record<string, string> = {};
   const warnings: string[] = [];
-  if (unique.length === 0) return { prices, warnings };
+  if (unique.length === 0) return { prices, tickers, warnings };
 
   for (const address of unique) {
     try {
       const data = await singleFetch(address, 'robinhood');
       if (data && data.price > 0) {
         prices[address.toLowerCase()] = data.price;
+      }
+      if (data?.ticker) {
+        tickers[address.toLowerCase()] = data.ticker;
       }
     } catch (error) {
       warnings.push(`dexscreener leg price ${address.slice(0, 10)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -155,7 +175,7 @@ async function fetchLegPrices(
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
-  return { prices, warnings };
+  return { prices, tickers, warnings };
 }
 
 /** Apply prices to a position; native ETH legs need an ETH price anchor. */
@@ -255,7 +275,7 @@ export async function refreshLpPositions(
     }
 
     // Leg pricing: DexScreener batch for meme legs. ETH legs already priced by ethUsd anchor.
-    const { prices, warnings } = await fetchLegPrices(
+    const { prices, tickers, warnings } = await fetchLegPrices(
       allLegCurrencies,
       options.fetchLegPrice ?? fetchFromDexScreener,
     );
@@ -269,15 +289,25 @@ export async function refreshLpPositions(
       for (const position of positions) {
         const priced = pricePosition(position, prices, tendiesEth.ethUsd);
         if (priced.totalUsd != null && priced.totalUsd < MIN_LP_POSITION_USD) continue;
+        // 展示 symbol：DexScreener 有 ticker 时替换 "0x2e8c" 截断形态（AI/BONER 好认）。
+        const symbolFor = (currency: string, fallback: string) => {
+          const lower = currency.toLowerCase();
+          if (lower === '0x0000000000000000000000000000000000000000') return 'ETH';
+          return tickers[lower] ?? fallback;
+        };
+        const token0Symbol = symbolFor(position.currency0, position.token0Symbol);
+        const token1Symbol = symbolFor(position.currency1, position.token1Symbol);
         rows.push({
           tracked_address_lower: wallet.addressLower,
           user_id: wallet.userId,
           token_id: position.tokenId,
           pool_id: position.poolId,
-          symbol: `${position.token0Symbol}/${position.token1Symbol}`,
+          symbol: `${token0Symbol}/${token1Symbol}`,
           name: position.name,
           currency0: position.currency0,
           currency1: position.currency1,
+          token0_symbol: token0Symbol,
+          token1_symbol: token1Symbol,
           fee: position.fee,
           tick_lower: position.tickLower,
           tick_upper: position.tickUpper,
@@ -320,10 +350,11 @@ function writeLpPositionRows(db: DbHandle, rows: LpPositionRow[], refreshedAtMs:
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO current_lp_positions
     (tracked_address_lower, user_id, token_id, pool_id, symbol, name,
-     currency0, currency1, fee, tick_lower, tick_upper, liquidity,
+     currency0, currency1, token0_symbol, token1_symbol,
+     fee, tick_lower, tick_upper, liquidity,
      amount0_human, amount1_human, amount0_usd, amount1_usd, total_usd,
      full_range, refreshed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const write = db.transaction(() => {
@@ -342,6 +373,8 @@ function writeLpPositionRows(db: DbHandle, rows: LpPositionRow[], refreshedAtMs:
         row.name,
         row.currency0,
         row.currency1,
+        row.token0_symbol,
+        row.token1_symbol,
         row.fee,
         row.tick_lower,
         row.tick_upper,
@@ -360,29 +393,63 @@ function writeLpPositionRows(db: DbHandle, rows: LpPositionRow[], refreshedAtMs:
 }
 
 /**
- * Project LP rows into current_holdings as one aggregated row per wallet
- * (kind marker via token_address = 'lp:uniswap-v4'), replacing that wallet's
- * previous LP row. wallet×chain key: current_holdings rows for LP use chain='robinhood-lp'
- * so they never collide with OKX token rows.
+ * Project LP rows into current_holdings as one row per (wallet × leg token):
+ * the AI leg lands on the AI token address, the BONER leg on BONER's, so
+ * downstream SQL consumers (trackedUsersRepo 总资产 SUM、walletPnlService 价源)
+ * see real token addresses instead of one 'lp:uniswap-v4' 聚合行. Rows for the
+ * same token across multiple positions accumulate (balance/amount + USD).
+ *
+ * wallet×chain key: LP projection rows use chain='robinhood-lp' so they never
+ * collide with OKX/spot token rows on chain='robinhood'. liquidity_usd stays
+ * NULL (LP 深度不等于币的池子深度) — 流动性过滤语义与聚合行时代一致。
  */
 function projectIntoCurrentHoldings(db: DbHandle, rows: LpPositionRow[], refreshedAtMs: number) {
+  const del = db.prepare(
+    `DELETE FROM current_holdings WHERE chain = 'robinhood-lp' AND refreshed_at < ?`,
+  );
   if (rows.length === 0) {
     // Still delete stale LP projection rows so closed positions disappear.
-    db.prepare(`DELETE FROM current_holdings WHERE chain = 'robinhood-lp' AND refreshed_at < ?`)
-      .run(refreshedAtMs);
+    del.run(refreshedAtMs);
     return;
   }
 
-  const byWallet = new Map<string, { userId: string | null; totalUsd: number; legs: LpPositionRow[] }>();
+  // (wallet, legToken) → accumulated leg amounts.
+  interface LegProjection {
+    userId: string | null;
+    tokenAddress: string;
+    symbol: string;
+    name: string;
+    amount: number;
+    usd: number;
+    usdKnown: boolean;
+  }
+  const byLeg = new Map<string, LegProjection>();
   for (const row of rows) {
-    const entry = byWallet.get(row.tracked_address_lower) ?? {
-      userId: row.user_id,
-      totalUsd: 0,
-      legs: [],
-    };
-    entry.totalUsd += row.total_usd ?? 0;
-    entry.legs.push(row);
-    byWallet.set(row.tracked_address_lower, entry);
+    const leg0Usd = row.amount0_usd;
+    const leg1Usd = row.amount1_usd;
+    const leg0 = { tokenAddress: row.currency0.toLowerCase(), symbol: row.token0_symbol, amount: row.amount0_human, usd: leg0Usd };
+    const leg1 = { tokenAddress: row.currency1.toLowerCase(), symbol: row.token1_symbol, amount: row.amount1_human, usd: leg1Usd };
+    for (const leg of [leg0, leg1]) {
+      const zeroAddress = '0x0000000000000000000000000000000000000000';
+      if (leg.tokenAddress === zeroAddress) continue;
+      const key = `${row.tracked_address_lower}:${leg.tokenAddress}`;
+      const entry = byLeg.get(key) ?? {
+        userId: row.user_id,
+        tokenAddress: leg.tokenAddress,
+        symbol: leg.symbol || leg.tokenAddress.slice(0, 6),
+        name: `Uniswap V4 LP · ${row.symbol}`,
+        amount: 0,
+        usd: 0,
+        usdKnown: false,
+      };
+      entry.amount += leg.amount;
+      if (leg.usd != null) {
+        entry.usd += leg.usd;
+        entry.usdKnown = true;
+      }
+      entry.name = `Uniswap V4 LP · ${row.symbol}`;
+      byLeg.set(key, entry);
+    }
   }
 
   const upsert = db.prepare(`
@@ -391,32 +458,26 @@ function projectIntoCurrentHoldings(db: DbHandle, rows: LpPositionRow[], refresh
      token_address, token_address_lower, symbol, name,
      balance, price_usd, value_usd, liquidity_usd, source,
      provisional_updated_at, authoritative_refreshed_at, refreshed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lp', NULL, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'lp', NULL, ?, ?)
   `);
-  const del = db.prepare(
-    `DELETE FROM current_holdings WHERE chain = 'robinhood-lp' AND refreshed_at < ?`,
-  );
 
   const write = db.transaction(() => {
     del.run(refreshedAtMs);
-    for (const [addressLower, entry] of byWallet) {
-      if (!(entry.totalUsd > 0)) continue;
-      const legsDesc = [...entry.legs].sort((a, b) => (b.total_usd ?? 0) - (a.total_usd ?? 0));
-      const symbol = legsDesc.map((leg) => leg.symbol).slice(0, 2).join(' + ');
-      const name = `Uniswap V4 LP ×${entry.legs.length}`;
+    for (const [key, leg] of byLeg) {
+      const [addressLower, tokenAddress] = key.split(':');
+      if (!(leg.usdKnown && leg.usd > 0)) continue;
       upsert.run(
         addressLower,
         addressLower,
-        entry.userId,
+        leg.userId,
         'robinhood-lp',
-        'lp:uniswap-v4',
-        'lp:uniswap-v4',
-        symbol || 'V4-LP',
-        name,
-        entry.legs.length,
-        entry.totalUsd / Math.max(1, entry.legs.length),
-        entry.totalUsd,
-        null,
+        tokenAddress,
+        tokenAddress,
+        leg.symbol,
+        leg.name,
+        leg.amount,
+        leg.usdKnown && leg.amount > 0 ? leg.usd / leg.amount : null,
+        leg.usd,
         refreshedAtMs,
         refreshedAtMs,
       );

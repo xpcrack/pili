@@ -99,7 +99,8 @@ function normalize(value: string | undefined) {
 function liquidAssetWhereSql(alias: string) {
   // RH: liquidity NULL/0 = 无 DEX 池数据，照常计入（9-12 教训）；实测尘埃
   // 流动性（0<liq<5k，如 4FOUR $0.0003 → $3.59M 幻觉）不算流动资产。
-  return `((${alias}.chain = 'robinhood' AND COALESCE(${alias}.liquidity_usd, 0) = 0) OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
+  // robinhood-lp = LP 腿投影行，liquidity_usd 恒 NULL，同 RH 语义计入。
+  return `((${alias}.chain IN ('robinhood', 'robinhood-lp') AND COALESCE(${alias}.liquidity_usd, 0) = 0) OR COALESCE(${alias}.liquidity_usd, 0) >= ${LIQUID_ASSET_MIN_LIQUIDITY_USD} OR upper(COALESCE(${alias}.symbol, '')) IN (${LIQUID_ASSET_SYMBOL_PLACEHOLDERS}))`;
 }
 
 /**
@@ -115,7 +116,7 @@ export function isLiquidHoldingRow(holding: {
 }): boolean {
   const chain = (holding.chain ?? '').toLowerCase();
   const liquidity = holding.liquidity_usd;
-  if (chain === 'robinhood' && (liquidity == null || liquidity === 0)) return true;
+  if ((chain === 'robinhood' || chain === 'robinhood-lp') && (liquidity == null || liquidity === 0)) return true;
   if (liquidity != null && liquidity >= LIQUID_ASSET_MIN_LIQUIDITY_USD) return true;
   const liquidSymbols: readonly string[] = LIQUID_ASSET_SYMBOLS;
   return liquidSymbols.includes((holding.symbol ?? '').toUpperCase());

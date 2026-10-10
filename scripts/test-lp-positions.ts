@@ -205,13 +205,20 @@ async function run() {
       `leg-priced total: expected ~170000, got ${lpRow.total_usd}`,
     );
 
-    // current_holdings 投影
+    // current_holdings 投影：每腿一行（AI $90k + BONER $80k），token_address 是真实合约
     const projected = db
       .prepare(`SELECT * FROM current_holdings WHERE chain = 'robinhood-lp' AND tracked_address_lower = ?`)
-      .get(wallet) as { value_usd: number; symbol: string; source: string } | undefined;
-    assert.ok(projected, 'projected row in current_holdings');
-    assert.equal(projected.source, 'lp');
-    assert.ok(Math.abs(projected.value_usd - 170_000) < 1, 'projected value matches legs');
+      .all(wallet) as Array<{ value_usd: number; symbol: string; source: string; token_address_lower: string }>;
+    assert.equal(projected.length, 2, 'one projection row per leg token');
+    assert.ok(projected.every((row) => row.source === 'lp'));
+    assert.ok(
+      Math.abs(projected.reduce((sum, row) => sum + row.value_usd, 0) - 170_000) < 1,
+      'projected values sum to both legs',
+    );
+    assert.ok(
+      projected.every((row) => row.token_address_lower.startsWith('0x')),
+      'projection rows carry real token addresses (no lp: prefix)',
+    );
 
     // readUserHoldingsDetails 合并 LP 行（isLp=true）
     const { listTrackedUsers } = await import('@/lib/server/trackedUsersRepo');
@@ -239,11 +246,27 @@ async function run() {
       tags: [],
     };
     const details = await readUserHoldingsDetails(user);
-    const lpHolding = details.holdings.find((h) => h.isLp);
-    assert.ok(lpHolding, 'LP row merged into holdings details');
-    assert.ok(Math.abs(lpHolding.valueUsd - 170_000) < 1, 'LP row valueUsd from lp table');
-    assert.equal(lpHolding.chain, 'robinhood');
-    assert.ok(lpHolding.tokenAddress.startsWith('lp:uniswap-v4:'), 'LP tokenAddress is lp: prefix');
+    // USDC $10 被 LP 腿（$90k/$80k）压过阈值是必然；AI/BONER 行应带 lpUsd + lpLegs。
+    const lpHoldings = details.holdings.filter((h) => h.lpUsd != null && h.lpUsd > 0);
+    assert.equal(lpHoldings.length, 2, 'both legs merged into per-token holdings rows');
+    assert.ok(
+      Math.abs(lpHoldings.reduce((sum, h) => sum + h.lpUsd!, 0) - 170_000) < 1,
+      'both LP legs = 170000',
+    );
+    assert.ok(
+      Math.abs(details.holdings.reduce((sum, h) => sum + h.valueUsd, 0) - 170_010) < 1,
+      'spot USDC + both LP legs = 170010',
+    );
+    for (const lpHolding of lpHoldings) {
+      assert.equal(lpHolding.chain, 'robinhood');
+      assert.ok(lpHolding.tokenAddress.startsWith('0x'), 'LP row keyed on real token address');
+      assert.ok(Math.abs(lpHolding.valueUsd - lpHolding.lpUsd!) < 1, 'no spot balance for AI/BONER');
+      assert.ok(lpHolding.lpLegs && lpHolding.lpLegs.length === 1, 'one leg detail attached');
+      const leg = lpHolding.lpLegs![0];
+      assert.equal(leg.feePct, 0.9, 'fee pct = 9000/10000');
+      assert.ok(leg.fullRange, 'full range flag');
+      assert.ok(leg.otherSymbol === 'X', 'other leg symbol from DexScreener ticker');
+    }
 
     // 阈值以下不显示：把价格改小后重刷 → 消失
     await refreshLpPositions({
@@ -261,7 +284,10 @@ async function run() {
       fetchLegPrice: async () => null,
     });
     const details2 = await readUserHoldingsDetails(user);
-    assert.ok(!details2.holdings.some((h) => h.isLp), 'dust LP row filtered by threshold');
+    assert.ok(
+      !details2.holdings.some((h) => h.lpUsd != null && h.lpUsd > 0),
+      'dust LP legs filtered by threshold',
+    );
 
     // LP 仓位清空（卖出）→ 聚合行从 current_holdings 消失
     await refreshLpPositions({
