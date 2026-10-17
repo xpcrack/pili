@@ -10,10 +10,13 @@ import { getDb, withTransaction } from '@/lib/server/sqlite';
 import { assertValidTrackedAddress } from '@/lib/trackedAddressValidation';
 import { type AddressInfo, type ChainType, type User } from '@/types';
 
-const SUPPORTED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
+const SUPPORTED_TYPED_CHAINS = new Set<ChainType>(['bsc', 'solana', 'ethereum', 'base']);
+// robinhood 是 Feed-only 链：不在 ChainType 类型里，但跟踪地址要建行、
+// Alchemy RH webhook 事件要能命中 monitored 地址。
+const SUPPORTED_CHAINS = new Set<string>([...SUPPORTED_TYPED_CHAINS, 'robinhood']);
 const LIQUID_ASSET_MIN_LIQUIDITY_USD = 5_000;
 const LIQUID_ASSET_SYMBOL_PLACEHOLDERS = LIQUID_ASSET_SYMBOLS.map(() => '?').join(', ');
-const TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY = 'tracked_address_evm_expansion_v1';
+const TRACKED_ADDRESS_EVM_EXPANSION_APP_STATE_KEY = 'tracked_address_evm_expansion_v2';
 
 interface TrackedUserRow {
   id: string;
@@ -337,7 +340,7 @@ function ensureExpandedTrackedAddressRows() {
 
       const lower = normalize(row.address_lower || row.address);
       const mon = enabledByLower.has(lower) ? enabledByLower.get(lower)! : 1;
-      for (const chain of EVM_CHAINS) {
+      for (const chain of [...EVM_CHAINS, 'robinhood'] as const) {
         const id = `${row.user_id}:${chain}:${row.address_lower}`;
         upsert.run(id, row.user_id, row.address, row.address_lower, row.name, chain, now, now, mon);
       }
@@ -611,7 +614,7 @@ function upsertAddressRows(userId: string, addresses: AddressInfo[], now: number
 
 function purgeAddressRelatedData(userId: string, chain: string, addressLower: string) {
   const db = getDb();
-  const chains = isEvmChain(chain) || isEvmAddress(addressLower) ? EVM_CHAINS : [chain];
+  const chains = isEvmChain(chain) || isEvmAddress(addressLower) ? [...EVM_CHAINS, 'robinhood'] : [chain];
 
   for (const nextChain of chains) {
     db.prepare(

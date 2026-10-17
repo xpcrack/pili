@@ -56,8 +56,8 @@ function run() {
 
   assert.deepEqual(
     expanded.map((item) => item.chain),
-    ['bsc', 'ethereum', 'base', 'solana'],
-    '0x 地址应自动展开为 3 条 EVM 跟踪记录'
+    ['bsc', 'ethereum', 'base', 'robinhood', 'solana'],
+    '0x 地址应自动展开为 4 条 EVM 跟踪记录'
   );
 
   const grouped = groupAddressesForDisplay([
