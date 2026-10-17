@@ -51,9 +51,10 @@ export function expandTrackedAddresses<T extends AddressInfo>(addresses: readonl
       continue;
     }
 
-    const nextChains =
+    // EVM 地址同时展开到 robinhood 链（Feed-only，不进 EVM_CHAINS 资产聚合路径）。
+    const nextChains: string[] =
       isEvmAddress(normalizedAddress) || isEvmChain(address.chain)
-        ? EVM_CHAINS
+        ? [...EVM_CHAINS, 'robinhood']
         : [address.chain];
 
     for (const chain of nextChains) {
@@ -66,7 +67,7 @@ export function expandTrackedAddresses<T extends AddressInfo>(addresses: readonl
         ...address,
         address: normalizedAddress,
         chain,
-      });
+      } as T);
     }
   }
 

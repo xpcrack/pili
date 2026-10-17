@@ -50,8 +50,8 @@ async function run() {
 
     assert.deepEqual(
       user.addresses.map((address) => address.chain).sort(),
-      ['base', 'bsc', 'ethereum'],
-      '服务端持久化时应自动将单个 EVM 地址展开为 BSC / Ethereum / Base 三链'
+      ['base', 'bsc', 'ethereum', 'robinhood'],
+      '服务端持久化时应自动将单个 EVM 地址展开为 BSC / Ethereum / Base / Robinhood 四链'
     );
 
     const db = getDb();
@@ -99,14 +99,14 @@ async function run() {
 
     const stored = listTrackedUsers().find((candidate) => candidate.id === user.id);
     assert.ok(stored, '应能读回已创建人物');
-    assert.deepEqual(stored.addresses.map((address) => address.chain).sort(), ['base', 'bsc', 'ethereum']);
+    assert.deepEqual(stored.addresses.map((address) => address.chain).sort(), ['base', 'bsc', 'ethereum', 'robinhood']);
 
     const legacy = listTrackedUsers().find((candidate) => candidate.id === 'legacy-user');
     assert.ok(legacy, '应能读回旧版单链 EVM 人物');
     assert.deepEqual(
       legacy.addresses.map((address) => address.chain).sort(),
-      ['base', 'bsc', 'ethereum'],
-      '读取旧版单链 EVM 数据时也应自动补齐三链地址'
+      ['base', 'bsc', 'ethereum', 'robinhood'],
+      '读取旧版单链 EVM 数据时也应自动补齐四链地址'
     );
 
     console.log('tracked user evm expansion tests: ok');
