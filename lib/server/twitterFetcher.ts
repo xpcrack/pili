@@ -5,7 +5,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { createTwitter6551Client } from '@/lib/server/twitter6551Client';
-import { createTwitterXreadClient } from '@/lib/server/twitterXreadClient';
 import {
   chooseTwitterProviderRoute,
   type TwitterStructuredProviderRouteResult,
@@ -27,7 +26,7 @@ import {
 } from '@/lib/server/twitterProviderTypes';
 
 export type TwitterFetcherTweet = Omit<UpsertTwitterTweetInput, 'lane'>;
-export type TwitterFetcherProvider = '6551' | 'xread' | 'opencli' | 'dokobot' | 'seed' | 'fixture' | 'noop';
+export type TwitterFetcherProvider = '6551' | 'opencli' | 'dokobot' | 'seed' | 'fixture' | 'noop';
 
 export interface TwitterFetcherResult {
   provider: TwitterFetcherProvider;
@@ -46,7 +45,7 @@ export interface TwitterFetcherSeedByHandle {
   };
 }
 
-export type TwitterFetcherProviderMode = 'auto' | '6551' | 'xread' | 'opencli' | 'dokobot' | 'fixture' | 'noop';
+export type TwitterFetcherProviderMode = 'auto' | '6551' | 'opencli' | 'dokobot' | 'fixture' | 'noop';
 
 export interface TwitterFetcherProviderPlanItem {
   provider: Exclude<TwitterFetcherProvider, 'seed' | 'noop'>;
@@ -62,7 +61,6 @@ export interface TwitterFetcherProviderAttempt {
 
 export interface TwitterFetcherDependencies {
   client6551?: ReturnType<typeof createTwitter6551Client>;
-  clientXread?: ReturnType<typeof createTwitterXreadClient>;
   routeChooser?: typeof chooseTwitterProviderRoute;
   readBudgetSnapshot?: typeof readTwitterProviderBudgetSnapshot;
   readIdentityCache?: typeof readTwitterIdentityCache;
@@ -95,8 +93,8 @@ const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
  *  - 401 invalid token / invalid Authorization format = key 真失效/被吊销，不会自愈 → 长冷却
  *  - 402 insufficient quota = 当日免费额度耗尽，按北京时间自然日 00:00 自动重置 → 会自愈，短冷却
  *  - 404 route not found = 端点路径不存在（如 twitter_tweet_detail 未开放），与 key 有效性无关 → 不锁
- *  旧版把 402/404 一并锁 2h，导致配额跨天恢复后 key 仍被 cooldown 挡住、浪费免费额度，
- *  整条线被迫全压到 xread 付费 API。修正为只有 401 才长冷却。 */
+ *  旧版把 402/404 一并锁 2h，导致配额跨天恢复后 key 仍被 cooldown 挡住、浪费免费额度。
+ *  修正为只有 401 才长冷却。 */
 const PAID_TIER_PROVIDER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 /**
  * 6551 免费额度按北京时间自然日重置（00:00）。402 insufficient quota = 当日配额耗尽，
@@ -136,13 +134,12 @@ function normalizeRealProviderMode(value: string | undefined | null): TwitterFet
   const normalized = normalize(value);
   if (
     normalized === '6551' ||
-    normalized === 'xread' ||
     normalized === 'opencli' ||
     normalized === 'dokobot' ||
     normalized === 'fixture' ||
     // 2026-10-07: 'noop' 是合法的「不抓」模式。此前它在白名单外，会被
     // 静默降级成 'auto' —— 设 TWITTER_FETCH_PROVIDER=noop 实际等于回到
-    // auto 路由（6551 → xread），意图被反转。修此 bug 后 noop 真能关掉直抓。
+    // auto 路由（6551），意图被反转。修此 bug 后 noop 真能关掉直抓。
     normalized === 'noop'
   ) {
     return normalized;
@@ -213,7 +210,7 @@ export function buildTwitterFetcherProviderPlan(input: {
     return [toPlanItem({ provider: 'fixture', credentialId: null })];
   }
 
-  if (input.providerMode === '6551' || input.providerMode === 'xread') {
+  if (input.providerMode === '6551') {
     return input.route.orderedProviders.filter((item) => item.provider === input.providerMode).map(toPlanItem);
   }
 
@@ -855,10 +852,6 @@ function get6551ApiKey(credentialId: string) {
   return (process.env[`TWITTER_6551_API_KEY_${index}`] || '').trim();
 }
 
-function getXreadApiKey() {
-  return (process.env.TWITTER_XREAD_API_KEY || '').trim();
-}
-
 function createRouteCandidates(
   nowMs: number,
   dependencies: Required<Pick<TwitterFetcherDependencies, 'readBudgetSnapshot'>>
@@ -886,18 +879,8 @@ function createRouteCandidates(
     };
   });
 
-  const xreadApiKey = getXreadApiKey();
-  const xread = xreadApiKey
-    ? {
-        provider: 'xread' as const,
-        credentialId: 'xread-default',
-        apiKey: xreadApiKey,
-      }
-    : null;
-
   return {
     keys6551,
-    xread,
   };
 }
 
@@ -908,7 +891,6 @@ async function resolveTwitterIdentity(params: {
     Pick<
       TwitterFetcherDependencies,
       | 'client6551'
-      | 'clientXread'
       | 'readIdentityCache'
       | 'upsertIdentityCache'
       | 'markProviderSuccess'
@@ -923,7 +905,7 @@ async function resolveTwitterIdentity(params: {
   }
 
   const firstStructuredProvider =
-    params.providerPlan.find((item) => item.provider === '6551' || item.provider === 'xread')?.provider || '6551';
+    params.providerPlan.find((item) => item.provider === '6551')?.provider || '6551';
 
   for (const item of params.providerPlan) {
     if (item.provider === '6551' && item.credentialId) {
@@ -968,30 +950,6 @@ async function resolveTwitterIdentity(params: {
         continue;
       }
     }
-
-    if (item.provider === 'xread') {
-      const apiKey = getXreadApiKey();
-      if (!apiKey) {
-        continue;
-      }
-      try {
-        const lookup = await params.dependencies.clientXread.lookupUser({
-          apiKey,
-          username: params.handle,
-        });
-        params.dependencies.upsertIdentityCache({
-          handle: params.handle,
-          provider: 'xread',
-          userId: lookup.user.id,
-          username: lookup.user.handle,
-          expiresAtMs: params.dependencies.now() + DEFAULT_IDENTITY_CACHE_TTL_MS,
-          lastError: null,
-        });
-        return lookup.user.id;
-      } catch {
-        continue;
-      }
-    }
   }
 
   params.dependencies.upsertIdentityCache({
@@ -1005,7 +963,7 @@ async function resolveTwitterIdentity(params: {
   return null;
 }
 
-/** 6551/xread provider fetch 超时（ms）。挂起请求必须被中止，否则整批卡死。 */
+/** 6551 provider fetch 超时（ms）。挂起请求必须被中止，否则整批卡死。 */
 const TWITTER_PROVIDER_FETCH_TIMEOUT_MS = 15_000;
 
 /** 给裸 fetch 包一层 AbortSignal.timeout；已有 signal 时两者叠加。 */
@@ -1027,11 +985,10 @@ export function createTwitterFetcher(
   const byIdFixtureFile = path.join(fixtureRoot, 'by-id.json');
   const providerMode = normalizeRealProviderMode(process.env.TWITTER_FETCH_PROVIDER);
   const dependencies = {
-    // 6551/xread client 内部 fetch 无超时：挂起的请求会永久 await，卡死调用方
+    // 6551 client 内部 fetch 无超时：挂起的请求会永久 await，卡死调用方
     // 的整批处理（telegram-bridge processUpdate 逐条 await → for 循环停住 →
     // offset 不再推进 → 积压无限增长）。包一层 AbortSignal.timeout 兜底。
     client6551: overrides.client6551 || createTwitter6551Client(withProviderFetchTimeout()),
-    clientXread: overrides.clientXread || createTwitterXreadClient(withProviderFetchTimeout()),
     routeChooser: overrides.routeChooser || chooseTwitterProviderRoute,
     readBudgetSnapshot: overrides.readBudgetSnapshot || readTwitterProviderBudgetSnapshot,
     readIdentityCache: overrides.readIdentityCache || readTwitterIdentityCache,
@@ -1094,9 +1051,7 @@ export function createTwitterFetcher(
         route,
       });
       const attempts: TwitterFetcherProviderAttempt[] = [];
-      const structuredPlan = providerPlan.filter(
-        (item) => item.provider === '6551' || item.provider === 'xread'
-      );
+      const structuredPlan = providerPlan.filter((item) => item.provider === '6551');
 
       if (structuredPlan.length > 0) {
         const resolvedUserId = await resolveTwitterIdentity({
@@ -1199,73 +1154,6 @@ export function createTwitterFetcher(
                 dailyLimit: DEFAULT_6551_DAILY_LIMIT,
               });
               attempts.push({ provider: '6551', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
-            }
-          }
-
-          if (item.provider === 'xread') {
-            const apiKey = getXreadApiKey();
-            if (!apiKey) {
-              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
-              continue;
-            }
-            try {
-              // 与 6551 一致：翻页直到收满预算或 provider 无更多，避免
-              // 活跃账号窗口内老推文被单页截断。
-              const collected: StructuredTwitterTweet[] = [];
-              let cursor: string | null = null;
-              let hasMore = false;
-              let pageCount = 0;
-              // Early-stop（2026-08-28）：同 6551 路径。xread 是付费 consumer API，
-              // 命中 watermark 即停，避免把 99.6% 的重复数据当新数据拉走。
-              let reachedWatermark = false;
-              do {
-                const result = await dependencies.clientXread.fetchUserTweets({
-                  apiKey,
-                  username: normalizeTwitterUsername(handle),
-                  userId: resolvedUserId || undefined,
-                  lane: params.lane,
-                  maxResults: 100,
-                  cursor,
-                });
-                pageCount += 1;
-                collected.push(...result.tweets);
-                hasMore = result.hasMore;
-                cursor = result.nextCursor ?? null;
-                const oldestOnPage = result.tweets.reduce(
-                  (min, tweet) => (tweet.createdAtMs < min ? tweet.createdAtMs : min),
-                  Number.MAX_SAFE_INTEGER
-                );
-                if (Number.isFinite(oldestOnPage) && oldestOnPage < params.sinceMs) {
-                  reachedWatermark = true;
-                }
-                if (
-                  collected.length >= params.maxItems ||
-                  !hasMore ||
-                  pageCount >= 5 ||
-                  reachedWatermark
-                ) {
-                  break;
-                }
-              } while (true);
-              const authoredTweets = filterStructuredUserTweets(collected, handle, params.lane, resolvedUserId);
-              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: true, chargedUnit: 0 });
-              const metadata = createFetcherResultMetadata(attempts);
-              const coverageEstablished = didStructuredProviderEstablishCoverage({
-                tweets: authoredTweets,
-                hasMore,
-                sinceMs: params.sinceMs,
-              });
-              return {
-                ...metadata,
-                coverageEstablished,
-                tweets: sortAndFilterTweets(
-                  authoredTweets.map((tweet) => toUpsertTwitterTweet(tweet, params.lane)),
-                  params.sinceMs,
-                  params.maxItems
-                ),
-              };
-            } catch {
-              attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
             }
           }
         }
@@ -1469,38 +1357,6 @@ export function createTwitterFetcher(
               ok: resolvedCount > 0,
               chargedUnit,
             });
-            continue;
-          }
-        }
-
-        if (item.provider === 'xread') {
-          const apiKey = getXreadApiKey();
-          if (!apiKey) {
-            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
-            continue;
-          }
-          try {
-            let resolvedCount = 0;
-            for (const id of Array.from(unresolvedIds)) {
-              const result = await dependencies.clientXread.fetchTweetById({
-                apiKey,
-                tweetId: id,
-              });
-              if (result.tweet) {
-                tweetsById.set(id, toUpsertTwitterTweet(result.tweet, 'timeline'));
-                unresolvedIds.delete(id);
-                resolvedCount += 1;
-              }
-            }
-            attempts.push({
-              provider: 'xread',
-              credentialId: item.credentialId,
-              ok: resolvedCount > 0,
-              chargedUnit: 0,
-            });
-            continue;
-          } catch {
-            attempts.push({ provider: 'xread', credentialId: item.credentialId, ok: false, chargedUnit: 0 });
             continue;
           }
         }

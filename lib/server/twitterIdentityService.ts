@@ -1,7 +1,6 @@
 import 'server-only';
 
 import { createTwitter6551Client } from '@/lib/server/twitter6551Client';
-import { createTwitterXreadClient } from '@/lib/server/twitterXreadClient';
 import {
   readTwitterIdentityCache,
   upsertTwitterIdentityCache,
@@ -39,18 +38,6 @@ function normalize(value: string | undefined | null) {
 }
 
 export async function lookupUserWithConfiguredProviders(handle: string) {
-  const xreadApiKey = process.env.TWITTER_XREAD_API_KEY?.trim() || '';
-  if (xreadApiKey) {
-    try {
-      return await createTwitterXreadClient().lookupUser({
-        apiKey: xreadApiKey,
-        username: handle,
-      });
-    } catch {
-      // Try the next configured provider.
-    }
-  }
-
   const client6551 = createTwitter6551Client();
   for (const keyIndex of TWITTER_6551_CREDENTIAL_IDS) {
     const apiKey = process.env[`TWITTER_6551_API_KEY_${keyIndex}`]?.trim() || '';

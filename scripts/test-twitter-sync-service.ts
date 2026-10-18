@@ -247,7 +247,6 @@ async function run() {
           TWITTER_FETCH_PROVIDER: 'fixture',
           TWITTER_6551_API_KEY_1: undefined,
           TWITTER_6551_API_KEY_2: undefined,
-          TWITTER_XREAD_API_KEY: undefined,
         },
         async () => {
           const result = await twitterSyncService.runTwitterSyncAction({

@@ -874,7 +874,7 @@ async function runTwitterRelayFixtures() {
         fullText: 'provider refresh should not erase relay source',
         createdAtMs: validBody.createdAtMs,
         lane: 'timeline',
-        source: { provider: 'xread' },
+        source: { provider: '6551' },
       },
     ]);
     const preservedRelaySource = getDb()

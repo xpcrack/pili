@@ -2,7 +2,7 @@ import 'server-only';
 
 import { type TwitterLane } from '@/lib/server/twitterRepo';
 
-export type StructuredTwitterProvider = '6551' | 'xread';
+export type StructuredTwitterProvider = '6551';
 export type TwitterProviderIntent = 'resolve-id' | 'sync' | 'backfill' | 'detail';
 export type StructuredTwitterLane = TwitterLane | 'none';
 export type TwitterProviderFetch = typeof fetch;

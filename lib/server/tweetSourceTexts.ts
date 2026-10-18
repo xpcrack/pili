@@ -102,7 +102,7 @@ export function extractQuotedTextFromSourceJson(sourceJson: string | null | unde
   const relay = readString(record, 'quotedContent', 'quoted_content');
   if (relay) return relay;
 
-  // xread / 6551 nested quote
+  // 6551 nested quote
   const candidates: unknown[] = [
     record.quoted_tweet,
     record.quotedTweet,

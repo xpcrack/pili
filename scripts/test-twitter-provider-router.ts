@@ -34,12 +34,6 @@ function buildInput(
           lastFailureAtMs: null,
         },
       ],
-      xread:
-        {
-          provider: 'xread',
-          credentialId: 'xread-default',
-          apiKey: 'xread-key',
-        },
     },
     ...overrides,
   };
@@ -47,7 +41,7 @@ function buildInput(
 
 function testUsesDeclared6551BucketOrderInsteadOfRecency() {
   const route = chooseTwitterProviderRoute(buildInput());
-  assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['6551', '6551', 'xread']);
+  assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['6551', '6551']);
   assert.equal(route.orderedProviders[0]?.credentialId, '6551-key-1');
   assert.equal(route.orderedProviders[1]?.credentialId, '6551-key-2');
   assert.equal(route.primaryProvider?.provider, '6551');
@@ -80,18 +74,13 @@ function testSkipsLocalBudgetExhausted6551Keys() {
             lastFailureAtMs: null,
           },
         ],
-        xread: {
-          provider: 'xread',
-          credentialId: 'xread-default',
-          apiKey: 'xread-key',
-        },
       },
     })
   );
 
   assert.deepEqual(
     route.orderedProviders.map((item) => `${item.provider}:${item.credentialId}`),
-    ['6551:6551-key-2', 'xread:xread-default']
+    ['6551:6551-key-2']
   );
   assert.equal(route.unavailableProviders[0]?.credentialId, '6551-key-1');
   assert.equal(route.unavailableProviders[0]?.reason, 'local_budget_exhausted');
@@ -123,11 +112,6 @@ function testSkipsCooldownAndUsesHealthy6551Key() {
             lastFailureAtMs: null,
           },
         ],
-        xread: {
-          provider: 'xread',
-          credentialId: 'xread-default',
-          apiKey: 'xread-key',
-        },
       },
     })
   );
@@ -138,42 +122,11 @@ function testSkipsCooldownAndUsesHealthy6551Key() {
   assert.equal(route.unavailableProviders[0]?.reason, 'cooldown_active');
 }
 
-function testFallsBackToXreadWhen6551IsUnavailable() {
-  const route = chooseTwitterProviderRoute(
-    buildInput({
-      providers: {
-        keys6551: [
-          {
-            provider: '6551',
-            credentialId: '6551-key-1',
-            apiKey: 'key-1',
-            dailyLimit: 100,
-            remainingUnits: 0,
-            cooldownUntilMs: Date.UTC(2026, 3, 23, 4, 30, 0),
-            lastSuccessAtMs: Date.UTC(2026, 3, 23, 3, 55, 0),
-            lastFailureAtMs: Date.UTC(2026, 3, 23, 4, 0, 0),
-          },
-        ],
-        xread: {
-          provider: 'xread',
-          credentialId: 'xread-default',
-          apiKey: 'xread-key',
-        },
-      },
-    })
-  );
-
-  assert.equal(route.primaryProvider?.provider, 'xread');
-  assert.deepEqual(route.orderedProviders.map((item) => item.provider), ['xread']);
-  assert.equal(route.unavailableProviders[0]?.reason, 'cooldown_active');
-}
-
 function testReturnsNoopRouteWithoutStructuredProviders() {
   const route = chooseTwitterProviderRoute(
     buildInput({
       providers: {
         keys6551: [],
-        xread: null,
       },
     })
   );
@@ -182,7 +135,7 @@ function testReturnsNoopRouteWithoutStructuredProviders() {
   assert.equal(route.orderedProviders.length, 0);
 }
 
-function testBackfillKeepsHealthy6551AheadOfXread() {
+function testBackfillKeepsDeclared6551Order() {
   const route = chooseTwitterProviderRoute(
     buildInput({
       intent: 'backfill',
@@ -191,7 +144,7 @@ function testBackfillKeepsHealthy6551AheadOfXread() {
 
   assert.deepEqual(
     route.orderedProviders.map((item) => `${item.provider}:${item.credentialId}`),
-    ['6551:6551-key-1', '6551:6551-key-2', 'xread:xread-default']
+    ['6551:6551-key-1', '6551:6551-key-2']
   );
 }
 
@@ -199,9 +152,8 @@ function main() {
   testUsesDeclared6551BucketOrderInsteadOfRecency();
   testSkipsLocalBudgetExhausted6551Keys();
   testSkipsCooldownAndUsesHealthy6551Key();
-  testFallsBackToXreadWhen6551IsUnavailable();
   testReturnsNoopRouteWithoutStructuredProviders();
-  testBackfillKeepsHealthy6551AheadOfXread();
+  testBackfillKeepsDeclared6551Order();
   console.log('twitter provider router tests: ok');
 }
 

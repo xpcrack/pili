@@ -18,7 +18,7 @@ async function run() {
         userName: 'TestUserB',
         handle: '0xsunnft',
         lane: 'replies' as const,
-        providerChain: ['6551', 'xread'] as TwitterFetcherProvider[],
+        providerChain: ['6551'] as TwitterFetcherProvider[],
       },
     ],
   };

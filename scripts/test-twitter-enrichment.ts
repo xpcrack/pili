@@ -447,7 +447,7 @@ async function testMediaUrlExtraction() {
   const { listImageUrlsFromSourceJson } = await import('../lib/server/tweetMediaUrls');
   const urls = listImageUrlsFromSourceJson(
     JSON.stringify({
-      provider: 'xread',
+      provider: '6551',
       raw: {
         legacy: {
           entities: {

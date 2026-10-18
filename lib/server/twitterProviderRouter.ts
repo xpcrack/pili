@@ -18,20 +18,13 @@ export interface Twitter6551RouteCandidate {
   lastFailureAtMs: number | null;
 }
 
-export interface TwitterXreadRouteCandidate {
-  provider: 'xread';
-  credentialId: string;
-  apiKey: string;
-}
-
-export type TwitterStructuredRouteCandidate = Twitter6551RouteCandidate | TwitterXreadRouteCandidate;
+export type TwitterStructuredRouteCandidate = Twitter6551RouteCandidate;
 
 export interface TwitterStructuredProviderRouteInput {
   intent: TwitterProviderIntent;
   nowMs: number;
   providers: {
     keys6551: Twitter6551RouteCandidate[];
-    xread: TwitterXreadRouteCandidate | null;
   };
 }
 
@@ -86,9 +79,6 @@ export function chooseTwitterProviderRoute(
       ...candidate,
     }))
   );
-  if (input.providers.xread?.apiKey.trim()) {
-    orderedProviders.push(input.providers.xread);
-  }
 
   return {
     primaryProvider: orderedProviders[0] || null,
@@ -98,5 +88,5 @@ export function chooseTwitterProviderRoute(
 }
 
 export function isStructuredProvider(provider: string): provider is StructuredTwitterProvider {
-  return provider === '6551' || provider === 'xread';
+  return provider === '6551';
 }

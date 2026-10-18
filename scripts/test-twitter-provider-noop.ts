@@ -3,8 +3,8 @@
  *
  * 事故：.env.local 设 TWITTER_FETCH_PROVIDER=noop 想停掉推特直抓，但
  * normalizeRealProviderMode 的白名单里没有 'noop' → 静默降级成 'auto'
- * → 只是回到 6551→xread 路由，opencli 那条路根本没被堵住（当时侥幸没触发
- * 是因为 6551 key 被注释 + xread 挂了）。本次修复让 'noop' 成为一等公民，
+ * → 只是回到 6551 结构化路由，opencli 那条路根本没被堵住（当时侥幸没触发
+ * 是因为 6551 key 被注释）。本次修复让 'noop' 成为一等公民，
  * 且在 fetchUserTweets / fetchTweetsByIds 两个入口短路，不碰任何 provider。
  *
  * 本测试断言：
@@ -26,7 +26,7 @@ async function run() {
   // 在 noop 下 provider 路由必须完全不被走到。
   const { createTwitterFetcher } = await import('../lib/server/twitterFetcher');
 
-  // routeChooser 是所有 structured provider（6551/xread）的必经入口，
+  // routeChooser 是所有 structured provider（6551）的必经入口，
   // 也是 fetchUserTweets 里第一批被调用的依赖 —— 用它当「有没有走到 provider
   // 路由」的探针最干净（不必伪造客户端内部形状）。
   function makeSpyDeps(label: string) {

@@ -45,8 +45,8 @@ function normalize(value: string | null | undefined) {
 }
 
 function formatProviderChain(chain: TwitterFetcherProvider[]) {
-  const filtered = chain.filter((item) => item === '6551' || item === 'xread');
-  return filtered.length > 0 ? filtered.join(' -> ') : '6551/xread';
+  const filtered = chain.filter((item) => item === '6551');
+  return filtered.length > 0 ? filtered.join(' -> ') : '6551';
 }
 
 function buildRateKey(input: NotifyTwitterProviderFailuresInput) {
@@ -71,7 +71,7 @@ export function buildTwitterProviderFailureAlertMessage(input: NotifyTwitterProv
     '⚠️ Twitter 结构化源抓取失败',
     `runId: ${input.runId ?? 'unknown'}`,
     `失败 lane: ${input.failures.length}`,
-    '6551 + Xread 均未成功返回，本轮不会自动降级 opencli/dokobot。',
+    '6551 未成功返回，本轮不会自动降级 opencli/dokobot。',
     ...lines,
   ].join('\n');
 }
