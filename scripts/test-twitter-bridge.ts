@@ -346,7 +346,7 @@ async function testRoutingBehavior() {
       chat: {
         id: '-5108676923',
       },
-      text: '[纯鱼#1]\nCA: 0xabc\naction: buy',
+      text: '[纯鱼#addr1]\nCA: 0xabc\naction: buy',
     },
   } satisfies TelegramUpdateLike;
   const malformedTwitterUpdate = makeTwitterUpdate({

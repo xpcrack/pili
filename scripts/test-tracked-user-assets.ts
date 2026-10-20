@@ -24,7 +24,7 @@ function buildUser(): Omit<User, 'id'> {
     addresses: [
       {
         address: SOLANA_ADDRESS,
-        name: '#1',
+        name: '#addr1',
         chain: 'solana',
         totalAssetUsd: null,
         assetUpdatedAt: null,

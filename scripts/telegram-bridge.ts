@@ -112,7 +112,7 @@ function isPotentialTwitterRelayUpdate(update: TelegramUpdateLike) {
   if (looksLikeTwitterRelayMessage(message || {})) {
     return true;
   }
-  if (chatId === '-1001234567890') {
+  if (process.env.TELEGRAM_TWITTER_MONITOR_CHAT_ID?.trim() === chatId) {
     return true;
   }
   return /(?:监控到新推文|发推|转推|引用推文|回复推文)/.test(headline);

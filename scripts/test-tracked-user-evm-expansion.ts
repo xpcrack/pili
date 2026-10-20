@@ -22,7 +22,7 @@ function buildUser(): Omit<User, 'id'> {
     addresses: [
       {
         address: EVM_ADDRESS,
-        name: '#1',
+        name: '#addr1',
         chain: 'bsc',
         totalAssetUsd: null,
         assetUpdatedAt: null,
@@ -91,7 +91,7 @@ async function run() {
       'legacy-user',
       EVM_ADDRESS,
       EVM_ADDRESS.toLowerCase(),
-      '#1',
+      '#addr1',
       'bsc',
       now,
       now
